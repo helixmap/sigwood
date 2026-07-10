@@ -26,7 +26,7 @@ _PIHOLE_COLUMNS = [
     "dst", "answer", "validation", "host", "raw", "message",
 ]
 
-# CloudTrail canonical row schema. The aws detector (Thread B) consumes frames with
+# CloudTrail canonical row schema. The aws detector consumes frames with
 # these columns in this order. parsers/cloudtrail.py is the single source of truth
 # for what each column means.
 _CLOUDTRAIL_COLUMNS = [

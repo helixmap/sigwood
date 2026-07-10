@@ -1,4 +1,4 @@
-"""Net-new coverage for the output voice & format consistency pass (tranche 1).
+"""Cross-cutting output voice & format consistency invariants.
 
 Locks the cross-cutting invariants the per-surface tests don't individually
 guard: single ``sigwood:`` prefixing (no double-prefix), the usage pointer
@@ -25,7 +25,7 @@ def _err_lines(capsys) -> list[str]:
     return [ln for ln in capsys.readouterr().err.splitlines() if ln.strip()]
 
 
-# ── report-content shape tripwire (tranche 2) ──────────────────────────────────
+# ── report-content shape tripwire ──────────────────────────────────────────────
 
 
 def assert_report_voice(findings) -> None:

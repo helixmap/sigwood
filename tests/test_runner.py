@@ -411,8 +411,8 @@ def test_runner_cloudtrail_integration_lights_data_sources(
 ) -> None:
     """End-to-end load contract: a detector requiring cloudtrail_dir drives the
     load through runner.run, and the resulting RunSummary.data_sources contains
-    "cloudtrail_raw". This is what proves Thread A wires plan → load → context →
-    data_sources before the real aws detector lands in Thread B."""
+    "cloudtrail_raw". This proves the runner wires plan → load → context →
+    data_sources for a cloudtrail_dir detector."""
     cloudtrail_dir = tmp_path / "ct"
     cloudtrail_dir.mkdir()
     event = {

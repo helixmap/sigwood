@@ -1,6 +1,6 @@
 """Shared display constants and helpers for human-facing terminal output.
 
-The ``liveness`` context manager is the shared primitive for ROADMAP-12 TTY
+The ``liveness`` context manager is the shared primitive for TTY
 progress narration. It draws an indeterminate spinner on stderr for opaque
 blocking phases when stderr is a tty, and seals a permanent one-line record
 on the way out (visible on tty AND non-tty - only the live animation is

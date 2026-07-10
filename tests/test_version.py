@@ -1,6 +1,6 @@
 """`sigwood --version` / `-V` and the single-sourced package version.
 
-Two workstreams share the version subsystem:
+The version subsystem has two parts:
   A. the version is single-sourced in ``sigwood/__init__.py`` (pyproject reads it
      dynamically), and
   B. ``--version`` / ``-V`` is a global leading-token short-circuit in ``cli._main``
@@ -23,7 +23,7 @@ from sigwood.common.errors import UsageError
 _PYPROJECT = Path(__file__).resolve().parents[1] / "pyproject.toml"
 
 
-# ── workstream B: the --version / -V flag ─────────────────────────────────────
+# ── the --version / -V flag ───────────────────────────────────────────────────
 
 
 def test_version_long(capsys):
@@ -100,7 +100,7 @@ def test_version_not_in_any_verb_allowed():
         assert "version" not in vs.allowed, verb
 
 
-# ── workstream A: single-sourced version ──────────────────────────────────────
+# ── single-sourced version ────────────────────────────────────────────────────
 
 
 def test_version_single_sourced():

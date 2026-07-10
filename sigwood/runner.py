@@ -1791,7 +1791,7 @@ _CLOUDTRAIL_EMPTY_COLUMNS = [
 # Mechanical mapping kept inline alongside run_digest because it's runner
 # plumbing - pattern + columns are runner/loader concerns, NOT source-
 # resolution ownership (DigestSource just carries the directory + feed +
-# source_key). See plan: "_PATTERN_AND_EMPTY[(schema, source_key)] inline".
+# source_key).
 _DIGEST_PATTERN_AND_EMPTY: dict[tuple[str, str], tuple[str, list[str]]] = {
     ("conn",       "zeek_dir"):       ("conn*.log*",   _CONN_EMPTY_COLUMNS),
     ("dns",        "zeek_dir"):       ("dns*.log*",    _DNS_ZEEK_EMPTY_COLUMNS),

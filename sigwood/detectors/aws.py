@@ -1,7 +1,7 @@
 """AWS detector - per-principal behavioral surfacing from CloudTrail events.
 
 Reads the canonical 12-column per-event frame produced by parsers/cloudtrail.py
-(Thread A) and surfaces two tiers of Findings:
+and surfaces two tiers of Findings:
 
 1. **Burst sweeps** - per-principal first-seen actions clumped within a
    sliding gap become one "enumeration sweep" Finding. The strongest primitive
@@ -102,9 +102,8 @@ DEFAULT_CONFIG = {
 # ── Pure helper: below-floor count ────────────────────────────────────────────
 #
 # Pre-detector: the runner calls this during RunSummary note assembly (before
-# the detector loop starts, see runner.py memory note runsummary-built-before-
-# detectors). The detector also calls it internally to size the scorable set,
-# so the disclosed count cannot drift from the analysis count.
+# the detector loop starts). The detector also calls it internally to size the
+# scorable set, so the disclosed count cannot drift from the analysis count.
 
 def below_floor_count(df: pd.DataFrame | None, min_events: int) -> int:
     """Number of interactive-lane principals with fewer than ``min_events`` events.

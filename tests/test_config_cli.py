@@ -591,9 +591,9 @@ def test_usage_advertises_out_not_output_dir(capsys) -> None:
     assert "--output-dir" not in out
 
 
-# ── Thread C - CLI polish for the aws detector ────────────────────────────────
+# ── CLI polish for the aws detector ───────────────────────────────────────────
 
-# Fix 1: aws subcommand + usage
+# aws subcommand + usage
 
 def test_aws_is_a_single_detector_command() -> None:
     """sigwood aws PATH must be recognized as a single-detector subcommand."""
@@ -613,7 +613,7 @@ def test_usage_lists_duration_subcommand(capsys) -> None:
     assert "sigwood duration " in out
 
 
-# Fix 2: positional PATH → cloudtrail_dir in single-detector mode
+# positional PATH → cloudtrail_dir in single-detector mode
 
 def test_aws_positional_path_routes_to_cloudtrail_dir(
     monkeypatch: pytest.MonkeyPatch,

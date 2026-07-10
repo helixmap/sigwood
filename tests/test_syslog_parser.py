@@ -442,10 +442,10 @@ def test_load_syslog_does_not_skip_hash_comment_flat_syslog(tmp_path: Path) -> N
 
 # ── bz2 / xz transparent decompression at load_syslog ────────────────────────
 #
-# This is the bug that triggered the prompt: a rotated `system.log.bz2` in
-# `/var/log` was read as replacement-char garbage and the syslog detector
-# titled findings with binary soup. With bz2/xz in `_open_log`, the public
-# `load_syslog` path ingests the file as text rows like any other syslog file.
+# A rotated `system.log.bz2` in `/var/log` must NOT read as replacement-char
+# garbage (which would title findings with binary soup): with bz2/xz in
+# `_open_log`, the public `load_syslog` path ingests it as text rows like any
+# other syslog file.
 
 _SYSLOG_BZ2_XZ_LINES = (
     "<134>May 31 12:00:00 router sshd[100]: Accepted publickey for user\n"
@@ -515,9 +515,8 @@ def test_load_syslog_corrupt_compressed_file_skipped_with_warning(
     read-warning. Good files in the same directory still load (skip is
     per-file, not whole-run). The phrasing differs by corruption shape -
     .gz/.xz land in the "incomplete or corrupt" branch, .bz2's OSError
-    falls to the generic class-name fallback (per the prompt's "do not
-    contort to special-case" note); both branches satisfy the required
-    rail of "warned, not traceback'd"."""
+    falls to the generic class-name fallback; both branches satisfy the
+    contract of "warned, not traceback'd"."""
     syslog_dir = tmp_path / "syslog"
     syslog_dir.mkdir()
     # Good companion file alongside the corrupt one.

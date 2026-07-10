@@ -174,7 +174,7 @@ def test_program_volume_dashes_below_population_floor() -> None:
 def test_program_volume_names_rank1_when_speaking() -> None:
     """Audit-logging-dominated pile: audisp dominates 20:1 over sshd.
 
-    This is the realistic motif the brief calls out - a pile in which
+    This is the realistic motif - a pile in which
     `audisp` runs the table is what the program-volume slot exists to flag.
     """
     rows = [_syslog_row(program="audisp", message="op=USYS_CONFIG res=success")

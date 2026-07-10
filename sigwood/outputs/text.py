@@ -137,8 +137,8 @@ def _render_histogram(
 def _render_label_value_block(rows: list[tuple[str, str]]) -> list[str]:
     """Flush-left ``label: value`` block with the value column aligned.
 
-    Shared by the ambient block (Zone 1) and the fields block (former
-    Zone 3) on every digest card. Label width is computed from the rows
+    Shared by the ambient block and the fields block on every digest
+    card. Label width is computed from the rows
     in this block only - no cross-block alignment. The labels are
     flush-left at column 0; alignment is in the value column.
 
@@ -386,7 +386,7 @@ def _render_group_header(detector: str, renderable: DetectorRenderable) -> list[
 
 
 def _render_cap_disclosure(detector: str, renderable: DetectorRenderable, cap: int) -> str:
-    """Cap disclosure: factual; deferred error-voice pass owns final wording.
+    """Cap disclosure: factual wording.
 
     Honesty rail: the cap trims sections in DECLARED order, NOT
     global severity. For a FLAT detector (one implicit section) the cap is
@@ -397,9 +397,8 @@ def _render_cap_disclosure(detector: str, renderable: DetectorRenderable, cap: i
 
     Rather than spell out the cross-section non-guarantee in two arms, the
     wording simply drops the severity claim. The hidden count and the cap
-    cap are what the operator needs to act on. Wording is placeholder-tier
-    pending the error-voice pass - the binding constraint is that we MUST
-    NOT claim severity-retention the cap doesn't provide.
+    cap are what the operator needs to act on. The binding constraint is
+    that the wording MUST NOT claim severity-retention the cap doesn't provide.
     """
     hidden = renderable.cap_truncated
     return (
@@ -980,7 +979,7 @@ class TextHandler(OutputHandler):
         if card.default_window_note:
             print(_sanitize(card.default_window_note), file=self._stream)
 
-        # ── Ambient (former Zone 1) block ─────────────────────────────────
+        # ── Ambient block ─────────────────────────────────────────────────
         ambient = _render_sanitized_label_value_block(card.zone1_extras)
         if ambient:
             print(file=self._stream)
@@ -1005,7 +1004,7 @@ class TextHandler(OutputHandler):
             for insight in card.insights:
                 print(_sanitize(insight), file=self._stream)
 
-        # ── Fields (former Zone 3) block ──────────────────────────────────
+        # ── Fields block ──────────────────────────────────────────────────
         field_rows = [
             (slot.label, "  ".join(_sanitize(cell) for cell in slot.cells))
             for slot in card.fields

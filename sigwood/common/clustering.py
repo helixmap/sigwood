@@ -1,9 +1,8 @@
 """HDBSCAN backend shim - prefer fast_hdbscan, fall back to stock hdbscan.
 
-The dns detector was originally built and calibrated on stock ``hdbscan``;
-``fast_hdbscan`` was added later as a drop-in accelerator with an identical
-``HDBSCAN(min_cluster_size=, min_samples=)`` plus ``.fit_predict(X)`` API.
-Both produce equivalent findings.
+Both backends expose an identical ``HDBSCAN(min_cluster_size=, min_samples=)``
+plus ``.fit_predict(X)`` API and produce equivalent findings; ``fast_hdbscan``
+is a drop-in accelerator over stock ``hdbscan``.
 
 This module resolves which implementation is in use exactly once at import
 time and exposes that class at module level as ``HDBSCAN`` so callers can

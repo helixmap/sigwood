@@ -577,7 +577,7 @@ def _prepare_detector_context(
 ) -> DetectorContext:
     """Build the per-detector filtered view + DetectorContext.
 
-    Pure extraction of the previously inline prep at the detector loop:
+    Prep run per detector inside the detector loop:
     each detector gets its own filtered copy of the shared log frames
     (so independent ``filter_df`` results never mutate the shared dict),
     keyed by the patterns the detector itself declares via
@@ -1051,11 +1051,9 @@ def _warn_skipped(detector_name: str, reason: str) -> None:
 def _zeek_entry_display(p: Path) -> str:
     """Render one zeek_dir input for the dry-run block.
 
-    Mirrors the single-input format that has shipped: a DIRECTORY shows
-    ``{path}  (N files, X.X MB)`` (counting only its immediate file children
-    - same iteration the prior helper did, NOT recursive); a FILE shows
-    ``{path}  (X.X MB)``; a non-existent path shows ``{path}  - not found``.
-    Single-input dry-run is byte-identical with the prior format.
+    A DIRECTORY shows ``{path}  (N files, X.X MB)`` (counting only its
+    immediate file children, NOT recursive); a FILE shows ``{path}  (X.X MB)``;
+    a non-existent path shows ``{path}  - not found``.
     """
     if not p.exists():
         return f"{p}  - not found"

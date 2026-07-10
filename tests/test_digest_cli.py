@@ -338,12 +338,11 @@ def test_digest_multipath_non_directory_errors_still_surface(
 
 # ─── Real-route regression: notice-shape pathless NDJSON → blob ─────────────
 #
-# Reproduces the original incident: a notice.log-shaped pathless Zeek NDJSON
-# (id.orig_h plus native src) historically reached the conn summariser via
-# the field-set fallback and crashed it with the Grouper-not-1-dimensional
-# pandas error. The collision guard now rejects the false claim at sniff,
-# the orchestrator drops to the blob floor, and the real summariser is
-# never invoked - so the defence-in-depth net never fires either.
+# A notice.log-shaped pathless Zeek NDJSON (id.orig_h plus native src) must NOT
+# reach the conn summariser via the field-set fallback (it crashes with the
+# Grouper-not-1-dimensional pandas error): the collision guard rejects the false
+# claim at sniff, the orchestrator drops to the blob floor, and the real
+# summariser is never invoked - so the defence-in-depth net never fires either.
 # Unmocked end-to-end: this test fails if a future change accidentally
 # bypasses the guard, even if the recognizer unit tests still pass.
 

@@ -134,7 +134,7 @@ ZEEK_NDJSON_ANALYZER_SAMPLE: list[str] = [
 ]
 
 # notice.log-shaped NDJSON WITHOUT _path. Carries the conn 5-tuple via
-# id.* keys (so the 2c conn fallback would historically claim it) AND its
+# id.* keys (so a field-set conn fallback would claim it) AND its
 # OWN native `src`/`dst` columns. That double-presence is the
 # rename-collision signal: the loader's id.orig_h→src rename would
 # duplicate the canonical `src` column and crash the conn summariser
@@ -400,8 +400,8 @@ def test_zeek_sniff_field_set_syslog_requires_message() -> None:
 
 def test_zeek_sniff_notice_no_path_native_src_collision_returns_none() -> None:
     """notice.log-shaped NDJSON without _path carrying id.orig_h plus
-    native src/dst - the original incident shape - must NOT be claimed as
-    conn. Falls through to None so the orchestrator drops to blob."""
+    native src/dst must NOT be claimed as conn. Falls through to None so the
+    orchestrator drops to blob."""
     assert zeek.sniff(ZEEK_NDJSON_NOTICE_NO_PATH_SAMPLE) is None
 
 

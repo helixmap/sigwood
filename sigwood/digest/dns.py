@@ -114,7 +114,7 @@ def _qtype_label(value: object, feed: str) -> str | None:
 def _qtype_dist(qtypes: pd.Series | None, feed: str) -> str:
     """Render top-3 qtype share string for the qtype-mix dist slot.
 
-    Two distinct fallbacks (consistency pinned by review):
+    Two distinct fallbacks:
       - Missing column (qtypes is None) → "(no qtype)" (schema-presence fact)
       - Empty / all-NaN series → "(no queries)" (data-shape fact)
     Single-type pile → "A 100%". Mix → "A 82% · AAAA 11% · HTTPS 4%".

@@ -523,9 +523,10 @@ def test_shape_cascade_repeated_program_prefix_is_freeform(tmp_path) -> None:
     bareword colon pair each → below the strict ≥2 density → freeform, not
     key-value. GUARDS the accepted tradeoff (a single-pair colon config reads
     freeform) against a future broadening of the `:` form (the prompt's explicit
-    "do NOT broaden the colon form to recover it"). The old→new discriminator delta
+    "do NOT broaden the colon form to recover it"). The discriminator
     - a ≥2-colon line whose colons are NON-bareword - is pinned by the apple
-    space/T-timestamp tests above (which the OLD code mis-claimed as key-value)."""
+    space/T-timestamp tests above (which a bareword-blind colon check would
+    mis-claim as key-value)."""
     p = tmp_path / "messages.log"
     with p.open("w") as fh:
         for i in range(250):
@@ -734,9 +735,8 @@ def test_meaninglessness_floor_vanishes_templates_on_freeform(tmp_path) -> None:
 
 # ─── Renderer: no banner, no Lines: / Data found: rows in flat grammar ─────
 #
-# The old Lines: / Records: / Data found: banner rows lived on RunSummary
-# and went away with it. Blob now uses its identity-line provenance and
-# never participates in a banner.
+# The flat grammar has no banner: blob uses its identity-line provenance and
+# never renders Lines: / Records: / Data found: rows.
 
 
 def test_blob_card_has_no_banner_lines_or_data_found_rows() -> None:

@@ -1,11 +1,10 @@
 """Multi-positional source ingestion - CLI primary rail.
 
 These tests exercise the REAL CLI ↔ runner path with ``--dry-run`` and
-``runner.run`` UNMOCKED. They prove the property the prior multi-positional
-work could not prove because the bug was at CLI fan-in (analyze/single-detector
-read only ``parsed["path"]`` and silently dropped the rest of ``parsed["paths"]``):
-that N positionals fan into per-family buckets, MERGE with explicit
-``--<family>-dir`` flags (sanctioned rail supersession; both load now), and the
+``runner.run`` UNMOCKED. They prove the CLI fan-in reads ALL of
+``parsed["paths"]`` (a fan-in that read only ``parsed["path"]`` would silently
+drop the rest): N positionals fan into per-family buckets, MERGE with explicit
+``--<family>-dir`` flags (sanctioned rail supersession; both load), and the
 union load runs across families.
 
 Companion to:
@@ -360,9 +359,9 @@ def test_pihole_satisfiability_via_neutral_filename_lockstep_with_loader(
     """Plan-time pihole satisfiability uses ``_syslog_files``
     (file-or-dir, ``*.log*``), NOT ``directory.glob(pattern)``. A Pi-hole
     file with a neutral name (``events.log``) MUST be plan-satisfiable,
-    matching what the loader will actually ingest. The old glob-on-pattern
+    matching what the loader will actually ingest. A glob-on-pattern
     check would reject ``events.log`` (no ``pihole`` prefix) while the
-    loader happily reads it - drift between plan and loader."""
+    loader happily reads it - the plan/loader drift this guards against."""
     from types import SimpleNamespace
 
     from sigwood.runner import _is_optional_satisfiable

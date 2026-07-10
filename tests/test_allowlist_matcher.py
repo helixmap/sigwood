@@ -24,9 +24,8 @@ import sigwood.common.allowlist as al
 
 
 def _oracle_allowed(patterns: list[str], domain) -> bool:
-    """The old `is_domain_allowed`: lower the data, IGNORECASE on `re:`, lower the
-    glob pattern. VALID patterns only (a malformed `re:` would raise here, exactly
-    the crash this change removes)."""
+    """Oracle for the domain-match contract: lower the data, IGNORECASE on `re:`,
+    lower the glob pattern. VALID patterns only (a malformed `re:` raises here)."""
     dl = str(domain).lower()
     for p in patterns:
         if p.startswith("re:"):
@@ -39,7 +38,7 @@ def _oracle_allowed(patterns: list[str], domain) -> bool:
 
 
 def _oracle_drop(patterns: list[str], q) -> bool:
-    """The old two-probe: bare query OR apex probe."""
+    """The two-probe oracle: bare query OR apex probe."""
     return _oracle_allowed(patterns, str(q)) or _oracle_allowed(patterns, "x." + str(q))
 
 

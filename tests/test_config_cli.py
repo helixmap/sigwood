@@ -871,15 +871,13 @@ def test_cli_keyboard_interrupt_at_confirm_prompt_still_exit_zero(
     assert "Stopped." not in captured.out
 
 
-# ── Single-detector positional routing: syslog (v1 promotion) ────────────────
+# ── Single-detector positional routing: syslog ───────────────────────────────
 #
-# The syslog detector's REQUIRED_LOGS is now
-# empty (dns shape), so _source_for_single_detector_path falls through to
-# OPTIONAL_LOGS pattern matching - and `syslog.log` matches BOTH `*.log*`
-# AND `syslog*.log*`, which previously routed to the zeek_dir default.
-# That regresses flat-syslog. The fix special-cases syslog: directories
-# default to syslog_dir (preserves /var/log convention), files content-sniff
-# (Zeek-origin → zeek_dir, anything else → syslog_dir).
+# syslog's REQUIRED_LOGS is empty (dns shape), so a positional routes through
+# OPTIONAL_LOGS matching, where `syslog.log` matches BOTH `*.log*` and
+# `syslog*.log*`. Flat syslog MUST reach syslog_dir, not the zeek_dir default:
+# a directory positional routes to syslog_dir (the /var/log convention), a
+# file content-sniffs (Zeek-origin → zeek_dir, anything else → syslog_dir).
 
 def test_syslog_positional_flat_file_routes_to_syslog_dir(
     monkeypatch: pytest.MonkeyPatch,
@@ -914,8 +912,8 @@ def test_syslog_positional_directory_routes_to_syslog_dir(
 ) -> None:
     """A directory positional preserves the /var/log flat-syslog convention.
 
-    Without the special-case, _source_for_single_detector_path's directory
-    branch would default to zeek_dir - wrong for the historical syslog flow.
+    A directory positional MUST route to syslog_dir, not the zeek_dir
+    default - the /var/log flat-syslog convention.
     """
     monkeypatch.setattr(cfg, "SEARCH_PATHS", [])
     captured: dict[str, object] = {}

@@ -1,30 +1,22 @@
 """Single-ownership source resolution for sigwood.
 
-Replaces a four-instance bug class:
+One owner of positional→source and config-fallback resolution, so the CLI
+seams cannot drift. Invariants:
 
-- Overloading ``None`` to mean both "no override" and "scoped out - don't
-  load this" silently undoes CLI scoping the moment a config fallback fills
-  a ``None`` back: ``sigwood syslog ./flat.log`` would then also load
-  configured Zeek ``syslog*.log*`` on a default install. The explicit
-  ``scope`` signal below exists so that cannot happen.
-- Analyze CLI, digest CLI, runner, and ``run_digest`` each carried their
-  own per-key config-fallback ladder, drifting in error strings and
-  semantics.
-- The detect-path positional→source router was implemented three times
-  (analyze, single-detector, and a "wrong-source" hint scold), with a
-  ``detector_name == "syslog"`` content-sniff special case while DNS
-  routed by filename ``fnmatch``.
-
-After this module:
-
-- One owner of source resolution. ``resolve_sources`` is the analyze
-  resolver; ``resolve_digest_source`` is the digest resolver.
-  ``_resolve_one`` is the ONLY site where a source-dir string becomes a
-  resolved ``Path`` - CLI seams pass raw strings (or ``None``) and the
-  runner threads them straight in.
-- ``None`` everywhere means strictly "no override." Scope is the only
-  scoping signal.
-- One generic content-sniff router, ``route_positional_source``.
+- ``None`` means strictly "no override," NEVER "scoped out - don't load this";
+  ``scope`` is the only scoping signal. Overloading ``None`` for both would let
+  a config fallback fill a scoped-out ``None`` back and undo CLI scoping
+  (``sigwood syslog ./flat.log`` must NOT then also load configured Zeek
+  ``syslog*.log*`` on a default install) - the explicit ``scope`` below
+  prevents that.
+- ``resolve_sources`` is the analyze resolver; ``resolve_digest_source`` is the
+  digest resolver; ``_resolve_one`` is the ONLY site where a source-dir string
+  becomes a resolved ``Path`` (CLI seams pass raw strings or ``None`` and the
+  runner threads them straight in).
+- One generic content-sniff router, ``route_positional_source``: a file
+  content-sniffs to its family, a directory runs a bounded content vote and
+  falls back to the detector's declared source on an inconclusive result - no
+  per-verb ladder, no ``detector_name`` special case.
 
 Layering: this module imports ``common.paths`` and ``common.loader``
 (content sniffing). It MUST NOT import from ``sigwood.detectors`` -

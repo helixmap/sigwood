@@ -1106,8 +1106,8 @@ def resolve_load_windows(
     zero runner edits). ``keep_null`` is read straight off ``strategy.ts_policy``.
 
     ``needed_sources`` carries the pattern→source map so the flat resolver recovers
-    the detector glob per family (``pattern``) - first pattern per family, matching
-    the prior name-ladder behavior - without reintroducing a source-name branch.
+    the detector glob per family (``pattern``) - first pattern per family, without
+    reintroducing a source-name branch.
     """
     if load_all or since is not None or until is not None:
         return []

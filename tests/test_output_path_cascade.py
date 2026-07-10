@@ -161,8 +161,8 @@ def test_cloudtrail_cascade_falls_to_cwd_when_nothing_set(
 def test_stale_per_query_output_dir_does_not_participate(tmp_path: Path) -> None:
     """A/D negative (scoped to EXPORT config): the per-query tier now reads only
     ``export_dir``. A stale ``output_dir`` key in a query stanza is inert - the
-    cascade falls through to the backend tier, NOT the stale value. This proves
-    the squash deleted ``output_dir`` as an export-config key.
+    cascade falls through to the backend tier, NOT the stale value;
+    ``output_dir`` is not a valid export-config key.
 
     Scoped strictly to the exporter cascade - the unrelated analyze-report
     ``output_dir`` kwarg (runner/cli) is a different function parameter and is

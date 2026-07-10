@@ -2773,8 +2773,8 @@ def test_liveness_seal_lands_once_for_successful_run(
 def test_prepare_detector_context_filters_per_pattern(tmp_path: Path) -> None:
     """Unit: _prepare_detector_context calls allowlist.filter_df once per
     pattern the detector declares (REQUIRED + OPTIONAL), and builds a
-    DetectorContext with the filtered view. Verifies the pure extraction
-    of the previously inline prep."""
+    DetectorContext with the filtered view. Verifies the per-detector
+    prep helper."""
     from sigwood.common.finding import DetectorContext as _DC
 
     mod = SimpleNamespace(
@@ -2817,7 +2817,7 @@ def test_prepare_detector_context_filters_per_pattern(tmp_path: Path) -> None:
     assert "other*.log*" in ctx.logs
     assert ctx.logs["other*.log*"] is other_df
 
-    # The returned context is shaped like the previously inline DetectorContext.
+    # The returned context is a fully-populated DetectorContext.
     assert isinstance(ctx, _DC)
     assert ctx.config == {"k": "v"}
     assert ctx.data_sources == ["zeek_conn"]

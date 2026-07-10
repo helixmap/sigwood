@@ -1020,16 +1020,14 @@ def test_run_digest_not_quiet_keeps_loader_progress(tmp_path, monkeypatch):
     assert captured["show_progress"] is True
 
 
-# ─── Single-file Zeek bypass: filename-era basename gate retired ─────────────
+# ─── Single-file Zeek bypass: no basename gate on an explicit file ───────────
 
-# The single-file Zeek loader path used to route through discover_zeek_files,
-# whose single-file branch gates on fnmatch(basename, pattern). After
-# content-sniffing was added at the CLI layer, that filename gate started
-# silently dropping date-prefixed files (e.g. 2026-06-09.conn.log) into
-# zero-row cards. run_digest now bypasses discover_zeek_files for an explicit
-# single Zeek file - only the Zeek path needed the fix (pihole/syslog/cloudtrail
-# loaders already accept explicit files without a basename gate); the detect
-# path is unchanged (it still uses the basename gate as a type check).
+# run_digest MUST bypass discover_zeek_files for an explicit single Zeek file:
+# discover_zeek_files' single-file branch gates on fnmatch(basename, pattern),
+# which silently drops date-prefixed files (e.g. 2026-06-09.conn.log) into
+# zero-row cards. Only the Zeek path needs this bypass (pihole/syslog/cloudtrail
+# loaders accept explicit files without a basename gate); the detect path keeps
+# the basename gate as a type check.
 
 _TSV_CONN_HEADER = (
     "#separator \\x09\n"

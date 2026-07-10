@@ -146,9 +146,9 @@ def _render(card: DigestCard) -> str:
 def _compute_slots(frame: pd.DataFrame) -> list:
     """Re-compute the canonical cloudtrail slot list for tests.
 
-    The summariser used to return the full pre-filter slot list as
-    body["slots"]. Under the flat grammar the body returns only
-    post-selection display state (`fields`). Tests that need to inspect a
+    Under the flat grammar the body returns only post-selection display
+    state (`fields`), not a full pre-filter slot list. Tests that need to
+    inspect a
     specific slot's computed state re-derive it here - same six
     computers, same interactive-lane scoping, in declared order.
     """
@@ -231,7 +231,7 @@ def test_principal_vol_dashes_when_interactive_neckandneck_despite_service_domin
     Service lane has one dominant principal that would WIN a whole-pile cliff.
     Interactive lane has only two principals (below POPULATION_FLOOR=5), so
     even though one of them dominates within interactive, the slot must dash
-    - the spec calls this out explicitly.
+    below the population floor.
     """
     rows: list[dict] = []
     # 10 service rows all from the same service principal - would dominate

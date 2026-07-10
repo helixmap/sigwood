@@ -122,8 +122,8 @@ def _slot_conn_share(frame: pd.DataFrame) -> DigestSlot:
 
     Host involvement = rows where host appears as src OR dst. Each row
     contributes to two hosts' counts (src and dst); a row with src == dst
-    counts once for that host. The brief reads "share of connections" as
-    endpoint involvement, not source-only.
+    counts once for that host. "Share of connections" is endpoint
+    involvement, not source-only.
     """
     label = "conn-share"
     if frame.empty:
@@ -155,8 +155,8 @@ def _slot_conn_share(frame: pd.DataFrame) -> DigestSlot:
 def _slot_densest_tuple(frame: pd.DataFrame) -> DigestSlot:
     """densest-tuple: the single busiest (src, dst, port) flow.
 
-    Proto is intentionally not part of the key - the brief specifies the fill
-    format as ``src->dst:port``.
+    Proto is intentionally not part of the key - the fill format is
+    ``src->dst:port``.
     """
     label = "densest-tuple"
     if frame.empty:
@@ -264,7 +264,7 @@ def _format_bytes(n: float) -> str:
 def _zone1_extras(frame: pd.DataFrame) -> list[tuple[str, str]]:
     """Return the ambient label/value rows the conn card prints.
 
-    Exactly the four pieces the brief lists: host count, internal/external
+    The four ambient pieces: host count, internal/external
     split, outbound bytes, inbound bytes. Host count and split share one
     rendered line (the split is the parenthetical of the count). Outbound and
     inbound bytes are two further lines.

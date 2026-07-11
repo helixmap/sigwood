@@ -105,7 +105,7 @@ def run(context: DetectorContext) -> list[Finding]:
 
 
 def _filter_conn(df: Any, home_net: list[str]) -> Any:
-    """Apply beacon pre-filters: established conns, no multicast/link-local, local origin.
+    """Apply beacon pre-filters: established conns, no non-unicast dst/src, local origin.
 
     Masks derived from ``.map`` are cast to bool so an empty post-conn_state frame stays a
     boolean mask. An empty object-dtype series used in ``df[...]`` is read by pandas as
@@ -121,9 +121,8 @@ def _filter_conn(df: Any, home_net: list[str]) -> Any:
     df = df[df["conn_state"].isin(["SF", "S1"])].copy()
     if df.empty:
         return df
-    df = df[~df["dst"].map(_is_multicast_or_broadcast).astype(bool)]
-    df = df[~df["src"].str.startswith("fe80:", na=False)]
-    df = df[~df["dst"].str.startswith("fe80:", na=False)]
+    df = df[~df["dst"].map(_is_non_unicast).astype(bool)]
+    df = df[~df["src"].map(_is_non_unicast).astype(bool)]
     src_internal = df["src"].map(lambda ip: _ip_in_home_net(ip, home_net))
     if "local_orig" not in df.columns:
         effective_local = src_internal.astype(bool)
@@ -135,13 +134,23 @@ def _filter_conn(df: Any, home_net: list[str]) -> Any:
     return df
 
 
-def _is_multicast_or_broadcast(ip: str) -> bool:
-    if not isinstance(ip, str):
+def _is_non_unicast(ip: object) -> bool:
+    """True for a multicast, link-local, or IPv4 limited-broadcast address.
+
+    Uses the stdlib ipaddress classifier, never a string prefix: an endswith(".255")
+    test over-fires on a unicast ".255" host in a network wider than /24 (dropping a
+    real beacon before it scores) and misses IPv4 link-local 169.254/16. is_link_local
+    subsumes both fe80::/10 and 169.254/16; the limited broadcast is exactly
+    255.255.255.255.
+    """
+    try:
+        addr = ipaddress.ip_address(ip)
+    except (ValueError, TypeError):
         return False
     return (
-        ip.startswith("224.") or ip.startswith("239.") or
-        ip.startswith("255.") or ip.endswith(".255") or
-        ip.startswith("ff0") or ip.startswith("ff02")
+        addr.is_multicast
+        or addr.is_link_local
+        or (addr.version == 4 and str(addr) == "255.255.255.255")
     )
 
 

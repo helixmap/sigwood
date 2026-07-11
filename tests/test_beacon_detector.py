@@ -38,6 +38,7 @@ from sigwood.detectors.beacon import (
     _compute_beacon_score,
     _filter_conn,
     _ip_in_home_net,
+    _is_non_unicast,
     analyzed_span_seconds,
     non_established_share,
     run,
@@ -424,7 +425,7 @@ class BeaconPrefilterTests(unittest.TestCase):
 
     def test_filter_empties_at_link_local_preserves_columns(self):
         # The only {SF,S1} survivor is an fe80 link-local row, dropped by the
-        # link-local filter AFTER the conn_state gate but BEFORE the local mask.
+        # non-unicast filter AFTER the conn_state gate but BEFORE the local mask.
         # No raise, and the returned empty frame keeps its columns.
         df = pd.DataFrame(_conn_rows(_T0 + np.arange(3), "fe80::1", "198.51.100.20", 443))
         out = _filter_conn(df, _DEFAULT_HOME_NET)
@@ -436,6 +437,42 @@ class BeaconPrefilterTests(unittest.TestCase):
         self.assertFalse(_ip_in_home_net("192.0.2.10", ["198.51.100.0/24"]))
         for bad in (None, np.nan, "", "not-an-ip", 42):
             self.assertFalse(_ip_in_home_net(bad, ["192.0.2.0/24"]))
+
+    def test_is_non_unicast_classifier(self):
+        # A unicast ".255" host in a network wider than /24 is kept (not treated as
+        # broadcast); multicast, link-local, and the limited broadcast are excluded;
+        # junk never raises.
+        for keep in ("192.0.2.255", "10.0.0.255", "203.0.113.1", "2001:db8::1"):
+            self.assertFalse(_is_non_unicast(keep), keep)
+        for excl in ("224.0.0.1", "239.1.2.3", "232.1.2.3", "255.255.255.255",
+                     "169.254.1.5", "fe80::1", "ff02::1", "ff35::1"):
+            self.assertTrue(_is_non_unicast(excl), excl)
+        for bad in (None, "not-an-ip", "", 42):
+            self.assertFalse(_is_non_unicast(bad), bad)
+
+    def test_filter_gates_non_unicast_both_columns_keeps_unicast_dot255(self):
+        # Both columns gate non-unicast: a real internal->external beacon to a unicast
+        # ".255" host in a network wider than /24 survives the pre-filter and reaches
+        # scoring, while multicast and link-local destinations are excluded.
+        hn = ["192.0.2.0/23"]
+        keep = pd.DataFrame(_conn_rows(_T0 + np.arange(3), "192.0.2.10", "192.0.2.255", 443))
+        self.assertEqual(len(_filter_conn(keep, hn)), 3)
+        for bad_dst in ("224.0.0.1", "169.254.1.5"):
+            df = pd.DataFrame(_conn_rows(_T0 + np.arange(3), "192.0.2.10", bad_dst, 443))
+            self.assertTrue(_filter_conn(df, hn).empty, bad_dst)
+        # Source-side non-unicast rows are excluded even when local_orig marks them local
+        # (local_orig=True pushes them past the effective-local gate, so the source
+        # non-unicast filter is the only thing that can drop them); a unicast ".255" source
+        # remains admissible.
+        for bad_src in ("169.254.1.5", "ff02::1"):
+            df = pd.DataFrame(
+                _conn_rows(_T0 + np.arange(3), bad_src, "198.51.100.20", 443, local_orig=True)
+            )
+            self.assertTrue(_filter_conn(df, _DEFAULT_HOME_NET).empty, bad_src)
+        df = pd.DataFrame(
+            _conn_rows(_T0 + np.arange(3), "192.0.2.255", "198.51.100.20", 443, local_orig=True)
+        )
+        self.assertEqual(len(_filter_conn(df, _DEFAULT_HOME_NET)), 3)
 
     def test_non_established_share_defensive_on_missing_conn_state(self):
         df = pd.DataFrame(_conn_rows(_T0 + np.arange(4), "192.0.2.10", "198.51.100.20", 443))

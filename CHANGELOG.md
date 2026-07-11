@@ -23,6 +23,12 @@ All notable changes to sigwood are recorded here. The format follows
 
 ### Fixed
 
+- The beacon detector no longer silently drops a genuine beaconing flow to a unicast host
+  whose IPv4 address ends in `.255` (a valid host in any network wider than a /24). Its
+  pre-filter now classifies non-unicast destinations and sources with the standard-library
+  `ipaddress` module rather than a string-prefix test, so multicast, link-local (including
+  IPv4 `169.254.0.0/16`), and the `255.255.255.255` limited broadcast are still excluded
+  before scoring while real unicast hosts are kept.
 - Copy polish in the `init` wizard prompts.
 - A closed downstream pipe (for example `sigwood hunt | head`) now exits quietly with
   Unix SIGPIPE semantics instead of printing a `BrokenPipeError` traceback.

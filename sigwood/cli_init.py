@@ -565,9 +565,10 @@ def _upsert_sigwood_key(
 ) -> str:
     """Keyed transform inside the [sigwood] table span.
 
-    value is None        - SKIPPED. fresh=True comments any active line for
-                            the key; fresh=False is a strict no-op (never
-                            touch a user-set value).
+    value is None        - COMMENT. fresh=True comments any active line for the
+                            key (the `remove` action's revert-to-default); fresh=False
+                            is a strict no-op (never touch a user-set value). A skip
+                            disables a source through `_disable_sigwood_key`, not here.
     value is a string    - PROVIDED. Upsert active line inside span. value=""
                             is honored (the explicit-empty-root case).
     """
@@ -606,7 +607,8 @@ def _upsert_sigwood_key(
             new_body = new_line + "\n" + body
         return text[:body_start] + new_body + text[body_end:]
 
-    # SKIPPED branch.
+    # value=None: comment the active line (the remove action). A skip disables a
+    # source via _disable_sigwood_key, not here.
     if not fresh:
         return text  # never touch a user-set value
     m = re.search(rf'^(?P<key>{re.escape(key)}\s*=.*)$', body, re.MULTILINE)
@@ -614,6 +616,29 @@ def _upsert_sigwood_key(
         return text  # active line not present; nothing to comment
     line_start = m.start()
     new_body = body[:line_start] + "# " + body[line_start:]
+    return text[:body_start] + new_body + text[body_end:]
+
+
+def _disable_sigwood_key(text: str, key: str) -> str:
+    """Rewrite an ACTIVE [sigwood] line for key to explicit-empty so a skipped
+    source stays disabled after config fallback.
+
+    A fresh/reset skip of a source that ships an active default line
+    (zeek_dir/syslog_dir) writes `key = ""  # disabled during setup`; an explicit
+    empty value resolves off, whereas commenting the line would let a shipped
+    default re-enable it. A source with no active line (pihole_dir/cloudtrail_dir
+    ship commented) is a no-op - it already resolves off.
+    """
+    span = _sigwood_span(text)
+    if span is None:
+        return text
+    _, body_start, body_end = span
+    body = text[body_start:body_end]
+    m = re.search(rf'^{re.escape(key)}\s*=.*$', body, re.MULTILINE)
+    if m is None:
+        return text  # no active line - leave a commented/absent source as-is
+    new_line = f'{key} = ""  # disabled during setup'
+    new_body = body[:m.start()] + new_line + body[m.end():]
     return text[:body_start] + new_body + text[body_end:]
 
 
@@ -659,15 +684,19 @@ def _apply_action(text: str, key: str, action: Action, *, fresh: bool) -> str:
                active line either way).
       remove → ALWAYS fresh=True (comment the active line). A merge remove runs
                under flow fresh=False, but must still COMMENT, not no-op.
-      skip   → honors the FLOW's `fresh`: merge=False is a strict no-op that
-               preserves a user value; fresh/reset=True comments an active
-               example default so a skipped zeek_dir/syslog_dir reads absent.
+      skip   → fresh/reset disables an active default via explicit-empty
+               (`_disable_sigwood_key`) so a skipped zeek_dir/syslog_dir stays off
+               instead of a shipped default re-enabling it; merge (fresh=False) is a
+               strict no-op that preserves a user value.
     """
     if action.kind == "set":
         return _upsert_sigwood_key(text, key, action.value, fresh=fresh)
     if action.kind == "remove":
         return _upsert_sigwood_key(text, key, None, fresh=True)
-    return _upsert_sigwood_key(text, key, None, fresh=fresh)
+    # skip
+    if not fresh:
+        return text
+    return _disable_sigwood_key(text, key)
 
 
 # ── Source prompt specs ───────────────────────────────────────────────────────
@@ -872,9 +901,11 @@ def _resolve_row(
     if action.kind == "remove":
         return (None, "removed" if existing_value is not None else "(not set)")
     # skip
-    if flow == "merge" and existing_value is not None:
-        return (existing_value, "unchanged")
-    return (None, "(not set)")
+    if flow == "merge":
+        return (existing_value, "unchanged") if existing_value is not None else (None, "(not set)")
+    # fresh/reset skip leaves the source off (active default -> explicit empty, or a
+    # commented source absent); the summary names it plainly.
+    return (None, "skipped")
 
 
 def _resolve_all(

@@ -454,8 +454,9 @@ def test_range_flag_tripwire_catches_single_value() -> None:
     assert clean == []
 
 
-_PRIVATE_DOCS_DIR = "priv" + "docs"
-_RESIDUE_TOKEN_FILE = _SRC_ROOT / _PRIVATE_DOCS_DIR / "residue_tokens.txt"
+# This test is the one tracked file that names the private token-file path; the
+# residue scan below excludes this file from itself, so the literal is sanctioned here.
+_RESIDUE_TOKEN_FILE = _SRC_ROOT / "privdocs" / "residue_tokens.txt"
 
 
 def _strip_residue_token_line(line: str) -> str:

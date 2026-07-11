@@ -96,7 +96,9 @@ def test_upsert_fresh_from_example_provided_active_rewrite() -> None:
     assert out.count('\nzeek_dir') == 1
 
 
-def test_upsert_fresh_from_example_skipped_active_gets_commented() -> None:
+def test_upsert_none_fresh_comments_active_line() -> None:
+    # value=None + fresh=True is the `remove` action's comment/revert-to-default
+    # path (a skip disables via _disable_sigwood_key, not here).
     out = cli._upsert_sigwood_key(
         EXAMPLE_TEXT, "zeek_dir", None, fresh=True,
     )
@@ -105,12 +107,45 @@ def test_upsert_fresh_from_example_skipped_active_gets_commented() -> None:
     assert "# zeek_dir" in out
 
 
-def test_upsert_fresh_from_example_skipped_already_commented_noop() -> None:
-    # pihole_dir is shipped commented in the example. Skipped → no-op.
+def test_upsert_none_fresh_commented_source_noop() -> None:
+    # pihole_dir is shipped commented; value=None finds no active line → no-op.
     out = cli._upsert_sigwood_key(
         EXAMPLE_TEXT, "pihole_dir", None, fresh=True,
     )
     assert out == EXAMPLE_TEXT
+
+
+@pytest.mark.parametrize("key", ["zeek_dir", "syslog_dir"])
+def test_disable_sigwood_key_active_writes_empty_disabled(key: str) -> None:
+    # A skipped active-default source is written explicit-empty so config fallback
+    # cannot re-expose the shipped default and re-enable it.
+    out = cli._disable_sigwood_key(EXAMPLE_TEXT, key)
+    parsed = tomllib.loads(out)
+    assert parsed["sigwood"][key] == ""
+    assert '# disabled during setup' in out
+    assert out.count(f"\n{key}") == 1  # exactly one active line, not commented
+
+
+def test_disable_sigwood_key_commented_source_noop() -> None:
+    # pihole_dir ships commented (no active line) → disable is a no-op.
+    assert cli._disable_sigwood_key(EXAMPLE_TEXT, "pihole_dir") == EXAMPLE_TEXT
+
+
+@pytest.mark.parametrize("key", ["zeek_dir", "syslog_dir"])
+def test_apply_action_skip_disables_remove_comments(key: str) -> None:
+    # Split-guard: a fresh/reset SKIP writes explicit-empty (disable), while REMOVE
+    # of the same active source keeps commenting/revert-to-default. The two must
+    # diverge so the unsettled remove-of-configured sibling is never swept into the
+    # skip fix.
+    skipped = cli._apply_action(EXAMPLE_TEXT, key, cli._SKIP, fresh=True)
+    assert tomllib.loads(skipped)["sigwood"][key] == ""
+
+    removed = cli._apply_action(EXAMPLE_TEXT, key, cli._REMOVE, fresh=True)
+    assert key not in tomllib.loads(removed)["sigwood"]
+    assert f"# {key}" in removed
+
+    # A merge skip (fresh=False) never disables - it preserves a user value.
+    assert cli._apply_action(EXAMPLE_TEXT, key, cli._SKIP, fresh=False) == EXAMPLE_TEXT
 
 
 def test_upsert_existing_active_key_updated() -> None:
@@ -914,12 +949,56 @@ def test_flow_all_skipped_proceeds_no_gate(
 
     cli._run_init([])
     parsed = tomllib.loads((home / "config.toml").read_text(encoding="utf-8"))
-    # Fresh-from-example: all four source keys ended SKIPPED → active example line
-    # commented (fresh=True); tomllib sees them absent.
-    assert "zeek_dir" not in parsed["sigwood"]
+    # Fresh-from-example: skipping an ACTIVE default (zeek_dir/syslog_dir) writes an
+    # explicit empty so config fallback can't re-enable it; a COMMENTED source
+    # (pihole_dir/cloudtrail_dir) stays absent. All four resolve off.
+    assert parsed["sigwood"]["zeek_dir"] == ""
+    assert parsed["sigwood"]["syslog_dir"] == ""
     assert "pihole_dir" not in parsed["sigwood"]
-    assert "syslog_dir" not in parsed["sigwood"]
     assert "cloudtrail_dir" not in parsed["sigwood"]
+
+
+@pytest.mark.parametrize("key", ["zeek_dir", "syslog_dir"])
+def test_fresh_skip_writes_explicit_empty_so_fallback_stays_disabled(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, key: str,
+) -> None:
+    """A fresh init that skips an active-default source disables it end-to-end: the
+    written config loads and resolve_sources returns [] for that family, NOT the
+    shipped default path a plain comment would re-expose."""
+    from sigwood.common import config as cfg
+    from sigwood.common.sources import resolve_sources
+
+    home = _isolated_home(monkeypatch, tmp_path)
+    zeek = _setup_zeek_dir(tmp_path)
+    _, pihole_candidates = _setup_pihole(tmp_path)
+    syslog = _setup_syslog(tmp_path)
+    _stub_candidates(monkeypatch, zeek=(zeek,), pihole=pihole_candidates, syslog=syslog)
+    _stage_inputs(monkeypatch, ["-", "-", "-", "-", "", ""])
+    cli._run_init([])
+
+    config = cfg.load(str(home / "config.toml"))
+    resolved = resolve_sources(
+        config,
+        overrides={k: None for k in ("zeek_dir", "syslog_dir", "pihole_dir", "cloudtrail_dir")},
+        scope=None,
+    )
+    assert getattr(resolved, key) == []
+
+
+def test_fresh_skip_summary_reads_skipped(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A fresh-skip reads `skipped` in the change summary (an intentional disable),
+    not the ambiguous `(not set)`."""
+    home = _isolated_home(monkeypatch, tmp_path)
+    zeek = _setup_zeek_dir(tmp_path)
+    _, pihole_candidates = _setup_pihole(tmp_path)
+    syslog = _setup_syslog(tmp_path)
+    _stub_candidates(monkeypatch, zeek=(zeek,), pihole=pihole_candidates, syslog=syslog)
+    _stage_inputs(monkeypatch, ["-", "-", "-", "-", "", ""])
+    cli._run_init([])
+    out = capsys.readouterr().out
+    assert re.search(r'zeek_dir\s+-\s+skipped', out)
 
 
 def test_flow_reinit_preserves_custom_root_and_other_stanzas(

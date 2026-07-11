@@ -1048,19 +1048,41 @@ def _warn_skipped(detector_name: str, reason: str) -> None:
     _estderr(f"{reason} - skipping {detector_name} detection")
 
 
+# The shipped-Zeek connection/dns/syslog primary log patterns. The dry-run zeek_dir
+# count discovers through the same loader helper the hunt uses (discover_zeek_files),
+# so a dated zeekctl tree (YYYY-MM-DD/ + current/) is counted the way it will actually
+# be loaded - not just its immediate file children.
+_ZEEK_DRYRUN_PATTERNS = ("conn*.log*", "dns*.log*", "syslog*.log*")
+
+
 def _zeek_entry_display(p: Path) -> str:
     """Render one zeek_dir input for the dry-run block.
 
-    A DIRECTORY shows ``{path}  (N files, X.X MB)`` (counting only its
-    immediate file children, NOT recursive); a FILE shows ``{path}  (X.X MB)``;
-    a non-existent path shows ``{path}  - not found``.
+    A DIRECTORY shows ``{path}  (N files, X.X MB)`` where N/size come from the
+    loader's ``discover_zeek_files`` union over the shipped patterns, so a dated
+    zeekctl layout is counted (not just immediate file children); an unreadable
+    tree shows ``{path}  (unreadable)`` (truth unknown, never a raw traceback). A
+    FILE shows ``{path}  (X.X MB)``; a non-existent path shows ``{path}  - not found``.
     """
+    from sigwood.common.loader import discover_zeek_files
+
     if not p.exists():
         return f"{p}  - not found"
     if p.is_dir():
-        log_files = [f for f in p.iterdir() if f.is_file()]
-        size_mb = sum(f.stat().st_size for f in log_files) / 1_048_576
-        return f"{p}  ({len(log_files)} files, {size_mb:.1f} MB)"
+        discovered: dict[Path, Path] = {}
+        try:
+            for pattern in _ZEEK_DRYRUN_PATTERNS:
+                for f in discover_zeek_files(p, pattern):
+                    discovered[f.resolve()] = f
+        except OSError:
+            return f"{p}  (unreadable)"   # discovery failed - truth unknown, not empty
+        total = 0
+        for f in discovered.values():
+            try:
+                total += f.stat().st_size
+            except OSError:
+                pass  # a file denied/removed mid-scan - skip its bytes, keep the count
+        return f"{p}  ({len(discovered)} files, {total / 1_048_576:.1f} MB)"
     try:
         size_mb = p.stat().st_size / 1_048_576
         return f"{p}  ({size_mb:.1f} MB)"

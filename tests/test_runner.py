@@ -148,6 +148,36 @@ def test_dry_run_lists_cloudtrail_dir(tmp_path: Path, capsys) -> None:
     assert "found" in out
 
 
+def test_zeek_entry_display_dated_layout_counts_discovered_files(tmp_path: Path) -> None:
+    # A dated zeekctl layout (YYYY-MM-DD/ + current/) is counted through the loader,
+    # so the dry-run count matches what the hunt loads - not the 0 that counting only
+    # immediate children reports. A derived sibling (conn-summary) is not a primary log.
+    root = tmp_path / "zeek"
+    (root / "2026-06-01").mkdir(parents=True)
+    (root / "current").mkdir(parents=True)
+    (root / "2026-06-01" / "conn.log").write_bytes(b"x" * 614_400)   # 600 KiB
+    (root / "2026-06-01" / "dns.log").write_bytes(b"y" * 614_400)    # 600 KiB
+    (root / "current" / "conn.log").write_bytes(b"z" * 409_600)      # 400 KiB
+    (root / "2026-06-01" / "conn-summary.log").write_bytes(b"s" * 999_999)  # derived, excluded
+
+    assert runner._zeek_entry_display(root) == f"{root}  (3 files, 1.6 MB)"
+
+
+def test_zeek_entry_display_discovery_oserror_renders_unreadable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A discovery-level OSError (unreadable tree) degrades to a plain marker, never a
+    # raw traceback and never a confident (0 files) count.
+    root = tmp_path / "zeek"
+    root.mkdir()
+
+    def _boom(*_a: object, **_kw: object) -> list[Path]:
+        raise OSError("permission denied")
+
+    monkeypatch.setattr("sigwood.common.loader.discover_zeek_files", _boom)
+    assert runner._zeek_entry_display(root) == f"{root}  (unreadable)"
+
+
 # ── DNS run-plan resolution - four source cases ───────────────────────────────
 
 # The reason carries NO detector name - both render surfaces prefix it (no double-name).

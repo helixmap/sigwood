@@ -74,6 +74,14 @@ whole archive.
 `.bz2`, and `.xz`. `.zst` needs a decoder that isn't in the Python standard library
 before 3.14, so it's deferred for now - decompress those files first.
 
+**Peak memory runs to a multiple of the largest log loaded.** sigwood reads each log fully
+into memory (pandas) rather than streaming, so peak memory tracks the biggest single file it
+opens, not the total on disk - a ~560 MB `conn.log` peaked near 6 GB in one measurement. The
+default window keeps a live directory from being read end to end, but one very large file, or
+`--all` over a big archive, can exhaust a small box before the run finishes. Narrow the window
+(`--since`/`--days`), point at a single file, or run where there's headroom; streaming
+ingestion for the large-single-file case is on the list.
+
 ## Digest and output
 
 **Not every finding carries a machine-readable event timestamp.** `duration`, `scan`,

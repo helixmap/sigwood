@@ -120,6 +120,20 @@ like `domains_user.bak` won't load (the readout nudges a rename); park a retired
 trailing `~` or by dropping the prefix. Turn suppression off for one run with
 `--no-allowlist`, or permanently with `enabled = false`.
 
+### What does the shipped allowlist not protect you from seeing?
+
+Treat it as a discovery aid, not a fence. The shipped lists quiet DNS queries to known-good
+domains so real signal isn't buried in plumbing - but they trust a domain by its **name**, so
+a channel that fronts through an allowlisted CDN, or hosts its payload on a big cloud
+provider's domain, gets its DNS name quieted along with the legitimate traffic. Two things keep
+that from being a silent hole. First, the shipped lists are **domain-only**: connection
+analysis (`beacon`, `scan`, `duration`, all reading `conn.log` by IP) never consults them, so a
+periodic beacon to a fronted host is still scored on its *timing*, whatever name it used.
+Second, every run prints how much it suppressed (the `allowlist:` line), and `--no-allowlist`
+turns suppression off entirely for one run. Numeric IP/CIDR suppression never ships - that's
+yours to set, locally. When a destination matters, read the connection findings and the
+suppression rate, not just the DNS view.
+
 ### It surfaced a huge number of findings. Now what?
 
 Two things are usually going on. First, real noise you haven't allowlisted yet - start
@@ -140,6 +154,13 @@ And it prompts before chewing through more than `warn_above` records (default 10
 Very large single pulls (tens of millions of CloudTrail events) are the current scaling
 edge.
 
+Memory is the other edge worth knowing. sigwood reads each log fully into memory (pandas)
+rather than streaming it, so peak memory scales with the *largest single file* it opens, not
+the total on disk - a ~560 MB `conn.log` peaked near 6 GB in one measurement. The default
+window keeps a live directory from being read end to end, but one very large file, or `--all`
+over a big archive, can OOM a small box. Narrow the window with `--since`/`--days`, point at a
+single file, or run where there's headroom.
+
 ### What timezone are the times in?
 
 Your machine's local timezone, labeled `local` on every human-readable timestamp. Pass
@@ -151,6 +172,27 @@ explicit offset is always honored as written), export's no-timeframe default win
 anchors on the same midnights, and the date in an auto-named report or digest filename
 follows it too. `json` output is the exception by design - it is always ISO-8601 UTC, so
 feeds into other tooling never shift with a display preference.
+
+### Can I run it on a schedule?
+
+Yes - it's batch, stateless, and built for unattended use. `-q` quiets the progress
+narration, `-y` auto-accepts the large-dataset prompt, and `--out=<dir>/` (or `report_dir` in
+config) writes a collision-safe named report. A hunt exits `0` whether or not it finds
+anything - a clean Unix contract, where nonzero means the *run itself* failed, not that a
+threat was found - so schedule it and inspect the JSON to decide whether to alert. A nightly
+cron line:
+
+```
+0 3 * * *  sigwood hunt -q -y --format=json --out=~/.sigwood/reports/
+```
+
+and, to page yourself only when a run actually found something:
+
+```
+sigwood hunt -q -y --format=json | jq -e '.findings | length > 0' && your-alert-here
+```
+
+No daemon and no state between runs - each run stands on its own.
 
 ### Can I use it as a Python library?
 
@@ -334,9 +376,9 @@ reproduced.
 
 ### A brand-new repo, one commit, tidy docs - was this written by AI?
 
-Yes, development was AI-assisted, no point being coy about it. The rest has a less exciting explanation than you might hope. sigwood was built over a few months against one homelab with Zeek, Pi-hole, syslog, a small CloudTrail corpus, and only opened up once it did something useful. The history starts at a single squashed commit because the real history was full of explorations that included that homelab's own IPs, hostnames, and other assets. Squashing was the cleanest way to get every example into line with RFC 5737 (the 192.0.2.x ranges throughout) with nothing real left in the tree. So a repo that looks like it appeared fully formed from Zeus's forehead is really just one person's ordinary, messy iteration, compressed into a single public commit, with the mess kept private for a reason.
+Um yep, development was AI-assisted, no point being coy about it. The rest has a less exciting explanation than you might hope. sigwood was built over a few months against one homelab with Zeek, Pi-hole, syslog, a small CloudTrail corpus, and only opened up once it did something useful. The history starts at a single squashed commit because the real history was full of explorations that included that homelab's own IPs, hostnames, and other assets. Squashing was the cleanest way to get every example into line with RFC 5737 (the 192.0.2.x ranges throughout) with nothing real left in the tree. So a repo that looks like it appeared fully formed from Zeus's forehead is really just one person's ordinary, messy iteration, compressed into a single public commit, with the mess kept private for a reason.
 
-None of this is a way of asking for trust; the hope is for trust to be unnecessary. The detection methods aren't inventions: FFT for periodicity, HDBSCAN for clustering, drain3 for templating, a plain z-score composite. All named, published techniques you can look up, credited elsewhere in this FAQ. The privacy claim you can check yourself: tldextract is pinned to run offline, so the tool talks to no one. The test suite is deterministic and passes on a cold install. And [KNOWN-ISSUES.md](KNOWN-ISSUES.md) names and quantifies the tool's own flaws rather than burying them. Read the code, run the tests, point it at your own logs - that will tell you more than this paragraph can.
+None of this is a way of asking for trust, however; the hope is for trust to be unnecessary. The detection methods aren't inventions: FFT for periodicity, HDBSCAN for clustering, drain3 for templating, a plain z-score composite. All named, published techniques you can look up, credited elsewhere in this FAQ. The privacy claim you can check yourself: tldextract is pinned to run offline, so the tool talks to no one. The test suite is deterministic and passes on a cold install. And [KNOWN-ISSUES.md](KNOWN-ISSUES.md) names and quantifies the tool's own flaws rather than burying them. Read the code, run the tests, point it at your own logs - that will tell you more than this paragraph can.
 
 ### What state is sigwood in?
 

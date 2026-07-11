@@ -40,18 +40,21 @@ documentation space:
 ```bash
 pipx install sigwood        # or pip install sigwood in a venv - see Installation
 
-# hunt across everything enabled in your config
-sigwood hunt
-
-# or point at a directory / file directly (the path is the intent)
+# point at a directory / file directly (the path is the intent)
 sigwood ~/zeek-logs
+sigwood /var/log/secure
+
+# optionally name a specific detector to run
 sigwood syslog /var/log
 
 # orient before you hunt - a fast, factual profile of a single file
 sigwood digest /var/log/messages
 
-# one-time, detection-driven setup - finds your logs and writes a config
+# or one-time, detection-driven setup - finds your logs and writes a config
 sigwood init
+
+# then hunt across everything enabled in your config
+sigwood hunt
 ```
 
 No config file is required to get started - `sigwood <path>` works against a directory or

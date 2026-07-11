@@ -131,7 +131,7 @@ allowlist_dir    = "allowlist.d/"
 # [detectors.beacon]
 # threshold       = 0.5    # min composite score to report (0-1)
 # min_connections = 20     # min connections for a flow to qualify
-# bin_seconds     = 30     # FFT bin; leave at 30 - 10 aliases a 60s beacon
+# bin_seconds     = 30     # FFT bin; leave at 30 - the scoring is calibrated to it
 
 # scan - vertical / horizontal / block / slow port scans.
 # [detectors.scan]

@@ -158,7 +158,7 @@ an importable Python function, handy in a notebook.
 ### Analysis window
 
 Pointed at a **directory**, an unqualified run looks back over the last `default_window` (`7d`
-out of the box) of *that source's own* data - the right default for a live log dir you don't
+out of the box) of *that source's own* data - a sensible default for a live log dir you don't
 want to read in full every time. Pointed at a **single file**, it reads the whole file.
 Override either way:
 

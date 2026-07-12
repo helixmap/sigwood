@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import bz2
 import gzip
+import io
 import json
 import lzma
 import os
@@ -11,6 +12,7 @@ import stat
 import subprocess
 import sys
 import textwrap
+from contextlib import nullcontext
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -44,6 +46,7 @@ from sigwood.common.loader import (
     CoverageTracker,
     RotationSkipInfo,
     SourceCoverage,
+    discover_for_source_key,
     discover_cloudtrail_files,
     discover_zeek_files,
     is_bounded,
@@ -180,6 +183,45 @@ def test_load_required_logs_warns_on_missing_canonical_fields(tmp_path: Path) ->
     ]
 
 
+@pytest.mark.parametrize("invalid_ts", [float("inf"), float("-inf")])
+def test_load_required_logs_drops_infinite_zeek_timestamps(
+    tmp_path: Path,
+    invalid_ts: float,
+) -> None:
+    """Infinity never reaches the canonical frame, coverage, or data window."""
+    zeek_dir = tmp_path / "zeek"
+    zeek_dir.mkdir()
+    _write_ndjson(zeek_dir / "conn.log", [
+        {
+            "ts": 100.0,
+            "id.orig_h": "192.0.2.10",
+            "id.resp_h": "198.51.100.10",
+            "id.resp_p": 443,
+            "proto": "tcp",
+        },
+        {
+            "ts": invalid_ts,
+            "id.orig_h": "192.0.2.11",
+            "id.resp_h": "198.51.100.11",
+            "id.resp_p": 53,
+            "proto": "udp",
+        },
+    ])
+
+    result = load_required_logs(
+        {"conn*.log*": "zeek_dir"},
+        {"zeek_dir": [zeek_dir]},
+    )
+
+    assert result.record_counts == {"conn*.log*": 1}
+    assert result.logs["conn*.log*"]["src"].tolist() == ["192.0.2.10"]
+    assert result.data_window == (
+        datetime.fromtimestamp(100.0, tz=timezone.utc),
+        datetime.fromtimestamp(100.0, tz=timezone.utc),
+    )
+    assert result.coverage == {}
+
+
 def test_load_required_logs_warns_when_source_missing() -> None:
     result = load_required_logs(
         {"conn*.log*": "zeek_dir"},
@@ -256,13 +298,115 @@ def test_load_required_logs_raises_for_unknown_source_key(tmp_path: Path) -> Non
         load_required_logs({"*.log*": "bogus_dir"}, {"bogus_dir": [bogus_dir]})
 
 
+def test_discover_for_source_key_uses_registered_strategy(tmp_path: Path) -> None:
+    """Generic discovery delegates to the source family rather than Zeek-only code."""
+    zeek_dir = tmp_path / "zeek"
+    zeek_dir.mkdir()
+    day = zeek_dir / "2026-06-01"
+    day.mkdir()
+    conn = day / "conn.log"
+    _write_ndjson(conn, [{"ts": 1.0}])
+
+    assert discover_for_source_key("zeek_dir", zeek_dir, "conn*.log*") == [conn]
+    with pytest.raises(ValueError, match="unknown source key 'missing_dir'"):
+        discover_for_source_key("missing_dir", zeek_dir, "*.log*")
+
+
+def test_load_required_logs_trusted_zeek_files_bypass_name_gate_with_metadata(
+    tmp_path: Path,
+) -> None:
+    """Trusted sniff-routed Zeek files keep the ordinary LoadResult contract."""
+    zeek_dir = tmp_path / "zeek"
+    zeek_dir.mkdir()
+    ordinary = zeek_dir / "conn.log"
+    routed_a = tmp_path / "capture-a.ndjson"
+    routed_b = tmp_path / "capture-b.ndjson"
+
+    _write_ndjson(ordinary, [{
+        "ts": 100.0,
+        "id.orig_h": "192.0.2.10",
+        "id.resp_h": "198.51.100.10",
+        "id.resp_p": 443,
+        "proto": "tcp",
+    }])
+    _write_ndjson(routed_a, [{
+        "ts": 200.0,
+        "id.orig_h": "192.0.2.11",
+        "id.resp_h": "198.51.100.11",
+        "id.resp_p": 53,
+        "proto": "udp",
+    }])
+    _write_ndjson(routed_b, [{
+        "ts": 300.0,
+        "id.orig_h": "192.0.2.12",
+        "id.resp_h": "198.51.100.12",
+        "id.resp_p": 22,
+        "proto": "tcp",
+    }])
+
+    result = load_required_logs(
+        {"conn*.log*": "zeek_dir"},
+        {"zeek_dir": [routed_a, routed_b, zeek_dir]},
+        trusted_files={"conn*.log*": [routed_a, routed_b]},
+    )
+
+    assert result.record_counts == {"conn*.log*": 3}
+    assert result.logs["conn*.log*"]["src"].tolist() == [
+        "192.0.2.11", "192.0.2.12", "192.0.2.10",
+    ]
+    assert result.data_window == (
+        datetime.fromtimestamp(100.0, tz=timezone.utc),
+        datetime.fromtimestamp(300.0, tz=timezone.utc),
+    )
+    assert result.data_size_bytes == sum(p.stat().st_size for p in (ordinary, routed_a, routed_b))
+    assert result.warnings == []
+    assert result.coverage == {}
+    assert result.rotation_skips == {}
+    assert result.permission_skips == {}
+
+
+def test_load_required_logs_trusted_zeek_file_records_permission_metadata(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A trusted explicit file still uses run_load's permission accounting."""
+    import sigwood.common.loader as loader_mod
+
+    routed = tmp_path / "capture.ndjson"
+    _write_ndjson(routed, [{
+        "ts": 100.0,
+        "id.orig_h": "192.0.2.10",
+        "id.resp_h": "198.51.100.10",
+        "id.resp_p": 443,
+        "proto": "tcp",
+    }])
+
+    monkeypatch.setattr(
+        loader_mod, "_open_log", lambda _path: (_ for _ in ()).throw(PermissionError())
+    )
+    result = load_required_logs(
+        {"conn*.log*": "zeek_dir"},
+        {"zeek_dir": [routed]},
+        trusted_files={"conn*.log*": [routed]},
+    )
+
+    assert result.logs["conn*.log*"].empty
+    assert result.record_counts == {}
+    assert result.data_window is None
+    assert any("permission denied" in warning for warning in result.warnings)
+    assert result.permission_skips["conn*.log*"].paths == (routed,)
+    assert result.permission_skips["conn*.log*"].discovered == 1
+    assert result.permission_skips["conn*.log*"].denied == 1
+
+
 def test_normalize_dns_df_renames_and_applies_qclass_aperture() -> None:
     """_normalize_dns_df renames Zeek-native DNS columns to canonical names,
     keeps only qclass==1 rows, drops qclass, and carries qtype through."""
     df = pd.DataFrame([
         # qclass=1 (internet) - must be kept
         {
-            "id.orig_h": "192.0.2.1", "TTLs": [300.0], "answers": ["198.51.100.1"],
+            "id.orig_h": "192.0.2.1", "id.resp_h": "192.0.2.53",
+            "TTLs": [300.0], "answers": ["198.51.100.1"],
             "TC": 0, "qclass": 1, "qtype": 1, "query": "example.com",
             "ts": 1.0, "rtt": 0.05, "rcode": 0,
         },
@@ -285,6 +429,7 @@ def test_normalize_dns_df_renames_and_applies_qclass_aperture() -> None:
     assert len(result) == 1, "only the qclass=1 row should survive"
 
     assert "src" in result.columns, "id.orig_h should be renamed to src"
+    assert "resolver" in result.columns, "id.resp_h should be renamed to resolver"
     assert "ttl" in result.columns, "TTLs should be renamed to ttl"
     assert "answer" in result.columns, "answers should be renamed to answer"
     assert "tc" in result.columns, "TC should be renamed to tc"
@@ -292,8 +437,10 @@ def test_normalize_dns_df_renames_and_applies_qclass_aperture() -> None:
     assert "qclass" not in result.columns, "qclass must be dropped"
     assert "qtype" in result.columns, "qtype must be carried through (raw numeric code)"
     assert "id.orig_h" not in result.columns, "Zeek-native id.orig_h must not remain"
+    assert "id.resp_h" not in result.columns, "Zeek-native id.resp_h must not remain"
 
     assert result.iloc[0]["src"] == "192.0.2.1"
+    assert result.iloc[0]["resolver"] == "192.0.2.53"
 
     # rtt and rcode are already canonical - must pass through unchanged
     assert "rtt" in result.columns
@@ -1169,6 +1316,18 @@ def test_discover_zeek_files_flat_drops_derived_siblings(tmp_path: Path) -> None
     assert {f.name for f in files} == {"conn.log", "conn.2026-01-02.log.gz"}
 
 
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="named FIFOs are unavailable")
+def test_discover_zeek_files_flat_skips_non_regular_candidates(tmp_path: Path) -> None:
+    """Directory discovery does not feed a named pipe into the loader."""
+    zeek_dir = tmp_path / "zeek"
+    zeek_dir.mkdir()
+    regular = zeek_dir / "conn.log"
+    regular.touch()
+    os.mkfifo(zeek_dir / "conn.1.log")
+
+    assert discover_zeek_files(zeek_dir, "conn*.log*") == [regular]
+
+
 def test_discover_zeek_files_dated_drops_derived_siblings(tmp_path: Path) -> None:
     """Dated discovery drops a derived sibling inside a date subdir, keeping the
     primary conn log."""
@@ -1179,6 +1338,19 @@ def test_discover_zeek_files_dated_drops_derived_siblings(tmp_path: Path) -> Non
     (day / "conn-summary.2026-01-02.log.gz").touch()
     files = discover_zeek_files(zeek_dir, "conn*.log*")
     assert files == [day / "conn.log"]
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="named FIFOs are unavailable")
+def test_discover_zeek_files_dated_skips_non_regular_candidates(tmp_path: Path) -> None:
+    """Dated directory discovery also excludes named pipes before loading."""
+    zeek_dir = tmp_path / "zeek"
+    day = zeek_dir / "2026-01-02"
+    day.mkdir(parents=True)
+    regular = day / "conn.log"
+    regular.touch()
+    os.mkfifo(day / "conn.1.log")
+
+    assert discover_zeek_files(zeek_dir, "conn*.log*") == [regular]
 
 
 def test_discover_zeek_files_primary_rule_is_general_not_conn_only(
@@ -2127,6 +2299,33 @@ class _ProgressSpy:
         return iter(iterable)
 
 
+def test_progress_description_strips_control_filename(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Progress text cannot relay a hostile filename to a terminal surface."""
+    from sigwood.common import loader as loader_mod
+
+    spy = _ProgressSpy()
+    monkeypatch.setattr(loader_mod, "progress", spy)
+    monkeypatch.setattr(
+        loader_mod,
+        "_open_log",
+        lambda _path: nullcontext(io.StringIO(
+            '{"ts":1.0,"id.orig_h":"192.0.2.10",'
+            '"id.resp_h":"198.51.100.20","id.resp_p":443,'
+            '"proto":"tcp","duration":1.0}\n'
+        )),
+    )
+    hostile = Path("conn\x1b[31m.log")
+
+    loader_mod.run_load(
+        loader_mod._SOURCE_LOADERS["zeek_dir"], [hostile], "conn*.log*",
+        None, None,
+    )
+
+    assert spy.calls[0]["desc"] == "loaded conn[31m.log"
+
+
 def test_progress_seam_tsv_wraps_pre_materialization(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2901,7 +3100,7 @@ def test_coverage_tracker_files_read_no_valid_ts_returns_zero_full_rows() -> Non
 
 def test_coverage_tracker_observe_counts_valid_ts_and_tracks_span() -> None:
     """observe(ts) increments valid_rows and folds ts into min/max. None / NaN
-    safely ignored (do not contaminate the span)."""
+    / infinity are safely ignored (do not contaminate the span)."""
     t = CoverageTracker()
     t.note_file_read()
     t.observe(100.0)
@@ -2909,6 +3108,8 @@ def test_coverage_tracker_observe_counts_valid_ts_and_tracks_span() -> None:
     t.observe(50.0)
     t.observe(None)
     t.observe(float("nan"))
+    t.observe(float("inf"))
+    t.observe(float("-inf"))
     sc = t.coverage(True)
     assert sc is not None
     assert sc.full_rows == 3
@@ -2920,11 +3121,13 @@ def test_coverage_tracker_observe_counts_valid_ts_and_tracks_span() -> None:
 
 def test_coverage_tracker_observe_frame_counts_valid_ts_and_tracks_span() -> None:
     """observe_frame(pre_df) counts valid-ts rows from the pre-window frame
-    and folds the frame's min/max into the running span. NaN-ts rows
-    excluded."""
+    and folds the frame's min/max into the running span. NaN/infinite-ts rows
+    are excluded."""
     t = CoverageTracker()
     t.note_file_read()
-    df = pd.DataFrame({"ts": [10.0, 20.0, float("nan"), 30.0]})
+    df = pd.DataFrame({
+        "ts": [10.0, 20.0, float("nan"), float("inf"), float("-inf"), 30.0],
+    })
     t.observe_frame(df)
     sc = t.coverage(True)
     assert sc is not None
@@ -3209,12 +3412,14 @@ def test_run_load_fake_strategy_exercises_pipeline_mechanics(
         normalize=None,
     )
 
-    # --- File 1: an in-window row + a NaN-ts row + an out-of-window row.
+    # --- File 1: an in-window row + a NaN-ts row + finite/infinite tails.
     f_data = tmp_path / "good.log"
     f_data.write_text(
         f"{1.0}\tA\n"
         f"NA\tB\n"
-        f"{99.0}\tC\n",
+        f"{99.0}\tC\n"
+        f"{float('inf')}\tD\n"
+        f"{float('-inf')}\tE\n",
         encoding="utf-8",
     )
     # --- File 2: should_skip drops this one.
@@ -3241,8 +3446,8 @@ def test_run_load_fake_strategy_exercises_pipeline_mechanics(
     )
 
     # In-window row (ts=1.0, host=A) + NaN-ts row (host=B, bypasses window).
-    # Out-of-window (ts=99.0) dropped; skipped file contributes zero; corrupt
-    # file caught with a read-warning.
+    # Out-of-window (ts=99.0), +inf, and -inf drop; skipped file contributes
+    # zero; corrupt file is caught with a read-warning.
     assert sorted(df["host"].tolist()) == ["A", "B"]
     captured = capsys.readouterr()
     assert "fake: skipping" not in captured.err  # quiet default
@@ -3253,6 +3458,19 @@ def test_run_load_fake_strategy_exercises_pipeline_mechanics(
     assert {c["desc"] for c in calls} == {"loaded good.log", "loaded bad.gz"}
     # mark_kept fired → no coverage write needed.
     assert "coverage" not in coverage
+
+    # Infinity must also drop without a requested window, while the keep-policy
+    # NaN row remains an intentionally retained unknown-time event.
+    df_unbounded = loader_mod.run_load(
+        strategy_keep,
+        [f_data],
+        pattern="",
+        since=None,
+        until=None,
+        show_progress=False,
+        verbose=False,
+    )
+    assert sorted(df_unbounded["host"].tolist()) == ["A", "B", "C"]
 
     # Now verbose=True surfaces the skip message; rebuild the spy log.
     calls.clear()
@@ -4139,7 +4357,7 @@ def test_source_ts_policy() -> None:
     assert "unknown_dir" not in _SOURCE_LOADERS
 
 
-def test_apply_ts_filter_keep_null_retains_nan_rows() -> None:
+def test_apply_ts_filter_keep_null_retains_nan_rows_but_drops_infinity() -> None:
     """keep_null=True retains NaN-ts rows alongside in-window rows; the default
     (keep_null=False) drops them - byte-identical to every existing caller."""
     import math
@@ -4148,6 +4366,8 @@ def test_apply_ts_filter_keep_null_retains_nan_rows() -> None:
         {"ts": base.timestamp(), "m": "in"},
         {"ts": (base - timedelta(days=5)).timestamp(), "m": "old"},
         {"ts": float("nan"), "m": "nan"},
+        {"ts": float("inf"), "m": "pos-inf"},
+        {"ts": float("-inf"), "m": "neg-inf"},
     ])
     since = base - timedelta(days=1)
     keep = _apply_ts_filter(df, since, base, keep_null=True)
@@ -4155,6 +4375,8 @@ def test_apply_ts_filter_keep_null_retains_nan_rows() -> None:
     drop = _apply_ts_filter(df, since, base)  # default
     assert set(drop["m"]) == {"in"}
     assert not any(math.isnan(x) for x in drop["ts"])
+    unbounded_keep = _apply_ts_filter(df, None, None, keep_null=True)
+    assert set(unbounded_keep["m"]) == {"in", "old", "nan"}
 
 
 def test_flat_family_default_floor_pihole_and_syslog(tmp_path: Path) -> None:

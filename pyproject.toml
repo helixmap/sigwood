@@ -84,7 +84,7 @@ where = ["."]
 include = ["sigwood*"]
 
 [tool.setuptools.package-data]
-sigwood = ["data/**/*"]
+sigwood = ["data/**/*", "outputs/graph_player.html"]
 
 [tool.setuptools.dynamic]
 version = {attr = "sigwood.__version__"}

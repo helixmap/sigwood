@@ -16,7 +16,6 @@ from tests.test_voice_consistency import assert_report_voice
 import numpy as np
 import pandas as pd
 import pytest
-import tldextract
 
 from sigwood.common import clustering
 from sigwood.common.finding import DetectorContext, Finding, Severity
@@ -1046,32 +1045,24 @@ def test_text_renderer_both_mode_verbose_shows_was_blocked() -> None:
 
 
 # ── Offline PSL pin - the "no phone-home" guard ───────────────────────────────
-# detectors/dns.py resolves registrable domains through a module-level tldextract
-# extractor pinned to the bundled snapshot (suffix_list_urls=()), so a dns/hunt
-# run never fetches the Public Suffix List over the network - keeping sigwood's
-# "talks to no one" promise (docs/FAQ.md) true even on a cold cache / air-gapped box.
+# common/tld.py owns the module-level extractor pinned to the bundled snapshot
+# (suffix_list_urls=()), so a dns/hunt run never fetches the Public Suffix List
+# over the network - keeping sigwood's "talks to no one" promise (docs/FAQ.md)
+# true even on a cold cache / air-gapped box.
 
-def test_tld_extract_is_offline_pinned() -> None:
-    """Structural tripwire on the shipped extractor - the fetch list is empty.
-
-    If a future edit re-enables network PSL refresh, suffix_list_urls is no
-    longer (), and this fails before any run can reach the network.
-    """
+def test_tld_extract_is_owned_offline_and_shared_with_detector() -> None:
+    """The common extractor is offline, cache-free, and the detector alias."""
+    from sigwood.common.tld import TLD_EXTRACT
     from sigwood.detectors.dns import _TLD_EXTRACT
-    assert _TLD_EXTRACT.suffix_list_urls == ()
+
+    assert _TLD_EXTRACT is TLD_EXTRACT
+    assert TLD_EXTRACT.suffix_list_urls == ()
 
 
-def test_tld_extract_resolves_without_network(monkeypatch) -> None:
-    """Behavioral proof: construction + first resolution need no network.
+def test_tld_extract_cold_construction_never_opens_a_socket(monkeypatch) -> None:
+    """The common owner's cold construction must never access the network."""
+    from sigwood.common import tld
 
-    The module-level _TLD_EXTRACT may already be warm (snapshot in memory) from
-    an earlier test, so socket-guarding a call on it could pass without proving
-    the COLD path is network-free. Instead, under a socket guard, build a FRESH
-    extractor AND resolve in one go - exercising the snapshot load from package
-    data with no socket allowed. top_domain_under_public_suffix (registered_domain
-    is deprecated); .co.uk is a multi-label suffix so the registered domain is
-    example.co.uk.
-    """
     def _no_network(*args, **kwargs):
         raise AssertionError(
             "offline pin breached - tldextract attempted network access"
@@ -1079,7 +1070,7 @@ def test_tld_extract_resolves_without_network(monkeypatch) -> None:
 
     monkeypatch.setattr(socket, "socket", _no_network)
 
-    ext = tldextract.TLDExtract(suffix_list_urls=(), cache_dir=None)
+    ext = tld._new_tld_extract()
     assert ext("foo.example.co.uk").top_domain_under_public_suffix == "example.co.uk"
 
 

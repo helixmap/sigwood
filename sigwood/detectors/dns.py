@@ -32,19 +32,11 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
-import tldextract
 from sigwood.common.clustering import ACTIVE_BACKEND, fit_predict_interruptible
 from sklearn.preprocessing import StandardScaler
 
 from sigwood.common.finding import DetectorContext, Finding, MethodTag, Severity
-
-# Pinned to the bundled Public Suffix List snapshot - NEVER the network.
-# tldextract's default extractor fetches the PSL over HTTPS on first use;
-# that would falsify sigwood's "talks to no one / no phone-home" promise
-# (docs/FAQ.md) and stall an air-gapped run. suffix_list_urls=() empties the
-# fetch list (the offline invariant); cache_dir=None avoids the
-# incidental on-disk PSL cache write. Do NOT re-enable network refresh.
-_TLD_EXTRACT = tldextract.TLDExtract(suffix_list_urls=(), cache_dir=None)
+from sigwood.common.tld import TLD_EXTRACT as _TLD_EXTRACT
 
 DETECTOR_NAME = "dns"
 STATUS = "available"

@@ -12,6 +12,7 @@ import math
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 import pandas as pd
 
@@ -38,6 +39,51 @@ _CLOUDTRAIL_COLUMNS = [
 # Stream-mode empty-frame columns. Module-level so the strategy table reads
 # clean; values match the per-loader empty-shape.
 _SYSLOG_COLUMNS = ["ts", "host", "program", "raw", "message"]
+
+
+def _is_infinite_ts(ts: Any) -> bool:
+    """Return whether ``ts`` is positive or negative infinity.
+
+    Infinity is neither a usable timeline value nor the loader's "missing"
+    timestamp sentinel. Keep-policy sources retain only missing (NaN) values;
+    infinite values always leave the load before coverage or data-window
+    accounting.
+    """
+    try:
+        return math.isinf(ts)
+    except (TypeError, ValueError, OverflowError):
+        return False
+
+
+def _coerce_usable_ts(ts: Any) -> float | None:
+    """Return a finite UTC-datetime-representable timestamp or ``None``."""
+    try:
+        value = float(ts)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if not math.isfinite(value):
+        return None
+    try:
+        datetime.fromtimestamp(value, tz=timezone.utc)
+    except (OSError, OverflowError, ValueError):
+        return None
+    return value
+
+
+def _is_out_of_range_ts(ts: Any) -> bool:
+    """Return whether a finite timestamp cannot become a UTC datetime.
+
+    NaN remains the loader's missing-time sentinel and infinity has its own
+    predicate. This class catches hostile finite magnitudes before coverage or
+    data-window consumers can raise ``OverflowError``.
+    """
+    try:
+        value = float(ts)
+    except (TypeError, ValueError, OverflowError):
+        return True
+    if math.isnan(value) or math.isinf(value):
+        return False
+    return _coerce_usable_ts(value) is None
 
 
 @dataclass(frozen=True)
@@ -102,26 +148,35 @@ class CoverageTracker:
             return
         if ts is None:
             return
+        if _is_infinite_ts(ts) or _is_out_of_range_ts(ts):
+            return
         # NaN-safe: math.isnan rejects NaN before it pollutes min/max.
         if isinstance(ts, float) and math.isnan(ts):
             return
+        usable = _coerce_usable_ts(ts)
+        if usable is None:
+            return
         self._valid_rows += 1
-        if self._min_ts is None or ts < self._min_ts:
-            self._min_ts = ts
-        if self._max_ts is None or ts > self._max_ts:
-            self._max_ts = ts
+        if self._min_ts is None or usable < self._min_ts:
+            self._min_ts = usable
+        if self._max_ts is None or usable > self._max_ts:
+            self._max_ts = usable
 
     def observe_frame(self, pre_df: pd.DataFrame) -> None:
         if self._kept:
             return
         if pre_df is None or pre_df.empty or "ts" not in pre_df.columns:
             return
-        valid = pre_df["ts"].dropna()
-        if valid.empty:
+        valid = [
+            normalized
+            for value in pre_df["ts"].dropna().tolist()
+            if (normalized := _coerce_usable_ts(value)) is not None
+        ]
+        if not valid:
             return
-        self._valid_rows += int(len(valid))
-        frame_min = float(valid.min())
-        frame_max = float(valid.max())
+        self._valid_rows += len(valid)
+        frame_min = min(valid)
+        frame_max = max(valid)
         if self._min_ts is None or frame_min < self._min_ts:
             self._min_ts = frame_min
         if self._max_ts is None or frame_max > self._max_ts:
@@ -207,7 +262,11 @@ def _data_window(logs: dict[str, pd.DataFrame]) -> tuple[datetime, datetime] | N
     all_ts: list[float] = []
     for df in logs.values():
         if not df.empty and "ts" in df.columns:
-            all_ts.extend(df["ts"].dropna().tolist())
+            all_ts.extend(
+                normalized
+                for ts in df["ts"].dropna().tolist()
+                if (normalized := _coerce_usable_ts(ts)) is not None
+            )
 
     if not all_ts:
         return None

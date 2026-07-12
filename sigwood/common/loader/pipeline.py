@@ -18,7 +18,7 @@ import sys
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Mapping, Sequence
 
 import pandas as pd
 
@@ -57,7 +57,10 @@ from sigwood.common.loader.types import (
     PermissionSkipInfo,
     RotationSkipInfo,
     SourceCoverage,
+    _coerce_usable_ts,
     _data_window,
+    _is_infinite_ts,
+    _is_out_of_range_ts,
 )
 from sigwood.common.loader.windowing import (
     LoadWindow,
@@ -163,12 +166,25 @@ def _zeek_records_from_lines(line_iter: Any) -> list[dict[str, Any]]:
             continue
         try:
             record = json.loads(line)
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, ValueError, OverflowError, RecursionError):
+            continue
+        if not isinstance(record, dict):
             continue
         if record.get("ts") is None:
             continue
         records.append(record)
     return records
+
+
+def _records_frame(records: list[dict[str, Any]]) -> pd.DataFrame:
+    """Construct a Zeek frame without leaking oversized JSON-int failures."""
+    try:
+        return pd.DataFrame(records)
+    except OverflowError:
+        # pandas' dtype inference can overflow on a valid JSON integer far
+        # beyond native float range. Object preservation lets the canonical
+        # timestamp/metric seams classify it without a raw parser traceback.
+        return pd.DataFrame(records, dtype=object)
 
 
 def _zeek_parse_from_lines(
@@ -229,7 +245,7 @@ def _zeek_parse_from_lines(
         if not records and warnings is not None:
             assert path is not None, "a warnings sink requires path"
             warnings.append(_zeek_no_records_warning(path))
-        return pd.DataFrame(records)
+        return _records_frame(records)
     if has_separator:
         if warnings is not None:
             sink: list[tuple[int, str]] = []
@@ -252,12 +268,12 @@ def _parse_ndjson_file(path: Path, show_progress: bool = True) -> pd.DataFrame:
     with _loader._open_log(path) as fh:
         line_iter = _loader.progress(
             fh,
-            desc=f"loaded {path.name}",
+            desc=f"loaded {strip_control(path.name)}",
             show_progress=show_progress,
             unit=" lines",
         )
         records = _zeek_records_from_lines(line_iter)
-    return pd.DataFrame(records)
+    return _records_frame(records)
 
 
 def _parse_lines(lines: list[str]) -> list[dict[str, Any]]:
@@ -268,9 +284,11 @@ def _parse_lines(lines: list[str]) -> list[dict[str, Any]]:
         if not line or line.startswith("#"):
             continue
         try:
-            result.append(json.loads(line))
-        except json.JSONDecodeError:
-            pass
+            record = json.loads(line)
+        except (json.JSONDecodeError, ValueError, OverflowError, RecursionError):
+            continue
+        if isinstance(record, dict):
+            result.append(record)
     return result
 
 
@@ -641,7 +659,7 @@ def run_load(
             with _loader._open_log(path) as fh:
                 line_iter = _loader.progress(
                     fh,
-                    desc=f"loaded {path.name}",
+                    desc=f"loaded {strip_control(path.name)}",
                     show_progress=show_progress,
                     unit=strategy.unit,
                 )
@@ -650,6 +668,11 @@ def run_load(
                         line_iter, path=path, warnings=_warnings
                     ):
                         ts = row["ts"]
+                        if _is_infinite_ts(ts):
+                            # Infinity is invalid at every policy boundary. It
+                            # is distinct from a NaN timestamp, which a
+                            # keep-policy source intentionally retains.
+                            continue
                         if _missing_ts(ts):
                             tracker.observe(None)
                             if strategy.ts_policy == "drop":
@@ -657,10 +680,16 @@ def run_load(
                             # keep policy - NaN-ts row bypasses the window
                             # (an unfilterable line stays in the frame).
                         else:
-                            tracker.observe(ts)
-                            if since_ts is not None and ts < since_ts:
+                            if _is_out_of_range_ts(ts):
                                 continue
-                            if until_ts is not None and ts > until_ts:
+                            normalized_ts = _coerce_usable_ts(ts)
+                            if normalized_ts is None:
+                                continue
+                            row["ts"] = normalized_ts
+                            tracker.observe(normalized_ts)
+                            if since_ts is not None and normalized_ts < since_ts:
+                                continue
+                            if until_ts is not None and normalized_ts > until_ts:
                                 continue
                         file_rows.append(row)
                         tracker.mark_kept()
@@ -669,7 +698,7 @@ def run_load(
                         pre = strategy.parse(
                             line_iter, path=path, warnings=_warnings
                         )
-                    except ValueError as exc:
+                    except (ValueError, OverflowError) as exc:
                         # A malformed frame-mode file (e.g. a live/mid-write
                         # Zeek TSV, or one with a broken header) skips THIS
                         # file only - never aborts the run. The skip is
@@ -796,6 +825,25 @@ _SOURCE_LOADERS: dict[str, SourceLoader] = {
         default_window_eligible=False,
     ),
 }
+
+
+def discover_for_source_key(
+    source_key: str,
+    directory: Path,
+    pattern: str,
+) -> list[Path]:
+    """Discover one source family's matching files without a time window.
+
+    Source-family discovery stays owned by the registered loader strategy.
+    Callers that need a directory probe use this generic entry point instead
+    of branching on a family-specific helper.
+    """
+    strategy = _SOURCE_LOADERS.get(source_key)
+    if strategy is None:
+        raise ValueError(
+            f"unknown source key {source_key!r} - no loader is registered"
+        )
+    return strategy.discover(directory, pattern, None, None)
 
 
 def load_logs(
@@ -932,6 +980,7 @@ def load_required_logs(
     source_windows: dict[str, tuple[datetime | None, datetime | None]] | None = None,
     show_progress: bool = True,
     file_select_windows: dict[str, tuple[datetime | None, datetime | None]] | None = None,
+    trusted_files: Mapping[str, Sequence[Path]] | None = None,
 ) -> LoadResult:
     """Load all patterns required by a run plan and return data plus metadata.
 
@@ -957,6 +1006,13 @@ def load_required_logs(
     flat floor (anchored on a PEEKED ``f_max``) from over-pruning real rows at load
     when the file supplying ``f_max`` peeks fine but fails to load. A source absent
     from this map falls back to its ``source_windows`` entry for file selection too.
+
+    ``trusted_files`` is an optional pattern-keyed mapping of explicit FILE
+    inputs whose content router already asserted their source kind. These files
+    bypass only filename-based discovery gates; they still traverse the normal
+    parse, window, normalization, warning, coverage, byte-accounting, and
+    permission-accounting path. It is keyed by pattern because one source
+    family can load multiple patterns.
     """
     logs: dict[str, pd.DataFrame] = {}
     record_counts: dict[str, int] = {}
@@ -967,10 +1023,12 @@ def load_required_logs(
     permission_skips: dict[str, PermissionSkipInfo] = {}
     source_windows = source_windows or {}
     file_select_windows = file_select_windows or {}
+    trusted_files = trusted_files or {}
 
     for pattern, source in needed_logs.items():
         paths = source_dirs.get(source) or []
-        if not paths:
+        trusted = list(trusted_files.get(pattern, ()))
+        if not paths and not trusted:
             warnings.append(f"{source} not configured - {pattern} not loaded")
             continue
 
@@ -985,19 +1043,30 @@ def load_required_logs(
 
         skip_info: RotationSkipInfo | None = None
         if strategy.window_select is None:
-            # Zeek / CloudTrail - byte-identical to the prior behavior. Discover
-            # over EVERY input (file or dir); the per-file pattern match in
-            # discover_zeek_files is what routes multi-positional Zeek inputs to
-            # the right pattern, so it must NOT be bypassed.
-            files = _union_dedupe([
-                strategy.discover(p, pattern, s_since, s_until) for p in paths
-            ])
+            # Zeek / CloudTrail: normal inputs retain their existing discovery
+            # behavior. Trusted explicit files bypass only a discovery name-gate
+            # (for example, an arbitrarily named but sniff-approved Zeek file),
+            # then converge on the same deduped run_load path.
+            trusted_resolved = {_safe_resolve(p) for p in trusted}
+            files_per_input = [
+                [p] if _safe_resolve(p) in trusted_resolved
+                else strategy.discover(p, pattern, s_since, s_until)
+                for p in paths
+            ]
+            input_resolved = {_safe_resolve(p) for p in paths}
+            extra_trusted = [
+                p for p in trusted if _safe_resolve(p) not in input_resolved
+            ]
+            files = _union_dedupe([*files_per_input, extra_trusted])
         else:
             # Flat (syslog / pihole) - ordinal-rotation peek-prune of the
             # directory-discovered candidates. Explicit FILES the operator named
             # are partitioned out, protected from BOTH the windowing input and
             # the skip count, and always loaded.
-            file_inputs = [p for p in paths if p.is_file()]
+            file_inputs = _union_dedupe([
+                [p for p in paths if p.is_file()],
+                trusted,
+            ])
             dir_inputs = [p for p in paths if p.is_dir()]
             dir_candidates = _union_dedupe([
                 strategy.discover(d, pattern, s_since, s_until) for d in dir_inputs
@@ -1044,7 +1113,14 @@ def load_required_logs(
                 selected_dir = dir_for_window
             files = _union_dedupe([file_inputs, selected_dir])
 
-        data_size_bytes += sum(p.stat().st_size for p in files if p.is_file())
+        for path in files:
+            try:
+                if path.is_file():
+                    data_size_bytes += path.stat().st_size
+            except OSError:
+                # The read loop records permission and corruption outcomes;
+                # an unreadable file simply has no reliable size to add.
+                continue
 
         cov_dict: dict = {}
         df = run_load(

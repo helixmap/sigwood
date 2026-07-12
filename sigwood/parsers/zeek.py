@@ -14,14 +14,17 @@ _CONN_COLUMN_MAP: dict[str, str] = {
 }
 
 # Zeek dns log → canonical DNS schema.
-# Renames: TTLs→ttl, answers→answer, TC→tc, id.orig_h→src.
+# Renames: TTLs→ttl, answers→answer, TC→tc, id.orig_h→src,
+# id.resp_h→resolver.
 # rtt, rcode, and qtype are already canonical (qtype as Zeek's raw numeric
 # type code, e.g. 1 = A, 28 = AAAA); qclass is filtered (aperture) and
 # dropped - see _normalize_dns_df.
 # Canonical minimal schema: ts, src, query.
-# Canonical extended schema (nullable): qtype, rtt, ttl, rcode, answer, tc.
+# Canonical extended schema (nullable): resolver, qtype, rtt, ttl, rcode,
+# answer, tc.
 _DNS_COLUMN_MAP: dict[str, str] = {
     "id.orig_h": "src",
+    "id.resp_h": "resolver",
     "TTLs":      "ttl",
     "answers":   "answer",
     "TC":        "tc",
@@ -39,7 +42,7 @@ _REQUIRED_COLUMNS: dict[str, set[str]] = {
 # _schema_warning never fires for expected-absent columns.
 _OPTIONAL_COLUMNS: dict[str, set[str]] = {
     "conn": {"duration", "bytes", "conn_state", "local_orig"},
-    "dns":  {"qtype", "rtt", "ttl", "rcode", "answer", "tc"},
+    "dns":  {"resolver", "qtype", "rtt", "ttl", "rcode", "answer", "tc"},
     # syslog extended (Zeek-only): facility/severity carried as-is from Zeek
     # (uppercase enum strings, e.g. "DAEMON" / "INFO"). The digest consumes
     # severity; the detector is source-blind.
@@ -136,7 +139,8 @@ def _normalize_zeek_syslog_df(df: pd.DataFrame) -> pd.DataFrame:
 def _normalize_dns_df(df: pd.DataFrame) -> pd.DataFrame:
     """Normalize Zeek dns.log to the canonical DNS schema.
 
-    Renames TTLs→ttl, answers→answer, TC→tc, id.orig_h→src.
+    Renames TTLs→ttl, answers→answer, TC→tc, id.orig_h→src, and
+    id.resp_h→resolver.
     Applies the internet-class aperture (qclass == 1) and drops qclass.
     Carries qtype through as Zeek's raw numeric type code (e.g. 1 = A,
     28 = AAAA); consumers wanting mnemonics map them downstream.
@@ -221,7 +225,7 @@ def sniff(sample: list[str]) -> str | None:
             continue
         try:
             obj = json.loads(line)
-        except (json.JSONDecodeError, ValueError):
+        except (json.JSONDecodeError, ValueError, RecursionError):
             return None
         if not isinstance(obj, dict):
             return None

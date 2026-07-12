@@ -55,6 +55,7 @@ from sigwood.common.loader.types import (
     RotationSkipInfo,
     SourceCoverage,
     _data_window,
+    _is_out_of_range_ts,
 )
 from sigwood.common.loader.diagnostics import (
     _cloudtrail_parse_warning,
@@ -132,6 +133,7 @@ from sigwood.common.loader.pipeline import (
     _zeek_records_from_lines,
     _zeek_strategy_parse,
     SourceLoader,
+    discover_for_source_key,
     load_cloudtrail,
     load_logs,
     load_pihole,

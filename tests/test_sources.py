@@ -32,10 +32,20 @@ from typing import Any
 import pytest
 
 from sigwood.common import sources
+from sigwood.common import loader
 from sigwood.common.sources import (
     DigestSource,
+    GRAPH_KINDS,
+    GraphKindSpec,
     ResolvedSources,
+    discover_for_source_key,
+    discover_graph_kinds,
+    graph_buckets_for_inputs,
+    graph_kind_for_sniff,
+    graph_kind_spec,
+    probe_graph_inputs,
     resolve_digest_source,
+    resolve_graph_source,
     resolve_sources,
     route_positional_source,
 )
@@ -221,6 +231,180 @@ def test_router_unrecognized_content_falls_back_to_first_optional(tmp_path: Path
     mystery = tmp_path / "mystery.log"
     mystery.write_text("lorem ipsum dolor\nsit amet\n", encoding="utf-8")
     assert route_positional_source(mystery, detector_module=_SyslogShape) == "syslog_dir"
+
+
+# ── graph kind/source foundation ────────────────────────────────────────────
+
+
+def test_graph_kinds_are_ordered_declarations() -> None:
+    """Graph advertises conn and Zeek dns in deterministic order."""
+    assert GRAPH_KINDS == (
+        GraphKindSpec("conn", "zeek_dir", "conn*.log*", "conn", "zeek"),
+        GraphKindSpec("dns", "zeek_dir", "dns*.log*", "dns", "zeek"),
+    )
+
+
+@pytest.mark.parametrize(
+    ("schema", "origin", "expected"),
+    [
+        ("conn", "zeek", "conn"),
+        ("dns", "zeek", "dns"),
+        ("dns", "pihole", None),
+        ("syslog", "zeek", None),
+        (None, None, None),
+    ],
+)
+def test_graph_kind_for_sniff_uses_schema_and_origin(
+    schema: str | None,
+    origin: str | None,
+    expected: str | None,
+) -> None:
+    spec = graph_kind_for_sniff(schema, origin)
+    assert (spec.kind if spec is not None else None) == expected
+
+
+def test_discover_for_source_key_delegates_to_registered_loader(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The graph seam delegates discovery to the registered source strategy."""
+    calls: list[tuple[Path, str, object, object]] = []
+
+    class _Strategy:
+        def discover(self, directory, pattern, since, until):
+            calls.append((directory, pattern, since, until))
+            return [directory / "conn.log"]
+
+    monkeypatch.setitem(loader._SOURCE_LOADERS, "graph_test_dir", _Strategy())
+
+    assert discover_for_source_key("graph_test_dir", tmp_path, "conn*.log*") == [
+        tmp_path / "conn.log"
+    ]
+    assert calls == [(tmp_path, "conn*.log*", None, None)]
+
+
+def test_discover_for_source_key_rejects_unknown_loader(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="unknown source key 'missing_dir'"):
+        discover_for_source_key("missing_dir", tmp_path, "*.log*")
+
+
+def test_discover_graph_kinds_keeps_only_nonempty_buckets(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A graphable directory may fan out to multiple ordered kind buckets."""
+    calls: list[tuple[str, Path, str]] = []
+
+    def _discover(source_key: str, directory: str | Path, pattern: str) -> list[Path]:
+        root = Path(directory)
+        calls.append((source_key, root, pattern))
+        if pattern == "dns*.log*":
+            return [root / "dns.log"]
+        return []
+
+    monkeypatch.setattr(sources, "discover_for_source_key", _discover)
+
+    assert discover_graph_kinds(tmp_path) == {"dns": [tmp_path / "dns.log"]}
+    assert calls == [
+        ("zeek_dir", tmp_path, "conn*.log*"),
+        ("zeek_dir", tmp_path, "dns*.log*"),
+    ]
+
+
+def test_graph_buckets_file_sniffs_and_keeps_trusted_explicit_path(
+    tmp_path: Path,
+) -> None:
+    """A neutral explicit filename becomes a conn bucket after detailed sniff."""
+    source = tmp_path / "captured"
+    source.write_text(
+        '{"_path":"conn","ts":1779750000.0,"uid":"C1",'
+        '"id.orig_h":"192.0.2.10","id.resp_h":"198.51.100.20",'
+        '"id.resp_p":443,"proto":"tcp","duration":1.0}\n',
+        encoding="utf-8",
+    )
+
+    assert graph_buckets_for_inputs({"sigwood": {}}, [source]) == {
+        "conn": [source],
+    }
+
+
+def test_graph_buckets_directory_fans_out_and_keeps_directory_input(
+    tmp_path: Path,
+) -> None:
+    """Directory probing selects kinds but leaves discovery ownership to loader."""
+    source = tmp_path / "zeek"
+    source.mkdir()
+    (source / "conn.log").write_text(
+        '{"_path":"conn","ts":1779750000.0,"uid":"C1",'
+        '"id.orig_h":"192.0.2.10","id.resp_h":"198.51.100.20",'
+        '"id.resp_p":443,"proto":"tcp","duration":1.0}\n',
+        encoding="utf-8",
+    )
+    (source / "dns.log").write_text(
+        '{"_path":"dns","ts":1779750000.0,"uid":"D1",'
+        '"id.orig_h":"192.0.2.10","query":"example.test"}\n',
+        encoding="utf-8",
+    )
+    mixed: dict[str, tuple[str, ...]] = {}
+
+    buckets = graph_buckets_for_inputs(
+        {"sigwood": {}}, [source], _mixed_sink=mixed,
+    )
+
+    assert buckets == {"conn": [source], "dns": [source]}
+    assert mixed == {str(source): ("conn", "dns")}
+
+
+def test_graph_probe_keeps_a_valid_file_when_a_sibling_cannot_be_read(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Input probing returns a typed denial beside the surviving graph bucket."""
+    conn = tmp_path / "conn.log"
+    conn.write_text(
+        '{"_path":"conn","ts":1779750000.0,"uid":"C1",'
+        '"id.orig_h":"192.0.2.10","id.resp_h":"198.51.100.20",'
+        '"id.resp_p":443,"proto":"tcp","duration":1.0}\n',
+        encoding="utf-8",
+    )
+    denied = tmp_path / "denied.log"
+    denied.write_text("placeholder\n", encoding="utf-8")
+    real_sniff = sources.sniff_format_detailed
+
+    def _sniff(path: Path):
+        if path == denied:
+            raise PermissionError("synthetic denied")
+        return real_sniff(path)
+
+    monkeypatch.setattr(sources, "sniff_format_detailed", _sniff)
+
+    probe = probe_graph_inputs({"sigwood": {}}, [conn, denied])
+
+    assert probe.buckets == {"conn": [conn]}
+    assert len(probe.issues) == 1
+    assert probe.issues[0].path == denied
+    assert probe.issues[0].permission is True
+
+
+def test_graph_bare_config_resolution_honors_root_and_declared_source(
+    tmp_path: Path,
+) -> None:
+    """Bare graph resolves config input through the shared source resolver."""
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    (logs / "conn.log").write_text(
+        '{"_path":"conn","ts":1779750000.0,"uid":"C1",'
+        '"id.orig_h":"192.0.2.10","id.resp_h":"198.51.100.20",'
+        '"id.resp_p":443,"proto":"tcp","duration":1.0}\n',
+        encoding="utf-8",
+    )
+    config = {"sigwood": {"root": str(tmp_path), "zeek_dir": "logs"}}
+
+    spec, resolved = resolve_graph_source(config, "conn")
+
+    assert spec == graph_kind_spec("conn")
+    assert resolved == [logs]
+    assert graph_buckets_for_inputs(config) == {"conn": [logs]}
 
 
 # ── resolve_sources - overrides None-contract + scope truth table ─────────────

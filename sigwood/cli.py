@@ -7,6 +7,7 @@ Dispatch table:
   sigwood PATH ...                   shorthand - point it at one or more log files
   sigwood beacon|dns|syslog|...      run a single detector
   sigwood digest [PATH ...]          orient-before-the-hunt card (sniff-driven)
+  sigwood graph [PATH ...]           replay-oriented conn/DNS graph artifact
   sigwood export                     pull logs from external systems
   sigwood init                       first-run setup wizard
 
@@ -35,7 +36,13 @@ from sigwood.common.display import (
     set_display_utc,
     to_display_timezone,
 )
-from sigwood.common.errors import DigestEmpty, ExportAborted, UsageError
+from sigwood.common.errors import (
+    DigestEmpty,
+    ExportAborted,
+    GraphEmpty,
+    GraphSourceUnreadable,
+    UsageError,
+)
 from sigwood.common.output import get_handler
 from sigwood.common.paths import be_like_water, effective_root, resolve_path, unique_path
 from sigwood.common.sanitize import strip_control
@@ -136,6 +143,10 @@ _DIGEST_ALLOWED: frozenset[str] = frozenset({
     "help", "verbose", "yes", "all", "quiet", "out", "config", "since",
     "dry_run", "format", "until", "days", "hours", "utc", "zeek_dir",
 })
+_GRAPH_ALLOWED: frozenset[str] = frozenset({
+    "help", "yes", "all", "quiet", "out", "config", "since", "dry_run",
+    "until", "days", "hours", "utc", "zeek_dir",
+})
 _EXPORT_ALLOWED: frozenset[str] = frozenset({
     "help", "verbose", "yes", "out", "config", "since", "until", "days", "hours",
     "utc",
@@ -161,6 +172,8 @@ _VERBS: dict[str, VerbSpec] = {
                          "[PATH]", _SINGLE_DET_ALLOWED),
     "digest":   VerbSpec("digest",   "orient-before-the-hunt card (schema sniffed)",
                          "[PATH ...]", _DIGEST_ALLOWED),
+    "graph":    VerbSpec("graph",    "replay-oriented conn/DNS HTML graph artifact",
+                         "[PATH ...]", _GRAPH_ALLOWED),
     "export":   VerbSpec("export",   "pull logs from external systems to local files",
                          "[BACKEND] [QUERY ...]", _EXPORT_ALLOWED),
     "init":     VerbSpec("init",     "first-run setup wizard",
@@ -263,7 +276,7 @@ def _main(argv: list[str] | None = None) -> int:
     elif cand == "hunt":
         verb = "hunt"               # explicit verb - never requires a target
         rest = args[1:]
-    elif cand in ("digest", "init", "export", "allowlist"):
+    elif cand in ("digest", "graph", "init", "export", "allowlist"):
         verb = cand
         rest = args[1:]
     elif cand.startswith("-") or _looks_like_path(cand):
@@ -291,6 +304,8 @@ def _main(argv: list[str] | None = None) -> int:
         return _run_single_detector(verb, rest) or 0
     elif verb == "digest":
         return _run_digest(rest) or 0
+    elif verb == "graph":
+        return _run_graph(rest) or 0
     elif verb == "init":
         _run_init(rest)
     elif verb == "export":
@@ -362,6 +377,7 @@ def _global_usage_text(no_config: bool = False) -> str:
         "  sigwood digest [options] PATH    orient-before-the-hunt card; schema is",
         "                                   inferred from the file (conn, dns, syslog,",
         "                                   cloudtrail, or blob for unrecognized text)",
+        "  sigwood graph [options] [PATH ...] replay-oriented conn/DNS HTML artifact",
         "",
         "  sigwood export                   pull logs from external systems",
         "  sigwood init                     first-run setup wizard",
@@ -612,6 +628,39 @@ def _resolve_digest_output_target(
     paths = parsed.get("paths") or []
     token = _digest_token(paths[0]) if paths else None
     return unique_path(resolved.path, _digest_basename(token)), None
+
+
+def _graph_basename(kind: str) -> str:
+    """Return a display-timezone dated auto-name for one graph artifact."""
+    date = to_display_timezone(datetime.now(timezone.utc)).strftime("%Y%m%d")
+    return f"sigwood-graph_{kind}_{date}.html"
+
+
+def _resolve_graph_output_target(
+    parsed: dict[str, Any], config: dict[str, Any], kind: str,
+) -> Path | None:
+    """Resolve graph's ``--out > report_dir > CWD`` artifact ladder.
+
+    Graph intentionally differs from digest: it participates in the configured
+    ``report_dir`` policy, then falls back to an auto-named artifact in CWD.
+    An explicit file verdict remains exact; a directory verdict receives a
+    collision-free kind/date name. ``--out=-`` is the sole stdout sentinel.
+    """
+    cfg_sigwood = config.get("sigwood", {})
+    cli_out = parsed.get("out") if "out" in parsed else None
+    if cli_out:
+        if cli_out == "-":
+            return None
+        target = resolve_path(cli_out, "")
+    else:
+        target = resolve_path(cfg_sigwood.get("report_dir"), effective_root(config))
+        if target is None:
+            target = "."
+
+    resolved = be_like_water(target)
+    if resolved.is_file:
+        return resolved.path
+    return unique_path(resolved.path, _graph_basename(kind))
 
 
 def _resolve_timeframe(
@@ -1104,6 +1153,176 @@ def _route_sniffed_path(
         # and must NEVER appear in _FLAGS / _VERBS / help.
         parsed_for_path["blob_path"] = path_str
     return parsed_for_path, schema
+
+
+def _run_graph(args: list[str]) -> int:
+    """Sniff/fan out graphable inputs and write one artifact per kind bucket.
+
+    Graph's CLI owns the public surface that is intentionally absent from the
+    runner: positional sniffing, same-kind fan-out, report target selection,
+    dry-run, and the final exit ledger across independently attempted buckets.
+    Graph accepts only conn and Zeek DNS inputs; other structured logs are not
+    silently routed to digest or an unrelated graph.
+    """
+    import sigwood.runner as runner
+    from sigwood.common.sources import probe_graph_inputs
+    from sigwood.graph._core import validate_config
+
+    parsed = _parse_args(args, "graph")
+    _assert_all_vs_timeframe(parsed)
+
+    paths = parsed.get("paths") or []
+    if paths and "zeek_dir" in parsed:
+        raise UsageError(
+            "--zeek-dir is not valid alongside a positional PATH "
+            "(positionals self-route via sniff)"
+        )
+
+    config = _load_config(parsed)
+    cfg.validate_table_sections(config, ("sigwood", "graph"))
+    # Validate once at the CLI seam even for --dry-run. run_graph repeats this
+    # at its public/programmatic boundary rather than trusting this caller.
+    validate_config(config.get("graph", {}))
+    use_utc = bool(parsed.get("utc")) or bool(
+        config.get("sigwood", {}).get("use_utc", False)
+    )
+    set_display_utc(use_utc)
+    quiet = bool(parsed.get("quiet")) or bool(
+        config.get("sigwood", {}).get("quiet", False)
+    )
+    since, until = _resolve_timeframe(parsed, use_utc=use_utc)
+
+    raw_inputs: list[str] | None
+    if paths:
+        raw_inputs = paths
+    elif parsed.get("zeek_dir"):
+        raw_inputs = [str(parsed["zeek_dir"])]
+    else:
+        raw_inputs = None
+
+    probe = probe_graph_inputs(config, raw_inputs)
+    buckets = probe.buckets
+    input_errors = input_permissions = 0
+    for issue in probe.issues:
+        line = f"{strip_control(issue.path)}: {strip_control(issue.message)}"
+        if issue.permission:
+            print(f"sigwood: {line}", file=sys.stderr)
+            input_permissions += 1
+        elif issue.message.startswith("can't graph"):
+            print(line, file=sys.stderr)
+            input_errors += 1
+        else:
+            print(f"sigwood: {line}", file=sys.stderr)
+            input_errors += 1
+    if not buckets:
+        print("sigwood: nothing to graph", file=sys.stderr)
+        return 1
+
+    targets = {
+        kind: _resolve_graph_output_target(parsed, config, kind)
+        for kind in buckets
+    }
+    if len(buckets) > 1:
+        paths_or_stdout = list(targets.values())
+        if any(target is None for target in paths_or_stdout):
+            raise UsageError(
+                "graph produced multiple kinds - stdout accepts one artifact; "
+                "choose a directory target"
+            )
+        if len({str(target) for target in paths_or_stdout}) != len(paths_or_stdout):
+            raise UsageError(
+                "graph produced multiple kinds - choose a directory target "
+                "instead of one exact output file"
+            )
+
+    if not quiet:
+        for path, kinds in probe.multi_kinds.items():
+            names = ", ".join(kinds)
+            print(
+                f"{strip_control(path)}: graphing discovered kinds separately ({names})",
+                file=sys.stderr,
+            )
+        for path, tally in probe.mixed_votes.items():
+            sampled = ", ".join(
+                f"{origin} {count}" for origin, count in tally.items()
+            )
+            graph_kinds = ", ".join(
+                kind for kind, inputs in buckets.items()
+                if any(str(source) == path for source in inputs)
+            )
+            print(
+                f"{strip_control(path)}: mixed log types sampled ({sampled}) - "
+                f"graphing {graph_kinds}; non-graphable files skipped; try "
+                "'sigwood digest PATH'",
+                file=sys.stderr,
+            )
+
+    if parsed.get("dry_run"):
+        print("sigwood  ·  graph  ·  dry run")
+        for kind, inputs in buckets.items():
+            source = ", ".join(strip_control(str(path)) for path in inputs)
+            target = targets[kind]
+            destination = "stdout" if target is None else str(compact_home(target))
+            print(f"  {kind}: {source} -> {strip_control(destination)}")
+        return 1 if input_permissions else 0
+
+    rendered = clean_empty = 0
+    ordinary_errors = input_errors
+    permission_errors = input_permissions
+    for kind, inputs in buckets.items():
+        target = targets[kind]
+        # A bucket produced from bare configuration must remain a config
+        # fallback at the runner boundary.  Passing its resolved file here
+        # would falsely turn it into a sniff-approved positional input and
+        # bypass the loader's filename discovery gate.
+        runner_inputs = inputs if raw_inputs is not None else None
+        try:
+            written = runner.run_graph(
+                config,
+                kind=kind,
+                inputs=runner_inputs,
+                since=since,
+                until=until,
+                output_file=target,
+                stream=sys.stdout if target is None else None,
+                load_all=bool(parsed.get("all", False)),
+                skip_confirm=bool(parsed.get("yes", False)),
+                quiet=quiet,
+                use_utc=use_utc,
+            )
+        except GraphSourceUnreadable as exc:
+            print(f"sigwood: {strip_control(exc)}", file=sys.stderr)
+            permission_errors += 1
+            continue
+        except GraphEmpty as exc:
+            print(f"sigwood: {strip_control(exc)} - skipping", file=sys.stderr)
+            clean_empty += 1
+            continue
+        except (ValueError, OSError, OverflowError) as exc:
+            print(f"sigwood: {kind}: {strip_control(exc)}", file=sys.stderr)
+            ordinary_errors += 1
+            continue
+
+        rendered += 1
+        if written is not None and not quiet:
+            print(
+                f"wrote graph to {strip_control(compact_home(written))}",
+                file=sys.stderr,
+            )
+
+    # Permission denial is the lone failure that outranks a sibling artifact.
+    # Ordinary malformed-source failures remain per-bucket and an artifact from
+    # another bucket is an honest successful graph result. All clean-empty
+    # recognized buckets are a no-op success; every other no-artifact case is
+    # an actionable failure.
+    if permission_errors:
+        return 1
+    if rendered:
+        return 0
+    if clean_empty and not ordinary_errors:
+        return 0
+    print("sigwood: nothing to graph", file=sys.stderr)
+    return 1
 
 
 def _run_digest(args: list[str]) -> int:

@@ -27,7 +27,10 @@ from sigwood.common.loader.types import (
     CoverageTracker,
     LoadResult,
     RotationSkipInfo,
+    _coerce_usable_ts,
     _data_window,
+    _is_infinite_ts,
+    _is_out_of_range_ts,
 )
 from sigwood.parsers.syslog import parse_timestamp as _parse_syslog_ts
 from sigwood.common.sanitize import strip_control
@@ -86,7 +89,7 @@ def _apply_ts_filter(
     *,
     keep_null: bool = False,
 ) -> pd.DataFrame:
-    """Drop null-ts rows and filter to [since, until] window.
+    """Drop null/infinite-ts rows and filter to [since, until] window.
 
     Default (``keep_null=False``): drops rows with NaN/None ts unconditionally -
     matches NDJSON behavior where records without ts are always skipped. This is
@@ -103,6 +106,18 @@ def _apply_ts_filter(
         return df
     if "ts" not in df.columns:
         return pd.DataFrame(columns=df.columns)
+    # Infinity and invalid finite magnitudes are invalid rather than missing.
+    # Keep-policy callers retain only the established None/NaN missing shapes.
+    invalid = df["ts"].map(_is_infinite_ts) | (
+        ~df["ts"].map(_missing_ts) & df["ts"].map(_is_out_of_range_ts)
+    )
+    df = df[~invalid].copy()
+    if df.empty:
+        return df
+    # Canonicalize valid numeric timestamp strings before any comparison.
+    df["ts"] = df["ts"].map(_coerce_usable_ts)
+    if df.empty:
+        return df
     null_mask = df["ts"].isna()
     if not keep_null:
         df = df[~null_mask]

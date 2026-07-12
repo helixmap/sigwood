@@ -58,6 +58,19 @@ def _validate_warn_above(config: dict[str, Any]) -> None:
         )
 
 
+def validate_table_sections(
+    config: object,
+    sections: tuple[str, ...] | None = None,
+) -> None:
+    """Require configuration sections used by a caller to be TOML tables."""
+    if not isinstance(config, dict):
+        raise ConfigError("config must be a table")
+    for section in sections or tuple(_DEFAULTS):
+        value = config.get(section, {})
+        if not isinstance(value, dict):
+            raise ConfigError(f"[{section}] must be a table")
+
+
 _DEFAULTS: dict[str, Any] = {
     "sigwood": {
         # The root - base for RELATIVE paths in config-file values. Empty = use
@@ -99,6 +112,12 @@ _DEFAULTS: dict[str, Any] = {
         # is a running budget across the detector's subsections in declared
         # order; the disclosure line reports rendered-vs-total. 0 = unlimited.
         "max_findings_per_detector": 100,
+    },
+    "graph": {
+        "target_bins": 2000,
+        "top_hosts": 24,
+        "top_services": 12,
+        "domain_level": "domain",
     },
     "detectors": {},
     "allowlist": {
@@ -181,6 +200,7 @@ def load(config_file: str | Path | None = None) -> dict[str, Any]:
         else:
             config = _load_file(found)
 
+    validate_table_sections(config)
     # Validate default_window eagerly so typos in user config fail at load time -
     # not lazily during the run, where bounded paths would never notice.
     parse_window_span(config.get("sigwood", {}).get("default_window"))

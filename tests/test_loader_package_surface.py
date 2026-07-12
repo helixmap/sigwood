@@ -50,7 +50,7 @@ _SURFACE = [
     "_zeek_dated_window", "_flat_default_floor", "_default_resolve_window",
     "_zeek_resolve_window", "_flat_resolve_window",
     # pipeline
-    "SourceLoader", "_SOURCE_LOADERS", "run_load", "load_required_logs",
+    "SourceLoader", "_SOURCE_LOADERS", "discover_for_source_key", "run_load", "load_required_logs",
     "load_logs", "load_zeek_log", "load_syslog", "load_pihole", "load_cloudtrail",
     "_zeek_records_from_lines", "_zeek_parse_from_lines", "_parse_ndjson_file",
     "_parse_lines", "_zeek_strategy_parse", "_zeek_normalize",

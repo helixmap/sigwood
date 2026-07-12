@@ -1,13 +1,14 @@
 """Unit coverage for ``common.paths.resolve_path`` and ``effective_root``.
 
 The SIGWOOD_ROOT rail collapses scattered ``os.path.expanduser`` calls at the
-CLI/config seam. ``resolve_path`` is pure: no validation, no URL handling,
-no suffix sniffing - string in, string-or-None out, trailing slash preserved.
+CLI/config seam. ``resolve_path`` accepts text or Path values, rejects invalid
+config types, and preserves trailing slash intent.
 """
 
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 
 import pytest
@@ -59,6 +60,21 @@ def test_resolve_path_relative_with_tilde_root_expanduser_then_join(
 def test_resolve_path_relative_with_empty_root_returns_as_is() -> None:
     """root="" is the CLI provenance - no root prepended. Shell semantics."""
     assert resolve_path("exports", "") == "exports"
+
+
+@pytest.mark.parametrize(
+    ("value", "root", "message"),
+    [
+        (7, "", "configured path must be a string"),
+        (["exports"], "", "configured path must be a string"),
+        ("exports", 7, "[sigwood].root must be a string"),
+    ],
+)
+def test_resolve_path_rejects_non_string_config_values(
+    value: object, root: object, message: str,
+) -> None:
+    with pytest.raises(ValueError, match=re.escape(message)):
+        resolve_path(value, root)  # type: ignore[arg-type]
 
 
 # ── trailing-slash preservation across branches ───────────────────────────────

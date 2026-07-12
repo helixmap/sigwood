@@ -17,12 +17,16 @@ import sys
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Collection, Sequence
+from typing import Any, Collection, Mapping, Sequence
 
 import pandas as pd
 
 import sigwood.detectors as _detectors_pkg
-from sigwood.common.config import get_detector_config, parse_window_span
+from sigwood.common.config import (
+    get_detector_config,
+    parse_window_span,
+    validate_table_sections,
+)
 from sigwood.common.display import (
     TEXT_RULE,
     TEXT_RULE_DOUBLE,
@@ -39,12 +43,18 @@ from sigwood.common.display import (
     set_narration_enabled,
     to_display_timezone,
 )
-from sigwood.common.errors import DigestEmpty, ExportAborted
+from sigwood.common.errors import (
+    DigestEmpty,
+    ExportAborted,
+    GraphEmpty,
+    GraphSourceUnreadable,
+)
 from sigwood.common.finding import DetectorContext, Finding, RunSummary
 from sigwood.common.output import OutputHandler, Reporter
 from sigwood.common.paths import unique_path
 from sigwood.common.sources import (
     resolve_digest_source,
+    resolve_graph_source,
     resolve_sources,
 )
 from sigwood.common.sanitize import strip_control
@@ -293,7 +303,7 @@ def run(
         for line in _rotation_fallback_lines(load_result, plan):
             _estderr(line)
 
-    permission_error = _permission_denied_run_error(load_result, plan)
+    permission_error = _permission_denied_run_error(load_result, plan.needed_logs)
     if permission_error is not None:
         raise ValueError(permission_error)
 
@@ -1326,15 +1336,37 @@ def _zero_window_coverage_notes(
 
 def _permission_denied_run_error(
     load_result: Any,
-    plan: RunPlan,
+    needed_logs: Mapping[str, str],
+    *,
+    strict: bool = False,
 ) -> str | None:
-    """Return an operational error when permission blocks the whole run."""
-    if sum(load_result.record_counts.values()) > 0:
+    """Return permission detail using the shared loader accounting.
+
+    Analyze remains partial-tolerant: a loaded record anywhere means a denied
+    sibling does not turn the whole detector run into an error. Graph artifacts
+    are stricter: one unreadable source makes its bucket operationally
+    incomplete even when other rows rendered, so ``strict=True`` reports every
+    discovered denial for the graph CLI's per-bucket exit ledger.
+    """
+    if not strict and sum(load_result.record_counts.values()) > 0:
         return None
-    for pattern, source_key in plan.needed_logs.items():
+    for pattern, source_key in needed_logs.items():
         info = load_result.permission_skips.get(pattern)
         if info is None or info.discovered <= 0:
             continue
+        if strict and info.denied > 0:
+            label = _pattern_human_label(source_key, pattern)
+            if info.denied == info.discovered:
+                n = info.discovered
+                return (
+                    f"{label}: all {n} discovered {plural(n, 'file')} "
+                    "permission denied - grant your user read access and retry"
+                )
+            return (
+                f"{label}: {info.denied} of {info.discovered} discovered "
+                f"{plural(info.discovered, 'file')} permission denied - grant "
+                "your user read access and retry"
+            )
         if info.denied == info.discovered:
             n = info.discovered
             label = _pattern_human_label(source_key, pattern)
@@ -1830,7 +1862,8 @@ def _compute_histogram(
 
 
 _DNS_ZEEK_EMPTY_COLUMNS = [
-    "ts", "src", "query", "rtt", "ttl", "rcode", "answer", "tc", "qtype",
+    "ts", "src", "query", "resolver", "rtt", "ttl", "rcode", "answer", "tc",
+    "qtype",
 ]
 _DNS_PIHOLE_EMPTY_COLUMNS = [
     "ts", "src", "query", "event_type", "qtype", "dst", "answer",
@@ -1928,6 +1961,167 @@ def _render_blob_for_path(
         handler.render_blob(card)
     finally:
         close_handler()
+
+
+def _graph_source_label(paths: Sequence[Path]) -> str:
+    """Return an aggregate source identity for graph metadata/control signals."""
+    if not paths:
+        return "graph source"
+    return ", ".join(strip_control(path.name) for path in paths)
+
+
+def run_graph(
+    config: dict[str, Any],
+    *,
+    kind: str,
+    inputs: str | Path | Sequence[str | Path] | None = None,
+    since: datetime | None = None,
+    until: datetime | None = None,
+    output_file: Path | None = None,
+    stream: Any = None,
+    load_all: bool = False,
+    skip_confirm: bool = False,
+    quiet: bool = False,
+    use_utc: bool = False,
+    show_progress: bool = True,
+) -> Path | None:
+    """Build and render one same-kind graph bucket.
+
+    The CLI owns sniffing, fan-out, target selection, dry-run, and final exit
+    precedence. This runner entry owns exactly one already-selected graph kind:
+    it resolves raw/config source inputs, asks the loader for its full
+    :class:`LoadResult`, applies the shared Zeek default-window policy, builds a
+    payload without allowlist construction, and writes one exact HTML target or
+    supplied stream. There is deliberately no ``dry_run`` argument here.
+    """
+    from sigwood.common import loader
+    from sigwood.graph import get_builder
+    from sigwood.graph._core import validate_config
+    from sigwood.outputs.graph import render_graph_html
+
+    validate_table_sections(config, ("sigwood", "graph"))
+    set_display_utc(use_utc)
+    if output_file is not None and stream is not None:
+        raise ValueError("output_file and stream are mutually exclusive")
+
+    # get_builder is the public graph dispatch/validation seam. Derive source
+    # facts from the same ordered declaration so adding a graph kind cannot create
+    # a CLI/runner routing ladder.
+    builder = get_builder(kind)
+    spec, source_inputs = resolve_graph_source(config, kind, inputs=inputs)
+    if not source_inputs:
+        raise ValueError(
+            f"{spec.source_key} not configured - pass a PATH or "
+            f"set [sigwood].{spec.source_key} in your config"
+        )
+    for path in source_inputs:
+        if not path.exists():
+            raise ValueError(f"{path}: not found")
+
+    graph_config = validate_config(config.get("graph", {}))
+    source_label = _graph_source_label(source_inputs)
+    needed_logs = {spec.pattern: spec.source_key}
+    source_dirs = {spec.source_key: source_inputs}
+    # Only a caller-supplied input carries the graph kind assertion. Config
+    # fallback files remain ordinary source inputs and keep filename discovery
+    # policy, so a misconfigured dns.log can never be treated as conn merely
+    # because a programmatic caller requested the conn builder.
+    from sigwood.common.sources import graph_has_explicit_inputs
+    has_explicit_inputs = graph_has_explicit_inputs(inputs)
+    trusted_files = [
+        path for path in source_inputs
+        if has_explicit_inputs and path.is_file()
+    ]
+
+    # Graph follows digest's Zeek-only default-window contract. The resolver's
+    # non-empty return is the one authoritative fact for artifact disclosure;
+    # it holds for both dated-select and flat-trim window shapes.
+    cfg_sigwood = config.get("sigwood", {})
+    default_spec = cfg_sigwood.get("default_window", "7d")
+    load_windows = loader.resolve_load_windows(
+        needed_logs,
+        source_dirs,
+        default_spec,
+        since=since,
+        until=until,
+        load_all=load_all,
+    )
+    default_window_note: str | None = None
+    source_windows: dict[str, tuple[datetime | None, datetime | None]] | None = None
+    flat_span: timedelta | None = None
+    keep_null = False
+    if load_windows:
+        window = load_windows[0]
+        default_window_note = default_window_advisory(default_spec)
+        if window.trim_span is None and window.select_window is not None:
+            source_windows = {spec.source_key: window.select_window}
+        else:
+            flat_span = window.trim_span
+            keep_null = window.keep_null
+
+    load_result = loader.load_required_logs(
+        needed_logs,
+        source_dirs,
+        since,
+        until,
+        source_windows=source_windows,
+        show_progress=show_progress and not quiet,
+        trusted_files={spec.pattern: trusted_files},
+    )
+    if flat_span is not None:
+        load_result = loader.apply_default_window(
+            load_result, [spec.pattern], flat_span, keep_null=keep_null,
+        )
+    for warning in load_result.warnings:
+        _estderr(warning)
+
+    # Strict graph accounting deliberately happens before the clean-empty
+    # branch: an unreadable requested source is operationally incomplete even
+    # if a sibling yielded an artifact-shaped frame.
+    permission_error = _permission_denied_run_error(
+        load_result, needed_logs, strict=True,
+    )
+    if permission_error is not None:
+        raise GraphSourceUnreadable(kind, source_label, permission_error)
+
+    frame = load_result.logs.get(spec.pattern)
+    if frame is None or frame.empty:
+        selected = since is not None or until is not None or bool(load_windows)
+        reason = "no records in selected window" if selected else "no parseable records"
+        raise GraphEmpty(kind, source_label, reason)
+
+    total_records = sum(load_result.record_counts.values())
+    warn_above: int = cfg_sigwood.get("warn_above", 10_000_000)
+    if total_records > warn_above and not skip_confirm:
+        try:
+            answer = input(
+                f"{total_records:,} records found. This may take a while. Continue? [y/N] "
+            )
+        except (EOFError, KeyboardInterrupt):
+            answer = ""
+        if answer.strip().lower() not in ("y", "yes"):
+            raise ExportAborted("sigwood: aborted by user")
+
+    with liveness(f"building {kind} graph", enabled=not quiet):
+        payload = builder(
+            frame,
+            config=graph_config,
+            source_label=source_label,
+            default_window_note=default_window_note,
+            display_utc=use_utc,
+        )
+    html = render_graph_html(payload)
+
+    # Do not create a directory or touch an exact target until the loader,
+    # builder, and strict JSON-in-script renderer have all succeeded.
+    if output_file is not None:
+        output_file.parent.mkdir(parents=True, exist_ok=True)
+        output_file.write_text(html, encoding="utf-8", newline="")
+        return output_file
+    if stream is None:
+        stream = sys.stdout
+    stream.write(html)
+    return None
 
 
 def run_digest(

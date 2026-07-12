@@ -1,0 +1,1287 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>sigwood · graph</title>
+<style>
+/* ---- theme tokens (sigwood html-report surfaces; validated categorical
+       palette per mode - node identity is always direct-labeled) ---------- */
+:root {
+  --bg: #ffffff; --fg: #1f2933; --muted: #677181; --border: #d7dde4;
+  --panel: #f6f8fa; --accent: #2a78d6;
+  --s1:#2a78d6; --s2:#1baf7a; --s3:#eda100; --s4:#008300;
+  --s5:#4a3aa7; --s6:#e34948; --s7:#e87ba4; --s8:#eb6834;
+  --sx1:#8a94a3; --sx2:#6b7686; --sother:#a5adb8;
+  --halo: rgba(255,255,255,.82); --panelglass: rgba(246,248,250,.72);
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #14181d; --fg: #e6eaef; --muted: #9aa4b1; --border: #2a3038;
+    --panel: #1a2027; --accent: #3987e5;
+    --s1:#3987e5; --s2:#199e70; --s3:#c98500; --s4:#008300;
+    --s5:#9085e9; --s6:#e66767; --s7:#d55181; --s8:#d95926;
+    --sx1:#5c6673; --sx2:#79848f; --sother:#4a545f;
+    --halo: rgba(20,24,29,.85); --panelglass: rgba(26,32,39,.72);
+  }
+}
+:root[data-theme="light"] {
+  --bg: #ffffff; --fg: #1f2933; --muted: #677181; --border: #d7dde4;
+  --panel: #f6f8fa; --accent: #2a78d6;
+  --s1:#2a78d6; --s2:#1baf7a; --s3:#eda100; --s4:#008300;
+  --s5:#4a3aa7; --s6:#e34948; --s7:#e87ba4; --s8:#eb6834;
+  --sx1:#8a94a3; --sx2:#6b7686; --sother:#a5adb8;
+  --halo: rgba(255,255,255,.82); --panelglass: rgba(246,248,250,.72);
+}
+:root[data-theme="dark"] {
+  --bg: #14181d; --fg: #e6eaef; --muted: #9aa4b1; --border: #2a3038;
+  --panel: #1a2027; --accent: #3987e5;
+  --s1:#3987e5; --s2:#199e70; --s3:#c98500; --s4:#008300;
+  --s5:#9085e9; --s6:#e66767; --s7:#d55181; --s8:#d95926;
+  --sx1:#5c6673; --sx2:#79848f; --sother:#4a545f;
+  --halo: rgba(20,24,29,.85); --panelglass: rgba(26,32,39,.72);
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body {
+  margin: 0; background: var(--bg); color: var(--fg);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  display: flex; flex-direction: column; overflow: hidden;
+}
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+header {
+  display: flex; align-items: flex-start; gap: 14px; flex-wrap: wrap;
+  padding: 10px 18px 6px 18px;
+}
+.hleft { display: flex; flex-direction: column; gap: 3px; }
+header .mark { font-size: 17px; font-weight: 700; letter-spacing: .2px; }
+header .mark .dim { color: var(--muted); font-weight: 400; }
+/* The data clock gets top billing. */
+#bigclock { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; white-space: nowrap; }
+#bc-time {
+  font-size: 30px; font-weight: 700; color: var(--accent); line-height: 1.05;
+  letter-spacing: 1.5px; font-variant-numeric: tabular-nums;
+}
+#bc-sub { font-size: 11.5px; color: var(--muted); letter-spacing: .6px; margin-left: 9px; }
+header .meta { color: var(--muted); font-size: 12.5px; padding-top: 4px; }
+header .spacer { flex: 1; }
+#stage { position: relative; flex: 1; min-height: 0; }
+#sankey { position: absolute; inset: 0; width: 100%; height: 100%; display: block; cursor: default; }
+#tooltip {
+  position: fixed; pointer-events: none; z-index: 10; display: none;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 6px;
+  padding: 7px 10px; font-size: 12px; line-height: 1.5;
+  box-shadow: 0 4px 14px rgba(0,0,0,.25); max-width: 360px;
+}
+#tooltip .t1 { font-weight: 600; }
+#tooltip .t2 { color: var(--muted); }
+/* ---- ranked entity panel (filter surface; draggable, translucent) ---- */
+#rank {
+  position: absolute; top: 10px; right: 12px; z-index: 5; width: 258px;
+  background: var(--panelglass); backdrop-filter: blur(5px);
+  border: 1px solid var(--border); border-radius: 8px; overflow: hidden;
+  font-size: 11.5px;
+}
+#rank-head { display: flex; align-items: center; gap: 6px; padding: 6px 8px; cursor: grab; touch-action: none; }
+#rank-head:active { cursor: grabbing; }
+#rank-head .spacer { flex: 1; }
+#rank-rows { position: relative; margin: 0 6px 6px 6px; }
+.rrow {
+  position: absolute; left: 0; right: 0; height: 21px;
+  display: flex; align-items: center; gap: 6px; padding: 0 4px;
+  transition: transform .35s ease, opacity .3s ease; border-radius: 4px;
+}
+.rrow .sw { width: 9px; height: 9px; border-radius: 2px; flex: none; }
+.rrow .nm {
+  flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  cursor: pointer; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.rrow .rt { color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10.5px; }
+.rrow .ex { cursor: pointer; color: var(--muted); border: 0; background: none; font-size: 12px; padding: 0 2px; }
+.rrow .ex:hover { color: var(--fg); }
+.rrow.excluded { opacity: .38; }
+.rrow.excluded .nm { text-decoration: line-through; }
+.rrow.only .nm { color: var(--accent); font-weight: 700; }
+.rrow .nm:hover { text-decoration: underline; }
+#rank.collapsed #rank-rows, #rank.collapsed .seg { display: none; }
+#rank button.mini {
+  border: 0; background: none; color: var(--muted); cursor: pointer; padding: 0 4px; font-size: 12px;
+}
+#rank button.mini:hover { color: var(--fg); }
+#timeline { height: 78px; margin: 0 18px; position: relative; }
+#tl { width: 100%; height: 100%; display: block; cursor: ew-resize; }
+#controls {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 8px 18px; font-size: 12.5px; color: var(--muted);
+}
+#controls .grp { display: flex; align-items: center; gap: 6px; }
+#controls .sep { width: 1px; height: 18px; background: var(--border); }
+button, select {
+  font: inherit; color: var(--fg); background: var(--panel);
+  border: 1px solid var(--border); border-radius: 6px; padding: 4px 10px;
+  cursor: pointer;
+}
+button:hover { border-color: var(--accent); }
+button.play { min-width: 44px; font-weight: 700; }
+#speed { min-width: 84px; }
+.seg { display: inline-flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+.seg button { border: 0; border-radius: 0; background: transparent; color: var(--muted); padding: 3px 8px; }
+.seg button.on { background: var(--accent); color: #fff; }
+input[type=range] { accent-color: var(--accent); width: 110px; }
+#winlabel { display: inline-block; min-width: 52px; }  /* fixed width: no reflow jiggle */
+#stats {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(128px, 1fr));
+  gap: 8px; padding: 4px 18px 14px 18px;
+}
+.tile {
+  background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+  padding: 7px 10px; min-width: 0;
+}
+.tile .k { font-size: 10.5px; text-transform: uppercase; letter-spacing: .6px; color: var(--muted); }
+.tile .v { font-size: 14.5px; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#fps { position: fixed; right: 8px; bottom: 8px; font-size: 11px; color: var(--muted); display: none; z-index: 20; }
+#filterbadge { display: none; color: var(--accent); font-weight: 600; }
+</style>
+</head>
+<body>
+<header>
+  <div class="hleft">
+    <div class="mark">sigwood <span class="dim">·</span> graph</div>
+    <div id="bigclock"><span id="bc-time">-:-:-</span><span id="bc-sub"></span></div>
+  </div>
+  <div class="meta mono" id="srcmeta"></div>
+  <div class="spacer"></div>
+  <div class="meta" id="winnote"></div>
+</header>
+
+<div id="stage">
+  <canvas id="sankey"></canvas>
+  <div id="rank">
+    <div id="rank-head">
+      <span class="seg" id="ranktab">
+        <button data-t="h" class="on">hosts</button><button data-t="s" id="ranktab-mid">services</button>
+      </span>
+      <span class="spacer"></span>
+      <button class="mini" id="rankclear" style="display:none" title="clear filters">clear</button>
+      <button class="mini" id="rankmin" title="collapse">-</button>
+    </div>
+    <div id="rank-rows"></div>
+  </div>
+</div>
+
+<div id="timeline" title="drag: scrub · shift-drag: loop range · double-click: clear range"><canvas id="tl"></canvas></div>
+
+<div id="controls">
+  <div class="grp">
+    <button id="play" class="play" title="space">▶</button>
+    <select id="speed" title="playback speed (data time per second)"></select>
+    <label><input type="checkbox" id="loop" checked> loop</label>
+    <button id="clipbtn" title="download the current view (time range + filters) as a standalone clip">⬇ clip</button>
+  </div>
+  <div class="sep"></div>
+  <div class="grp"><span>window</span>
+    <input type="range" id="win" min="1" max="40" step="1">
+    <span class="mono" id="winlabel"></span>
+  </div>
+  <div class="sep"></div>
+  <div class="grp" id="metricgrp"><span>metric</span>
+    <span class="seg" id="metric">
+      <button data-m="b" class="on">bytes</button><button data-m="c">conns</button>
+    </span>
+  </div>
+  <div class="grp"><span>view</span>
+    <span class="seg" id="mode">
+      <button data-mode="2" class="on">hosts</button><button data-mode="3" id="modemid">+services</button>
+    </span>
+  </div>
+  <div class="grp"><span>group</span>
+    <span class="seg" id="group">
+      <button data-g="32" class="on">host</button><button data-g="24">/24</button>
+      <button data-g="16">/16</button><button data-g="8">/8</button>
+    </span>
+  </div>
+  <div class="grp"><span>y</span>
+    <span class="seg" id="yscale">
+      <button data-y="lin">lin</button><button data-y="log">log</button>
+    </span>
+  </div>
+  <div class="sep"></div>
+  <div class="grp"><button id="theme" title="theme">◐</button></div>
+  <div class="spacer" style="flex:1"></div>
+  <div class="grp"><span id="filterbadge">filtered</span></div>
+</div>
+
+<div id="stats">
+  <div class="tile" id="tile-rate"><div class="k">rate</div><div class="v mono" id="st-rate">-</div></div>
+  <div class="tile"><div class="k" id="k-cps">conns / s</div><div class="v mono" id="st-cps">-</div></div>
+  <div class="tile" id="tile-cum"><div class="k">cumulative</div><div class="v mono" id="st-cum">-</div></div>
+  <div class="tile"><div class="k" id="k-conns">connections</div><div class="v mono" id="st-conns">-</div></div>
+  <div class="tile"><div class="k">flows shown</div><div class="v mono" id="st-active">-</div></div>
+  <div class="tile"><div class="k" id="k-hosts">hosts seen</div><div class="v mono" id="st-hosts">-</div></div>
+  <div class="tile"><div class="k">top talker</div><div class="v mono" id="st-talker">-</div></div>
+  <div class="tile"><div class="k" id="k-svc">top service</div><div class="v mono" id="st-svc">-</div></div>
+</div>
+
+<div id="tooltip"></div>
+<div id="fps" class="mono"></div>
+
+<script>const DATA = __SIGWOOD_GRAPH_DATA__;</script>
+<script>
+"use strict";
+/* sigwood graph animated Sankey player.
+   Smoothness architecture:
+   1. frozen node order per view (layout never re-sorts between frames)
+   2. centered kernel smoothing of per-flow series, edge-renormalized
+   3. rAF value interpolation; geometry is a continuous function of values
+   4. continuous gap/label fades + EMA'd normalization scale + animated
+      filter masks (nothing ever pops)
+   View model layer: the raw payload rolls up client-side by CIDR group; only/
+   exclude filters apply as eased per-flow masks. A loop range (shift-drag on
+   the timeline) bounds playback, and "clip" re-embeds the sliced+filtered
+   payload into this page's own pristine source for a standalone artifact.   */
+
+/* captured BEFORE any DOM mutation - the template this page re-embeds into
+   when exporting a clip */
+const PRISTINE = "<!doctype html>\n" + document.documentElement.outerHTML;
+
+const M = DATA.meta;
+const B = M.bins, BIN = M.bin_seconds;
+const clockPart = (d, local, utc) => M.display_utc ? d[utc]() : d[local]();
+function startOfDisplayDay(d) {
+  if (M.display_utc) d.setUTCHours(0, 0, 0, 0);
+  else d.setHours(0, 0, 0, 0);
+}
+
+/* ---------- raw payload ---------- */
+function expand(pairs) {
+  const a = new Float32Array(B);
+  for (let i = 0; i < pairs.length; i += 2) a[pairs[i]] = pairs[i + 1];
+  return a;
+}
+const RAW = { SRC: DATA.srcNodes, DST: DATA.dstNodes, SVC: DATA.svcNodes, FLOWS: DATA.flows };
+const rawDenseB = RAW.FLOWS.map(f => expand(f.b));
+const rawDenseC = RAW.FLOWS.map(f => expand(f.c));
+const rawTotPerFlow = rawDenseB.map((a, i) => {
+  let s = 0; for (let k = 0; k < B; k++) s += a[k];
+  let c = 0; const cc = rawDenseC[i]; for (let k = 0; k < B; k++) c += cc[k];
+  return s + c;
+});
+const totB = Float32Array.from(DATA.totB);
+const totC = Float32Array.from(DATA.totC);
+const cumB = new Float64Array(B + 1), cumC = new Float64Array(B + 1);
+for (let i = 0; i < B; i++) { cumB[i+1] = cumB[i] + totB[i]; cumC[i+1] = cumC[i] + totC[i]; }
+
+/* ---------- active view model (rebuilt on group change) ---------- */
+let SRC, DST, SVC, FLOWS, NF, denseB, denseC;
+let srcFlowOrder, dstFlowOrder, svList, vdList, hostIndex;
+let rawToModel;               // raw flow index -> active model flow index
+let groupLevel = 32;
+
+const OTHER = "(other)";
+function rollKey(id, level) {
+  if (level === 32 || id === OTHER) return id;
+  const m = id.match(/^(\d+)\.(\d+)\.(\d+)\.(\d+)$/);
+  if (!m) return id;                       // v6 / non-IP labels stay themselves
+  if (level === 24) return `${m[1]}.${m[2]}.${m[3]}.0/24`;
+  if (level === 16) return `${m[1]}.${m[2]}.0.0/16`;
+  return `${m[1]}.0.0.0/8`;
+}
+
+function buildModel(level) {
+  groupLevel = level;
+  SVC = RAW.SVC;
+  if (level === 32) {
+    SRC = RAW.SRC; DST = RAW.DST;
+    FLOWS = RAW.FLOWS.map(f => ({ s: f.s, d: f.d, v: f.v }));
+    denseB = rawDenseB; denseC = rawDenseC;
+    rawToModel = Int32Array.from(RAW.FLOWS, (_, i) => i);
+  } else {
+    const sKey = RAW.SRC.map(n => rollKey(n.id, level));
+    const dKey = RAW.DST.map(n => rollKey(n.id, level));
+    const tot = new Map();
+    RAW.FLOWS.forEach((f, i) => {
+      tot.set(sKey[f.s], (tot.get(sKey[f.s]) || 0) + rawTotPerFlow[i]);
+      tot.set(dKey[f.d], (tot.get(dKey[f.d]) || 0) + rawTotPerFlow[i]);
+    });
+    const rank = [...tot.keys()].filter(k => k !== OTHER)
+      .sort((a, b) => tot.get(b) - tot.get(a));
+    const cr = new Map(rank.map((k, i) => [k, i]));
+    const sideTotals = (keys, pick) => {
+      const seen = new Map();
+      RAW.FLOWS.forEach((f, i) => {
+        const k = keys[pick(f)];
+        seen.set(k, (seen.get(k) || 0) + rawTotPerFlow[i]);
+      });
+      const ids = [...seen.keys()].filter(k => k !== OTHER)
+        .sort((a, b) => seen.get(b) - seen.get(a));
+      if (seen.has(OTHER)) ids.push(OTHER);
+      return ids.map(id => ({ id, cr: cr.get(id) ?? 0 }));
+    };
+    SRC = sideTotals(sKey, f => f.s);
+    DST = sideTotals(dKey, f => f.d);
+    const sIdx = new Map(SRC.map((n, i) => [n.id, i]));
+    const dIdx = new Map(DST.map((n, i) => [n.id, i]));
+    // group by NUMERIC (srcNode, dstNode, svc) key - entity ids are log bytes
+    // and can contain any delimiter (dns-mode mDNS names carry spaces), so a
+    // string-joined key is never parse-safe
+    const KD = 100000;   // > max node/svc count by construction
+    const groups = new Map();
+    RAW.FLOWS.forEach((f, i) => {
+      const k = (sIdx.get(sKey[f.s]) * KD + dIdx.get(dKey[f.d])) * KD + f.v;
+      const g = groups.get(k);
+      if (g) g.push(i); else groups.set(k, [i]);
+    });
+    FLOWS = []; denseB = []; denseC = [];
+    rawToModel = new Int32Array(RAW.FLOWS.length);
+    for (const [k, idxs] of groups) {
+      const kv = k % KD, kd = Math.floor(k / KD) % KD, ks = Math.floor(k / (KD * KD));
+      const db = new Float32Array(B), dc = new Float32Array(B);
+      for (const i of idxs) {
+        const a = rawDenseB[i], c = rawDenseC[i];
+        for (let x = 0; x < B; x++) { db[x] += a[x]; dc[x] += c[x]; }
+        rawToModel[i] = FLOWS.length;
+      }
+      FLOWS.push({ s: ks, d: kd, v: kv });
+      denseB.push(db); denseC.push(dc);
+    }
+  }
+  NF = FLOWS.length;
+  srcFlowOrder = SRC.map((_, si) =>
+    FLOWS.map((f, i) => i).filter(i => FLOWS[i].s === si)
+         .sort((a, b) => (FLOWS[a].d - FLOWS[b].d) || (FLOWS[a].v - FLOWS[b].v)));
+  dstFlowOrder = DST.map((_, di) =>
+    FLOWS.map((f, i) => i).filter(i => FLOWS[i].d === di)
+         .sort((a, b) => (FLOWS[a].s - FLOWS[b].s) || (FLOWS[a].v - FLOWS[b].v)));
+  const svM = new Map(), vdM = new Map();
+  FLOWS.forEach((f, i) => {
+    const k1 = f.s * 100000 + f.v, k2 = f.v * 100000 + f.d;
+    (svM.get(k1) || svM.set(k1, []).get(k1)).push(i);
+    (vdM.get(k2) || vdM.set(k2, []).get(k2)).push(i);
+  });
+  svList = [...svM.entries()].map(([k, idxs]) => ({ s: Math.floor(k/100000), v: k%100000, idxs }))
+    .sort((a, b) => (a.s - b.s) || (a.v - b.v));
+  vdList = [...vdM.entries()].map(([k, idxs]) => ({ v: Math.floor(k/100000), d: k%100000, idxs }))
+    .sort((a, b) => (a.v - b.v) || (a.d - b.d));
+  hostIndex = new Map();
+  SRC.forEach((n, i) => hostIndex.set(n.id, { si: i, di: -1 }));
+  DST.forEach((n, i) => {
+    const e = hostIndex.get(n.id);
+    if (e) e.di = i; else hostIndex.set(n.id, { si: -1, di: i });
+  });
+  onHosts.clear(); exHosts.clear(); onSvc.clear(); exSvc.clear();
+  maskT = new Float32Array(NF).fill(1);
+  maskC = new Float32Array(NF).fill(1);
+  gradCache.clear();
+}
+
+/* ---------- smoothing (Epanechnikov, centered, edge-renormalized) ------- */
+let radius = Math.max(2, Math.round(B / 160));
+let smB, smC, smTotB, smTotC, peakRate = { b: 1, c: 1 }, floorRate = { b: 0, c: 0 };
+function smooth(src, R) {
+  const w = new Float32Array(2 * R + 1);
+  let sum = 0;
+  for (let k = -R; k <= R; k++) { const u = k / (R + 1); w[k+R] = 1 - u*u; sum += w[k+R]; }
+  for (let k = 0; k < w.length; k++) w[k] /= sum;
+  const out = new Float32Array(B);
+  for (let i = 0; i < B; i++) {
+    let v = 0, wsum = 0;
+    const k0 = Math.max(-R, -i), k1 = Math.min(R, B - 1 - i);
+    for (let k = k0; k <= k1; k++) { v += w[k+R] * src[i+k]; wsum += w[k+R]; }
+    out[i] = wsum > 0 ? v / wsum : 0;   // edge-renormalized: no phantom ramps
+  }
+  return out;
+}
+function resmooth() {
+  smB = denseB.map(a => smooth(a, radius));
+  smC = denseC.map(a => smooth(a, radius));
+  smTotB = smooth(totB, radius);
+  smTotC = smooth(totC, radius);
+  peakRate.b = Math.max(1, ...smTotB);
+  peakRate.c = Math.max(1e-6, ...smTotC);
+  recomputeFloor();
+  tlPath = null;
+}
+/* normalization floor + FILTERED aggregate surfaces. One masked pass builds:
+   the floor (a low percentile of typical windows), the filtered smoothed
+   totals (timeline shape), and the filtered raw cumulative sums (odometer
+   tiles) - so every aggregate surface agrees with the filtered picture
+   instead of silently mixing bases */
+let fSm = { b: null, c: null }, fPeak = { b: 1, c: 1 };
+let fTot = { b: null, c: null }, fCum = { b: null, c: null };
+function recomputeFloor() {
+  const per = { b: new Float32Array(B), c: new Float32Array(B) };
+  const raw = { b: new Float64Array(B), c: new Float64Array(B) };
+  for (let i = 0; i < NF; i++) {
+    if (maskT[i] === 0) continue;
+    const a = smB[i], c = smC[i], db = denseB[i], dc = denseC[i];
+    for (let x = 0; x < B; x++) {
+      per.b[x] += a[x]; per.c[x] += c[x];
+      raw.b[x] += db[x]; raw.c[x] += dc[x];
+    }
+  }
+  for (const m of ["b", "c"]) {
+    const nz = [...per[m]].filter(v => v > 0).sort((x, y) => x - y);
+    const p25 = nz.length ? nz[Math.floor(nz.length * 0.25)] : 1;
+    floorRate[m] = Math.max(p25, peakRate[m] * 1e-3);
+    fSm[m] = per[m];
+    fPeak[m] = Math.max(m === "b" ? 1 : 1e-6, ...per[m]);
+    fTot[m] = raw[m];
+    const cum = new Float64Array(B + 1);
+    for (let i = 0; i < B; i++) cum[i+1] = cum[i] + raw[m][i];
+    fCum[m] = cum;
+  }
+  tlPath = null;
+}
+
+/* ---------- filters ---------- */
+const onHosts = new Set(), exHosts = new Set(), onSvc = new Set(), exSvc = new Set();
+let maskT = new Float32Array(0), maskC = new Float32Array(0);
+let floorTimer = null;
+function rebuildMask() {
+  for (let i = 0; i < NF; i++) {
+    const f = FLOWS[i];
+    const sid = SRC[f.s].id, did = DST[f.d].id, vid = SVC[f.v];
+    const ok =
+      (!onHosts.size || onHosts.has(sid) || onHosts.has(did)) &&
+      !exHosts.has(sid) && !exHosts.has(did) &&
+      (!onSvc.size || onSvc.has(vid)) && !exSvc.has(vid);
+    maskT[i] = ok ? 1 : 0;
+  }
+  const any = onHosts.size || exHosts.size || onSvc.size || exSvc.size;
+  $("filterbadge").style.display = any ? "inline" : "none";
+  $("rankclear").style.display = any ? "inline" : "none";
+  clearTimeout(floorTimer);
+  floorTimer = setTimeout(recomputeFloor, 200);
+}
+function advanceMask(dt) {
+  const k = Math.min(1, dt * 7);
+  for (let i = 0; i < NF; i++) maskC[i] += (maskT[i] - maskC[i]) * k;
+}
+
+/* ---------- state ---------- */
+const prefersReduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
+let t = 0;                       // playhead in fractional bins, domain [0, B]
+let playing = !prefersReduced;
+let speedRate = 0;               // data-seconds per wall-second
+let loop = true;
+let metric = "b";
+let mode = 2;
+let yLog = false;
+let hover = null;
+let scaleEMA = null, snapScale = true;
+let rangeSet = false, loopA = 0, loopB = 0;   // loop range in bins
+
+/* ---------- theme ---------- */
+const css = () => getComputedStyle(document.documentElement);
+let TH = {};
+function readTheme() {
+  const c = css();
+  const v = n => c.getPropertyValue(n).trim();
+  TH = {
+    bg: v("--bg"), fg: v("--fg"), muted: v("--muted"), border: v("--border"),
+    halo: v("--halo"), accent: v("--accent"), other: v("--sother"),
+    series: [1,2,3,4,5,6,7,8].map(i => v("--s" + i)),
+    extra: [v("--sx1"), v("--sx2")],
+  };
+  gradCache.clear(); tlPath = null;
+}
+function entColor(node) {
+  if (node.id === OTHER) return TH.other;
+  return node.cr < 8 ? TH.series[node.cr] : TH.extra[node.cr % 2];
+}
+function svcColor(i, id) {
+  if (id === OTHER) return TH.other;
+  return i < 8 ? TH.series[(i + 4) % 8] : TH.extra[i % 2];
+}
+
+/* ---------- canvas plumbing ---------- */
+const stage = document.getElementById("stage");
+const cv = document.getElementById("sankey"), ctx = cv.getContext("2d");
+const tlc = document.getElementById("tl"), tctx = tlc.getContext("2d");
+let W = 0, H = 0, dpr = 1, tlW = 0, tlH = 0;
+function resize() {
+  dpr = window.devicePixelRatio || 1;
+  W = stage.clientWidth; H = stage.clientHeight;
+  cv.width = W * dpr; cv.height = H * dpr;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const tp = document.getElementById("timeline");
+  tlW = tp.clientWidth; tlH = tp.clientHeight;
+  tlc.width = tlW * dpr; tlc.height = tlH * dpr;
+  tctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  gradCache.clear(); tlPath = null;
+  if (smB) { draw(); drawTimeline(); }   // no blank frame on live resize
+}
+new ResizeObserver(resize).observe(stage);
+
+/* ---------- interpolation ---------- */
+function valAt(arr, tt) {
+  const i = Math.min(Math.max(tt, 0), B - 1), i0 = Math.floor(i), fr = i - i0;
+  return i0 + 1 < B ? arr[i0] * (1 - fr) + arr[i0 + 1] * fr : arr[i0];
+}
+
+/* ---------- per-frame layout ---------- */
+const NW = 10, PAD_X = 26, PAD_Y = 18, GAP = 7;
+function layout(tt) {
+  const series = metric === "b" ? smB : smC;
+  const fv = new Float32Array(NF);
+  for (let i = 0; i < NF; i++) fv[i] = valAt(series[i], tt) * maskC[i];
+
+  const sVal = new Float32Array(SRC.length), dVal = new Float32Array(DST.length),
+        vVal = new Float32Array(SVC.length);
+  for (let i = 0; i < NF; i++) {
+    sVal[FLOWS[i].s] += fv[i]; dVal[FLOWS[i].d] += fv[i]; vVal[FLOWS[i].v] += fv[i];
+  }
+  const total = sVal.reduce((a, x) => a + x, 0);
+
+  const usable = H - 2 * PAD_Y - GAP * Math.max(SRC.length, DST.length, mode === 3 ? SVC.length : 0);
+  const target = Math.max(total, floorRate[metric]);
+  const sTarget = Math.max(usable, 50) / target;
+  if (snapScale || scaleEMA === null) { scaleEMA = sTarget; snapScale = false; }
+  else scaleEMA += (sTarget - scaleEMA) * 0.10;
+  const S = scaleEMA;
+
+  function column(vals) {
+    const h = [], gapAfter = [];
+    let used = 0;
+    for (let i = 0; i < vals.length; i++) {
+      const px = vals[i] * S;
+      h.push(px);
+      const g = GAP * Math.min(1, px / 8);
+      gapAfter.push(g);
+      used += px + g;
+    }
+    let y = Math.max(PAD_Y, (H - used) / 2);
+    const ys = [];
+    for (let i = 0; i < vals.length; i++) { ys.push(y); y += h[i] + gapAfter[i]; }
+    return { ys, h };
+  }
+  const L = column(sVal), R = column(dVal);
+  const Mid = mode === 3 ? column(vVal) : null;
+
+  const offS = new Float32Array(NF), offD = new Float32Array(NF);
+  SRC.forEach((_, si) => {
+    let acc = 0;
+    for (const i of srcFlowOrder[si]) { offS[i] = acc; acc += fv[i] * S; }
+  });
+  DST.forEach((_, di) => {
+    let acc = 0;
+    for (const i of dstFlowOrder[di]) { offD[i] = acc; acc += fv[i] * S; }
+  });
+
+  let links = null;
+  if (mode === 3) {
+    const lv = svList.map(l => l.idxs.reduce((a, i) => a + fv[i], 0));
+    const rv = vdList.map(l => l.idxs.reduce((a, i) => a + fv[i], 0));
+    const accS = new Float32Array(SRC.length), accVin = new Float32Array(SVC.length),
+          accVout = new Float32Array(SVC.length), accD = new Float32Array(DST.length);
+    const offLs = new Float32Array(svList.length), offLv = new Float32Array(svList.length);
+    svList.forEach((l, k) => { offLs[k] = accS[l.s]; accS[l.s] += lv[k] * S;
+                               offLv[k] = accVin[l.v]; accVin[l.v] += lv[k] * S; });
+    const offRv = new Float32Array(vdList.length), offRd = new Float32Array(vdList.length);
+    vdList.forEach((l, k) => { offRv[k] = accVout[l.v]; accVout[l.v] += rv[k] * S;
+                               offRd[k] = accD[l.d]; accD[l.d] += rv[k] * S; });
+    links = { lv, rv, offLs, offLv, offRv, offRd };
+  }
+  return { fv, sVal, dVal, vVal, S, L, R, Mid, offS, offD, links, total };
+}
+
+/* ---------- drawing ---------- */
+const gradCache = new Map();
+function grad(x0, x1, c0, c1, key) {
+  let g = gradCache.get(key);
+  if (!g) {
+    g = ctx.createLinearGradient(x0, 0, x1, 0);
+    g.addColorStop(0, c0); g.addColorStop(1, c1);
+    gradCache.set(key, g);
+  }
+  return g;
+}
+function ribbon(x0, y0, x1, y1, h) {
+  const cx = (x0 + x1) / 2;
+  ctx.beginPath();
+  ctx.moveTo(x0, y0);
+  ctx.bezierCurveTo(cx, y0, cx, y1, x1, y1);
+  ctx.lineTo(x1, y1 + h);
+  ctx.bezierCurveTo(cx, y1 + h, cx, y0 + h, x0, y0 + h);
+  ctx.closePath();
+}
+function label(txt, x, y, align, size, color) {
+  ctx.font = `${size}px ui-monospace, SFMono-Regular, Menlo, monospace`;
+  ctx.textAlign = align; ctx.textBaseline = "middle";
+  ctx.lineWidth = 3; ctx.strokeStyle = TH.halo;
+  ctx.strokeText(txt, x, y);
+  ctx.fillStyle = color; ctx.fillText(txt, x, y);
+}
+let geom = null;
+function draw() {
+  const g = layout(t);
+  geom = g;
+  ctx.clearRect(0, 0, W, H);
+  const xL = PAD_X, xR = W - PAD_X - NW, xM = (xL + xR + NW) / 2 - NW / 2;
+  const MIN_DRAW = 0.4;
+
+  const hovSet = hover && hover.flows ? hover.flows : null;
+  const baseA = hovSet ? 0.10 : 0.66;
+
+  function drawRibbons(x0, x1, list) {
+    for (const r of list) {
+      if (r.h < MIN_DRAW) continue;
+      ctx.globalAlpha = hovSet ? (r.hot ? 0.85 : baseA) : baseA;
+      ctx.fillStyle = grad(x0, x1, r.c0, r.c1, r.key);
+      ribbon(x0, r.y0, x1, r.y1, r.h);
+      ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  if (mode === 2) {
+    const list = [];
+    for (let i = 0; i < NF; i++) {
+      const h = g.fv[i] * g.S;
+      if (h < MIN_DRAW) continue;
+      const f = FLOWS[i];
+      list.push({
+        h, y0: g.L.ys[f.s] + g.offS[i], y1: g.R.ys[f.d] + g.offD[i],
+        c0: entColor(SRC[f.s]), c1: entColor(DST[f.d]),
+        key: "2|" + i, hot: hovSet && hovSet.has(i),
+      });
+    }
+    drawRibbons(xL + NW, xR, list);
+  } else {
+    const lk = g.links;
+    const left = svList.map((l, k) => ({
+      h: lk.lv[k] * g.S, y0: g.L.ys[l.s] + lk.offLs[k], y1: g.Mid.ys[l.v] + lk.offLv[k],
+      c0: entColor(SRC[l.s]), c1: svcColor(l.v, SVC[l.v]),
+      key: "3L|" + k, hot: hovSet && l.idxs.some(i => hovSet.has(i)),
+    })).filter(r => r.h >= MIN_DRAW);
+    const right = vdList.map((l, k) => ({
+      h: lk.rv[k] * g.S, y0: g.Mid.ys[l.v] + lk.offRv[k], y1: g.R.ys[l.d] + lk.offRd[k],
+      c0: svcColor(l.v, SVC[l.v]), c1: entColor(DST[l.d]),
+      key: "3R|" + k, hot: hovSet && l.idxs.some(i => hovSet.has(i)),
+    })).filter(r => r.h >= MIN_DRAW);
+    drawRibbons(xL + NW, xM, left);
+    drawRibbons(xM + NW, xR, right);
+  }
+
+  function bars(nodes, colVals, col, x, side) {
+    let lastLabelY = -1e9, lastLabelA = 0;
+    for (let i = 0; i < nodes.length; i++) {
+      const h = colVals[i] * g.S;
+      if (h < 0.5) continue;
+      const id = typeof nodes[i] === "string" ? nodes[i] : nodes[i].id;
+      ctx.fillStyle = side === "M" ? svcColor(i, id) : entColor(nodes[i]);
+      const y = col.ys[i];
+      const r = Math.min(3, h / 2);
+      ctx.beginPath(); ctx.roundRect(x, y, NW, h, r); ctx.fill();
+      const ly = y + h / 2;
+      const aH = Math.min(1, (h - 3) / 10);
+      const rawGap = Math.min(1, Math.max(0, (ly - lastLabelY - 11) / 6));
+      const a = aH * (1 - (1 - rawGap) * lastLabelA);
+      if (a > 0.05) {
+        ctx.globalAlpha = a;
+        if (side === "L") label(id, x + NW + 8, ly, "left", 12, TH.fg);
+        else if (side === "R") label(id, x - 8, ly, "right", 12, TH.fg);
+        else label(id, x + NW / 2, ly, "center", 11, TH.fg);
+        ctx.globalAlpha = 1;
+        lastLabelY = ly; lastLabelA = a;
+      }
+    }
+  }
+  bars(SRC, g.sVal, g.L, xL, "L");
+  bars(DST, g.dVal, g.R, xR, "R");
+  if (mode === 3) bars(SVC, g.vVal, g.Mid, xM, "M");
+}
+
+/* ---------- timeline (scrubber = strip chart + loop range) ---------- */
+let tlPath = null;
+const yOf = (v, peak) => {
+  const f = yLog ? Math.log1p(v) / Math.log1p(peak) : v / peak;
+  return tlH - 14 - f * (tlH - 24);
+};
+function tickStep(spanSec) {
+  const steps = [300, 900, 1800, 3600, 10800, 21600, 43200, 86400, 172800, 604800];
+  for (const s of steps) if (spanSec / s <= 10) return s;
+  return 1209600;
+}
+function drawTimeline() {
+  const tot = fSm[metric] || (metric === "b" ? smTotB : smTotC);
+  const peak = fSm[metric] ? fPeak[metric] : peakRate[metric];
+  tctx.clearRect(0, 0, tlW, tlH);
+  if (!tlPath) {
+    tlPath = new Path2D();
+    tlPath.moveTo(0, tlH - 14);
+    for (let i = 0; i < B; i++) tlPath.lineTo(((i + 0.5) / B) * tlW, yOf(tot[i], peak));
+    tlPath.lineTo(tlW, tlH - 14); tlPath.closePath();
+  }
+  tctx.globalAlpha = 0.35; tctx.fillStyle = TH.accent; tctx.fill(tlPath);
+  tctx.globalAlpha = 1;
+
+  const spanSec = B * BIN, step = tickStep(spanSec);
+  tctx.font = "9px ui-monospace, SFMono-Regular, Menlo, monospace";
+  tctx.textBaseline = "top"; tctx.textAlign = "left";
+  let tick;
+  if (step >= 86400) {
+    const d0 = new Date(M.t0 * 1000); startOfDisplayDay(d0);
+    tick = d0.getTime() / 1000;
+    while (tick < M.t0) tick += step;
+  } else {
+    tick = Math.ceil(M.t0 / step) * step;
+  }
+  for (; tick <= M.t0 + spanSec; tick += step) {
+    const x = ((tick - M.t0) / spanSec) * tlW;
+    tctx.strokeStyle = TH.border; tctx.globalAlpha = 0.7;
+    tctx.beginPath(); tctx.moveTo(x, 0); tctx.lineTo(x, tlH - 13); tctx.stroke();
+    tctx.globalAlpha = 1;
+    const d = new Date(tick * 1000);
+    const lbl = step >= 86400
+      ? `${two(clockPart(d, "getMonth", "getUTCMonth") + 1)}-${two(clockPart(d, "getDate", "getUTCDate"))}`
+      : `${two(clockPart(d, "getHours", "getUTCHours"))}:${two(clockPart(d, "getMinutes", "getUTCMinutes"))}`;
+    tctx.fillStyle = TH.muted; tctx.fillText(lbl, x + 3, tlH - 11);
+  }
+  const yVals = [];
+  if (yLog) {
+    for (let d = Math.pow(10, Math.floor(Math.log10(peak))); d >= peak / 1000 && yVals.length < 3; d /= 10)
+      if (d < peak) yVals.push(d);
+  } else { yVals.push(peak / 2, peak); }
+  tctx.textAlign = "left"; tctx.textBaseline = "bottom";
+  for (const v of yVals) {
+    const y = yOf(v, peak);
+    tctx.strokeStyle = TH.border; tctx.globalAlpha = 0.6;
+    tctx.beginPath(); tctx.moveTo(0, y); tctx.lineTo(tlW, y); tctx.stroke();
+    tctx.globalAlpha = 1;
+    tctx.fillStyle = TH.muted;
+    tctx.fillText(metric === "b" ? fmtB(v / BIN) + "/s" : fmtN(v / BIN) + "/s", 3, y - 1);
+  }
+  // loop range (committed OR mid-gesture provisional): dim outside, bracket
+  const showRange = rangeAnchor !== null ? [pendA, pendB] : rangeSet ? [loopA, loopB] : null;
+  if (showRange) {
+    const xa = (showRange[0] / B) * tlW, xb = (showRange[1] / B) * tlW;
+    tctx.globalAlpha = 0.5; tctx.fillStyle = TH.bg;
+    tctx.fillRect(0, 0, xa, tlH); tctx.fillRect(xb, 0, tlW - xb, tlH);
+    tctx.globalAlpha = 1;
+    tctx.strokeStyle = TH.accent; tctx.lineWidth = 1.5;
+    for (const x of [xa, xb]) {
+      tctx.beginPath(); tctx.moveTo(x, 0); tctx.lineTo(x, tlH); tctx.stroke();
+    }
+    tctx.lineWidth = 1;
+  }
+  tctx.strokeStyle = TH.border; tctx.strokeRect(0.5, 0.5, tlW - 1, tlH - 1);
+  const px = (t / B) * tlW;
+  tctx.strokeStyle = TH.fg; tctx.lineWidth = 1.5;
+  tctx.beginPath(); tctx.moveTo(px, 0); tctx.lineTo(px, tlH); tctx.stroke();
+  tctx.lineWidth = 1;
+}
+
+/* ---------- formats ---------- */
+const fmtB = n => n < 1024 ? `${Math.round(n)} B` : n < 1048576 ? `${(n/1024).toFixed(1)} KB`
+  : n < 1073741824 ? `${(n/1048576).toFixed(1)} MB` : `${(n/1073741824).toFixed(2)} GB`;
+const fmtN = n => Math.round(n).toLocaleString("en-US");
+const two = n => String(n).padStart(2, "0");
+const TZ_LABEL = (() => {
+  if (M.display_utc) return "UTC";
+  try {
+    const p = new Intl.DateTimeFormat(undefined, { timeZoneName: "short" })
+      .formatToParts(new Date());
+    return (p.find(x => x.type === "timeZoneName") || {}).value || "local";
+  } catch { return "local"; }
+})();
+function fmtDur(sec) {
+  if (sec < 60) return `${sec}s`;
+  if (sec < 3600) return `${Math.round(sec/60)}m`;
+  if (sec < 86400) return `${+(sec/3600).toFixed(sec % 3600 ? 1 : 0)}h`;
+  return `${+(sec/86400).toFixed(sec % 86400 ? 1 : 0)}d`;
+}
+const $ = id => document.getElementById(id);
+
+/* ---------- stats and data clock ---------- */
+let lastStats = 0;
+function stats(now) {
+  if (now - lastStats < 100 || !geom) return;
+  lastStats = now;
+  const d = new Date(Math.min(M.t0 + t * BIN, M.t1) * 1000);
+  $("bc-time").textContent = `${two(clockPart(d, "getHours", "getUTCHours"))}:${two(clockPart(d, "getMinutes", "getUTCMinutes"))}:${two(clockPart(d, "getSeconds", "getUTCSeconds"))}`;
+  $("bc-sub").textContent =
+    `${clockPart(d, "getFullYear", "getUTCFullYear")}-${two(clockPart(d, "getMonth", "getUTCMonth")+1)}-${two(clockPart(d, "getDate", "getUTCDate"))} · ${TZ_LABEL}`;
+  let rB = 0, rC = 0;
+  for (let i = 0; i < NF; i++) {
+    rB += valAt(smB[i], t) * maskC[i];
+    rC += valAt(smC[i], t) * maskC[i];
+  }
+  $("st-rate").textContent = fmtB(rB / BIN) + "/s";
+  const cps = rC / BIN;
+  $("st-cps").textContent = cps >= 10 ? fmtN(cps) : cps.toFixed(1);
+  // odometer tiles read the FILTERED cumulative sums (equal to the raw sums
+  // when no filter is active), so every aggregate surface shares one basis
+  const i0 = Math.min(Math.floor(t), B - 1), fr = t - i0;
+  const cB = fCum.b || cumB, cC = fCum.c || cumC;
+  const tB = fTot.b || totB, tC = fTot.c || totC;
+  $("st-cum").textContent = fmtB(cB[i0] + fr * tB[i0]);
+  $("st-conns").textContent = fmtN(cC[i0] + fr * tC[i0]);
+  let act = 0;
+  for (let i = 0; i < NF; i++) if (geom.fv[i] * geom.S >= 0.4) act++;
+  $("st-active").textContent = fmtN(act);
+  // hosts-seen stays a whole-capture census (pre-fold fact) - say so when a
+  // filter makes the rest of the row filtered
+  const anyFilter = onHosts.size || exHosts.size || onSvc.size || exSvc.size;
+  $("st-hosts").textContent =
+    (DATA.hostsSeen ? fmtN(DATA.hostsSeen[i0]) : "-") + (anyFilter ? " (all)" : "");
+  const eps = peakRate[metric] * 1e-4;
+  let bi = -1, bv = 0;
+  geom.sVal.forEach((v, i) => { if (v > bv) { bv = v; bi = i; } });
+  $("st-talker").textContent = bi >= 0 && bv > eps
+    ? `${SRC[bi].id} · ${Math.round(100 * bv / Math.max(geom.total, 1e-9))}%` : "-";
+  let si = -1, sv = 0;
+  geom.vVal.forEach((v, i) => { if (v > sv) { sv = v; si = i; } });
+  $("st-svc").textContent = si >= 0 && sv > eps
+    ? `${SVC[si]} · ${Math.round(100 * sv / Math.max(geom.total, 1e-9))}%` : "-";
+}
+
+/* ---------- ranked entity panel (animated, click-to-filter, draggable) -- */
+const ROWH = 21, RANK_N = 12;
+let rankTab = "h", lastRank = 0;
+const rankRows = new Map();
+function rankData() {
+  if (!geom) return [];
+  const ent = new Map();
+  if (rankTab === "h") {
+    for (const [id, e] of hostIndex) {
+      if (id === OTHER) continue;
+      const v = (e.si >= 0 ? geom.sVal[e.si] : 0) + (e.di >= 0 ? geom.dVal[e.di] : 0);
+      ent.set(id, { v, color: entColor(e.si >= 0 ? SRC[e.si] : DST[e.di]) });
+    }
+  } else {
+    SVC.forEach((id, i) => {
+      if (id === OTHER) return;
+      ent.set(id, { v: geom.vVal[i], color: svcColor(i, id) });
+    });
+  }
+  const onSet = rankTab === "h" ? onHosts : onSvc, exSet = rankTab === "h" ? exHosts : exSvc;
+  const list = [...ent.entries()].sort((a, b) => b[1].v - a[1].v).slice(0, RANK_N);
+  for (const id of [...onSet, ...exSet])
+    if (ent.has(id) && !list.some(e => e[0] === id)) list.push([id, ent.get(id)]);
+  return list;
+}
+function updateRank(now) {
+  if (now - lastRank < 250) return;
+  lastRank = now;
+  const list = rankData();
+  const holder = $("rank-rows");
+  holder.style.height = list.length * ROWH + "px";
+  const onSet = rankTab === "h" ? onHosts : onSvc, exSet = rankTab === "h" ? exHosts : exSvc;
+  const seen = new Set();
+  list.forEach(([id, e], idx) => {
+    seen.add(id);
+    let row = rankRows.get(id);
+    if (!row) {
+      row = document.createElement("div");
+      row.className = "rrow";
+      const sw = document.createElement("span"); sw.className = "sw";
+      const nm = document.createElement("span"); nm.className = "nm"; nm.textContent = id;
+      nm.title = "click: only this";
+      const rt = document.createElement("span"); rt.className = "rt";
+      const ex = document.createElement("button"); ex.className = "ex"; ex.textContent = "✕";
+      ex.title = "exclude";
+      nm.addEventListener("click", () => { toggleSet(onSet, id); rebuildMask(); lastRank = 0; });
+      ex.addEventListener("click", () => { toggleSet(exSet, id); rebuildMask(); lastRank = 0; });
+      row.append(sw, nm, rt, ex);
+      row.style.transform = `translateY(${idx * ROWH}px)`;
+      holder.appendChild(row);
+      rankRows.set(id, row);
+    }
+    row.querySelector(".sw").style.background = e.color;
+    row.querySelector(".rt").textContent =
+      metric === "b" ? fmtB(e.v / BIN) + "/s" : (e.v / BIN).toFixed(1) + "/s";
+    row.style.transform = `translateY(${idx * ROWH}px)`;
+    row.classList.toggle("excluded", exSet.has(id));
+    row.classList.toggle("only", onSet.has(id));
+  });
+  for (const [id, row] of rankRows)
+    if (!seen.has(id)) { row.remove(); rankRows.delete(id); }
+}
+function toggleSet(set, id) { set.has(id) ? set.delete(id) : set.add(id); }
+function clearRank() { rankRows.forEach(r => r.remove()); rankRows.clear(); }
+$("rankclear").addEventListener("click", () => {
+  onHosts.clear(); exHosts.clear(); onSvc.clear(); exSvc.clear();
+  rebuildMask(); lastRank = 0;
+});
+$("rankmin").addEventListener("click", () => {
+  const el = $("rank");
+  el.classList.toggle("collapsed");
+  $("rankmin").textContent = el.classList.contains("collapsed") ? "+" : "-";
+});
+/* drag the panel by its header */
+(() => {
+  const el = $("rank"), head = $("rank-head");
+  let dragging = false, sx = 0, sy = 0, ox = 0, oy = 0;
+  head.addEventListener("pointerdown", ev => {
+    if (ev.target.closest("button")) return;
+    dragging = true; head.setPointerCapture(ev.pointerId);
+    const r = el.getBoundingClientRect(), sr = stage.getBoundingClientRect();
+    ox = r.left - sr.left; oy = r.top - sr.top;
+    el.style.left = ox + "px"; el.style.top = oy + "px"; el.style.right = "auto";
+    sx = ev.clientX; sy = ev.clientY;
+  });
+  head.addEventListener("pointermove", ev => {
+    if (!dragging) return;
+    if (ev.buttons === 0) { dragging = false; return; }
+    // clamp on all four sides so the grab header can never leave the stage
+    const maxL = stage.clientWidth - 60, maxT = stage.clientHeight - 28;
+    el.style.left = Math.min(Math.max(4, ox + ev.clientX - sx), maxL) + "px";
+    el.style.top = Math.min(Math.max(4, oy + ev.clientY - sy), maxT) + "px";
+  });
+  head.addEventListener("pointerup", () => { dragging = false; });
+  head.addEventListener("pointercancel", () => { dragging = false; });
+})();
+
+/* ---------- clip export: re-embed a sliced+filtered payload into this
+              page's own pristine source ---------- */
+function downloadClip() {
+  const a = rangeSet ? Math.floor(loopA) : 0;
+  const b = rangeSet ? Math.min(B, Math.max(a + 1, Math.ceil(loopB))) : B;
+  const nb = b - a;
+  const flows = [];
+  const usedS = new Set(), usedD = new Set(), usedV = new Set();
+  const ntotB = new Float64Array(nb), ntotC = new Float64Array(nb);
+  RAW.FLOWS.forEach((f, i) => {
+    if (maskT[rawToModel[i]] < 0.5) return;   // bake current filters
+    const db = rawDenseB[i], dc = rawDenseC[i];
+    const pb = [], pc = [];
+    for (let x = a; x < b; x++) {
+      if (db[x]) { pb.push(x - a, Math.round(db[x])); ntotB[x-a] += db[x]; }
+      if (dc[x]) { pc.push(x - a, Math.round(dc[x])); ntotC[x-a] += dc[x]; }
+    }
+    if (!pb.length && !pc.length) return;
+    flows.push({ s: f.s, d: f.d, v: f.v, b: pb, c: pc });
+    usedS.add(f.s); usedD.add(f.d); usedV.add(f.v);
+  });
+  if (!flows.length) {
+    const btn = $("clipbtn");
+    btn.textContent = "empty range";
+    setTimeout(() => { btn.textContent = "⬇ clip"; }, 1400);   // restore to the constant label
+    return;
+  }
+  const remap = used => {
+    const keep = [...used].sort((x, y) => x - y);
+    return [keep, new Map(keep.map((o, n) => [o, n]))];
+  };
+  // hosts remap (they carry a baked color rank, so pruning is color-safe);
+  // services keep the FULL list - svcColor is index-keyed, and compacting
+  // the list would repaint every surviving service in the clip
+  const [sKeep, sMap] = remap(usedS), [dKeep, dMap] = remap(usedD);
+  flows.forEach(f => { f.s = sMap.get(f.s); f.d = dMap.get(f.d); });
+  let rows = 0; for (const v of ntotC) rows += v;
+  const payload = {
+    meta: { ...M,
+      source: (M.source || "").replace(/ · clip$/, "") + " · clip",
+      rows: Math.round(rows), clip: true,
+      t0: M.t0 + a * BIN, t1: Math.min(M.t1, M.t0 + b * BIN), bins: nb,
+      distinct_hosts: null,
+      generated_utc: new Date().toISOString().slice(0, 16).replace("T", " ") + " UTC",
+    },
+    srcNodes: sKeep.map(o => RAW.SRC[o]),
+    dstNodes: dKeep.map(o => RAW.DST[o]),
+    svcNodes: RAW.SVC,
+    flows,
+    totB: [...ntotB].map(Math.round), totC: [...ntotC].map(Math.round),
+    hostsSeen: null,   // pre-fold host census can't be re-derived client-side
+  };
+  const blob = JSON.stringify(payload).replace(/</g, "\\u003c");
+  const marker = "const DATA" + " = ";
+  const idx = PRISTINE.indexOf(marker);           // data script precedes this one
+  const end = PRISTINE.indexOf(";</scr" + "ipt>", idx);
+  const html = PRISTINE.slice(0, idx + marker.length) + blob + PRISTINE.slice(end);
+  const d = new Date(payload.meta.t0 * 1000);
+  const name = `sigwood-graph_clip_${clockPart(d, "getFullYear", "getUTCFullYear")}${two(clockPart(d, "getMonth", "getUTCMonth")+1)}${two(clockPart(d, "getDate", "getUTCDate"))}` +
+               `-${two(clockPart(d, "getHours", "getUTCHours"))}${two(clockPart(d, "getMinutes", "getUTCMinutes"))}.html`;
+  const url = URL.createObjectURL(new Blob([html], { type: "text/html" }));
+  const link = document.createElement("a");
+  link.href = url; link.download = name; link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 5000);
+}
+$("clipbtn").addEventListener("click", downloadClip);
+
+/* ---------- hit testing (analytic - no picking buffer) ---------- */
+function bezY(y0, y1, u) {
+  const v = 1 - u;
+  return y0 * (v*v*v + 3*v*v*u) + y1 * (3*v*u*u + u*u*u);
+}
+function solveU(x0, x1, px) {
+  const cx = (x0 + x1) / 2;
+  let lo = 0, hi = 1;
+  for (let k = 0; k < 18; k++) {
+    const u = (lo + hi) / 2, v = 1 - u;
+    const x = x0*v*v*v + 3*cx*v*v*u + 3*cx*v*u*u + x1*u*u*u;
+    if (x < px) lo = u; else hi = u;
+  }
+  return (lo + hi) / 2;
+}
+function hitTest(px, py) {
+  if (!geom) return null;
+  const g = geom;
+  const xL = PAD_X, xR = W - PAD_X - NW, xM = (xL + xR + NW) / 2 - NW / 2;
+  function nodeHit(nodes, vals, col, x, kind) {
+    if (px < x - 2 || px > x + NW + 2) return null;
+    for (let i = 0; i < nodes.length; i++) {
+      const h = vals[i] * g.S;
+      if (h >= 0.5 && py >= col.ys[i] && py <= col.ys[i] + h) return { kind, i };
+    }
+    return null;
+  }
+  let n = nodeHit(SRC, g.sVal, g.L, xL, "src") || nodeHit(DST, g.dVal, g.R, xR, "dst")
+       || (mode === 3 && nodeHit(SVC, g.vVal, g.Mid, xM, "svc"));
+  if (n) {
+    const flows = new Set();
+    FLOWS.forEach((f, i) => {
+      if ((n.kind === "src" && f.s === n.i) || (n.kind === "dst" && f.d === n.i) ||
+          (n.kind === "svc" && f.v === n.i)) flows.add(i);
+    });
+    return { ...n, flows };
+  }
+  function ribbonHit(x0, x1, list, vals, y0f, y1f) {
+    if (px <= x0 || px >= x1) return null;
+    const u = solveU(x0, x1, px);
+    for (let k = list.length - 1; k >= 0; k--) {
+      const h = vals(k) * g.S;
+      if (h < 0.4) continue;
+      const yt = bezY(y0f(k), y1f(k), u);
+      if (py >= yt && py <= yt + h) return k;
+    }
+    return null;
+  }
+  if (mode === 2) {
+    const k = ribbonHit(xL + NW, xR,
+      FLOWS, i => g.fv[i],
+      i => g.L.ys[FLOWS[i].s] + g.offS[i], i => g.R.ys[FLOWS[i].d] + g.offD[i]);
+    if (k !== null) return { kind: "flow", i: k, flows: new Set([k]) };
+  } else {
+    const lk = g.links;
+    let k = ribbonHit(xL + NW, xM, svList, k2 => lk.lv[k2],
+      k2 => g.L.ys[svList[k2].s] + lk.offLs[k2], k2 => g.Mid.ys[svList[k2].v] + lk.offLv[k2]);
+    if (k !== null) return { kind: "sv", i: k, flows: new Set(svList[k].idxs) };
+    k = ribbonHit(xM + NW, xR, vdList, k2 => lk.rv[k2],
+      k2 => g.Mid.ys[vdList[k2].v] + lk.offRv[k2], k2 => g.R.ys[vdList[k2].d] + lk.offRd[k2]);
+    if (k !== null) return { kind: "vd", i: k, flows: new Set(vdList[k].idxs) };
+  }
+  return null;
+}
+
+/* ---------- tooltip ---------- */
+const tip = $("tooltip");
+function setTip(lines, x, y) {
+  tip.replaceChildren(...lines.map((l, i) => {
+    const d = document.createElement("div");
+    d.className = i === 0 ? "t1" : "t2";
+    d.textContent = l;
+    return d;
+  }));
+  tip.style.display = "block";
+  const r = tip.getBoundingClientRect();
+  tip.style.left = Math.min(x + 14, innerWidth - r.width - 8) + "px";
+  tip.style.top = Math.min(y + 14, innerHeight - r.height - 8) + "px";
+}
+function tipFor(h, ev) {
+  const g = geom, rate = v => (metric === "b" ? fmtB(v / BIN) + "/s" : (v / BIN).toFixed(2) + "/s");
+  if (h.kind === "flow") {
+    const f = FLOWS[h.i];
+    setTip([`${SRC[f.s].id} → ${DST[f.d].id}`, SVC[f.v], rate(g.fv[h.i])], ev.clientX, ev.clientY);
+  } else if (h.kind === "sv") {
+    const l = svList[h.i];
+    setTip([`${SRC[l.s].id} → ${SVC[l.v]}`, rate(g.links.lv[h.i])], ev.clientX, ev.clientY);
+  } else if (h.kind === "vd") {
+    const l = vdList[h.i];
+    setTip([`${SVC[l.v]} → ${DST[l.d].id}`, rate(g.links.rv[h.i])], ev.clientX, ev.clientY);
+  } else {
+    const id = h.kind === "src" ? SRC[h.i].id : h.kind === "dst" ? DST[h.i].id : SVC[h.i];
+    const v = (h.kind === "src" ? g.sVal : h.kind === "dst" ? g.dVal : g.vVal)[h.i];
+    const share = g.total > 0 ? ` · ${(100 * v / g.total).toFixed(1)}% of window` : "";
+    setTip([id, rate(v) + share], ev.clientX, ev.clientY);
+  }
+}
+cv.addEventListener("pointermove", ev => {
+  const r = cv.getBoundingClientRect();
+  const h = hitTest(ev.clientX - r.left, ev.clientY - r.top);
+  hover = h;
+  if (h) { tipFor(h, ev); cv.style.cursor = "pointer"; }
+  else { tip.style.display = "none"; cv.style.cursor = "default"; }
+});
+cv.addEventListener("pointerleave", () => { hover = null; tip.style.display = "none"; });
+
+/* ---------- playback loop ---------- */
+let lastFrame = 0, frames = 0, fpsT = 0;
+const fpsEl = $("fps");
+if (location.hash.includes("fps")) fpsEl.style.display = "block";
+function tick(now) {
+  const dt = Math.min(lastFrame ? (now - lastFrame) / 1000 : 0, 0.1);
+  lastFrame = now;
+  advanceMask(dt);
+  if (playing) {
+    t += dt * speedRate / BIN;
+    const end = rangeSet ? loopB : B, start = rangeSet ? loopA : 0;
+    if (t >= end) {
+      if (loop) { t = start; snapScale = true; }
+      else { t = end; setPlaying(false); }
+    }
+  }
+  draw();
+  drawTimeline();
+  stats(now);
+  updateRank(now);
+  if (fpsEl.style.display === "block") {
+    frames++;
+    if (now - fpsT > 500) { fpsEl.textContent = `${Math.round(frames * 1000 / (now - fpsT))} fps · ${NF} flows`; frames = 0; fpsT = now; }
+  }
+  requestAnimationFrame(tick);
+}
+
+/* ---------- controls ---------- */
+function setPlaying(p) {
+  const end = rangeSet ? loopB : B, start = rangeSet ? loopA : 0;
+  if (p && t >= end - 1e-9) { t = start; snapScale = true; }
+  playing = p; $("play").textContent = p ? "⏸" : "▶";
+}
+$("play").addEventListener("click", () => setPlaying(!playing));
+$("loop").addEventListener("change", e => { loop = e.target.checked; });
+function buildSpeeds() {
+  const span = B * BIN;
+  const rates = [60, 120, 300, 600, 1800, 3600, 10800, 21600, 43200, 86400, 259200]
+    .filter(r => span / r >= 4 && span / r <= 1800);
+  if (!rates.length) rates.push(Math.max(60, Math.round(span / 45)));
+  const def = rates.reduce((a, b) =>
+    Math.abs(span / b - 45) < Math.abs(span / a - 45) ? b : a);
+  const sel = $("speed");
+  sel.replaceChildren(...rates.map(r => {
+    const o = document.createElement("option");
+    o.value = r; o.textContent = fmtDur(r) + "/s";
+    if (r === def) o.selected = true;
+    return o;
+  }));
+  speedRate = def;
+}
+$("speed").addEventListener("change", e => { speedRate = +e.target.value; });
+function seg(id, cb) {
+  const el = $(id);
+  el.addEventListener("click", ev => {
+    const b = ev.target.closest("button"); if (!b) return;
+    el.querySelectorAll("button").forEach(x => x.classList.toggle("on", x === b));
+    cb(b);
+  });
+}
+seg("metric", b => { metric = b.dataset.m; tlPath = null; snapScale = true; lastRank = 0; });
+seg("mode", b => { mode = +b.dataset.mode; gradCache.clear(); snapScale = true; hover = null; });
+seg("yscale", b => { yLog = b.dataset.y === "log"; tlPath = null; });
+seg("group", b => {
+  buildModel(+b.dataset.g);
+  resmooth();
+  snapScale = true; hover = null; clearRank(); lastRank = 0; rebuildMask();
+});
+seg("ranktab", b => { rankTab = b.dataset.t; clearRank(); lastRank = 0; });
+const winEl = $("win");
+function winLabel() { $("winlabel").textContent = `±${fmtDur(radius * BIN)}`; }
+winEl.value = radius;
+let winTimer = null;
+winEl.addEventListener("input", e => {
+  radius = +e.target.value; winLabel();
+  clearTimeout(winTimer);
+  winTimer = setTimeout(() => { resmooth(); snapScale = true; }, 120);
+});
+const themes = ["auto", "light", "dark"];
+let themeIdx = 0;
+$("theme").addEventListener("click", () => {
+  themeIdx = (themeIdx + 1) % 3;
+  const v = themes[themeIdx];
+  if (v === "auto") document.documentElement.removeAttribute("data-theme");
+  else document.documentElement.setAttribute("data-theme", v);
+  readTheme();
+});
+matchMedia("(prefers-color-scheme: dark)").addEventListener("change", readTheme);
+/* timeline: drag = scrub · shift-drag = loop range · double-click = clear.
+   The range COMMITS at pointerup - during the gesture it is provisional
+   (drawn, but playback unconstrained), so a zero-width range at pointerdown
+   can never pause playback mid-drag */
+let scrubbing = false, rangeAnchor = null, pendA = 0, pendB = 0;
+const binAt = ev => {
+  const r = tlc.getBoundingClientRect();
+  return Math.min(Math.max((ev.clientX - r.left) / r.width, 0), 1) * B;
+};
+tlc.addEventListener("pointerdown", ev => {
+  tlc.setPointerCapture(ev.pointerId);
+  if (ev.shiftKey) {
+    rangeAnchor = binAt(ev);
+    pendA = pendB = rangeAnchor;
+  } else { scrubbing = true; t = binAt(ev); snapScale = true; }
+});
+tlc.addEventListener("pointermove", ev => {
+  if (ev.buttons === 0) { scrubbing = false; rangeAnchor = null; return; }
+  if (rangeAnchor !== null) {
+    const b2 = binAt(ev);
+    pendA = Math.min(rangeAnchor, b2); pendB = Math.max(rangeAnchor, b2);
+  } else if (scrubbing) { t = binAt(ev); snapScale = true; }
+});
+tlc.addEventListener("pointerup", () => {
+  scrubbing = false;
+  if (rangeAnchor !== null) {
+    rangeAnchor = null;
+    if (pendB - pendA >= 0.5) {
+      rangeSet = true; loopA = pendA; loopB = pendB;
+      t = Math.min(Math.max(t, loopA), loopB); snapScale = true;
+    }
+  }
+});
+tlc.addEventListener("pointercancel", () => { scrubbing = false; rangeAnchor = null; });
+tlc.addEventListener("dblclick", () => { rangeSet = false; });
+document.addEventListener("keydown", ev => {
+  if (ev.target.tagName === "SELECT" || ev.target.tagName === "INPUT") return;
+  if (ev.code === "Space") { ev.preventDefault(); setPlaying(!playing); }
+  else if (ev.key === "ArrowRight") { t = Math.min(t + B * 0.02, B); snapScale = true; }
+  else if (ev.key === "ArrowLeft") { t = Math.max(t - B * 0.02, 0); snapScale = true; }
+});
+
+/* ---------- header meta + schema parametrization ---------- */
+{
+  const parts = [M.source, `${fmtN(M.rows)} ${M.rows_label || "conns"}`,
+                 fmtDur(Math.round(M.t1 - M.t0))];
+  if (M.distinct_hosts != null)
+    parts.push(`${M.distinct_hosts} ${(M.hosts_label || "hosts seen").replace(" seen", "")}`);
+  parts.push(`bin ${fmtDur(BIN)}`, M.metric_note || "");
+  $("srcmeta").textContent = parts.filter(Boolean).join(" · ");
+  const footer = `generated by ${M.generator || "sigwood"} · hunt logs like this: sigwood hunt PATH`;
+  $("winnote").textContent = [footer, M.default_window_note].filter(Boolean).join(" · ");
+  if (M.mid_label) {
+    $("modemid").textContent = "+" + M.mid_label;
+    $("ranktab-mid").textContent = M.mid_label;
+    $("k-svc").textContent = "top " + (M.mid_singular || M.mid_label);
+  }
+  if (M.hosts_label) $("k-hosts").textContent = M.hosts_label;
+  if (M.single_metric) {
+    metric = "c";
+    $("metricgrp").style.display = "none";
+    $("tile-rate").style.display = "none";
+    $("tile-cum").style.display = "none";
+    $("k-conns").textContent = M.rows_label || "events";
+    $("k-cps").textContent = (M.rows_label || "events") + " / s";
+  }
+}
+
+/* ---------- boot ---------- */
+buildModel(32);
+readTheme();
+resize();
+resmooth();
+{
+  const base = metric === "b" ? smTotB : smTotC;
+  const nz = [...base].filter(v => v > 0).sort((a, b) => a - b);
+  const med = nz.length ? nz[Math.floor(nz.length / 2)] : 1;
+  yLog = peakRate[metric] / med > 40;
+  $("yscale").querySelectorAll("button").forEach(b =>
+    b.classList.toggle("on", (b.dataset.y === "log") === yLog));
+}
+buildSpeeds();
+winEl.max = Math.max(6, Math.round(B / 12));
+winLabel();
+rebuildMask();
+setPlaying(playing);
+requestAnimationFrame(tick);
+</script>
+</body>
+</html>

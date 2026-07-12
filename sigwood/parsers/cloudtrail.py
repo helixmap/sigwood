@@ -271,7 +271,7 @@ def sniff(sample: list[str]) -> str | None:
             continue
         try:
             obj = json.loads(line)
-        except (json.JSONDecodeError, ValueError):
+        except (json.JSONDecodeError, ValueError, RecursionError):
             break
         if isinstance(obj, dict):
             hit = sum(1 for k in _CT_EVENT_KEYS if k in obj)

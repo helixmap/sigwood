@@ -27,11 +27,12 @@ as a parameter; the CLI does the ``importlib`` work.
 from __future__ import annotations
 
 import fnmatch
+import stat
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Sequence
 
-from sigwood.common.loader import sniff_format_detailed
+from sigwood.common.loader import discover_for_source_key, sniff_format_detailed
 from sigwood.common.paths import effective_root, resolve_path
 
 _ALL_KEYS: tuple[str, ...] = (
@@ -45,6 +46,109 @@ _DIR_ORIGIN_PRIORITY: tuple[str, ...] = (
 _PERMISSION_FILENAME_HINTS: tuple[tuple[str, str], ...] = (
     ("pihole*.log*", "pihole"),
 )
+
+
+@dataclass(frozen=True)
+class GraphKindSpec:
+    """One graphable source kind and its loader/sniff contract.
+
+    ``source_key`` and ``pattern`` are consumed by the generic loader-owned
+    discovery seam. ``sniff_schema`` and ``sniff_origin`` map a positional
+    file's existing detailed-sniff result to this kind. Keeping the four facts
+    together makes adding a graph kind an append-only declaration instead of a
+    coordinated edit across CLI, runner, and discovery ladders.
+    """
+
+    kind: str
+    source_key: str
+    pattern: str
+    sniff_schema: str
+    sniff_origin: str
+
+
+@dataclass(frozen=True)
+class GraphProbeIssue:
+    """One graph input that could not join a renderable bucket."""
+
+    path: Path
+    message: str
+    permission: bool = False
+
+
+@dataclass(frozen=True)
+class GraphProbeResult:
+    """Graph source buckets plus non-fatal routing/disclosure sidecars."""
+
+    buckets: dict[str, list[Path]]
+    issues: tuple[GraphProbeIssue, ...]
+    multi_kinds: dict[str, tuple[str, ...]]
+    mixed_votes: dict[str, dict[str, int]]
+
+
+# Ordered public graph-kind declaration. The order is the supported-kind
+# narration order and remains stable as new graphable families are added.
+GRAPH_KINDS: tuple[GraphKindSpec, ...] = (
+    GraphKindSpec(
+        kind="conn",
+        source_key="zeek_dir",
+        pattern="conn*.log*",
+        sniff_schema="conn",
+        sniff_origin="zeek",
+    ),
+    GraphKindSpec(
+        kind="dns",
+        source_key="zeek_dir",
+        pattern="dns*.log*",
+        sniff_schema="dns",
+        sniff_origin="zeek",
+    ),
+)
+
+
+def graph_kind_for_sniff(
+    schema: str | None,
+    origin: str | None,
+) -> GraphKindSpec | None:
+    """Return the graph kind matching a detailed-sniff schema/origin pair.
+
+    A detailed sniff recognizes more formats than graph supports. ``None`` is
+    therefore the normal unsupported result rather than an error for the CLI
+    to translate into its graph-to-digest refusal.
+    """
+    for spec in GRAPH_KINDS:
+        if spec.sniff_schema == schema and spec.sniff_origin == origin:
+            return spec
+    return None
+
+
+def discover_graph_kinds(directory: str | Path) -> dict[str, list[Path]]:
+    """Return non-empty graph-kind buckets discovered under one directory.
+
+    Iteration follows ``GRAPH_KINDS`` order. A directory can therefore yield
+    both conn and dns buckets, while a kind with no matching files does not
+    create an empty bucket for the CLI to mistake for a graphable source.
+    """
+    root = Path(directory).expanduser()
+    buckets: dict[str, list[Path]] = {}
+    for spec in GRAPH_KINDS:
+        files = discover_for_source_key(spec.source_key, root, spec.pattern)
+        if files:
+            buckets[spec.kind] = files
+    return buckets
+
+
+def graph_kind_spec(kind: str) -> GraphKindSpec:
+    """Return the declared graph kind or an actionable unsupported-kind error."""
+    for spec in GRAPH_KINDS:
+        if spec.kind == kind:
+            return spec
+    supported = ", ".join(spec.kind for spec in GRAPH_KINDS)
+    raise ValueError(f"graph kind {kind!r} is not supported (supported: {supported})")
+
+
+def graph_supported_kinds() -> tuple[str, ...]:
+    """Return graph kind labels in the public declaration order."""
+    return tuple(spec.kind for spec in GRAPH_KINDS)
 
 
 def _present(value: object) -> bool:
@@ -281,6 +385,253 @@ def resolve_sources(
         else:
             resolved[key] = []
     return ResolvedSources(**resolved)
+
+
+def resolve_graph_source(
+    config: dict[str, Any],
+    kind: str,
+    *,
+    inputs: str | Path | Sequence[str | Path] | None = None,
+) -> tuple[GraphKindSpec, list[Path]]:
+    """Resolve one graph kind's raw inputs through the shared source owner.
+
+    Graph has one source family per kind today, but it must not grow its own
+    path resolver. ``inputs`` follows the runner's established override shape:
+    a truthy value is an explicit CLI/programmatic input, while ``None`` falls
+    back to the declared source key in config. The returned paths deliberately
+    retain both directories and explicit files so the runner can use the same
+    combined shape for default-window boundedness and trusted-file loading.
+    """
+    spec = graph_kind_spec(kind)
+    resolved = resolve_sources(
+        config,
+        overrides={spec.source_key: inputs},
+        scope=frozenset({spec.source_key}),
+    )
+    return spec, list(getattr(resolved, spec.source_key))
+
+
+def graph_has_explicit_inputs(
+    inputs: str | Path | Sequence[str | Path] | None,
+) -> bool:
+    """Return whether graph source resolution retains an explicit override.
+
+    Graph's trusted-file bypass is allowed only for an input that survived the
+    shared override normalization.  Falsy scalar and sequence members fall
+    through to config just as they do in :func:`resolve_graph_source`, so they
+    must not accidentally make a config file trusted at the runner seam.
+    """
+    return bool(_normalize_overrides(inputs))
+
+
+def _graph_path_kind(path: Path) -> str:
+    """Classify a graph input without swallowing a permission failure."""
+    try:
+        mode = path.stat().st_mode
+    except FileNotFoundError as exc:
+        raise ValueError("not found") from exc
+    except PermissionError:
+        raise
+    except OSError as exc:
+        raise ValueError("could not inspect graph input") from exc
+    if stat.S_ISREG(mode):
+        return "file"
+    if stat.S_ISDIR(mode):
+        return "directory"
+    raise ValueError("graph input is not a regular file or directory")
+
+
+def _graph_unsupported_message(path: Path) -> str:
+    """Return the one actionable unsupported-input status message."""
+    supported = ", ".join(graph_supported_kinds())
+    return (
+        f"can't graph {path.name} - graph supports {supported}; "
+        "try 'sigwood digest PATH'"
+    )
+
+
+def _graph_config_filename_message(path: Path, spec: GraphKindSpec) -> str:
+    """Explain why a configured file cannot receive positional trust."""
+    return (
+        f"can't graph {path.name} from config - it does not match "
+        f"{spec.pattern} discovery; pass it as a PATH to graph its sniffed "
+        f"{spec.kind} data"
+    )
+
+
+def _probe_graph_directory(path: Path) -> tuple[dict[str, list[Path]], dict[str, int]]:
+    """Probe a readable directory through graph discovery and the mixed vote."""
+    # ``iterdir`` is deliberately touched before discovery: Path.glob can turn
+    # a denied directory into an empty match set, which would lie as clean-empty
+    # instead of preserving the strict graph permission outcome.
+    try:
+        next(iter(path.iterdir()), None)
+    except PermissionError:
+        raise
+    except OSError as exc:
+        raise ValueError("could not inspect graph input") from exc
+    return discover_graph_kinds(path), _directory_vote_tally(path)
+
+
+def _append_bucket(
+    buckets: dict[str, list[Path]], kind: str, path: Path,
+) -> None:
+    """Append one input while retaining declaration-order bucket assembly."""
+    buckets.setdefault(kind, []).append(path)
+
+
+def probe_graph_inputs(
+    config: dict[str, Any],
+    inputs: Sequence[str | Path] | None = None,
+) -> GraphProbeResult:
+    """Resolve graph inputs without letting one bad path abort sibling buckets.
+
+    The result preserves graphable same-kind buckets plus typed probe issues.
+    The CLI owns narration and final exit precedence, so a bad or denied input
+    can be reported while a valid sibling still produces its artifact. Directory
+    probing remains loader-owned and the bounded directory vote is retained only
+    to disclose non-graphable families that graph intentionally skips.
+    """
+    buckets: dict[str, list[Path]] = {}
+    issues: list[GraphProbeIssue] = []
+    multi_kinds: dict[str, tuple[str, ...]] = {}
+    mixed_votes: dict[str, dict[str, int]] = {}
+    graph_origins = {spec.sniff_origin for spec in GRAPH_KINDS}
+
+    def _issue(path: Path, exc: Exception) -> None:
+        if isinstance(exc, PermissionError):
+            issues.append(GraphProbeIssue(
+                path,
+                "permission denied - grant your user read access and retry",
+                permission=True,
+            ))
+        else:
+            issues.append(GraphProbeIssue(path, str(exc)))
+
+    def _record_directory(path: Path, discovered: dict[str, list[Path]], tally: dict[str, int]) -> None:
+        for kind in discovered:
+            _append_bucket(buckets, kind, path)
+        if len(discovered) > 1:
+            multi_kinds[str(path)] = tuple(discovered)
+        non_graph_votes = {
+            origin: count for origin, count in tally.items()
+            if origin not in graph_origins
+        }
+        if non_graph_votes:
+            mixed_votes[str(path)] = dict(tally)
+
+    raw_inputs = list(inputs or ())
+    if raw_inputs:
+        root = effective_root(config)
+        for raw in raw_inputs:
+            path = _resolve_one(raw, None, root)
+            if path is None:
+                continue
+            try:
+                kind = _graph_path_kind(path)
+                if kind == "file":
+                    sniff = sniff_format_detailed(path)
+                    spec = graph_kind_for_sniff(sniff.schema, sniff.origin)
+                    if spec is None:
+                        raise ValueError(_graph_unsupported_message(path))
+                    _append_bucket(buckets, spec.kind, path)
+                    continue
+                discovered, tally = _probe_graph_directory(path)
+                if discovered:
+                    _record_directory(path, discovered, tally)
+                elif tally:
+                    raise ValueError(_graph_unsupported_message(path))
+                else:
+                    # An empty explicit directory is a selected source with no
+                    # renderable rows, not an unconfigured-source error.
+                    for spec in GRAPH_KINDS:
+                        _append_bucket(buckets, spec.kind, path)
+            except (PermissionError, ValueError, OSError) as exc:
+                _issue(path, exc)
+    else:
+        # Resolve one configured source family at a time. When a configured
+        # directory has no graphable files, retain empty buckets for that family
+        # so runner.run_graph can return the honest GraphEmpty control signal.
+        seen_sources: set[tuple[str, Path]] = set()
+        for spec in GRAPH_KINDS:
+            _, candidates = resolve_graph_source(config, spec.kind)
+            for path in candidates:
+                source_id = (spec.source_key, path)
+                if source_id in seen_sources:
+                    continue
+                seen_sources.add(source_id)
+                family_specs = tuple(
+                    item for item in GRAPH_KINDS if item.source_key == spec.source_key
+                )
+                try:
+                    kind = _graph_path_kind(path)
+                    if kind == "file":
+                        sniff = sniff_format_detailed(path)
+                        matched = graph_kind_for_sniff(sniff.schema, sniff.origin)
+                        if matched is not None and matched.source_key == spec.source_key:
+                            if discover_for_source_key(
+                                matched.source_key, path, matched.pattern,
+                            ):
+                                _append_bucket(buckets, matched.kind, path)
+                            else:
+                                raise ValueError(
+                                    _graph_config_filename_message(path, matched)
+                                )
+                        else:
+                            raise ValueError(_graph_unsupported_message(path))
+                        continue
+                    discovered, tally = _probe_graph_directory(path)
+                    matching = {
+                        item.kind: files
+                        for item, files in (
+                            (item, discovered.get(item.kind, []))
+                            for item in family_specs
+                        )
+                        if files
+                    }
+                    if matching:
+                        _record_directory(path, matching, tally)
+                    else:
+                        for item in family_specs:
+                            _append_bucket(buckets, item.kind, path)
+                    non_graph_votes = {
+                        origin: count for origin, count in tally.items()
+                        if origin not in graph_origins
+                    }
+                    if non_graph_votes:
+                        mixed_votes[str(path)] = dict(tally)
+                except (PermissionError, ValueError, OSError) as exc:
+                    _issue(path, exc)
+
+    ordered = {
+        spec.kind: buckets[spec.kind]
+        for spec in GRAPH_KINDS
+        if spec.kind in buckets
+    }
+    return GraphProbeResult(
+        buckets=ordered,
+        issues=tuple(issues),
+        multi_kinds=multi_kinds,
+        mixed_votes=mixed_votes,
+    )
+
+
+def graph_buckets_for_inputs(
+    config: dict[str, Any],
+    inputs: Sequence[str | Path] | None = None,
+    *,
+    _mixed_sink: dict[str, tuple[str, ...]] | None = None,
+) -> dict[str, list[Path]]:
+    """Compatibility wrapper returning buckets or surfacing the first issue."""
+    result = probe_graph_inputs(config, inputs)
+    if result.issues:
+        issue = result.issues[0]
+        if issue.permission:
+            raise PermissionError(issue.message)
+        raise ValueError(issue.message)
+    if _mixed_sink is not None:
+        _mixed_sink.update(result.multi_kinds)
+    return result.buckets
 
 
 # Per-schema candidate ladder + feed mapping for the digest resolver.

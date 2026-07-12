@@ -55,3 +55,37 @@ class DigestEmpty(Exception):
         )
         self.basename = basename
         self.schema = schema
+
+
+class GraphEmpty(Exception):
+    """Control signal for a recognized graph bucket with nothing to render.
+
+    Graph accepts same-kind multi-input buckets, so ``source_label`` is a
+    caller-provided aggregate label rather than a single basename. ``reason``
+    distinguishes no parseable rows, no timestamped rows, window exclusion,
+    and kind-preparation emptiness without making a clean-empty result look
+    like an operational failure.
+    """
+
+    def __init__(self, kind: str, source_label: str, reason: str) -> None:
+        super().__init__(
+            f"recognized {source_label} as {kind} but no renderable records - {reason}"
+        )
+        self.kind = kind
+        self.source_label = source_label
+        self.reason = reason
+
+
+class GraphSourceUnreadable(Exception):
+    """Typed strict-graph signal for a bucket containing a denied source.
+
+    ``run_graph`` adds the known graph kind and an already-sanitized source
+    label to the loader-owned permission detail. The CLI catches this type per
+    bucket and owns the final permission-over-artifact exit ledger.
+    """
+
+    def __init__(self, kind: str, source_label: str, message: str) -> None:
+        super().__init__(message)
+        self.kind = kind
+        self.source_label = source_label
+        self.message = message

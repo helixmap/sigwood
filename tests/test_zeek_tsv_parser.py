@@ -144,8 +144,8 @@ def test_dns_tsv_ndjson_parity() -> None:
     Both paths go through _normalize_dns_df which applies the qclass==1
     aperture. The qclass=2 row must be dropped by both paths identically,
     and the surviving qtype values must pass through as raw numeric type
-    codes (1 = A, 48 = DNSKEY) in both paths - locks the qtype-carries-
-    through behaviour on the TSV side of the Zeek path.
+    codes (1 = A, 48 = DNSKEY) in both paths. The Zeek responder address must
+    become canonical `resolver`, never leak as `id.resp_h`.
     """
     tsv_df    = _normalize_dns_df(parse_tsv_log(_DNS_TSV.splitlines(keepends=True)))
     ndjson_df = _normalize_dns_df(_ndjson_df(_DNS_NDJSON))
@@ -155,6 +155,10 @@ def test_dns_tsv_ndjson_parity() -> None:
     assert "qtype" in ndjson_df.columns, "qtype must survive NDJSON normalization"
     assert sorted(tsv_df["qtype"].tolist()) == [1, 48]
     assert sorted(ndjson_df["qtype"].tolist()) == [1, 48]
+    assert tsv_df["resolver"].tolist() == ["192.0.2.53", "192.0.2.53"]
+    assert ndjson_df["resolver"].tolist() == ["192.0.2.53", "192.0.2.53"]
+    assert "id.resp_h" not in tsv_df.columns
+    assert "id.resp_h" not in ndjson_df.columns
     _compare(tsv_df, ndjson_df)
 
 

@@ -221,7 +221,7 @@ def discover_zeek_files(
         # never derived siblings that share the type prefix (conn-summary).
         return [
             f for f in sorted(directory.glob(pattern))
-            if _is_primary_zeek_name(f.name, pattern)
+            if f.is_file() and _is_primary_zeek_name(f.name, pattern)
         ]
 
     # Dated layout. Root-level FILES are never included (mixed-root policy);
@@ -271,7 +271,7 @@ def discover_zeek_files(
     for d in included:
         files.extend(
             f for f in sorted(d.glob(pattern))
-            if _is_primary_zeek_name(f.name, pattern)
+            if f.is_file() and _is_primary_zeek_name(f.name, pattern)
         )
     return files
 

@@ -55,6 +55,15 @@ warn_above     = 10_000_000
 # operates post severity-sort; a disclosure line is shown when it trips. 0 = unlimited.
 max_findings_per_detector = 100
 
+# ── Graph replay tuning ─────────────────────────────────────────────
+# sigwood graph renders a self-contained replay artifact. These limits bound
+# detail before the player applies its own smooth-interaction safety budgets.
+[graph]
+target_bins  = 2000
+top_hosts    = 24
+top_services = 12
+domain_level = "domain"
+
 [allowlist]
 
 enabled = true   # master switch; false disables ALL suppression every run

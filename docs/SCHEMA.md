@@ -122,8 +122,10 @@ query     - queried domain (str)
 
 Extended (Zeek only):
 ```
-rtt, ttl, rcode, answer, tc
+resolver, rtt, ttl, rcode, answer, tc
 ```
+
+`resolver` is Zeek's DNS responder address, normalized from `id.resp_h`.
 
 dnsmasq enrichment (Pi-hole only) - computed by the dns detector's per-domain
 aggregation (`_build_pihole_aggregate`), *not* emitted by the parser. Same

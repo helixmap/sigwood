@@ -96,7 +96,7 @@ def unique_path(directory: Path, basename: str) -> Path:
         n += 1
 
 
-def resolve_path(value: str | None, root: str) -> str | None:
+def resolve_path(value: str | os.PathLike[str] | None, root: str | os.PathLike[str]) -> str | None:
     """Resolve a config-supplied path value against the SIGWOOD_ROOT base.
 
     Returns a STRING (trailing slash preserved) or None - never a Path, so
@@ -108,13 +108,22 @@ def resolve_path(value: str | None, root: str) -> str | None:
       "~/x/exports"    -> expanduser(value) (~-anchored: root ignored)
       "exports"        -> join(expanduser(root), value) if root else value
 
-    Pure path helper - no validation, no URL handling, no suffix sniffing.
+    Pure path helper - validates path-like value types, with no URL handling
+    or suffix sniffing.
     Apply to CONFIG-supplied paths only; CLI-supplied paths take ``root=""``
     so they get ``~``-expansion but resolve relative to CWD as shell semantics
     demand.
     """
-    if not value:
+    if value is None or value == "":
         return None
+    if isinstance(value, os.PathLike):
+        value = os.fspath(value)
+    if not isinstance(value, str):
+        raise ValueError("configured path must be a string")
+    if isinstance(root, os.PathLike):
+        root = os.fspath(root)
+    if not isinstance(root, str):
+        raise ValueError("[sigwood].root must be a string")
     if os.path.isabs(value):
         return value
     if value.startswith("~"):

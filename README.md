@@ -31,7 +31,9 @@ box, over logs at rest.
 
 ```bash
 pipx install sigwood        # or: pip install sigwood in a venv - see Installation
-sigwood ~/logs              # point it at a directory or a single file
+
+sigwood /var/log/           # point it at a directory
+sigwood /opt/zeek/dns.log   # or a single file
 ```
 
 That's it - no config required. Here is the kind of thing a run surfaces (illustrative
@@ -60,7 +62,7 @@ from one of those same IPs. A finding means "unusual for **your** network," not 
 it is a lead to look at, not a verdict. Add `-v` for the evidence behind each score and the
 steps to run it down.
 
-The rest of the surface:
+The usual invocations:
 
 ```bash
 sigwood digest /var/log/messages     # orient first - a fast, factual profile of a file
@@ -138,10 +140,7 @@ at it. sigwood differs in conception: there is no database and no import step (i
 and Pi-hole, syslog, and CloudTrail - in place), it spans several log families rather than
 conn/dns alone, and it ships an orientation verb (`digest`) for logs you haven't met yet. If
 you already run RITA against a dedicated Zeek sensor, keep it - sigwood is for the box where
-the logs already live and the analyst who wants one tool across all of them. One caveat on
-footprint: the scientific-Python stack underneath is a ~450 MB install and reads logs into
-memory rather than streaming, so it is light to operate but not light in resources (see
-[KNOWN-ISSUES.md](docs/KNOWN-ISSUES.md) for the memory envelope).
+the logs already live and the analyst who wants one tool across all of them.
 
 ## How a run works
 
@@ -248,8 +247,7 @@ python3 -m venv .venv                # Python 3.11+
 
 Configuration is optional - sigwood runs against a path with none. When you want it
 repeatable, `sigwood init` looks at the conventional locations on your box, profiles what it
-finds (which log families, rough size, freshness - reading only enough of a file to recognize
-its format, never its contents), and writes an annotated config under `~/.sigwood/` (or
+finds (which log families, rough size, freshness), and writes an annotated config under `~/.sigwood/` (or
 `/etc/sigwood` for a system-wide install). Re-run it any time: it merges into an existing
 config without clobbering settings you already have, and shows a summary of what will change
 before it writes anything.

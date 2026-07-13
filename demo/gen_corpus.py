@@ -15,7 +15,7 @@ given seed, anchor, and timezone (syslog stamps render in the generating box's
 local time), so it is safe to run offline or in CI.
 
 Usage:
-    python demo/gen_corpus.py [OUT_DIR] [--seed N] [--anchor ISO8601]
+    python3 demo/gen_corpus.py [OUT_DIR] [--seed N] [--anchor ISO8601]
 
 Defaults regenerate the exact corpus the demo config and README expect.
 """

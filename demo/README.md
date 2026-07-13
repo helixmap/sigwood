@@ -25,7 +25,7 @@ The corpus is generated on demand and is not committed (see `.gitignore`). From
 the repository root:
 
 ```
-python demo/gen_corpus.py
+python3 demo/gen_corpus.py
 ```
 
 This writes `demo/corpus/zeek/{conn.log,dns.log}`,

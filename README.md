@@ -11,7 +11,8 @@ scans, rare syslog events, over-long connections, and unusual CloudTrail activit
 
 **Not a SIEM. Not an agent. Not magic.** Nothing to deploy - no database, no daemon, no
 account. Install it, point it at a directory of logs, read the output. It runs on your own
-box, over logs at rest.
+box, over logs at rest, and your logs never leave your machine - no telemetry, no phone-home,
+no cloud.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](#license)
 ![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)
@@ -24,7 +25,8 @@ box, over logs at rest.
   <a href="https://github.com/helixmap/sigwood/blob/main/docs/FAQ.md">FAQ</a> ·
   <a href="https://github.com/helixmap/sigwood/blob/main/docs/ROADMAP.md">Roadmap</a> ·
   <a href="https://github.com/helixmap/sigwood/blob/main/docs/KNOWN-ISSUES.md">Known issues</a> ·
-  <a href="https://github.com/helixmap/sigwood/blob/main/docs/SCHEMA.md">Schemas</a>
+  <a href="https://github.com/helixmap/sigwood/blob/main/docs/SCHEMA.md">Schemas</a> ·
+  <a href="https://github.com/helixmap/sigwood/blob/main/SECURITY.md">Security</a>
 </p>
 
 ## Quick start
@@ -45,10 +47,10 @@ dns - 1 finding · 1 H
 groups (1)
   [H]   16 sub  score=2.10-1.85  418 qry  1 src  k7x2p9qz3f.example
 
-beacon - 2 findings · 2 H
+beacon - 2 findings · 2 M
 ────────────────────────────────────────────────────────────────────────────────
-[H]  192.168.1.37  →  198.51.100.20:443/tcp    period=3.0m    score=0.624   480 conns
-[H]  192.168.1.37  →  203.0.113.50:8443/tcp    period=10.0m   score=0.606   144 conns
+[M]  192.168.1.37  →  198.51.100.20:443/tcp    period=3.0m    score=0.624   480 conns
+[M]  192.168.1.37  →  203.0.113.50:8443/tcp    period=10.0m   score=0.606   144 conns
 
 syslog - 1 finding · 1 M
 ────────────────────────────────────────────────────────────────────────────────
@@ -56,7 +58,7 @@ rare events (1)
   [M]   Accepted password for root from 198.51.100.20 port 51900 ssh2
 ```
 
-Read top to bottom that is a story: an internal host making high-entropy lookups under one
+Read top to bottom, that is a story: an internal host making high-entropy lookups under one
 throwaway domain, calling out to two external IPs on a fixed schedule, and a root SSH login
 from one of those same IPs. A finding means "unusual for **your** network," not "known-bad" -
 it is a lead to look at, not a verdict. Add `-v` for the evidence behind each score and the
@@ -78,7 +80,7 @@ network data - so you can watch it work first:
 ```bash
 git clone https://github.com/helixmap/sigwood
 cd sigwood
-python demo/gen_corpus.py                  # writes a synthetic corpus; no network calls
+python3 demo/gen_corpus.py                 # writes a synthetic corpus; no network calls
 sigwood hunt --config=demo/sigwood.toml    # beacons, a DGA burst, and the matching syslog trail
 ```
 
@@ -87,7 +89,7 @@ The generated logs live under `demo/corpus/` (gitignored); the full walkthrough 
 full run against that corpus, and the same findings as an HTML report:
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/helixmap/sigwood/main/docs/img/demo.svg" alt="sigwood hunting one compromised host across conn, DNS, and syslog - synthetic RFC 5737 / reserved-domain data">
+  <img src="https://raw.githubusercontent.com/helixmap/sigwood/main/docs/img/demo.svg" alt="sigwood hunting one compromised host across conn, DNS, and syslog - synthetic RFC 5737 data with random-label demo domains">
 </p>
 <p align="center">
   <img src="https://raw.githubusercontent.com/helixmap/sigwood/main/docs/img/report.png"
@@ -219,7 +221,7 @@ substitute.
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/helixmap/sigwood/main/docs/img/graph.gif"
-       width="760" alt="sigwood graph replaying Pi-hole query flows - clients, domains, and dispositions over time, synthetic RFC 5737 / reserved-domain data">
+       width="760" alt="sigwood graph replaying Pi-hole query flows - clients, domains, and dispositions over time, synthetic RFC 5737 data with random-label demo domains">
 </p>
 
 ## Installation

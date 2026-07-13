@@ -6,6 +6,19 @@ All notable changes to sigwood are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-07-13
+
+### Added
+
+- A `graph` verb (`sigwood graph <path>`) that writes a self-contained HTML artifact -
+  one file, no server, no external resources, no network calls - replaying a log's flows
+  as an animated Sankey with time, speed, and filter controls. A Zeek directory produces
+  a conn graph (hosts vs the services they reach) and a dns graph (clients vs the domains
+  they look up); Pi-hole adds a disposition lane showing what happened to each query
+  (`blocked`, `forwarded`, `cached`, or `local`). Like `digest`, it reads before the
+  allowlist and states facts, not verdicts, and every artifact ends with the exact
+  `sigwood hunt` command for the same log.
+
 ### Changed
 
 - The curated `common` domain allowlist now ships its generic UUID-label rule disabled
@@ -126,6 +139,7 @@ agent, no account.
 - Analysis-window controls (`--since`/`--until`/`--days`/`--all`), a per-source default
   lookback window, and local-or-UTC time rendering.
 
-[Unreleased]: https://github.com/helixmap/sigwood/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/helixmap/sigwood/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/helixmap/sigwood/compare/v0.1.1...v0.2.1
 [0.1.1]: https://github.com/helixmap/sigwood/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/helixmap/sigwood/releases/tag/v0.1.0

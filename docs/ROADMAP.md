@@ -15,6 +15,8 @@ What sigwood does today:
 - **A `digest` verb** to orient before you hunt - a fast, honest profile of conn, DNS,
   syslog, or CloudTrail data, with a bytes-only fallback for anything it doesn't
   recognize.
+- **A `graph` verb** to see a log move - a self-contained HTML artifact that replays
+  conn, DNS, or Pi-hole flows as an animated Sankey, with the exact hunt command baked in.
 - **Five output formats** - text, JSON, CSV, HTML, and PDF - and a setup wizard
   (`sigwood init`) that looks at your logs before it asks anything.
 - **An allowlist** for suppressing known-good infrastructure, with curated starter
@@ -53,7 +55,7 @@ real logs, before they ship (see [CONTRIBUTING.md](../CONTRIBUTING.md)):
   `weird.log`/`notice.log`. A future CloudTrail identity and privilege-escalation
   detector is its own thing, separate from the behavioral `aws` detector.
 - **Exploratory ideas** - a protocol and application classifier over conn.log, a
-  per-protocol anomaly model, an emailed-report output, and a Sankey flow visualizer.
+  per-protocol anomaly model, and an emailed-report output.
 
 ## By design, not on the roadmap
 

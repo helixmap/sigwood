@@ -167,6 +167,11 @@ animated Sankey: who talked to whom, over the window, with time, speed, and filt
 controls. Watch the flows form and dissolve and you quickly get a sense of what's going
 on in the data.
 
+<p align="center">
+  <img src="https://raw.githubusercontent.com/helixmap/sigwood/main/docs/img/graph.gif"
+       width="760" alt="sigwood graph replaying Pi-hole query flows - clients, domains, and dispositions over time, synthetic RFC 5737 data with random-label demo domains">
+</p>
+
 A Zeek directory produces two graphs - a **conn** graph (hosts vs the services
 they reach) and a **dns** graph (clients vs the domains they look up). Pi-hole
 adds a **disposition lane**: alongside the domains each client queried, you can
@@ -177,11 +182,6 @@ leaving your database server at 3am, and lets you decide if that's your backup
 window or a nightmare exfil scenario. Every artifact includes the command to
 hunt the data being visualized, so the visual is a door into analysis, not a
 substitute.
-
-<p align="center">
-  <img src="https://raw.githubusercontent.com/helixmap/sigwood/main/docs/img/graph.gif"
-       width="760" alt="sigwood graph replaying Pi-hole query flows - clients, domains, and dispositions over time, synthetic RFC 5737 data with random-label demo domains">
-</p>
 
 ## sigwood and RITA / AC-Hunter
 

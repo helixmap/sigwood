@@ -121,17 +121,7 @@ python3 -m venv .venv-rel && ./.venv-rel/bin/pip install -q -e ".[dev]" build tw
 
 ./.venv-rel/bin/python -m build              # sdist + wheel into dist/
 ./.venv-rel/bin/python -m twine check dist/* # metadata + README render must PASS
-
-# the wheel must contain exactly the package - top_level.txt reads 'sigwood':
-unzip -p dist/sigwood-*.whl '*.dist-info/top_level.txt'
-
-# the shipped data templates must be inside the wheel (init/allowlist need them):
-./.venv-rel/bin/python -m zipfile -l dist/sigwood-*.whl | grep 'sigwood/data/'
-
-# the sdist ships the package + metadata only - the suite is pruned (its
-# support files are unpackaged, so a shipped half-suite is uncollectable):
-tar -tzf dist/sigwood-*.tar.gz | grep -E '/(tests/|conftest\.py)' \
-  && echo 'STOP: sdist contains test files' || echo 'sdist: no tests OK'
+./.venv-rel/bin/python scripts/validate_distribution.py dist
 
 # README is baked into the release and PyPI never refetches or rewrites it - every
 # absolute image/badge URL must resolve NOW (a broken hero image is permanent):

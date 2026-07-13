@@ -214,6 +214,19 @@ pip install -e '.[dev]'      # runtime extras + pytest
 python -m pytest             # from the repo root
 ```
 
+To exercise the archive boundary as well as the editable checkout, install the
+packaging tools and run the same distribution check as CI:
+
+```bash
+python -m pip install build twine
+python -m build
+python -m twine check dist/*
+python scripts/validate_distribution.py dist
+```
+
+This catches missing package data, accidental test-suite leakage, malformed
+metadata, and wheel/sdist version drift before a release checkout is involved.
+
 `[dev]` deliberately leaves out `[pdf]` - WeasyPrint needs native libraries pip can't
 install, so grab `.[dev,pdf]` plus your platform's Pango/HarfBuzz/fontconfig only if
 you're working on PDF output. Requires Python 3.11+.

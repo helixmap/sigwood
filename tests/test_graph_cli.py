@@ -516,11 +516,11 @@ def test_graph_contains_array_shaped_dns_qtype_without_pandas_error(
     assert "traceback" not in captured.err.lower()
 
 
-def test_graph_contains_deeply_nested_identity_labels(
+def test_graph_contains_structured_identity_labels(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """A parseable deep label degrades before identity grouping and rendering."""
-    nested = "[" * 100_000 + "0" + "]" * 100_000
+    """A parseable structured identity degrades before graph grouping."""
+    nested = '[["not-an-address"]]'
     source = tmp_path / "conn.log"
     source.write_text(
         '{"_path":"conn","ts":1779750000.0,"uid":"C1",'

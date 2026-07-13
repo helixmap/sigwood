@@ -78,6 +78,13 @@ def _clean_label(value: object) -> str:
     return cleaned or "(unknown)"
 
 
+def _clean_identity(value: object) -> str:
+    """Return a scalar host identity without inventing structured labels."""
+    if not isinstance(value, str):
+        return "(unknown)"
+    return _clean_label(value)
+
+
 def _coerce_timestamp(value: object) -> float | None:
     """Return a finite, UTC-datetime-representable graph timestamp or None."""
     try:
@@ -263,8 +270,9 @@ def build_payload(
         df["metric"] = df["metric"].map(_coerce_weight)
     else:
         df["metric"] = df["metric"].map(_coerce_metric)
-    for column in ("src", "dst", "svc"):
-        df[column] = df[column].map(_clean_label)
+    for column in ("src", "dst"):
+        df[column] = df[column].map(_clean_identity)
+    df["svc"] = df["svc"].map(_clean_label)
 
     t0 = float(df["ts"].min())
     t1 = float(df["ts"].max())

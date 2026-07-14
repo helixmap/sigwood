@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Literal
 
@@ -10,6 +11,7 @@ import numpy as np
 import pandas as pd
 
 from sigwood import __version__
+from sigwood.common.display import fmt_timestamp, plural
 from sigwood.common.errors import GraphEmpty
 from sigwood.common.sanitize import strip_control
 
@@ -17,6 +19,10 @@ from sigwood.common.sanitize import strip_control
 GRAPH_MAX_FLOWS = 4_000
 GRAPH_MAX_SMOOTH_OPS = 400_000_000
 GRAPH_MAX_PAYLOAD_PAIRS = 1_500_000
+TRIM_DENSITY_FRACTION = 0.05
+MIN_DENSE_BINS = 8
+TRIM_MIN_TAIL_BINS = 6
+_TRIM_MASS_CAP_DEN = 1_000
 
 _NICE_BIN_SECONDS = (
     1, 5, 10, 30, 60, 300, 900, 1_800, 3_600, 7_200, 21_600,
@@ -100,27 +106,41 @@ def _coerce_timestamp(value: object) -> float | None:
     return timestamp
 
 
+def _coerce_metric_with_flag(value: object) -> tuple[float, bool]:
+    """Return one finite size metric and whether saturation changed it."""
+    try:
+        metric = float(value)
+    except OverflowError:
+        try:
+            negative = bool(value < 0)  # type: ignore[operator]
+        except (TypeError, ValueError, OverflowError, RecursionError):
+            negative = False
+        return (-_FLOAT32_MAX if negative else _FLOAT32_MAX), True
+    except (TypeError, ValueError):
+        return 0.0, False
+    if not math.isfinite(metric):
+        return 0.0, False
+    if abs(metric) > _FLOAT32_MAX:
+        return math.copysign(_FLOAT32_MAX, metric), True
+    return metric, False
+
+
+def _coerce_metric(value: object) -> float:
+    """Coerce null/non-finite metrics to zero and saturate finite sizes."""
+    return _coerce_metric_with_flag(value)[0]
+
+
 def _metric_error() -> ValueError:
     return ValueError("graph metric values are too large to render safely")
 
 
-def _coerce_metric(value: object) -> float:
-    """Coerce null/non-finite metrics to zero and reject unsafe finite sizes."""
-    try:
-        metric = float(value)
-    except OverflowError as exc:
-        raise _metric_error() from exc
-    except (TypeError, ValueError):
-        return 0.0
-    if not math.isfinite(metric):
-        return 0.0
-    if abs(metric) > _FLOAT32_MAX:
-        raise _metric_error()
-    return metric
-
-
 def _coerce_weight(value: object) -> float:
-    """Return one finite non-negative weighted-count contribution."""
+    """Return one finite non-negative weighted-count contribution.
+
+    Weighted counts are builder-authored shares, not source size magnitudes.
+    Invalid values therefore remain a builder-contract error instead of using
+    the size-metric saturation path.
+    """
     try:
         weight = float(value)
     except (TypeError, ValueError, OverflowError) as exc:
@@ -168,7 +188,8 @@ def require_columns(frame: pd.DataFrame, columns: set[str], kind: str) -> None:
     _require_columns(frame, columns, kind)
 
 
-def _top_values(frame: pd.DataFrame, column: str, limit: int) -> list[str]:
+def _rank_values(frame: pd.DataFrame, column: str) -> list[str]:
+    """Return deterministic metric-ranked identities for one graph axis."""
     totals = (
         frame.groupby(column, sort=False)
         .agg(metric=("metric", "sum"), count=("metric", "size"))
@@ -181,29 +202,298 @@ def _top_values(frame: pd.DataFrame, column: str, limit: int) -> list[str]:
     )
     return [
         str(value)
-        for value in ranked[column].head(limit)
+        for value in ranked[column]
         if str(value) != _OTHER
     ]
 
 
-def _budget_error() -> ValueError:
-    return ValueError(
-        "graph too dense for smooth interaction - narrow the window "
-        "(--since/--days) or lower [graph] top_hosts / top_services / target_bins"
+@dataclass
+class _GroupState:
+    """One recomputable folded/binned graph shape."""
+
+    frame: pd.DataFrame
+    grouped: pd.DataFrame
+    keep_src: list[str]
+    keep_dst: list[str]
+    keep_svc: list[str]
+    host_limit: int
+    service_limit: int
+    bin_seconds: int
+    bins: int
+
+    @property
+    def flow_count(self) -> int:
+        return int(self.grouped.groupby(["s", "d", "v"], sort=False).ngroups)
+
+    @property
+    def payload_pairs(self) -> int:
+        return 2 * len(self.grouped)
+
+
+@dataclass(frozen=True)
+class _TrimResult:
+    """One sparse-edge trim result and its disclosure facts."""
+
+    frame: pd.DataFrame
+    trimmed_leading: int = 0
+    trimmed_trailing: int = 0
+    lead_boundary_epoch: float | None = None
+    trail_boundary_epoch: float | None = None
+
+
+def _trim_sparse_edges(
+    frame: pd.DataFrame,
+    *,
+    t0: float,
+    t1: float,
+    bin_seconds: int,
+) -> _TrimResult:
+    """Trim small, distant outer runs around a robust dense body."""
+    if t1 < t0:
+        return _TrimResult(frame)
+    indexes = ((frame["ts"] - t0) // bin_seconds).astype(int)
+    bin_count = int(indexes.max()) + 1
+    counts = np.bincount(indexes.to_numpy(), minlength=bin_count)
+    total = int(counts.sum())
+    nonempty = counts[counts > 0]
+    if nonempty.size < MIN_DENSE_BINS:
+        return _TrimResult(frame)
+
+    dense_reference = float(np.quantile(nonempty, 0.75))
+    floor = dense_reference * TRIM_DENSITY_FRACTION
+    crossings = np.flatnonzero(counts >= floor)
+    leading_bin = int(crossings[0])
+    trailing_bin = int(crossings[-1])
+    if leading_bin < TRIM_MIN_TAIL_BINS:
+        leading_bin = 0
+    if bin_count - 1 - trailing_bin < TRIM_MIN_TAIL_BINS:
+        trailing_bin = bin_count - 1
+    if leading_bin == 0 and trailing_bin == bin_count - 1:
+        return _TrimResult(frame)
+
+    trimmed_leading = int(counts[:leading_bin].sum())
+    trimmed_trailing = int(counts[trailing_bin + 1 :].sum())
+    trimmed = trimmed_leading + trimmed_trailing
+    if trimmed * _TRIM_MASS_CAP_DEN > total:
+        return _TrimResult(frame)
+
+    keep = indexes.between(leading_bin, trailing_bin)
+    # This is a positional mask. Loader concatenation can preserve duplicate
+    # source indexes, so label-aligned boolean selection is the wrong seam.
+    kept = frame.loc[keep.to_numpy()].copy()
+    lead_epoch = float(kept["ts"].min()) if trimmed_leading else None
+    trail_epoch = float(kept["ts"].max()) if trimmed_trailing else None
+    return _TrimResult(
+        kept,
+        trimmed_leading=trimmed_leading,
+        trimmed_trailing=trimmed_trailing,
+        lead_boundary_epoch=lead_epoch,
+        trail_boundary_epoch=trail_epoch,
     )
 
 
-def _assert_budgets(grouped: pd.DataFrame, bins: int) -> None:
-    flow_count = int(grouped.groupby(["s", "d", "v"], sort=False).ngroups)
-    if flow_count > GRAPH_MAX_FLOWS:
-        raise _budget_error()
-    radius_max = _slider_radius(bins)
-    smooth_ops = 2 * flow_count * bins * (2 * radius_max + 1)
-    if smooth_ops > GRAPH_MAX_SMOOTH_OPS:
-        raise _budget_error()
-    serialized_pairs = 2 * len(grouped)
-    if serialized_pairs > GRAPH_MAX_PAYLOAD_PAIRS:
-        raise _budget_error()
+def _group_shape(
+    frame: pd.DataFrame,
+    *,
+    rankings: dict[str, list[str]],
+    host_limit: int,
+    service_limit: int,
+    bin_seconds: int,
+    t0: float,
+    t1: float,
+    count_by: Literal["size", "weight"],
+) -> _GroupState:
+    """Fold, bin, and group one candidate build shape."""
+    shaped = frame.copy()
+    shaped["bin"] = ((shaped["ts"] - t0) // bin_seconds).astype(int)
+    bins = max(
+        int(shaped["bin"].max()) + 1,
+        math.floor((t1 - t0) / bin_seconds) + 1,
+    )
+    keep_src = rankings["src"][:host_limit]
+    keep_dst = rankings["dst"][:host_limit]
+    keep_svc = rankings["svc"][:service_limit]
+    shaped["s"] = shaped["src"].where(shaped["src"].isin(keep_src), _OTHER)
+    shaped["d"] = shaped["dst"].where(shaped["dst"].isin(keep_dst), _OTHER)
+    shaped["v"] = shaped["svc"].where(shaped["svc"].isin(keep_svc), _OTHER)
+    count_aggregation = "sum" if count_by == "weight" else "size"
+    grouped = (
+        shaped.groupby(["s", "d", "v", "bin"], sort=False)
+        .agg(
+            b=("metric", "sum"),
+            c=("metric", count_aggregation),
+            _metric_altered=("_metric_altered", "any"),
+        )
+        .reset_index()
+    )
+    return _GroupState(
+        frame=shaped,
+        grouped=grouped,
+        keep_src=keep_src,
+        keep_dst=keep_dst,
+        keep_svc=keep_svc,
+        host_limit=host_limit,
+        service_limit=service_limit,
+        bin_seconds=bin_seconds,
+        bins=bins,
+    )
+
+
+def _largest_fitting_limit(upper: int, fits: Any) -> int | None:
+    """Return the largest integer limit accepted by a monotone predicate."""
+    if fits(upper):
+        return upper
+    if not fits(1):
+        return None
+    low, high, best = 2, upper - 1, 1
+    while low <= high:
+        middle = (low + high) // 2
+        if fits(middle):
+            best = middle
+            low = middle + 1
+        else:
+            high = middle - 1
+    return best
+
+
+def _next_bin_seconds(current: int, span_seconds: float) -> int | None:
+    """Return the next coarser nice width, ending at one inclusive bin."""
+    terminal = pick_bin_seconds(span_seconds, 1)
+    for unit in _NICE_BIN_SECONDS:
+        if current < unit <= terminal:
+            return unit
+    if current < terminal:
+        return terminal
+    return None
+
+
+def _float32_abs_sum_is_finite(values: pd.Series) -> bool:
+    """Mirror the player's Float32 accumulation for one bin's absolute mass."""
+    total = np.float32(0.0)
+    with np.errstate(over="ignore", invalid="ignore"):
+        for value in values:
+            total = np.float32(total + np.float32(abs(float(value))))
+    return bool(np.isfinite(total))
+
+
+def _saturate_grouped_metrics(
+    grouped: pd.DataFrame, *, count_by: Literal["size", "weight"],
+) -> tuple[pd.DataFrame, int]:
+    """Make serialized grouped metrics safe for every player subset sum."""
+    safe = grouped.copy()
+    raw = pd.to_numeric(safe["b"], errors="coerce")
+    saturated = raw.clip(lower=-_FLOAT32_MAX, upper=_FLOAT32_MAX).fillna(0.0)
+    cell_changed = safe["_metric_altered"].astype(bool) | raw.ne(saturated)
+    safe["b"] = saturated.astype(float)
+
+    absolute = safe["b"].abs().groupby(safe["bin"], sort=False).transform("sum")
+    scale = pd.Series(1.0, index=safe.index, dtype=float)
+    over = absolute > _FLOAT32_MAX
+    scale.loc[over] = _FLOAT32_MAX / absolute.loc[over]
+    if over.any():
+        safe.loc[over, "b"] = safe.loc[over, "b"] * scale.loc[over]
+        cell_changed.loc[over] = True
+
+    # Values round once more when the player loads them into Float32Array.
+    # If exact-ceiling scaling still overflows a sequential Float32 sum, add
+    # generous headroom for that bin and prove the representation again.
+    for bin_index, indexes in safe.groupby("bin", sort=False).groups.items():
+        del bin_index
+        values = safe.loc[indexes, "b"]
+        if _float32_abs_sum_is_finite(values):
+            continue
+        safe.loc[indexes, "b"] = values * 0.5
+        cell_changed.loc[indexes] = True
+        assert _float32_abs_sum_is_finite(safe.loc[indexes, "b"])
+
+    if count_by == "weight":
+        safe["c"] = safe["b"]
+    safe = safe.drop(columns=["_metric_altered"])
+    return safe, int(cell_changed.sum())
+
+
+def _human_bin_seconds(seconds: int) -> str:
+    """Render one tool-authored bin width for the degrade note."""
+    for unit, suffix in ((86_400, "d"), (3_600, "h"), (60, "m")):
+        if seconds >= unit and seconds % unit == 0:
+            return f"{seconds // unit}{suffix}"
+    return f"{seconds}s"
+
+
+def _format_trim_boundary(value: object) -> str:
+    """Render one validated retained-window epoch through the display owner."""
+    epoch = _coerce_timestamp(value)
+    if epoch is None:
+        raise ValueError("graph trim boundary must be a finite timestamp")
+    return fmt_timestamp(datetime.fromtimestamp(epoch, tz=timezone.utc))
+
+
+def _format_degrade_note(meta: dict[str, Any]) -> str | None:
+    """Compose the one artifact/stderr degradation disclosure."""
+    parts: list[str] = []
+    max_radius = int(meta["max_radius"])
+    natural_radius = int(meta["natural_radius"])
+    if max_radius < natural_radius:
+        parts.append(
+            f"capped max smoothing to +/-{max_radius} bins to stay interactive"
+        )
+    bin_seconds = int(meta["bin_seconds"])
+    requested_bin_seconds = int(meta["requested_bin_seconds"])
+    if bin_seconds > requested_bin_seconds:
+        parts.append(
+            f"binned to {_human_bin_seconds(bin_seconds)} to stay interactive"
+        )
+    effective_services = int(meta["effective_top_services"])
+    effective_hosts = int(meta["effective_top_hosts"])
+    if (
+        effective_services < int(meta["requested_top_services"])
+        or effective_hosts < int(meta["requested_top_hosts"])
+    ):
+        parts.append(
+            f"showing top {effective_services} services / {effective_hosts} hosts "
+            "to stay interactive"
+        )
+    trimmed_leading = int(meta.get("trimmed_leading", 0))
+    if trimmed_leading:
+        noun = plural(
+            trimmed_leading,
+            str(meta["trim_noun_singular"]),
+            str(meta["trim_noun_plural"]),
+        )
+        boundary = _format_trim_boundary(meta["trim_lead_epoch"])
+        parts.append(
+            f"trimmed {trimmed_leading} {noun} before the retained window "
+            "to focus the timeline "
+            f"(window begins {boundary})"
+        )
+    trimmed_trailing = int(meta.get("trimmed_trailing", 0))
+    if trimmed_trailing:
+        noun = plural(
+            trimmed_trailing,
+            str(meta["trim_noun_singular"]),
+            str(meta["trim_noun_plural"]),
+        )
+        boundary = _format_trim_boundary(meta["trim_trail_epoch"])
+        parts.append(
+            f"trimmed {trimmed_trailing} {noun} after the retained window "
+            "to focus the timeline "
+            f"(window ends {boundary})"
+        )
+    altered_cells = int(meta.get("altered_metric_cells", 0))
+    if altered_cells:
+        parts.append(
+            f"scaled {altered_cells} metric cells to the render ceiling"
+        )
+    if meta.get("date_window_widened"):
+        parts.append(
+            f"date window held no {meta['kind']} rows that started that day; "
+            "widened to the full archive"
+        )
+    if meta.get("missing_bytes"):
+        parts.append(
+            "conn.log has no byte counts; showing connection counts only"
+        )
+    return "; ".join(parts) or None
 
 
 def _payload_number(value: object, *, preserve_fraction: bool) -> int | float:
@@ -239,6 +529,7 @@ def build_payload(
     count_by: Literal["size", "weight"] = "size",
     row_count: int | None = None,
     window: tuple[float, float] | None = None,
+    trim_sparse_edges: bool = False,
 ) -> dict[str, Any]:
     """Build the common graph payload from a prepared canonical frame.
 
@@ -268,8 +559,11 @@ def build_payload(
 
     if count_by == "weight":
         df["metric"] = df["metric"].map(_coerce_weight)
+        df["_metric_altered"] = False
     else:
-        df["metric"] = df["metric"].map(_coerce_metric)
+        coerced = df["metric"].map(_coerce_metric_with_flag)
+        df["metric"] = coerced.map(lambda item: item[0])
+        df["_metric_altered"] = coerced.map(lambda item: item[1])
     for column in ("src", "dst"):
         df[column] = df[column].map(_clean_identity)
     df["svc"] = df["svc"].map(_clean_label)
@@ -286,48 +580,132 @@ def build_payload(
         if window_t0 is not None and window_t1 is not None:
             t0 = min(t0, window_t0, window_t1)
             t1 = max(t1, window_t0, window_t1)
-    bin_seconds = pick_bin_seconds(t1 - t0, config["target_bins"])
-    df["bin"] = ((df["ts"] - t0) // bin_seconds).astype(int)
-    bins = max(
-        int(df["bin"].max()) + 1,
-        math.floor((t1 - t0) / bin_seconds) + 1,
+    span_seconds = t1 - t0
+    requested_bin_seconds = pick_bin_seconds(
+        span_seconds, config["target_bins"],
     )
+    trim_result = _TrimResult(df)
+    if trim_sparse_edges and window is None:
+        trim_result = _trim_sparse_edges(
+            df,
+            t0=t0,
+            t1=t1,
+            bin_seconds=requested_bin_seconds,
+        )
+        if trim_result.trimmed_leading or trim_result.trimmed_trailing:
+            df = trim_result.frame
+            t0 = float(df["ts"].min())
+            t1 = float(df["ts"].max())
+            span_seconds = t1 - t0
+            requested_bin_seconds = pick_bin_seconds(
+                span_seconds, config["target_bins"],
+            )
+    rankings = {
+        column: _rank_values(df, column)
+        for column in ("src", "dst", "svc")
+    }
+    states: dict[tuple[int, int, int], _GroupState] = {}
 
-    keep_src = _top_values(df, "src", config["top_hosts"])
-    keep_dst = _top_values(df, "dst", config["top_hosts"])
-    keep_svc = _top_values(df, "svc", config["top_services"])
-    df["s"] = df["src"].where(df["src"].isin(keep_src), _OTHER)
-    df["d"] = df["dst"].where(df["dst"].isin(keep_dst), _OTHER)
-    df["v"] = df["svc"].where(df["svc"].isin(keep_svc), _OTHER)
+    def state_for(host_limit: int, service_limit: int, width: int) -> _GroupState:
+        key = (host_limit, service_limit, width)
+        if key not in states:
+            states[key] = _group_shape(
+                df,
+                rankings=rankings,
+                host_limit=host_limit,
+                service_limit=service_limit,
+                bin_seconds=width,
+                t0=t0,
+                t1=t1,
+                count_by=count_by,
+            )
+        return states[key]
 
-    count_aggregation = "sum" if count_by == "weight" else "size"
-    grouped = (
-        df.groupby(["s", "d", "v", "bin"], sort=False)
-        .agg(b=("metric", "sum"), c=("metric", count_aggregation))
-        .reset_index()
+    host_limit = int(config["top_hosts"])
+    service_limit = int(config["top_services"])
+    bin_seconds = requested_bin_seconds
+    state = state_for(host_limit, service_limit, bin_seconds)
+
+    if state.flow_count > GRAPH_MAX_FLOWS:
+        service_fit = _largest_fitting_limit(
+            service_limit,
+            lambda limit: state_for(host_limit, limit, bin_seconds).flow_count
+            <= GRAPH_MAX_FLOWS,
+        )
+        if service_fit is not None:
+            service_limit = service_fit
+        else:
+            service_limit = 1
+            host_fit = _largest_fitting_limit(
+                host_limit,
+                lambda limit: state_for(limit, service_limit, bin_seconds).flow_count
+                <= GRAPH_MAX_FLOWS,
+            )
+            # The 1/1 fold has at most eight grouped flows.
+            host_limit = 1 if host_fit is None else host_fit
+        state = state_for(host_limit, service_limit, bin_seconds)
+
+    def fold_for_pairs(current: _GroupState) -> _GroupState:
+        """Fold farther only when the terminal bin width cannot fit pairs."""
+        nonlocal host_limit, service_limit
+        service_fit = _largest_fitting_limit(
+            service_limit,
+            lambda limit: state_for(
+                host_limit, limit, current.bin_seconds,
+            ).payload_pairs <= GRAPH_MAX_PAYLOAD_PAIRS,
+        )
+        if service_fit is not None:
+            service_limit = service_fit
+        else:
+            service_limit = 1
+            host_fit = _largest_fitting_limit(
+                host_limit,
+                lambda limit: state_for(
+                    limit, service_limit, current.bin_seconds,
+                ).payload_pairs <= GRAPH_MAX_PAYLOAD_PAIRS,
+            )
+            host_limit = 1 if host_fit is None else host_fit
+        return state_for(host_limit, service_limit, current.bin_seconds)
+
+    while True:
+        while state.payload_pairs > GRAPH_MAX_PAYLOAD_PAIRS:
+            next_width = _next_bin_seconds(state.bin_seconds, span_seconds)
+            if next_width is None:
+                state = fold_for_pairs(state)
+                break
+            bin_seconds = next_width
+            state = state_for(host_limit, service_limit, bin_seconds)
+
+        flow_count = state.flow_count
+        denominator = 2 * flow_count * state.bins
+        radius_fit = math.floor(
+            (GRAPH_MAX_SMOOTH_OPS / denominator - 1) / 2
+        )
+        if radius_fit >= 6:
+            natural_radius = _slider_radius(state.bins)
+            max_radius = min(natural_radius, radius_fit)
+            break
+        next_width = _next_bin_seconds(state.bin_seconds, span_seconds)
+        if next_width is None:
+            # Production budgets make the 1/1/1 floor fit with wide margin.
+            natural_radius = _slider_radius(state.bins)
+            max_radius = natural_radius
+            break
+        bin_seconds = next_width
+        state = state_for(host_limit, service_limit, bin_seconds)
+
+    df = state.frame
+    keep_src = state.keep_src
+    keep_dst = state.keep_dst
+    keep_svc = state.keep_svc
+    bins = state.bins
+    bin_seconds = state.bin_seconds
+    grouped, altered_metric_cells = _saturate_grouped_metrics(
+        state.grouped, count_by=count_by,
     )
-    if (
-        not np.isfinite(grouped["b"]).all()
-        or (grouped["b"].abs() > _FLOAT32_MAX).any()
-    ):
-        raise _metric_error()
-    _assert_budgets(grouped, bins)
-
-    # Check all numeric series before materializing sparse [bin, value] pairs.
-    # A set of individually safe flows can still overflow the player total.
     totals_b = grouped.groupby("bin", sort=False)["b"].sum().reindex(
-        range(bins), fill_value=0
+        range(bins), fill_value=0,
     )
-    absolute_totals_b = grouped.assign(_abs_b=grouped["b"].abs()).groupby(
-        "bin", sort=False,
-    )["_abs_b"].sum().reindex(range(bins), fill_value=0)
-    if (
-        not np.isfinite(totals_b).all()
-        or (totals_b.abs() > _FLOAT32_MAX).any()
-        or not np.isfinite(absolute_totals_b).all()
-        or (absolute_totals_b > _FLOAT32_MAX).any()
-    ):
-        raise _metric_error()
 
     src_nodes = keep_src + ([_OTHER] if (df["s"] == _OTHER).any() else [])
     svc_nodes = keep_svc + ([_OTHER] if (df["v"] == _OTHER).any() else [])
@@ -416,6 +794,20 @@ def build_payload(
         "display_utc": bool(payload_meta_extra.pop("display_utc", False)),
         "default_window_note": default_window_note,
         **payload_meta_extra,
+        "requested_bin_seconds": int(requested_bin_seconds),
+        "requested_top_hosts": int(config["top_hosts"]),
+        "requested_top_services": int(config["top_services"]),
+        "effective_top_hosts": int(host_limit),
+        "effective_top_services": int(service_limit),
+        "natural_radius": int(natural_radius),
+        "max_radius": int(max_radius),
+        "altered_metric_cells": altered_metric_cells,
+        "trimmed_leading": trim_result.trimmed_leading,
+        "trimmed_trailing": trim_result.trimmed_trailing,
+        "trim_lead_epoch": trim_result.lead_boundary_epoch,
+        "trim_trail_epoch": trim_result.trail_boundary_epoch,
+        "date_window_widened": False,
+        "degrade_note": None,
         "weighted": count_by == "weight",
         "hunt_hint": None,
     }

@@ -41,7 +41,7 @@ _REQUIRED_COLUMNS: dict[str, set[str]] = {
 # Add new nullable canonical fields here, not to _REQUIRED_COLUMNS alone, so
 # _schema_warning never fires for expected-absent columns.
 _OPTIONAL_COLUMNS: dict[str, set[str]] = {
-    "conn": {"duration", "bytes", "conn_state", "local_orig"},
+    "conn": {"port", "proto", "duration", "bytes", "conn_state", "local_orig"},
     "dns":  {"resolver", "qtype", "rtt", "ttl", "rcode", "answer", "tc"},
     # syslog extended (Zeek-only): facility/severity carried as-is from Zeek
     # (uppercase enum strings, e.g. "DAEMON" / "INFO"). The digest consumes

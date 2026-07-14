@@ -94,23 +94,51 @@ def test_renderer_loads_the_packaged_player_resource() -> None:
 def test_player_labeled_readout_display_and_window_metadata_contracts() -> None:
     template = _player_template()
 
-    for label in ("source", "window", "records", "entities", "bin", "derivation", "hunt"):
+    for label in ("source", "records", "entities", "bin"):
         assert f'<span class="readout-label">{label}</span>' in template
+    assert '<span class="readout-label" id="meta-derivation-label">derivation</span>' in template
+    assert '<span class="readout-label" id="meta-window-label">window</span>' in template
     assert '$("meta-source").textContent = source;' in template
     assert '$("meta-source").title = source;' in template
-    assert 'const hunt = M.hunt_hint || "sigwood hunt PATH";' in template
-    assert '$("meta-hunt").textContent = hunt;' in template
-    assert '$("meta-hunt").title = hunt;' in template
+    assert '$("meta-source-dir").textContent = commonDir;' in template
+    assert '$("meta-source-dir").title = commonDir;' in template
+    assert '`${sample} + ${otherCount} ${otherCount === 1 ? "other" : "others"}`' in template
+    assert '$("meta-kind").textContent = M.kind || "graph";' in template
     assert '$("meta-entities-cell").hidden = !hasEntities;' in template
-    assert '`${fmtN(M.distinct_hosts)} ${M.hosts_label || "hosts seen"}`' in template
-    assert '$("meta-derivation-cell").hidden = !hasDerivation;' in template
+    assert '.replace(/\\s+seen$/i, "").trim()' in template
+    assert 'entityNoun.toLowerCase() === "entities"' in template
+    assert '? fmtN(M.distinct_hosts)' in template
+    assert ': `${fmtN(M.distinct_hosts)} ${entityNoun}`;' in template
+    assert '$("meta-derivation-cell").hidden = !hasDerivation && !hasDegrade;' in template
+    assert '$("meta-derivation-label").textContent = hasDerivation ? "derivation" : "note";' in template
     assert 'if (hasDerivation) $("meta-derivation").textContent = M.metric_note;' in template
-    assert '$("meta-window-note").hidden = !hasWindowNote;' in template
+    assert 'if (hasDegrade) $("meta-degrade").textContent = M.degrade_note;' in template
+    assert ".readout-value[hidden], .readout-sub[hidden] { display: none; }" in template
+    assert '$("meta-window-label").textContent = `window (${fmtDur(Math.round(M.t1 - M.t0))})`;' in template
+    assert '$("meta-window-start").textContent = fmtStamp(M.t0);' in template
+    assert '$("meta-window-end").textContent = fmtStamp(M.t1);' in template
+    assert (
+        "grid-template-columns: max-content minmax(160px,3fr)\n"
+        "    repeat(3,minmax(78px,auto)) minmax(120px,1fr);"
+    ) in template
+    readout = template.split('<div class="readout-grid">', 1)[1].split(
+        "</div>\n    <div class=\"readout-foot\"", 1,
+    )[0]
+    assert readout.index('class="readout-cell window"') < readout.index(
+        'class="readout-cell source"'
+    )
+    assert "border-bottom: 1px solid var(--border);" in template
+    assert "padding: 10px 18px 8px 18px;" in template
+    assert "meta-window-note" not in template
+    assert "meta-generator" not in template
+    assert "M.default_window_note" not in template
+    assert 'ctx.fillText(M.generator || "sigwood", W - 10, H - 8);' in template
     assert "srcmeta" not in template
     assert "winnote" not in template
     assert 'const clockPart = (d, local, utc) => M.display_utc ? d[utc]() : d[local]();' in template
     assert "const fmtStamp = sec => {" in template
-    assert "${fmtStamp(M.t0)} → ${fmtStamp(M.t1)} ${TZ_LABEL}" in template
+    assert "${fmtStamp(M.t0)} → ${fmtStamp(M.t1)} ${TZ_LABEL}" not in template
+    assert template.count("${TZ_LABEL}") == 1
     assert 'if (M.display_utc) d.setUTCHours(0, 0, 0, 0);' in template
     assert 'if (M.display_utc) return "UTC";' in template
 
@@ -132,8 +160,21 @@ def test_player_polish_tokens_cover_the_full_theme_and_speed_contract() -> None:
     assert template.count("--sother:#38c0c0;") == 2
     assert template.count("--clock: #0a6e2e;") == 2
     assert template.count("--clock: #7dff58;") == 2
+    assert template.count("--wordmark: #8a5320;") == 2
+    assert template.count("--wordmark: #e38e30;") == 2
     assert "color: var(--clock)" in template
+    assert "color: var(--wordmark)" in template
     assert '<span class="wm">sigwood</span>' in template
+    assert '<span class="kind-chip" id="meta-kind"></span>' in template
+    hleft = template.split('<div class="hleft">', 1)[1].split("</div>\n  <div class=\"readout\">", 1)[0]
+    assert hleft.count('id="meta-kind"') == 1
+    assert '<div class="mark"><span class="wm">sigwood</span><span class="dim">·</span><span>graph</span></div>' in hleft
+    assert '<div id="bigclock"><span id="bc-time">-:-:-</span></div>' in hleft
+    assert '<span id="bc-cal"><span id="bc-day"></span><span id="bc-sub"></span></span>' in hleft
+    assert "display: grid; grid-template-columns: auto auto; justify-content: start;" in template
+    assert "grid-column: 2; grid-row: 1; justify-self: start;" in template
+    assert "grid-column: 2; grid-row: 2;" in template
+    assert "border: 1.5px solid var(--accent)" in template
     assert 'font-family: Georgia, "Bookman Old Style", "Times New Roman", serif;' in template
     assert '$("bc-day").textContent = WEEKDAYS[clockPart(d, "getDay", "getUTCDay")];' in template
     assert "--sother:#a5adb8;" not in template
@@ -144,6 +185,40 @@ def test_player_polish_tokens_cover_the_full_theme_and_speed_contract() -> None:
     assert "span / r >= 4 && (r >= 300 || span / r <= 1800)" in template
     assert "Math.max(60, Math.round(span / 240))" in template
     assert "Math.abs(span / b - 240) < Math.abs(span / a - 240)" in template
+
+
+def test_player_radius_cap_uses_validated_numeric_sink_and_clips_keep_meta() -> None:
+    template = _player_template()
+
+    assert "const naturalRadius = Math.max(6, Math.round(B / 12));" in template
+    assert "Number.isInteger(M.max_radius) && M.max_radius >= 6" in template
+    assert "? M.max_radius : naturalRadius;" in template
+    assert "winEl.max = Math.min(naturalRadius, radiusCap);" in template
+    assert "winEl.max = Math.max(6, Math.round(B / 12));" not in template
+    assert "meta: { ...M," in template
+    assert "max_radius:" not in template.split("meta: { ...M,", 1)[1].split("},", 1)[0]
+    assert "degrade_note:" not in template.split("meta: { ...M,", 1)[1].split("},", 1)[0]
+
+
+def test_player_hunt_copy_uses_clipboard_with_selectable_fallback() -> None:
+    template = _player_template()
+
+    assert '$("meta-hunt-foot").hidden = !M.hunt_hint;' in template
+    assert ".readout-foot[hidden] { display: none; }" in template
+    assert "sigwood hunt PATH" not in template
+    assert "async function copyHunt()" in template
+    assert "const attempt = ++copyAttempt;" in template
+    assert "if (attempt !== copyAttempt) return;" in template
+    assert "await navigator.clipboard.writeText(M.hunt_hint);" in template
+    assert 'const area = document.createElement("textarea");' in template
+    assert "area.value = text;" in template
+    assert 'area.style.position = "fixed";' in template
+    assert 'area.style.left = "-10000px";' in template
+    assert "area.focus(); area.select(); area.setSelectionRange(0, area.value.length);" in template
+    assert 'document.execCommand("copy")' in template
+    assert "area.remove();" in template
+    assert 'button.textContent = copied ? "copied" : "copy failed";' in template
+    assert 'button.textContent = "copy hunt";' in template
 
 
 def test_clip_export_reuses_the_data_script_escape_before_reembedding() -> None:

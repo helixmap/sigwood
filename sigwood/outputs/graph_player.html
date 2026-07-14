@@ -10,7 +10,7 @@
        palette per mode - node identity is always direct-labeled) ---------- */
 :root {
   --bg: #ffffff; --fg: #1f2933; --muted: #677181; --border: #d7dde4;
-  --panel: #f6f8fa; --accent: #2a78d6; --clock: #0a6e2e;
+  --panel: #f6f8fa; --accent: #2a78d6; --clock: #0a6e2e; --wordmark: #8a5320;
   --s1:#2a78d6; --s2:#1baf7a; --s3:#eda100; --s4:#008300;
   --s5:#4a3aa7; --s6:#e34948; --s7:#e87ba4; --s8:#eb6834;
   --sx1:#8a94a3; --sx2:#6b7686; --sother:#0d9f9f;
@@ -19,7 +19,7 @@
 @media (prefers-color-scheme: dark) {
   :root {
     --bg: #14181d; --fg: #e6eaef; --muted: #9aa4b1; --border: #2a3038;
-    --panel: #1a2027; --accent: #3987e5; --clock: #7dff58;
+    --panel: #1a2027; --accent: #3987e5; --clock: #7dff58; --wordmark: #e38e30;
     --s1:#3987e5; --s2:#199e70; --s3:#c98500; --s4:#008300;
     --s5:#9085e9; --s6:#e66767; --s7:#d55181; --s8:#d95926;
     --sx1:#5c6673; --sx2:#79848f; --sother:#38c0c0;
@@ -28,7 +28,7 @@
 }
 :root[data-theme="light"] {
   --bg: #ffffff; --fg: #1f2933; --muted: #677181; --border: #d7dde4;
-  --panel: #f6f8fa; --accent: #2a78d6; --clock: #0a6e2e;
+  --panel: #f6f8fa; --accent: #2a78d6; --clock: #0a6e2e; --wordmark: #8a5320;
   --s1:#2a78d6; --s2:#1baf7a; --s3:#eda100; --s4:#008300;
   --s5:#4a3aa7; --s6:#e34948; --s7:#e87ba4; --s8:#eb6834;
   --sx1:#8a94a3; --sx2:#6b7686; --sother:#0d9f9f;
@@ -36,7 +36,7 @@
 }
 :root[data-theme="dark"] {
   --bg: #14181d; --fg: #e6eaef; --muted: #9aa4b1; --border: #2a3038;
-  --panel: #1a2027; --accent: #3987e5; --clock: #7dff58;
+  --panel: #1a2027; --accent: #3987e5; --clock: #7dff58; --wordmark: #e38e30;
   --s1:#3987e5; --s2:#199e70; --s3:#c98500; --s4:#008300;
   --s5:#9085e9; --s6:#e66767; --s7:#d55181; --s8:#d95926;
   --sx1:#5c6673; --sx2:#79848f; --sother:#38c0c0;
@@ -52,31 +52,52 @@ body {
 .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 header {
   display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: start; gap: 18px;
-  padding: 10px 18px 6px 18px;
+  border-bottom: 1px solid var(--border);
+  padding: 10px 18px 8px 18px;
 }
-.hleft { display: flex; flex-direction: column; gap: 3px; }
-header .mark { font-size: 17px; font-weight: 700; letter-spacing: .2px; }
+.hleft {
+  display: grid; grid-template-columns: auto auto; justify-content: start;
+  align-items: center; column-gap: 11px; row-gap: 3px;
+}
+header .mark {
+  display: flex; align-items: center; gap: 5px;
+  grid-column: 1; grid-row: 1;
+  font-size: 17px; font-weight: 700; letter-spacing: .2px;
+}
 header .mark .dim { color: var(--muted); font-weight: 400; }
 header .mark .wm {
   font-family: Georgia, "Bookman Old Style", "Times New Roman", serif;
-  font-size: 18px;
+  font-size: 18px; color: var(--wordmark);
+}
+.kind-chip {
+  display: inline-flex; align-items: center; min-height: 22px; padding: 0 6px;
+  grid-column: 2; grid-row: 1; justify-self: start;
+  border: 1.5px solid var(--accent); border-radius: 5px;
+  background: rgba(42,120,214,.10); color: var(--accent);
+  font: 700 17px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 /* The data clock gets top billing. */
 #bigclock {
   display: flex; align-items: center; gap: 11px; white-space: nowrap;
+  grid-column: 1; grid-row: 2;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 #bc-time {
   font-size: 30px; font-weight: 700; color: var(--clock); line-height: 1.05;
   letter-spacing: 1.5px; font-variant-numeric: tabular-nums;
 }
-#bc-cal { display: flex; flex-direction: column; line-height: 1.12; }
+#bc-cal {
+  display: flex; flex-direction: column; grid-column: 2; grid-row: 2;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  line-height: 1.12;
+}
 #bc-day { font-size: 16px; font-weight: 600; color: var(--clock); letter-spacing: .3px; }
 #bc-sub { font-size: 11.5px; color: var(--muted); letter-spacing: .6px; }
 .readout { min-width: 0; padding-top: 2px; }
 .readout-grid {
   display: grid;
-  grid-template-columns: minmax(145px,1.2fr) minmax(245px,2fr) repeat(4,minmax(78px,auto));
+  grid-template-columns: max-content minmax(160px,3fr)
+    repeat(3,minmax(78px,auto)) minmax(120px,1fr);
   gap: 6px 14px;
 }
 .readout-cell { min-width: 0; }
@@ -85,14 +106,24 @@ header .mark .wm {
   letter-spacing: .65px; line-height: 1.15; text-transform: uppercase;
 }
 .readout-value { display: block; margin-top: 2px; font-size: 12px; line-height: 1.2; }
+.readout-value[hidden], .readout-sub[hidden] { display: none; }
 .readout-clip { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.readout-sub {
+  display: block; margin-top: 2px; overflow: hidden; text-overflow: ellipsis;
+  color: var(--muted); font-size: 10px; line-height: 1.2; white-space: nowrap;
+}
+.window-stack { display: flex; flex-direction: column; gap: 1px; }
 .readout-foot {
-  display: flex; align-items: baseline; gap: 6px; min-width: 0;
+  display: flex; align-items: center; gap: 6px; min-width: 0;
   margin-top: 6px; color: var(--muted); font-size: 10.5px;
 }
-.readout-foot .readout-label { display: inline; flex: none; }
-#meta-hunt { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.readout-dot { flex: none; }
+.readout-foot[hidden] { display: none; }
+.copy-hunt {
+  border: 1px solid var(--border); border-radius: 4px; padding: 2px 7px;
+  background: var(--panel); color: var(--muted); cursor: pointer;
+  font: 600 10px/1.35 ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.copy-hunt:hover, .copy-hunt:focus-visible { border-color: var(--accent); color: var(--accent); }
 @media (max-width: 900px) {
   header { grid-template-columns: 1fr; gap: 8px; }
   .readout-grid { grid-template-columns: repeat(3,minmax(0,1fr)); }
@@ -188,22 +219,22 @@ input[type=range] { accent-color: var(--accent); width: 110px; }
 <body>
 <header>
   <div class="hleft">
-    <div class="mark"><span class="wm">sigwood</span> <span class="dim">·</span> graph</div>
-    <div id="bigclock"><span id="bc-time">-:-:-</span><span id="bc-cal"><span id="bc-day"></span><span id="bc-sub"></span></span></div>
+    <div class="mark"><span class="wm">sigwood</span><span class="dim">·</span><span>graph</span></div>
+    <span class="kind-chip" id="meta-kind"></span>
+    <div id="bigclock"><span id="bc-time">-:-:-</span></div>
+    <span id="bc-cal"><span id="bc-day"></span><span id="bc-sub"></span></span>
   </div>
   <div class="readout">
     <div class="readout-grid">
-      <div class="readout-cell source"><span class="readout-label">source</span><span class="readout-value readout-clip mono" id="meta-source"></span></div>
-      <div class="readout-cell window"><span class="readout-label">window</span><span class="readout-value mono" id="meta-window"></span></div>
+      <div class="readout-cell window"><span class="readout-label" id="meta-window-label">window</span><span class="readout-value window-stack mono"><span id="meta-window-start"></span><span id="meta-window-end"></span></span></div>
+      <div class="readout-cell source"><span class="readout-label">source</span><span class="readout-value readout-clip mono" id="meta-source"></span><span class="readout-sub mono" id="meta-source-dir"></span></div>
       <div class="readout-cell"><span class="readout-label">records</span><span class="readout-value mono" id="meta-count"></span></div>
       <div class="readout-cell" id="meta-entities-cell"><span class="readout-label">entities</span><span class="readout-value mono" id="meta-entities"></span></div>
       <div class="readout-cell"><span class="readout-label">bin</span><span class="readout-value mono" id="meta-bin"></span></div>
-      <div class="readout-cell" id="meta-derivation-cell"><span class="readout-label">derivation</span><span class="readout-value" id="meta-derivation"></span></div>
+      <div class="readout-cell" id="meta-derivation-cell"><span class="readout-label" id="meta-derivation-label">derivation</span><span class="readout-value" id="meta-derivation"></span><span class="readout-sub" id="meta-degrade"></span></div>
     </div>
-    <div class="readout-foot">
-      <span class="readout-label">hunt</span><span class="mono" id="meta-hunt"></span>
-      <span class="readout-dot">·</span><span id="meta-generator"></span>
-      <span class="readout-dot" id="meta-window-dot">·</span><span id="meta-window-note"></span>
+    <div class="readout-foot" id="meta-hunt-foot">
+      <button class="copy-hunt" id="copy-hunt" type="button" title="copy exact hunt command">copy hunt</button>
     </div>
   </div>
 </header>
@@ -783,6 +814,14 @@ function draw() {
   bars(SRC, g.sVal, g.L, xL, "L");
   bars(DST, g.dVal, g.R, xR, "R");
   if (mode === 3) bars(SVC, g.vVal, g.Mid, xM, "M");
+
+  ctx.save();
+  ctx.globalAlpha = 0.72;
+  ctx.fillStyle = TH.muted;
+  ctx.font = "10px ui-monospace, SFMono-Regular, Menlo, monospace";
+  ctx.textAlign = "right"; ctx.textBaseline = "bottom";
+  ctx.fillText(M.generator || "sigwood", W - 10, H - 8);
+  ctx.restore();
 }
 
 /* ---------- timeline (scrubber = strip chart + loop range) ---------- */
@@ -1378,28 +1417,43 @@ document.addEventListener("keydown", ev => {
 
 /* ---------- header meta + schema parametrization ---------- */
 {
-  const source = M.source || "graph source";
+  const sample = M.file_sample || M.source || "graph source";
+  const fileCount = Number.isInteger(M.file_count) ? M.file_count : (M.file_sample ? 1 : 0);
+  const otherCount = Math.max(0, fileCount - 1);
+  const source = otherCount
+    ? `${sample} + ${otherCount} ${otherCount === 1 ? "other" : "others"}`
+    : sample;
   $("meta-source").textContent = source;
   $("meta-source").title = source;
-  $("meta-window").textContent =
-    `${fmtStamp(M.t0)} → ${fmtStamp(M.t1)} ${TZ_LABEL} (${fmtDur(Math.round(M.t1 - M.t0))})`;
+  const commonDir = M.common_dir || "";
+  $("meta-source-dir").hidden = !commonDir;
+  if (commonDir) {
+    $("meta-source-dir").textContent = commonDir;
+    $("meta-source-dir").title = commonDir;
+  }
+  $("meta-window-label").textContent = `window (${fmtDur(Math.round(M.t1 - M.t0))})`;
+  $("meta-window-start").textContent = fmtStamp(M.t0);
+  $("meta-window-end").textContent = fmtStamp(M.t1);
   $("meta-count").textContent = `${fmtN(M.rows)} ${M.rows_label || "conns"}`;
   const hasEntities = M.distinct_hosts != null;
   $("meta-entities-cell").hidden = !hasEntities;
-  if (hasEntities)
-    $("meta-entities").textContent = `${fmtN(M.distinct_hosts)} ${M.hosts_label || "hosts seen"}`;
+  if (hasEntities) {
+    const entityNoun = String(M.hosts_label || "hosts").replace(/\s+seen$/i, "").trim();
+    $("meta-entities").textContent = entityNoun.toLowerCase() === "entities"
+      ? fmtN(M.distinct_hosts)
+      : `${fmtN(M.distinct_hosts)} ${entityNoun}`;
+  }
   $("meta-bin").textContent = fmtDur(BIN);
   const hasDerivation = Boolean(M.metric_note);
-  $("meta-derivation-cell").hidden = !hasDerivation;
+  const hasDegrade = Boolean(M.degrade_note);
+  $("meta-derivation-cell").hidden = !hasDerivation && !hasDegrade;
+  $("meta-derivation-label").textContent = hasDerivation ? "derivation" : "note";
+  $("meta-derivation").hidden = !hasDerivation;
+  $("meta-degrade").hidden = !hasDegrade;
   if (hasDerivation) $("meta-derivation").textContent = M.metric_note;
-  const hunt = M.hunt_hint || "sigwood hunt PATH";
-  $("meta-hunt").textContent = hunt;
-  $("meta-hunt").title = hunt;
-  $("meta-generator").textContent = `generated by ${M.generator || "sigwood"}`;
-  const hasWindowNote = Boolean(M.default_window_note);
-  $("meta-window-dot").hidden = !hasWindowNote;
-  $("meta-window-note").hidden = !hasWindowNote;
-  if (hasWindowNote) $("meta-window-note").textContent = M.default_window_note;
+  if (hasDegrade) $("meta-degrade").textContent = M.degrade_note;
+  $("meta-kind").textContent = M.kind || "graph";
+  $("meta-hunt-foot").hidden = !M.hunt_hint;
   if (M.mid_label) {
     $("modemid").textContent = "+" + M.mid_label;
     $("ranktab-mid").textContent = M.mid_label;
@@ -1416,6 +1470,43 @@ document.addEventListener("keydown", ev => {
   }
 }
 
+let copyRestoreTimer = null, copyAttempt = 0;
+function legacyCopy(text) {
+  const area = document.createElement("textarea");
+  const active = document.activeElement;
+  area.value = text;
+  area.setAttribute("readonly", "");
+  area.setAttribute("aria-hidden", "true");
+  area.style.position = "fixed";
+  area.style.left = "-10000px";
+  area.style.top = "0";
+  document.body.appendChild(area);
+  area.focus(); area.select(); area.setSelectionRange(0, area.value.length);
+  let copied = false;
+  try { copied = Boolean(document.execCommand("copy")); } catch {}
+  area.remove();
+  if (active instanceof HTMLElement) active.focus();
+  return copied;
+}
+async function copyHunt() {
+  if (!M.hunt_hint) return;
+  const attempt = ++copyAttempt;
+  const button = $("copy-hunt");
+  clearTimeout(copyRestoreTimer);
+  let copied = false;
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(M.hunt_hint);
+      copied = true;
+    }
+  } catch {}
+  if (!copied) copied = legacyCopy(M.hunt_hint);
+  if (attempt !== copyAttempt) return;
+  button.textContent = copied ? "copied" : "copy failed";
+  copyRestoreTimer = setTimeout(() => { button.textContent = "copy hunt"; }, 1400);
+}
+$("copy-hunt").addEventListener("click", copyHunt);
+
 /* ---------- boot ---------- */
 buildModel(32);
 readTheme();
@@ -1430,7 +1521,10 @@ resmooth();
     b.classList.toggle("on", (b.dataset.y === "log") === yLog));
 }
 buildSpeeds();
-winEl.max = Math.max(6, Math.round(B / 12));
+const naturalRadius = Math.max(6, Math.round(B / 12));
+const radiusCap = Number.isInteger(M.max_radius) && M.max_radius >= 6
+  ? M.max_radius : naturalRadius;
+winEl.max = Math.min(naturalRadius, radiusCap);
 winLabel();
 rebuildMask();
 setPlaying(playing);

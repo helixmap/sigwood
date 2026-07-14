@@ -110,6 +110,18 @@ rotates once a day, events written since midnight - which live only in the live
 window. An explicit `--since` with no `--until` includes them, and `--all` reads the
 whole archive.
 
+**A graph's entity count describes only the timeline it shows.** For bounded Zeek
+files, graph can remove a very small but distant sparse edge so the dense body fills
+the timeline. A host or service found only in that removed edge is therefore absent
+from the entity count as well as the plotted rows; the header notes how many rows
+were removed. This changes the shown-window census, not the underlying logs.
+
+**A resolver-windowed graph does not receive a second sparse-edge trim.** A configured
+Zeek directory already gets the normal default window, so graph deliberately
+leaves any sparse edge inside that retained window alone. Shell-expanded bounded
+files can receive the density trim when no timeframe or `--all` is supplied. This
+one-window rule avoids silently stacking two automatic window selections.
+
 **Syslog and Pi-hole timestamps carry no year and no timezone, so sigwood infers
 both.** The RFC 3164 / dnsmasq wall-clock format simply doesn't record them. sigwood
 stamps each line with the analysis machine's current year (rolling back one year only

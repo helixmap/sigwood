@@ -8,11 +8,12 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from sigwood.common.display import set_display_utc
 from sigwood.common.errors import GraphEmpty
 from sigwood.graph import _core
 from sigwood.graph._core import (
-    GRAPH_MAX_FLOWS,
-    _assert_budgets,
+    GRAPH_MAX_SMOOTH_OPS,
+    _format_degrade_note,
     attach_hunt_hint,
     build_payload,
     pick_bin_seconds,
@@ -39,17 +40,14 @@ def _conn_frame(**overrides: object) -> pd.DataFrame:
     return pd.DataFrame(columns)
 
 
-def _grouped(flow_count: int) -> pd.DataFrame:
-    return pd.DataFrame(
-        {
-            "s": [f"s{index}" for index in range(flow_count)],
-            "d": [f"d{index}" for index in range(flow_count)],
-            "v": ["tcp" for _ in range(flow_count)],
-            "bin": [0 for _ in range(flow_count)],
-            "b": [0 for _ in range(flow_count)],
-            "c": [1 for _ in range(flow_count)],
-        }
-    )
+def _timestamp_frame(counts: dict[int, int]) -> pd.DataFrame:
+    """Build a compact synthetic row population keyed by one-second bin."""
+    return pd.DataFrame({
+        "ts": np.concatenate([
+            np.full(count, float(bin_index))
+            for bin_index, count in counts.items()
+        ]),
+    })
 
 
 def test_validate_graph_config_merges_defaults_and_rejects_invalid_scalars() -> None:
@@ -80,7 +78,7 @@ def test_validate_graph_config_merges_defaults_and_rejects_invalid_scalars() -> 
 @pytest.mark.parametrize(
     ("builder", "frame", "missing"),
     [
-        (build_conn, _conn_frame(dst=["198.51.100.10", "198.51.100.11"]), "bytes"),
+        (build_conn, _conn_frame(), "dst"),
         (
             build_dns,
             pd.DataFrame(
@@ -102,6 +100,26 @@ def test_builders_report_missing_raw_fields_as_controlled_value_errors(
 
     with pytest.raises(ValueError, match=rf"\.log fields not found: {missing}"):
         builder(frame, config=_config(), source_label="sample.log")
+
+
+@pytest.mark.parametrize("missing_service", ["port", "proto"])
+def test_conn_missing_optional_columns_degrade_to_count_only_unknown_service(
+    missing_service: str,
+) -> None:
+    frame = _conn_frame().drop(columns=["bytes", missing_service])
+
+    payload = build_conn(
+        frame, config=_config(), source_label="conn.log",
+    )
+
+    assert payload["meta"]["single_metric"] is True
+    assert payload["meta"]["missing_bytes"] is True
+    assert payload["svcNodes"] == ["unknown"]
+    assert payload["totB"] == [1, 1]
+    assert payload["totC"] == [1, 1]
+    assert _format_degrade_note(payload["meta"]) == (
+        "conn.log has no byte counts; showing connection counts only"
+    )
 
 
 def test_graph_empty_covers_no_timestamped_rows_and_post_preparation_empty_dns() -> None:
@@ -167,6 +185,23 @@ def test_conn_payload_keeps_null_metrics_as_zero_and_collapses_icmp() -> None:
         "mid_label": "services",
         "mid_singular": "service",
         "metric_note": None,
+        "missing_bytes": False,
+        "trim_noun_singular": "connection",
+        "trim_noun_plural": "connections",
+        "requested_bin_seconds": 1,
+        "requested_top_hosts": 30,
+        "requested_top_services": 16,
+        "effective_top_hosts": 30,
+        "effective_top_services": 16,
+        "natural_radius": 6,
+        "max_radius": 6,
+        "altered_metric_cells": 0,
+        "trimmed_leading": 0,
+        "trimmed_trailing": 0,
+        "trim_lead_epoch": None,
+        "trim_trail_epoch": None,
+        "date_window_widened": False,
+        "degrade_note": None,
     }
     assert payload["svcNodes"] == ["443/tcp", "icmp"]
     assert payload["totB"] == [12, 0]
@@ -286,55 +321,353 @@ def test_bin_picker_uses_a_week_multiple_beyond_its_largest_nice_tier() -> None:
     assert pick_bin_seconds(0, 1) == 5
 
 
-def test_flow_budget_is_independent_of_the_slider_and_pair_budgets() -> None:
-    with pytest.raises(ValueError, match="graph too dense"):
-        _assert_budgets(_grouped(GRAPH_MAX_FLOWS + 1), bins=1)
+def test_sparse_edge_trim_matches_the_182_row_axis_decompression_shape() -> None:
+    tail = {index: 9 + (index < 2) for index in range(20)}
+    dense = {index: 2_300 for index in range(32, 120)}
+    frame = _timestamp_frame({**tail, **dense})
+
+    result = _core._trim_sparse_edges(
+        frame, t0=0.0, t1=119.0, bin_seconds=1,
+    )
+
+    assert result.trimmed_leading == 182
+    assert result.trimmed_trailing == 0
+    assert result.lead_boundary_epoch == 32.0
+    assert result.trail_boundary_epoch is None
+    assert len(result.frame) == 202_400
+    assert float(result.frame["ts"].min()) == 32.0
+    assert float(result.frame["ts"].max()) == 119.0
+    assert (119.0 - 32.0) / (119.0 - 0.0) == pytest.approx(0.731, abs=0.001)
 
 
-def test_smooth_budget_is_independent_of_flow_and_pair_budgets() -> None:
-    # 576 flows/1,440 bins are just inside the interaction ceiling; adding
-    # one otherwise-identical flow crosses it without touching other limits.
-    assert _core.GRAPH_MAX_SMOOTH_OPS == 400_000_000
-    _assert_budgets(_grouped(576), bins=1_440)
-    with pytest.raises(ValueError, match="graph too dense"):
-        _assert_budgets(_grouped(577), bins=1_440)
+@pytest.mark.parametrize(
+    ("dense_start", "trimmed"),
+    [(5, 0), (6, 1)],
+)
+def test_sparse_edge_trim_uses_axis_distance_for_a_singleton(
+    dense_start: int, trimmed: int,
+) -> None:
+    counts = {0: 1, **{
+        index: 2_000 for index in range(dense_start, dense_start + 8)
+    }}
+    frame = _timestamp_frame(counts)
+
+    result = _core._trim_sparse_edges(
+        frame,
+        t0=0.0,
+        t1=float(dense_start + 7),
+        bin_seconds=1,
+    )
+
+    assert result.trimmed_leading == trimmed
+    assert len(result.frame) == len(frame) - trimmed
+
+
+@pytest.mark.parametrize(
+    "counts",
+    [
+        {index: 100 for index in range(7)},
+        {index: 100 for index in range(10)},
+        {
+            **{index: 40 for index in range(10)},
+            **{index: 1_000 for index in range(10, 18)},
+        },
+        {
+            **{index: 11 for index in range(6)},
+            **{index: 1_250 for index in range(6, 14)},
+        },
+        {
+            **{index: 1_000 for index in range(8)},
+            **{index: 1 for index in range(8, 20)},
+            **{index: 1_000 for index in range(20, 28)},
+        },
+    ],
+)
+def test_sparse_edge_trim_noops_for_weak_or_interior_shapes(
+    counts: dict[int, int],
+) -> None:
+    frame = _timestamp_frame(counts)
+
+    result = _core._trim_sparse_edges(
+        frame,
+        t0=float(min(counts)),
+        t1=float(max(counts)),
+        bin_seconds=1,
+    )
+
+    assert result.frame is frame
+    assert result.trimmed_leading == 0
+    assert result.trimmed_trailing == 0
+
+
+def test_sparse_edge_trim_can_remove_both_outer_edges() -> None:
+    counts = {
+        0: 1,
+        **{index: 2_000 for index in range(10, 21)},
+        30: 1,
+    }
+    frame = _timestamp_frame(counts)
+
+    result = _core._trim_sparse_edges(
+        frame, t0=0.0, t1=30.0, bin_seconds=1,
+    )
+
+    assert result.trimmed_leading == 1
+    assert result.trimmed_trailing == 1
+    assert result.lead_boundary_epoch == 10.0
+    assert result.trail_boundary_epoch == 20.0
+    assert len(result.frame) == 22_000
+
+
+def test_sparse_edge_trim_uses_a_positional_mask_with_duplicate_indexes() -> None:
+    frame = _timestamp_frame({0: 1, **{index: 2_000 for index in range(6, 14)}})
+    frame.index = [index // 2 for index in range(len(frame))]
+
+    result = _core._trim_sparse_edges(
+        frame, t0=0.0, t1=13.0, bin_seconds=1,
+    )
+
+    assert result.trimmed_leading == 1
+    assert len(result.frame) == 16_000
+    assert float(result.frame["ts"].min()) == 6.0
+
+
+def test_sparse_edge_trim_precedes_ranking_and_discloses_same_minute_truthfully(
+    restore_display_utc,
+) -> None:
+    dense_timestamps = [
+        float(bin_index)
+        for bin_index in range(6, 14)
+        for _ in range(2_000)
+    ]
+    frame = pd.DataFrame({
+        "ts": [0.0, *dense_timestamps],
+        "src": ["192.0.2.250", *(["192.0.2.10"] * 16_000)],
+        "dst": ["198.51.100.250", *(["198.51.100.10"] * 16_000)],
+        "svc": ["tail", *(["dns"] * 16_000)],
+        "metric": [1_000_000_000, *([1] * 16_000)],
+    })
+    meta = {
+        "kind": "test",
+        "trim_noun_singular": "connection",
+        "trim_noun_plural": "connections",
+    }
+
+    payload = build_payload(
+        frame,
+        kind="test",
+        source_label="test.log",
+        config=_config(target_bins=20_000, top_hosts=1, top_services=1),
+        meta=meta,
+        default_window_note=None,
+        trim_sparse_edges=True,
+    )
+
+    assert meta == {
+        "kind": "test",
+        "trim_noun_singular": "connection",
+        "trim_noun_plural": "connections",
+    }
+    assert payload["meta"]["rows"] == 16_000
+    assert payload["meta"]["t0"] == 6.0
+    assert payload["meta"]["t1"] == 13.0
+    assert payload["meta"]["trimmed_leading"] == 1
+    assert payload["meta"]["trim_lead_epoch"] == 6.0
+    assert "192.0.2.250" not in [node["id"] for node in payload["srcNodes"]]
+    assert "tail" not in payload["svcNodes"]
+
+    set_display_utc(True)
+    assert _format_degrade_note(payload["meta"]) == (
+        "trimmed 1 connection before the retained window to focus the timeline "
+        "(window begins 1970-01-01 00:00 UTC)"
+    )
+
+    evidence_window = build_payload(
+        frame,
+        kind="test",
+        source_label="test.log",
+        config=_config(target_bins=20_000),
+        meta=meta,
+        default_window_note=None,
+        window=(0.0, 13.0),
+        trim_sparse_edges=True,
+    )
+    assert evidence_window["meta"]["rows"] == 16_001
+    assert evidence_window["meta"]["trimmed_leading"] == 0
+
+
+def test_trim_disclosure_handles_both_dns_edges_and_irregular_plural(
+    restore_display_utc,
+) -> None:
+    payload = build_dns(
+        pd.DataFrame({
+            "ts": [10.0],
+            "src": ["192.0.2.10"],
+            "query": ["example.test"],
+        }),
+        config=_config(),
+        source_label="dns.log",
+    )
+    payload["meta"].update({
+        "trimmed_leading": 1,
+        "trimmed_trailing": 2,
+        "trim_lead_epoch": 10.0,
+        "trim_trail_epoch": 20.0,
+        "altered_metric_cells": 3,
+    })
+
+    set_display_utc(True)
+    note = _format_degrade_note(payload["meta"])
+
+    assert note == (
+        "trimmed 1 query before the retained window to focus the timeline "
+        "(window begins 1970-01-01 00:00 UTC); "
+        "trimmed 2 queries after the retained window to focus the timeline "
+        "(window ends 1970-01-01 00:00 UTC); "
+        "scaled 3 metric cells to the render ceiling"
+    )
+    assert "querys" not in note
+    assert "started" not in note
+
+
+def test_trim_disclosure_uses_the_local_display_timezone(
+    pin_tz, restore_display_utc,
+) -> None:
+    pin_tz("Etc/GMT+6")
+    set_display_utc(False)
+    payload = build_conn(
+        _conn_frame(ts=[10.0, 11.0]),
+        config=_config(),
+        source_label="conn.log",
+    )
+    payload["meta"].update({
+        "trimmed_leading": 2,
+        "trim_lead_epoch": 10.0,
+    })
+
+    note = _format_degrade_note(payload["meta"])
+
+    assert note == (
+        "trimmed 2 connections before the retained window to focus the timeline "
+        "(window begins 1969-12-31 18:00 local)"
+    )
+
+
+def test_smooth_budget_caps_radius_without_folding_or_coarsening() -> None:
+    """The dns regression keeps all 636 flows and all 1,440 day bins."""
+    flow_count = 636
+    frame = pd.DataFrame({
+        "ts": [0.0 if index % 2 == 0 else 86_340.0 for index in range(flow_count)],
+        "src": [f"192.0.2.{index % 30 + 1}" for index in range(flow_count)],
+        "dst": [f"198.51.100.{index // 30 + 1}" for index in range(flow_count)],
+        "svc": ["dns"] * flow_count,
+        "metric": [1] * flow_count,
+    })
+
+    payload = build_payload(
+        frame,
+        kind="dns",
+        source_label="dns.log",
+        config=_config(target_bins=2000, top_hosts=30, top_services=16),
+        meta={"kind": "dns"},
+        default_window_note=None,
+    )
+
+    assert len(payload["flows"]) == flow_count
+    assert payload["meta"]["bins"] == 1_440
+    assert payload["meta"]["bin_seconds"] == 60
+    assert payload["meta"]["natural_radius"] == 120
+    assert payload["meta"]["max_radius"] == 108
+    assert payload["meta"]["effective_top_hosts"] == 30
+    assert payload["meta"]["effective_top_services"] == 16
+    assert _format_degrade_note(payload["meta"]) == (
+        "capped max smoothing to +/-108 bins to stay interactive"
+    )
+    assert (
+        2 * flow_count * 1_440 * (2 * payload["meta"]["max_radius"] + 1)
+        <= GRAPH_MAX_SMOOTH_OPS
+    )
+
+
+def test_flow_budget_uses_service_first_monotonic_max_fit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(_core, "GRAPH_MAX_FLOWS", 4)
+    monkeypatch.setattr(_core, "GRAPH_MAX_SMOOTH_OPS", 10**12)
+    frame = pd.DataFrame({
+        "ts": [0.0] * 10,
+        "src": ["192.0.2.10"] * 10,
+        "dst": ["198.51.100.10"] * 10,
+        "svc": [f"svc-{index}" for index in range(10)],
+        "metric": [1] * 10,
+    })
+
+    payload = build_payload(
+        frame, kind="test", source_label="test.log",
+        config=_config(top_hosts=1, top_services=10), meta={"kind": "test"},
+        default_window_note=None,
+    )
+
+    assert payload["meta"]["effective_top_services"] == 3
+    assert payload["meta"]["effective_top_hosts"] == 1
+    assert len(payload["flows"]) == 4
+    assert payload["svcNodes"][-1] == "(other)"
 
 
 def test_smooth_budget_uses_the_player_half_up_slider_rounding(
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A .5 slider tie matches JavaScript Math.round rather than banker rounding."""
     assert _core._slider_radius(318) == 27
-    # This threshold sits between the work produced by radius 26 and 27.
-    monkeypatch.setattr(_core, "GRAPH_MAX_SMOOTH_OPS", 130_000_000)
-    with pytest.raises(ValueError, match="graph too dense"):
-        _assert_budgets(_grouped(3_856), bins=318)
 
 
-def test_pair_budget_counts_zero_metric_series_before_pair_lists(monkeypatch) -> None:
-    # Keep the production threshold assertion visible while lowering only the
-    # test seam. Two all-zero bin rows emit four values: b and c pairs each.
+def test_pair_budget_coarsens_bins_before_allocating_sparse_pairs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     assert _core.GRAPH_MAX_PAYLOAD_PAIRS == 1_500_000
+    monkeypatch.setattr(_core, "GRAPH_MAX_PAYLOAD_PAIRS", 4)
+    monkeypatch.setattr(_core, "GRAPH_MAX_SMOOTH_OPS", 10**12)
+    frame = pd.DataFrame({
+        "ts": [float(index) for index in range(10)],
+        "src": ["192.0.2.10"] * 10,
+        "dst": ["198.51.100.10"] * 10,
+        "svc": ["dns"] * 10,
+        "metric": [0] * 10,
+    })
+
+    payload = build_payload(
+        frame, kind="test", source_label="test.log",
+        config=_config(target_bins=20), meta={"kind": "test"},
+        default_window_note=None,
+    )
+
+    assert payload["meta"]["requested_bin_seconds"] == 1
+    assert payload["meta"]["bin_seconds"] == 5
+    assert payload["meta"]["bins"] == 2
+    assert sum(len(flow["b"]) + len(flow["c"]) for flow in payload["flows"]) == 8
+
+
+def test_pair_descent_reaches_terminal_one_bin_beyond_nice_table(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setattr(_core, "GRAPH_MAX_PAYLOAD_PAIRS", 2)
     monkeypatch.setattr(_core, "GRAPH_MAX_SMOOTH_OPS", 10**12)
+    frame = pd.DataFrame({
+        "ts": [0.0, 604_801.0],
+        "src": ["192.0.2.10"] * 2,
+        "dst": ["198.51.100.10"] * 2,
+        "svc": ["dns"] * 2,
+        "metric": [1, 1],
+    })
 
-    with pytest.raises(ValueError, match="graph too dense"):
-        build_payload(
-            pd.DataFrame(
-                {
-                    "ts": [0.0, 1.0],
-                    "src": ["192.0.2.10", "192.0.2.10"],
-                    "dst": ["198.51.100.10", "198.51.100.10"],
-                    "svc": ["dns", "dns"],
-                    "metric": [0, 0],
-                }
-            ),
-            kind="test",
-            source_label="test.log",
-            config=_config(),
-            meta={},
-            default_window_note=None,
-        )
+    payload = build_payload(
+        frame, kind="test", source_label="test.log",
+        config=_config(), meta={"kind": "test"},
+        default_window_note=None,
+    )
+
+    assert payload["meta"]["bins"] == 1
+    assert payload["meta"]["bin_seconds"] == 1_209_600
+    assert payload["totC"] == [2]
 
 
 def test_explicit_one_bin_target_keeps_an_exact_endpoint_span_in_one_bin() -> None:
@@ -353,10 +686,9 @@ def test_explicit_one_bin_target_keeps_an_exact_endpoint_span_in_one_bin() -> No
 
     assert payload["meta"]["bins"] == 1
     assert payload["totC"] == [2]
-    _assert_budgets(_grouped(GRAPH_MAX_FLOWS), bins=1)
 
 
-def test_core_drops_out_of_range_timestamps_and_rejects_unsafe_metrics() -> None:
+def test_core_drops_out_of_range_timestamps_and_scales_unsafe_metrics() -> None:
     """Finite host-language magnitudes cannot create an invalid player payload."""
     with pytest.raises(GraphEmpty, match="no timestamped rows"):
         build_conn(
@@ -365,27 +697,61 @@ def test_core_drops_out_of_range_timestamps_and_rejects_unsafe_metrics() -> None
             source_label="conn.log",
         )
 
-    with pytest.raises(ValueError, match="metric values are too large"):
-        build_conn(
-            _conn_frame(bytes=[1e308, 1]),
-            config=_config(),
-            source_label="conn.log",
-        )
+    saturated = build_conn(
+        _conn_frame(bytes=[1e308, 1]),
+        config=_config(),
+        source_label="conn.log",
+    )
+    assert saturated["meta"]["altered_metric_cells"] == 1
+    assert np.isfinite(np.float32(saturated["flows"][0]["b"][1]))
 
     # A player filter can select only positive flows, so signed net totals do
-    # not prove Float32 safety. The absolute per-bin contribution is bounded.
-    with pytest.raises(ValueError, match="metric values are too large"):
-        build_payload(
-            pd.DataFrame({
-                "ts": [0.0, 0.0, 0.0],
-                "src": ["192.0.2.10", "192.0.2.11", "192.0.2.12"],
-                "dst": ["198.51.100.10"] * 3,
-                "svc": ["dns"] * 3,
-                "metric": [3e38, 3e38, -3e38],
-            }),
-            kind="test", source_label="test.log", config=_config(),
-            meta={}, default_window_note=None,
+    # not prove Float32 safety. The absolute per-bin flow contribution is
+    # scaled before serialization and survives player-style accumulation.
+    mixed = build_payload(
+        pd.DataFrame({
+            "ts": [0.0, 0.0, 0.0],
+            "src": ["192.0.2.10", "192.0.2.11", "192.0.2.12"],
+            "dst": ["198.51.100.10"] * 3,
+            "svc": ["dns"] * 3,
+            "metric": [3e38, 3e38, -3e38],
+        }),
+        kind="test", source_label="test.log", config=_config(),
+        meta={"kind": "test"}, default_window_note=None,
+    )
+    values = [flow["b"][1] for flow in mixed["flows"]]
+    absolute_total = np.float32(0.0)
+    for value in values:
+        absolute_total = np.float32(absolute_total + np.float32(abs(value)))
+    assert np.isfinite(absolute_total)
+    assert mixed["meta"]["altered_metric_cells"] == 3
+    assert "scaled 3 metric cells" in (_format_degrade_note(mixed["meta"]) or "")
+
+
+def test_metric_scaling_stays_finite_after_many_float32_rounding_steps() -> None:
+    """Builder proof reaches the player's rounded sequential accumulator."""
+    count = 1_000
+    frame = pd.DataFrame({
+        "ts": [0.0] * count,
+        "src": [f"192.0.2.{index % 250 + 1}" for index in range(count)],
+        "dst": [f"198.51.100.{index // 250 + 1}" for index in range(count)],
+        "svc": ["dns"] * count,
+        "metric": [1e38 if index % 2 == 0 else -1e38 for index in range(count)],
+    })
+
+    payload = build_payload(
+        frame, kind="test", source_label="test.log",
+        config=_config(top_hosts=500), meta={"kind": "test"},
+        default_window_note=None,
+    )
+
+    absolute_total = np.float32(0.0)
+    for flow in payload["flows"]:
+        absolute_total = np.float32(
+            absolute_total + np.float32(abs(flow["b"][1]))
         )
+    assert np.isfinite(absolute_total)
+    assert payload["meta"]["altered_metric_cells"] == count
 
 
 def test_build_payload_does_not_mutate_caller_metadata() -> None:
@@ -406,7 +772,6 @@ def test_build_payload_does_not_mutate_caller_metadata() -> None:
 
     assert meta == {"display_utc": True, "kind": "test"}
     assert payload["meta"]["display_utc"] is True
-    _assert_budgets(_grouped(GRAPH_MAX_FLOWS), bins=1)
 
 
 def test_evidence_window_extends_bins_without_leaking_meta_overrides() -> None:

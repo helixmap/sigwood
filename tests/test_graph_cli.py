@@ -81,6 +81,22 @@ def _pihole_directory(tmp_path: Path) -> Path:
     return source
 
 
+def _trim_candidate_conn_frame() -> pd.DataFrame:
+    dense_timestamps = [
+        float(bin_index)
+        for bin_index in range(6, 14)
+        for _ in range(2_000)
+    ]
+    return pd.DataFrame({
+        "ts": [0.0, *dense_timestamps],
+        "src": ["192.0.2.250", *(["192.0.2.10"] * 16_000)],
+        "dst": ["198.51.100.250", *(["198.51.100.10"] * 16_000)],
+        "port": [161, *([443] * 16_000)],
+        "proto": ["udp", *(["tcp"] * 16_000)],
+        "bytes": [1, *([1] * 16_000)],
+    })
+
+
 def test_graph_arbitrary_named_sniffed_conn_file_writes_exact_html(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -98,6 +114,9 @@ def test_graph_arbitrary_named_sniffed_conn_file_writes_exact_html(
     assert '"kind":"conn"' in html
     payload = json.loads(html.split("const DATA = ", 1)[1].split(";</script>", 1)[0])
     assert payload["meta"]["hunt_hint"] is None
+    assert payload["meta"]["file_sample"] == "captured-input"
+    assert payload["meta"]["file_count"] == 1
+    assert payload["meta"]["common_dir"] == str(tmp_path.absolute())
     assert "__SIGWOOD_GRAPH_DATA__" not in html
 
 
@@ -194,6 +213,69 @@ def test_graph_hunt_hint_quotes_inputs_and_gates_unrediscoverable_zeek_files(
         source_inputs=[matching],
         has_explicit_inputs=True,
     ) is not None
+
+
+def test_graph_discovered_file_meta_uses_deduped_loader_candidates(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "zeek"
+    source.mkdir()
+    primary = source / "conn.log"
+    rotation = source / "conn.log.1"
+    primary.write_text(_CONN_LINE, encoding="utf-8")
+    rotation.write_text(_CONN_LINE, encoding="utf-8")
+
+    meta = runner._graph_discovered_file_meta(
+        graph_kind_spec("conn"), [source, primary], trusted_files=[],
+    )
+
+    assert meta == {
+        "file_sample": "conn.log",
+        "file_count": 2,
+        "common_dir": str(source.absolute()),
+    }
+
+
+def test_graph_discovered_file_meta_cleans_trusted_file_provenance(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "odd\x1bdir"
+    source.mkdir()
+    trusted = source / "captured\x1binput"
+    trusted.write_text(_CONN_LINE, encoding="utf-8")
+
+    meta = runner._graph_discovered_file_meta(
+        graph_kind_spec("conn"), [trusted], trusted_files=[trusted],
+    )
+
+    assert meta["file_sample"] == "capturedinput"
+    assert meta["file_count"] == 1
+    assert meta["common_dir"] == str(source.absolute()).replace("\x1b", "")
+    assert "\x1b" not in "".join(str(value) for value in meta.values())
+
+
+def test_graph_discovered_file_meta_omits_cross_root_common_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first = tmp_path / "one" / "conn.log"
+    second = tmp_path / "two" / "conn.log"
+    monkeypatch.setattr(
+        loader,
+        "discover_for_source_key",
+        lambda *_args, **_kwargs: [first, second],
+    )
+    monkeypatch.setattr(
+        os.path,
+        "commonpath",
+        lambda _paths: (_ for _ in ()).throw(ValueError("different drives")),
+    )
+
+    meta = runner._graph_discovered_file_meta(
+        graph_kind_spec("conn"), [tmp_path], trusted_files=[],
+    )
+
+    assert meta["file_count"] == 2
+    assert meta["common_dir"] == ""
 
 
 def test_graph_pihole_dir_flag_and_bare_config_route_to_pihole(
@@ -546,7 +628,7 @@ def test_graph_contains_structured_identity_labels(
     ("replacement", "expected_rc", "expected_message", "expected_artifact"),
     [
         (('"ts":1779750000.0', '"ts":1e308'), 0, "no renderable records", False),
-        (('"orig_bytes":128', '"orig_bytes":1e308'), 1, "metric values are too large", False),
+        (('"orig_bytes":128', '"orig_bytes":1e308'), 0, None, True),
     ],
 )
 def test_graph_real_loader_contains_hostile_finite_numbers(
@@ -555,7 +637,7 @@ def test_graph_real_loader_contains_hostile_finite_numbers(
     capsys: pytest.CaptureFixture[str],
     replacement: tuple[str, str],
     expected_rc: int,
-    expected_message: str,
+    expected_message: str | None,
     expected_artifact: bool,
 ) -> None:
     """Finite numeric extremes become graph outcomes rather than tracebacks."""
@@ -568,9 +650,52 @@ def test_graph_real_loader_contains_hostile_finite_numbers(
 
     captured = capsys.readouterr()
     assert rc == expected_rc
-    assert expected_message in captured.err
+    if expected_message is not None:
+        assert expected_message in captured.err
     assert "traceback" not in captured.err.lower()
     assert target.exists() is expected_artifact
+    if expected_artifact:
+        payload = json.loads(
+            target.read_text(encoding="utf-8")
+            .split("const DATA = ", 1)[1]
+            .split(";</script>", 1)[0]
+        )
+        assert payload["meta"]["altered_metric_cells"] == 1
+        assert payload["meta"]["degrade_note"] == (
+            "scaled 1 metric cells to the render ceiling"
+        )
+        assert payload["meta"]["degrade_note"] not in captured.err
+
+
+def test_graph_real_loader_degrades_missing_conn_enrichment(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    source = tmp_path / "conn.log"
+    line = _CONN_LINE.replace(
+        '"id.resp_p":443,"proto":"tcp",', "",
+    ).replace(',"orig_bytes":128', "")
+    source.write_text(line, encoding="utf-8")
+    target = tmp_path / "graph.html"
+    _stub_config(monkeypatch, _config())
+
+    assert cli._main([
+        "graph", "--all", "-q", f"--out={target}", str(source),
+    ]) == 0
+
+    captured = capsys.readouterr()
+    payload = json.loads(
+        target.read_text(encoding="utf-8")
+        .split("const DATA = ", 1)[1]
+        .split(";</script>", 1)[0]
+    )
+    assert payload["meta"]["single_metric"] is True
+    assert payload["meta"]["degrade_note"] == (
+        "conn.log has no byte counts; showing connection counts only"
+    )
+    assert payload["svcNodes"] == ["unknown"]
+    assert "fields not found" not in captured.err
 
 
 def test_graph_permission_failure_outranks_sibling_artifact(
@@ -680,6 +805,52 @@ def test_run_graph_strict_permission_blocks_render_before_stream_write(
     with pytest.raises(GraphSourceUnreadable, match="1 of 2"):
         runner.run_graph(
             _config(), kind="conn", inputs=source, stream=stream, quiet=True,
+        )
+    assert stream.getvalue() == ""
+
+
+def test_run_graph_date_retry_rechecks_strict_permission_accounting(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, restore_display_utc,
+) -> None:
+    source = tmp_path / "2026-05-25"
+    source.mkdir()
+    denied = source / "conn.log"
+    denied.write_text(_CONN_LINE, encoding="utf-8")
+    frame = pd.DataFrame({
+        "ts": [1778972400.0],
+        "src": ["192.0.2.10"],
+        "dst": ["198.51.100.20"],
+        "port": [443],
+        "proto": ["tcp"],
+        "bytes": [1],
+    })
+    first = LoadResult(
+        logs={"conn*.log*": pd.DataFrame()}, record_counts={"conn*.log*": 0},
+    )
+    retry = LoadResult(
+        logs={"conn*.log*": frame},
+        record_counts={"conn*.log*": 1},
+        permission_skips={
+            "conn*.log*": PermissionSkipInfo(
+                discovered=2, denied=1, paths=(denied,),
+            )
+        },
+    )
+    from sigwood.common import loader
+
+    results = iter((first, retry))
+    monkeypatch.setattr(loader, "resolve_load_windows", lambda *args, **kwargs: [])
+    monkeypatch.setattr(
+        loader, "load_required_logs", lambda *args, **kwargs: next(results),
+    )
+    stream = io.StringIO()
+    config = _config()
+    config["sigwood"]["default_window"] = "7d"
+
+    with pytest.raises(GraphSourceUnreadable, match="1 of 2"):
+        runner.run_graph(
+            config, kind="conn", inputs=source, stream=stream,
+            quiet=True, use_utc=True,
         )
     assert stream.getvalue() == ""
 
@@ -982,31 +1153,359 @@ def test_run_graph_date_directory_respects_window_opt_outs(
     assert json.loads(blob)["meta"]["default_window_note"] is None
 
 
-def test_run_graph_date_directory_empty_explains_long_lived_connections(
+@pytest.mark.parametrize(
+    ("kind", "filename", "line"),
+    [
+        ("conn", "conn.log", _CONN_LINE),
+        ("dns", "dns.log", _DNS_LINE),
+    ],
+)
+def test_run_graph_date_directory_empty_retries_the_full_source(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    restore_display_utc,
+    kind: str,
+    filename: str,
+    line: str,
+) -> None:
+    source = tmp_path / "2026-05-25"
+    source.mkdir()
+    earlier = line.replace("1779750000.0", "1778972400.0")
+    (source / filename).write_text(earlier, encoding="utf-8")
+    config = _config()
+    config["sigwood"]["default_window"] = "7d"
+    stream = io.StringIO()
+    module = __import__(f"sigwood.graph.{kind}", fromlist=["build"])
+    actual_build = module.build
+    seen_trim_flags: list[bool] = []
+
+    def _capture(*args: object, **builder_kwargs: object) -> dict[str, Any]:
+        seen_trim_flags.append(bool(builder_kwargs["trim_sparse_edges"]))
+        return actual_build(*args, **builder_kwargs)
+
+    monkeypatch.setattr(module, "build", _capture)
+
+    runner.run_graph(
+        config,
+        kind=kind,
+        inputs=source,
+        stream=stream,
+        quiet=True,
+        use_utc=True,
+    )
+
+    payload = json.loads(
+        stream.getvalue().split("const DATA = ", 1)[1].split(";</script>", 1)[0]
+    )
+    assert payload["meta"]["rows"] == 1
+    assert payload["meta"]["default_window_note"] is None
+    assert payload["meta"]["date_window_widened"] is True
+    assert seen_trim_flags == [False]
+    assert payload["meta"]["degrade_note"] == (
+        f"date window held no {kind} rows that started that day; "
+        "widened to the full archive"
+    )
+
+
+def test_run_graph_operator_empty_window_does_not_auto_widen(
     tmp_path: Path, restore_display_utc,
 ) -> None:
     source = tmp_path / "2026-05-25"
     source.mkdir()
-    earlier = _CONN_LINE.replace("1779750000.0", "1779663600.0")
-    (source / "conn.log").write_text(earlier, encoding="utf-8")
-    config = _config()
-    config["sigwood"]["default_window"] = "7d"
+    (source / "conn.log").write_text(_CONN_LINE, encoding="utf-8")
 
-    with pytest.raises(GraphEmpty) as caught:
+    with pytest.raises(GraphEmpty, match="no records in selected window"):
         runner.run_graph(
-            config,
+            _config(),
             kind="conn",
             inputs=source,
+            since=datetime(2026, 6, 1, tzinfo=timezone.utc),
+            until=datetime(2026, 6, 2, tzinfo=timezone.utc),
             stream=io.StringIO(),
             quiet=True,
             use_utc=True,
         )
 
-    assert caught.value.reason == (
-        "date-named directory 2026-05-25 has no connections that started that day "
-        "(long-lived flows closing that day carry earlier start times) - "
-        "pass --all to include them"
+
+def test_run_graph_warn_above_never_prompts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "conn.log"
+    source.write_text(_CONN_LINE, encoding="utf-8")
+    config = _config()
+    config["sigwood"]["warn_above"] = 0
+    monkeypatch.setattr(
+        "builtins.input",
+        lambda *_args, **_kwargs: pytest.fail("graph must not prompt"),
     )
+
+    runner.run_graph(
+        config, kind="conn", inputs=source, stream=io.StringIO(), quiet=True,
+    )
+
+
+def test_run_graph_degrade_note_matches_quiet_gated_stderr(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str],
+) -> None:
+    source = tmp_path / "conn.log"
+    source.write_text(
+        _CONN_LINE.replace('"orig_bytes":128', '"orig_bytes":1e308'),
+        encoding="utf-8",
+    )
+    stream = io.StringIO()
+
+    runner.run_graph(
+        _config(), kind="conn", inputs=source, stream=stream,
+        quiet=False, show_progress=False,
+    )
+
+    payload = json.loads(
+        stream.getvalue().split("const DATA = ", 1)[1].split(";</script>", 1)[0]
+    )
+    note = payload["meta"]["degrade_note"]
+    assert note == "scaled 1 metric cells to the render ceiling"
+    assert capsys.readouterr().err.strip() == note
+
+
+def test_run_graph_bounded_files_trim_sparse_edge_and_share_one_note(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    restore_display_utc,
+) -> None:
+    source = tmp_path / "conn.log"
+    source.write_text("placeholder\n", encoding="utf-8")
+    frame = _trim_candidate_conn_frame()
+    result = LoadResult(
+        logs={"conn*.log*": frame}, record_counts={"conn*.log*": len(frame)},
+    )
+    monkeypatch.setattr(loader, "resolve_load_windows", lambda *args, **kwargs: [])
+    monkeypatch.setattr(loader, "load_required_logs", lambda *args, **kwargs: result)
+    config = _config()
+    config["sigwood"]["default_window"] = "7d"
+    stream = io.StringIO()
+
+    runner.run_graph(
+        config,
+        kind="conn",
+        inputs=source,
+        stream=stream,
+        quiet=False,
+        show_progress=False,
+        use_utc=True,
+    )
+
+    payload = json.loads(
+        stream.getvalue().split("const DATA = ", 1)[1].split(";</script>", 1)[0]
+    )
+    note = payload["meta"]["degrade_note"]
+    assert payload["meta"]["rows"] == 16_000
+    assert payload["meta"]["t0"] == 6.0
+    assert payload["meta"]["trimmed_leading"] == 1
+    assert note == (
+        "trimmed 1 connection before the retained window to focus the timeline "
+        "(window begins 1970-01-01 00:00 UTC)"
+    )
+    assert capsys.readouterr().err.strip() == note
+
+    runner.run_graph(
+        config,
+        kind="conn",
+        inputs=source,
+        stream=io.StringIO(),
+        quiet=True,
+        show_progress=False,
+        use_utc=True,
+    )
+    assert capsys.readouterr().err == ""
+
+
+def test_run_graph_real_bounded_file_route_enables_density_trim(
+    tmp_path: Path, restore_display_utc,
+) -> None:
+    base = 1_779_750_000.0
+    tail = tmp_path / "conn.log.1"
+    dense = tmp_path / "conn.log.2"
+
+    def _record(ts: float, uid: str) -> str:
+        return json.dumps({
+            "_path": "conn",
+            "ts": ts,
+            "uid": uid,
+            "id.orig_h": "192.0.2.10",
+            "id.resp_h": "198.51.100.20",
+            "id.resp_p": 443,
+            "proto": "tcp",
+            "duration": 1.0,
+            "orig_bytes": 1,
+        }) + "\n"
+
+    tail.write_text(_record(base, "TAIL"), encoding="utf-8")
+    dense.write_text(
+        "".join(
+            _record(base + bin_index, f"D{bin_index}-{row}")
+            for bin_index in range(6, 14)
+            for row in range(125)
+        ),
+        encoding="utf-8",
+    )
+    config = _config()
+    config["sigwood"]["default_window"] = "7d"
+    stream = io.StringIO()
+
+    runner.run_graph(
+        config,
+        kind="conn",
+        inputs=[tail, dense],
+        stream=stream,
+        quiet=True,
+        show_progress=False,
+        use_utc=True,
+    )
+
+    payload = json.loads(
+        stream.getvalue().split("const DATA = ", 1)[1].split(";</script>", 1)[0]
+    )
+    assert payload["meta"]["rows"] == 1_000
+    assert payload["meta"]["trimmed_leading"] == 1
+    assert payload["meta"]["t0"] == base + 6
+    assert payload["meta"]["default_window_note"] is None
+    assert payload["meta"]["degrade_note"].startswith(
+        "trimmed 1 connection before the retained window"
+    )
+
+
+def test_run_graph_resolver_window_prevents_a_second_density_trim(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, restore_display_utc,
+) -> None:
+    source = tmp_path / "zeek"
+    source.mkdir()
+    (source / "conn.log").write_text("placeholder\n", encoding="utf-8")
+    frame = _trim_candidate_conn_frame()
+    result = LoadResult(
+        logs={"conn*.log*": frame}, record_counts={"conn*.log*": len(frame)},
+    )
+    window = LoadWindow("zeek_dir", None, timedelta(days=7), False)
+    monkeypatch.setattr(
+        loader, "resolve_load_windows", lambda *args, **kwargs: [window],
+    )
+    monkeypatch.setattr(loader, "load_required_logs", lambda *args, **kwargs: result)
+    monkeypatch.setattr(loader, "apply_default_window", lambda *args, **kwargs: result)
+    config = _config()
+    config["sigwood"]["default_window"] = "7d"
+    stream = io.StringIO()
+
+    runner.run_graph(
+        config, kind="conn", inputs=source, stream=stream, quiet=True,
+    )
+
+    payload = json.loads(
+        stream.getvalue().split("const DATA = ", 1)[1].split(";</script>", 1)[0]
+    )
+    assert payload["meta"]["rows"] == 16_001
+    assert payload["meta"]["trimmed_leading"] == 0
+    assert payload["meta"]["degrade_note"] is None
+    assert payload["meta"]["default_window_note"] == default_window_advisory("7d")
+
+
+@pytest.mark.parametrize(
+    ("default_window", "kwargs", "expected"),
+    [
+        ("7d", {}, True),
+        ("all", {}, False),
+        ("7d", {"load_all": True}, False),
+        (
+            "7d",
+            {"since": datetime(2026, 1, 1, tzinfo=timezone.utc)},
+            False,
+        ),
+        (
+            "7d",
+            {"until": datetime(2026, 1, 2, tzinfo=timezone.utc)},
+            False,
+        ),
+    ],
+)
+def test_run_graph_threads_tail_trim_from_original_operator_intent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    default_window: str,
+    kwargs: dict[str, object],
+    expected: bool,
+) -> None:
+    source = tmp_path / "conn.log"
+    source.write_text("placeholder\n", encoding="utf-8")
+    frame = pd.DataFrame({
+        "ts": [1.0],
+        "src": ["192.0.2.10"],
+        "dst": ["198.51.100.10"],
+        "port": [443],
+        "proto": ["tcp"],
+        "bytes": [1],
+    })
+    result = LoadResult(logs={"conn*.log*": frame}, record_counts={"conn*.log*": 1})
+    monkeypatch.setattr(loader, "resolve_load_windows", lambda *args, **kwargs: [])
+    monkeypatch.setattr(loader, "load_required_logs", lambda *args, **kwargs: result)
+
+    from sigwood.graph import conn as conn_graph
+
+    actual_build = conn_graph.build
+    seen: list[bool] = []
+
+    def _capture(*args: object, **builder_kwargs: object) -> dict[str, Any]:
+        seen.append(bool(builder_kwargs["trim_sparse_edges"]))
+        return actual_build(*args, **builder_kwargs)
+
+    monkeypatch.setattr(conn_graph, "build", _capture)
+    config = _config()
+    config["sigwood"]["default_window"] = default_window
+
+    runner.run_graph(
+        config, kind="conn", inputs=source, stream=io.StringIO(), quiet=True,
+        **kwargs,
+    )
+
+    assert seen == [expected]
+
+
+def test_run_graph_dns_smooth_breach_sets_radius_only_degrade_note(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    source = tmp_path / "dns.log"
+    source.write_text("placeholder\n", encoding="utf-8")
+    flow_count = 636
+    frame = pd.DataFrame({
+        "ts": [0.0 if index % 2 == 0 else 86_340.0 for index in range(flow_count)],
+        "src": [f"192.0.2.{index % 30 + 1}" for index in range(flow_count)],
+        "query": [f"d{index // 30}.test" for index in range(flow_count)],
+        "qtype": [1] * flow_count,
+    })
+    result = LoadResult(
+        logs={"dns*.log*": frame}, record_counts={"dns*.log*": flow_count},
+    )
+    from sigwood.common import loader
+
+    monkeypatch.setattr(loader, "load_required_logs", lambda *args, **kwargs: result)
+    stream = io.StringIO()
+
+    runner.run_graph(
+        _config(), kind="dns", inputs=source, stream=stream,
+        quiet=False, show_progress=False,
+    )
+
+    payload = json.loads(
+        stream.getvalue().split("const DATA = ", 1)[1].split(";</script>", 1)[0]
+    )
+    assert len(payload["flows"]) == flow_count
+    assert payload["meta"]["bins"] == 1_440
+    assert payload["meta"]["bin_seconds"] == 60
+    assert payload["meta"]["max_radius"] == 108
+    assert payload["meta"]["degrade_note"] == (
+        "capped max smoothing to +/-108 bins to stay interactive"
+    )
+    assert capsys.readouterr().err.strip() == payload["meta"]["degrade_note"]
 
 
 def test_run_graph_pihole_skips_implicit_window_but_keeps_explicit_timeframe(

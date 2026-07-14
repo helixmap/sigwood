@@ -79,6 +79,7 @@ def build(
     source_label: str,
     default_window_note: str | None = None,
     display_utc: bool = False,
+    trim_sparse_edges: bool = False,
 ) -> dict[str, Any]:
     """Build a weighted-query Pi-hole graph from canonical dnsmasq rows."""
     require_columns(frame, {"ts", "src", "query", "event_type"}, "pihole")
@@ -124,6 +125,7 @@ def build(
         count_by="weight",
         row_count=len(query_rows),
         window=evidence_window,
+        trim_sparse_edges=trim_sparse_edges,
         meta={
             "kind": "pihole",
             "single_metric": True,
@@ -132,6 +134,8 @@ def build(
             "mid_label": "dispositions",
             "mid_singular": "disposition",
             "metric_note": "weighted by disposition share",
+            "trim_noun_singular": "query",
+            "trim_noun_plural": "queries",
             "display_utc": display_utc,
         },
     )

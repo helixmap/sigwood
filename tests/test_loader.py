@@ -179,7 +179,7 @@ def test_load_required_logs_warns_on_missing_canonical_fields(tmp_path: Path) ->
 
     assert result.record_counts == {"conn*.log*": 1}
     assert result.warnings == [
-        "conn.log fields not found: dst, port, proto - is this a Zeek conn.log?"
+        "conn.log fields not found: dst - is this a Zeek conn.log?"
     ]
 
 
@@ -243,16 +243,24 @@ def test_schema_warning_does_not_fire_for_missing_duration() -> None:
     assert _schema_warning("conn*.log*", df) is None
 
 
-def test_schema_warning_fires_for_missing_required_conn_field() -> None:
-    """Optional-column subtraction must not suppress warnings for truly required fields."""
+def test_schema_warning_does_not_fire_for_missing_graph_enrichment() -> None:
+    """Port and protocol are optional enrichment at the canonical boundary."""
     df = pd.DataFrame([{
         "src": "192.0.2.10", "dst": "198.51.100.20",
-        "port": 443, "ts": 1_779_750_000.0, "duration": 600.0,
-        # proto deliberately absent
+        "ts": 1_779_750_000.0, "duration": 600.0,
+    }])
+    assert _schema_warning("conn*.log*", df) is None
+
+
+def test_schema_warning_fires_for_missing_required_conn_field() -> None:
+    """Optional-column subtraction retains the conn spine warning."""
+    df = pd.DataFrame([{
+        "src": "192.0.2.10", "port": 443, "proto": "tcp",
+        "ts": 1_779_750_000.0, "duration": 600.0,
     }])
     warning = _schema_warning("conn*.log*", df)
     assert warning is not None
-    assert "proto" in warning
+    assert "dst" in warning
 
 
 def test_load_required_logs_routes_pihole_dir(tmp_path: Path) -> None:

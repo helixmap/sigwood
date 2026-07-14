@@ -8,6 +8,7 @@ import pandas as pd
 import pytest
 
 from sigwood.common.errors import GraphEmpty
+from sigwood.graph import _core
 from sigwood.graph._core import validate_config
 from sigwood.graph.pihole import _DISPOSITIONS, build
 from sigwood.outputs.graph import render_graph_html
@@ -85,7 +86,9 @@ def test_pihole_builder_keeps_three_way_fractional_shares_nonzero() -> None:
     assert all(value != 0 for flow in payload["flows"] for value in flow["c"][1::2])
 
 
-def test_pihole_evidence_window_includes_a_late_disposition_tail() -> None:
+def test_pihole_evidence_window_includes_a_late_disposition_tail(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """The replay frame retains attribution evidence after the final query."""
     rows = pd.DataFrame(
         [
@@ -94,7 +97,19 @@ def test_pihole_evidence_window_includes_a_late_disposition_tail() -> None:
         ]
     )
 
-    payload = build(rows, config=validate_config({}), source_label="pihole.log")
+    monkeypatch.setattr(
+        _core,
+        "_trim_sparse_edges",
+        lambda *args, **kwargs: pytest.fail(
+            "Pi-hole evidence windows must bypass sparse-edge trimming"
+        ),
+    )
+    payload = build(
+        rows,
+        config=validate_config({}),
+        source_label="pihole.log",
+        trim_sparse_edges=True,
+    )
 
     assert payload["meta"]["t0"] == 10.0
     assert payload["meta"]["t1"] == 20.0

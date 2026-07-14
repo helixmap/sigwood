@@ -86,6 +86,11 @@ the allowlist and renders facts rather than verdicts: it shows you a flow, never
 calls, and it ends with the exact `sigwood hunt` command for the same log - so a graph is a
 hook into the hunt, not a replacement for it.
 
+A valid log always yields a graph. A very busy one that is too dense to animate smoothly
+degrades rather than failing - it caps the smoothing, coarsens the time bins, or folds to the
+busiest hosts and services, and notes what it did in the header - so you always get an artifact
+to look at instead of an error.
+
 ### What log sources can it read?
 
 Zeek (`conn.log`, `dns.log`, `syslog.log`, in NDJSON or TSV, flat or date-partitioned

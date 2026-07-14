@@ -65,6 +65,7 @@ def build(
     source_label: str,
     default_window_note: str | None = None,
     display_utc: bool = False,
+    trim_sparse_edges: bool = False,
 ) -> dict[str, Any]:
     """Build a single-metric DNS graph from canonical DNS columns."""
     require_columns(frame, {"ts", "src", "query"}, "dns")
@@ -98,6 +99,7 @@ def build(
         source_label=source_label,
         config=config,
         default_window_note=default_window_note,
+        trim_sparse_edges=trim_sparse_edges,
         meta={
             "kind": "dns",
             "single_metric": True,
@@ -106,6 +108,8 @@ def build(
             "mid_label": mid_label,
             "mid_singular": mid_singular,
             "metric_note": f"rolled to {_LEVEL_PHRASE[config['domain_level']]}",
+            "trim_noun_singular": "query",
+            "trim_noun_plural": "queries",
             "display_utc": display_utc,
         },
     )

@@ -1974,6 +1974,54 @@ def _graph_source_label(paths: Sequence[Path]) -> str:
     return ", ".join(strip_control(path.name) for path in paths)
 
 
+def _graph_discovered_file_meta(
+    spec: GraphKindSpec,
+    source_inputs: Sequence[Path],
+    *,
+    trusted_files: Sequence[Path],
+) -> dict[str, str | int]:
+    """Return graph provenance from the loader's discovery candidate universe."""
+    from sigwood.common import loader
+
+    trusted_resolved = {loader._safe_resolve(path) for path in trusted_files}
+    per_input: list[list[Path]] = []
+    for path in source_inputs:
+        if loader._safe_resolve(path) in trusted_resolved:
+            per_input.append([path])
+            continue
+        try:
+            per_input.append(
+                loader.discover_for_source_key(
+                    spec.source_key, path, spec.pattern,
+                )
+            )
+        except OSError:
+            per_input.append([])
+
+    discovered = sorted(
+        loader._union_dedupe(per_input),
+        key=lambda path: os.path.abspath(path),
+    )
+    if not discovered:
+        return {"file_sample": "", "file_count": 0, "common_dir": ""}
+
+    absolute = [os.path.abspath(path) for path in discovered]
+    sample = strip_control(Path(absolute[0]).name)
+    try:
+        common = (
+            str(Path(absolute[0]).parent)
+            if len(absolute) == 1
+            else os.path.commonpath(absolute)
+        )
+    except (OSError, ValueError):
+        common = ""
+    return {
+        "file_sample": sample,
+        "file_count": len(discovered),
+        "common_dir": strip_control(common),
+    }
+
+
 def _graph_date_dir_window(
     source_inputs: Sequence[Path], *, use_utc: bool,
 ) -> tuple[datetime, datetime] | None:
@@ -2062,10 +2110,16 @@ def run_graph(
     :class:`LoadResult`, applies the shared Zeek default-window policy, builds a
     payload without allowlist construction, and writes one exact HTML target or
     supplied stream. There is deliberately no ``dry_run`` argument here.
+    ``skip_confirm`` remains a compatibility no-op because graph density is
+    bounded by build-time degradation instead of a record-count prompt.
     """
     from sigwood.common import loader
     from sigwood.graph import get_builder
-    from sigwood.graph._core import attach_hunt_hint, validate_config
+    from sigwood.graph._core import (
+        _format_degrade_note,
+        attach_hunt_hint,
+        validate_config,
+    )
     from sigwood.outputs.graph import render_graph_html
 
     validate_table_sections(config, ("sigwood", "graph"))
@@ -2107,6 +2161,7 @@ def run_graph(
     # it holds for both dated-select and flat-trim window shapes.
     cfg_sigwood = config.get("sigwood", {})
     default_spec = cfg_sigwood.get("default_window", "7d")
+    operator_since, operator_until = since, until
     date_dir_note: str | None = None
     if (
         spec.source_key == "zeek_dir"
@@ -2134,6 +2189,14 @@ def run_graph(
             until=until,
             load_all=load_all,
         )
+    allow_tail_trim = (
+        operator_since is None
+        and operator_until is None
+        and not load_all
+        and parse_window_span(default_spec) is not None
+        and date_dir_note is None
+        and not load_windows
+    )
     default_window_note = date_dir_note
     source_windows: dict[str, tuple[datetime | None, datetime | None]] | None = None
     flat_span: timedelta | None = None
@@ -2173,29 +2236,35 @@ def run_graph(
         raise GraphSourceUnreadable(kind, source_label, permission_error)
 
     frame = load_result.logs.get(spec.pattern)
+    date_window_widened = False
+    if (frame is None or frame.empty) and date_dir_note is not None:
+        retry_result = loader.load_required_logs(
+            needed_logs,
+            source_dirs,
+            None,
+            None,
+            show_progress=show_progress and not quiet,
+            trusted_files={spec.pattern: trusted_files},
+        )
+        for warning in retry_result.warnings:
+            _estderr(warning)
+        retry_permission_error = _permission_denied_run_error(
+            retry_result, needed_logs, strict=True,
+        )
+        if retry_permission_error is not None:
+            raise GraphSourceUnreadable(
+                kind, source_label, retry_permission_error,
+            )
+        load_result = retry_result
+        frame = load_result.logs.get(spec.pattern)
+        if frame is not None and not frame.empty:
+            default_window_note = None
+            date_window_widened = True
+
     if frame is None or frame.empty:
         selected = since is not None or until is not None or bool(load_windows)
-        if date_dir_note is not None and kind == "conn":
-            reason = (
-                f"date-named directory {source_inputs[0].name} has no connections "
-                "that started that day (long-lived flows closing that day carry "
-                "earlier start times) - pass --all to include them"
-            )
-        else:
-            reason = "no records in selected window" if selected else "no parseable records"
+        reason = "no records in selected window" if selected else "no parseable records"
         raise GraphEmpty(kind, source_label, reason)
-
-    total_records = sum(load_result.record_counts.values())
-    warn_above: int = cfg_sigwood.get("warn_above", 10_000_000)
-    if total_records > warn_above and not skip_confirm:
-        try:
-            answer = input(
-                f"{total_records:,} records found. This may take a while. Continue? [y/N] "
-            )
-        except (EOFError, KeyboardInterrupt):
-            answer = ""
-        if answer.strip().lower() not in ("y", "yes"):
-            raise ExportAborted("sigwood: aborted by user")
 
     with liveness(f"building {kind} graph", enabled=not quiet):
         payload = builder(
@@ -2204,7 +2273,18 @@ def run_graph(
             source_label=source_label,
             default_window_note=default_window_note,
             display_utc=use_utc,
+            trim_sparse_edges=allow_tail_trim,
         )
+    payload["meta"]["date_window_widened"] = date_window_widened
+    degrade_note = _format_degrade_note(payload["meta"])
+    payload["meta"]["degrade_note"] = degrade_note
+    if degrade_note is not None and not quiet:
+        _estderr(degrade_note)
+    payload["meta"].update(
+        _graph_discovered_file_meta(
+            spec, source_inputs, trusted_files=trusted_files,
+        )
+    )
     attach_hunt_hint(
         payload,
         _graph_hunt_hint(

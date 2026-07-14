@@ -1,7 +1,8 @@
+<!--
 <p align="center">
   <img src="https://raw.githubusercontent.com/helixmap/sigwood/main/docs/img/sigwood-logo.png" width="300" alt="sigwood">
 </p>
-
+-->
 [![CI](https://github.com/helixmap/sigwood/actions/workflows/ci.yml/badge.svg)](https://github.com/helixmap/sigwood/actions/workflows/ci.yml)
 
 sigwood is a local-first, command-line threat-hunting tool for self-hosters. Point it at

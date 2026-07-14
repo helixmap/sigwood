@@ -89,7 +89,7 @@ The generated logs live under `demo/corpus/` (gitignored); the full walkthrough 
 full run against that corpus, and the same findings as an HTML report:
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/helixmap/sigwood/main/docs/img/demo.svg" alt="sigwood hunting one compromised host across conn, DNS, and syslog - synthetic RFC 5737 data with random-label demo domains">
+  <img src="https://raw.githubusercontent.com/helixmap/sigwood/main/docs/img/demo.svg" width="760" alt="sigwood hunting one compromised host across conn, DNS, and syslog - synthetic RFC 5737 data with random-label demo domains">
 </p>
 <p align="center">
   <img src="https://raw.githubusercontent.com/helixmap/sigwood/main/docs/img/report.png"

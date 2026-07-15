@@ -10,16 +10,15 @@ logs you already have - Zeek, Pi-hole/dnsmasq, syslog, or CloudTrail - and it pr
 what's in them, then runs a handful of detectors over them: beaconing, suspicious DNS, port
 scans, rare syslog events, over-long connections, and unusual CloudTrail activity.
 
-**Not a SIEM. Not an agent. Not magic.** Nothing to deploy - no database, no daemon, no
-account. Install it, point it at a directory of logs, read the output. It runs on your own
-box, over logs at rest, and your logs never leave your machine - no telemetry, no phone-home,
-no cloud.
+**Not a SIEM. Not an agent. Not magic.** Nothing to deploy - no database, no daemon, no network, 
+no account. Install it, point it at a directory of logs, read the output. It runs on your own
+box, over logs at rest, and your logs never have to leave your machine.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](#license)
 ![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)
 
 > **Status: early / pre-1.0 (`0.2.1`).** The six detectors work and are covered by tests,
-> but things may well change before 1.0. Feedback is welcome.
+> but things may change before 1.0. Feedback is welcome.
 
 <p align="center">
   <b><a href="#quick-start">Install</a></b> ·
@@ -63,7 +62,7 @@ Read top to bottom, that is a story: an internal host making high-entropy lookup
 throwaway domain, calling out to two external IPs on a fixed schedule, and a root SSH login
 from one of those same IPs. A finding means "unusual for **your** network," not "known-bad" -
 it is a lead to look at, not a verdict. Add `-v` for the evidence behind each score and the
-steps to run it down.
+next steps to run it down.
 
 The usual invocations:
 
@@ -107,15 +106,18 @@ full run against that corpus, and the same findings as an HTML report:
   per-principal z-score composite. Every run names the technique each detector used, and `-v`
   shows the evidence behind a finding.
 - **Big-tent ingestion.** One tool reads Zeek (NDJSON *and* TSV, flat *or* date-partitioned
-  directories), Pi-hole/dnsmasq, flat RFC 3164 syslog (Debian *and* RHEL/Fedora layouts), and
+  directories), Pi-hole/dnsmasq, flat syslog (Debian *and* RHEL/Fedora layouts), and
   CloudTrail. Rotation and `.gz`/`.bz2`/`.xz` compression are handled for you.
-- **Orient before you hunt.** `sigwood digest FILE` reports facts about a log - time span, top
-  talkers, the shape of the mix - so you know where to point the detectors. No verdicts.
+- **Orient before you hunt.** `sigwood digest FILE` reports facts about a log -
+  time span, top talkers, the shape of the mix - so you know where to point the
+  detectors. `sigwood graph FILE` creates a visual representation of the
+  activity on a log. sigwood gives you facts, not verdicts.
 - **Filter before analyze.** A curated allowlist of known-harmless infrastructure ships on and
   drops that noise *before* any detector sees the data - toggle a list off by name, or drop the
   whole thing with `--no-allowlist`. Every run reports how much it hid.
-- **Pick the output for the job.** A **report** to read (`text`, `html`, `pdf`), a **lossless
-  feed** to script against (`json`), or a **worklist** to triage from (`csv`).
+- **Pick the output for the job.** A **report** to read (`text`, `html`, `pdf`),
+  a **lossless feed** to script against (`json`), or a **worklist** to triage
+  from (`csv`), or a Sankey animation (`graph`).
 
 ## What it hunts
 
@@ -165,7 +167,7 @@ sigwood graph dns.log --out=~/graphs/         # choose where the artifact lands
 `graph` builds a **self-contained HTML artifact** - one file, no server, no
 external resources, no network calls - that *replays* the flows in a log as an
 animated Sankey: who talked to whom, over the window, with time, speed, and filter
-controls. Watch the flows form and dissolve and you quickly get a sense of what's going
+controls. Watch the flows form and dissolve as you quickly get a sense of what's going
 on in the data.
 
 <p align="center">
@@ -179,10 +181,9 @@ adds a **disposition lane**: alongside the domains each client queried, you can
 switch on a column for what Pi-hole did with each query - `blocked`,
 `forwarded`, `cached`, or `local`. Like `digest`, `graph` reads *before* the
 allowlist, and it states facts, not verdicts: it shows you the fat ribbon
-leaving your database server at 3am, and lets you decide if that's your backup
+leaving your database server at 3 AM, and lets you decide if that's your backup
 window or a nightmare exfil scenario. Every artifact includes the command to
-hunt the data being visualized, so the visual is a door into analysis, not a
-substitute.
+hunt the data being visualized, for a quick pivot into analysis.
 
 ## sigwood and RITA / AC-Hunter
 
@@ -283,7 +284,7 @@ python3 -m venv .venv                # Python 3.11+
 
 ## Configuration
 
-Configuration is optional - sigwood runs against a path with none. When you want it
+Configuration is optional - sigwood will run against a path with no config. When you want it
 repeatable, `sigwood init` looks at the conventional locations on your box, profiles what it
 finds (which log families, rough size, freshness), and writes an annotated config under `~/.sigwood/` (or
 `/etc/sigwood` for a system-wide install). Re-run it any time: it merges into an existing
@@ -307,7 +308,7 @@ default_window = "7d"             # lookback for a directory; "" or "all" = full
 output_format  = "text"           # text | json | csv | html | pdf
 ```
 
-Findings print to your terminal by default - keep it pipeable. Set `report_dir`
+Findings print to your terminal by default (pipeable). Set `report_dir`
 (or pass `--out=PATH`) to write report files instead. Every setting a detector
 has is documented in a commented "engine room" section at the bottom of the
 generated config (you rarely need to mess around in there). And `sigwood
@@ -364,8 +365,7 @@ visible at a glance.
 
 Add your own in any `domains_*` file under `~/.sigwood/allowlist.d/` (the shipped `domains_user`
 is a starter). Drop-ins are additive and survive upgrades; to replace a shipped list, `disable`
-it and add your own. A malformed regex line is skipped with a notice naming its file and line,
-not a crash. A bare host IP with no port suppresses *all* traffic involving that host - powerful
+it and add your own. A bare host IP with no port suppresses *all* traffic involving that host - powerful
 but dangerous, and flagged as such wherever it appears.
 
 ## Pulling logs in: exporters
@@ -421,17 +421,9 @@ python3 -m venv .venv                # Python 3.11+
 .venv/bin/python -m pytest
 ```
 
-`main` is kept runnable. Architecture tests cover the boundaries that matter - detector
-discovery, run planning, loader metadata, allowlist suppression, output registration, and CLI
+`main` is kept runnable. Architecture tests cover detector discovery, run
+planning, loader metadata, allowlist suppression, output registration, and CLI
 error formatting.
-
-## Acknowledgments
-
-sigwood's mathematics-based detection - FFT for beacon periodicity, unsupervised clustering for
-DNS behavior - was inspired by David Hoelzer's SANS SEC595. The techniques themselves (FFT,
-HDBSCAN, drain3) are public-domain mathematics and open-source libraries; this implementation is
-independent and original, and any errors are mine. sigwood is not affiliated with or endorsed by
-SANS or GIAC.
 
 ## License
 

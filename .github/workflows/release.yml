@@ -1,0 +1,119 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+# Serialize each package index so two releases cannot publish there concurrently.
+concurrency:
+  group: release-${{ github.event_name == 'workflow_dispatch' && 'testpypi' || 'pypi' }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: build + verify (py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Tag matches version (tag push only)
+        if: github.event_name == 'push'
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          ver="$(python -c "import re,pathlib; print(re.search(r'__version__ = \"([^\"]+)\"', pathlib.Path('sigwood/__init__.py').read_text()).group(1))")"
+          echo "tag=$tag version=$ver"
+          test "$tag" = "$ver" || { echo "::error::tag v$tag != __version__ $ver"; exit 1; }
+
+      - name: Install dev extras and packaging tools
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]" build twine
+
+      # Fail loudly if recursive extras stop installing dependencies whose tests
+      # would otherwise skip and make the full-suite result incomplete.
+      - name: Guard gap-closing dependencies
+        run: python -c "import botocore.exceptions, splunklib; print('cloudtrail + splunk deps present')"
+
+      - name: Full suite
+        run: python -m pytest -ra
+
+      # The universal wheel is packaged once, after the Python 3.12 suite passes.
+      - name: Throwaway version for TestPyPI (workflow dispatch, Python 3.12)
+        if: github.event_name == 'workflow_dispatch' && matrix.python-version == '3.12'
+        run: |
+          python - <<'PY'
+          import os, re, pathlib
+          run = os.environ["GITHUB_RUN_NUMBER"]
+          p = pathlib.Path("sigwood/__init__.py")
+          s = p.read_text()
+          found = re.findall(r'^__version__ = "([^"]+)"$', s, flags=re.M)
+          assert len(found) == 1, f"expected exactly one __version__, found {len(found)}"
+          base = found[0]
+          assert re.fullmatch(r"\d+\.\d+\.\d+", base), f"source version not a stable X.Y.Z: {base!r}"
+          target = f"{base}.dev{run}"
+          s2, n = re.subn(r'^__version__ = "[^"]+"$', f'__version__ = "{target}"', s, flags=re.M)
+          assert n == 1, f"expected exactly one replacement, made {n}"
+          p.write_text(s2)
+          got = re.search(r'^__version__ = "([^"]+)"$', p.read_text(), flags=re.M).group(1)
+          assert got == target, f"post-edit version {got!r} != {target!r}"
+          print("rehearsal version:", got)
+          PY
+
+      - name: Build and validate distributions
+        if: matrix.python-version == '3.12'
+        run: |
+          python -m build
+          python -m twine check dist/*
+          python scripts/validate_distribution.py dist
+
+      - name: Clean-venv wheel smoke
+        if: matrix.python-version == '3.12'
+        run: |
+          WHEEL="$(python -c 'from pathlib import Path; print(next(Path("dist").glob("*.whl")).resolve())')"
+          VENV="$RUNNER_TEMP/smoke"
+          python -m venv "$VENV"
+          "$VENV/bin/python" -m pip install "$WHEEL"
+          "$VENV/bin/python" -m pip check
+          cd "$RUNNER_TEMP"
+          "$VENV/bin/sigwood" --version
+          "$VENV/bin/sigwood" --help >/dev/null
+          "$VENV/bin/python" -c "import importlib.resources as r; assert (r.files('sigwood') / 'data' / 'config_example.toml').is_file()"
+
+      - name: Upload dist
+        if: matrix.python-version == '3.12'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+
+  publish:
+    name: publish ${{ github.event_name == 'workflow_dispatch' && 'TestPyPI' || 'PyPI' }}
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: ${{ github.event_name == 'workflow_dispatch' && 'testpypi' || 'pypi' }}
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # v1.14.0
+        with:
+          attestations: true
+          repository-url: ${{ github.event_name == 'workflow_dispatch' && 'https://test.pypi.org/legacy/' || 'https://upload.pypi.org/legacy/' }}

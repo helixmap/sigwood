@@ -410,6 +410,17 @@ Um yep, development was AI-assisted, no point being coy about it. The rest has a
 
 You don't have to take any of this on faith, though - most of it is checkable. The detection methods are named, published techniques you can look up: FFT for periodicity, HDBSCAN for clustering, drain3 for templating, a plain z-score composite, credited elsewhere in this FAQ. The privacy claim you can verify yourself: tldextract is pinned to run offline, so the tool talks to no one. The test suite is deterministic and passes on a cold install. And [KNOWN-ISSUES.md](KNOWN-ISSUES.md) names and quantifies the tool's own flaws rather than burying them. Read the code, run the tests, point it at your own logs - that will tell you more than this paragraph can.
 
+### How do I know the sigwood I installed is genuine?
+
+Every `sigwood` release on PyPI is published by a tag-triggered CI pipeline that authenticates
+over OpenID Connect - there is no long-lived upload token sitting on anyone's laptop that could
+leak and let someone publish a malicious release under our name. Each published file also carries
+a [PEP 740](https://peps.python.org/pep-0740/) publish attestation: a Sigstore-backed, verifiable
+record that the file was uploaded by this project's release pipeline (`helixmap/sigwood`'s
+`release.yml`). PyPI shows it on each file's page. The precise claim matters - an attestation
+proves *where a file came from*, this pipeline, not that the code is safe; for that, the rest of
+this section applies: read the code, run the tests.
+
 ### What state is sigwood in?
 
 Early, pre-1.0. The six detectors above work and are covered by tests. Five more -

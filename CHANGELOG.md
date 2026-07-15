@@ -6,6 +6,31 @@ All notable changes to sigwood are recorded here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- The `graph` verb is now resilient on real-world data: a valid log always produces a graph.
+  Instead of failing on a dense or very large source, the builder degrades within the player -
+  adapting host and service rankings, bin width, and smoothing - until it fits. Timelines with
+  a long, sparse lead-in are trimmed to the active window, so a handful of long-lived flows no
+  longer stretch the axis. The player's header is now a labeled provenance readout - source,
+  window, entity counts, bin size, and the exact `sigwood hunt` command for the same log - and a
+  Zeek directory that lacks byte or service detail still renders a connection-count graph.
+
+### Fixed
+
+- `sigwood graph` no longer aborts with a "too dense for smooth interaction" error on an
+  ordinary day of dense logs; an oversized graph degrades to fit the animation instead of
+  failing.
+
+### Security
+
+- Releases are now published through **PyPI Trusted Publishing**: each distribution is built and
+  uploaded by a tag-triggered CI workflow that authenticates to PyPI over OIDC, with no
+  long-lived upload token stored anywhere. Every published file carries a **PEP 740 publish
+  attestation** - a Sigstore-backed, verifiable record that it was uploaded by this project's
+  release pipeline. This is publication provenance (which pipeline uploaded the file), not a
+  claim about how the code was built or that the code is safe.
+
 ## [0.2.1] - 2026-07-13
 
 ### Added

@@ -15,6 +15,7 @@ scratch/
 *.parquet
 *.zip
 *.gz
+demo.cast
 
 # MacBS
 ._*

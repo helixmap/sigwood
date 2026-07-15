@@ -170,7 +170,7 @@ on in the data.
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/helixmap/sigwood/main/docs/img/graph.gif"
-       width="760" alt="sigwood graph replaying Pi-hole query flows - clients, domains, and dispositions over time, synthetic RFC 5737 data with random-label demo domains">
+       width="760" alt="sigwood graph replaying conn.log flows as an animated Sankey - hosts, the services they reach, and destination hosts over a two-day window; scrambled sample data">
 </p>
 
 A Zeek directory produces two graphs - a **conn** graph (hosts vs the services

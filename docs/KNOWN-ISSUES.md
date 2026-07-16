@@ -145,6 +145,15 @@ directory can be hunted as syslog; a differently-shaped one (like `dnf.log`) is 
 skipped. If a non-syslog file is picked up, point sigwood at the specific syslog file
 rather than the directory.
 
+**`auto` uses one local system-log source per run - it does not combine the journal with
+your flat archive.** On a systemd host `--syslog-source=auto` prefers the live journal and,
+once it finds usable entries there, does not also read `syslog_dir`. So a historical window
+that has rolled out of the journal but still exists in your rotated flat files is not covered
+by an `auto` run - pass `--syslog-source=files` (or point at the files directly) to hunt the
+on-disk archive. This is deliberate: reading both and reconciling them would double the I/O and
+still could not prove which copy is more complete. A very large `journalctl` query (for example
+`--all` on a big archive) can take a while and has no built-in timeout; press Ctrl-C to stop it.
+
 **A directory positional is hunted as one log family.** When you pass a directory to
 `sigwood hunt` (or to `dns`/`syslog`, the two-source detectors), sigwood samples up to
 32 files, takes a majority vote on what family the directory is (Zeek, syslog, Pi-hole,

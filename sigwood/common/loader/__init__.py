@@ -115,6 +115,20 @@ from sigwood.common.loader.discovery import (
     discover_files,
     discover_zeek_files,
 )
+from sigwood.common.loader.journal import (
+    JournalCaptureIOError,
+    JournalCaptureOutcome,
+    JournalError,
+    JournalExecutableMissingError,
+    JournalProcessError,
+    JournalProtocolError,
+    JournalUnavailableError,
+    PreparedJournalCapture,
+    _discover_journal_capture,
+    _journal_read_error,
+    _journal_strategy_parse,
+    prepare_journal_capture,
+)
 from sigwood.common.loader.pipeline import (
     _NORMALIZER_MAP,
     _SOURCE_LOADERS,

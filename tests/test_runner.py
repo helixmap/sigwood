@@ -3094,7 +3094,10 @@ def test_runner_rotation_no_note_when_unwindowed(tmp_path, capture_summary):
     _write_sysrot(d, "syslog.log", {0: ("Jun", 6), 1: ("Jun", 5), 2: ("Jun", 4)})
     runner.run(config=_SYSLOG_ONLY, syslog_dir=d, load_all=True)
     s = capture_summary["summary"]
-    assert not any("rotation" in n.lower() for n in s.notes)
+    assert not any(
+        n.startswith("syslog: rotation") or " rotation files;" in n
+        for n in s.notes
+    )
 
 
 def test_runner_rotation_overlap_export_window_note(tmp_path, capture_summary, capsys):

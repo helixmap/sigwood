@@ -94,9 +94,29 @@ to look at instead of an error.
 ### What log sources can it read?
 
 Zeek (`conn.log`, `dns.log`, `syslog.log`, in NDJSON or TSV, flat or date-partitioned
-directories), Pi-hole/dnsmasq, flat syslog in RFC 3164 or ISO-8601 form (both the
-Debian `*.log` convention and the extensionless RHEL/Fedora one), and CloudTrail JSON.
-Rotation and `.gz`/`.bz2`/`.xz` compression are handled for you. Forthcoming, possibly: more.
+directories), Pi-hole/dnsmasq, the live **systemd journal** (via `journalctl`, no sudo), flat
+syslog in RFC 3164 or ISO-8601 form (both the Debian `*.log` convention and the extensionless
+RHEL/Fedora one), and CloudTrail JSON. Rotation and `.gz`/`.bz2`/`.xz` compression are handled
+for you. Forthcoming, possibly: more.
+
+### Does it read the systemd journal?
+
+Yes. On a systemd host `sigwood syslog` (and `sigwood hunt`) read the live system journal
+directly - it runs `journalctl --output=json` for the journal *your* user can already read, with
+**no sudo, no export step, and no file left behind** (the capture is a private temporary file
+removed as soon as the data is loaded). Every entry becomes the same five-column row as flat
+syslog, so the detector treats journal and file logs identically.
+
+`--syslog-source` picks the local source: `auto` (the default) prefers the journal and falls back
+to your `syslog_dir` files if journalctl is missing or the journal has nothing usable; `journal`
+requires it; `files` uses the flat directory only; `off` turns the local lane off. sigwood uses
+**one** local source per run - it never merges the journal with flat files (choose `files`
+explicitly if you want the on-disk archive). It needs systemd 236 or newer, and a single journal
+entry larger than 1 MiB fails the run visibly rather than being silently truncated.
+
+**Existing configs migrate to `auto`.** If you never set `syslog_source`, sigwood now prefers the
+journal on a systemd host and tells you which source it used; set `syslog_source = "files"` to keep
+the old file-only behavior.
 
 ---
 

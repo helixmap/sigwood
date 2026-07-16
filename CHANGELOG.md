@@ -8,6 +8,19 @@ All notable changes to sigwood are recorded here. The format follows
 
 ### Added
 
+- **The syslog detector now reads the live systemd journal directly** - no `sudo`, no export
+  step, no durable capture file. On a systemd host `sigwood syslog` (and `sigwood hunt`) invoke
+  `journalctl --output=json` for the invoking user's readable system journal, normalize every
+  entry into the same five columns as flat syslog, and analyze them identically. A new
+  `--syslog-source=auto|journal|files|off` flag (and `[sigwood].syslog_source`, default `auto`)
+  chooses the local carrier: `auto` prefers the journal and falls back to the configured
+  `syslog_dir` files when journalctl is absent/unusable or the journal has no usable entries;
+  `journal` requires it; `files` uses the flat directory only; `off` disables the local lane.
+  Exactly one local carrier is used per run - sigwood never merges the journal and flat files.
+  Journal access depends entirely on the invoking user's permissions; sigwood never invokes sudo.
+  Requires systemd 236+ (for `--output-fields`); a single journal entry over 1 MiB fails the run
+  visibly rather than being silently truncated. `sigwood init` gains a compound "system logs"
+  choice that detects and recommends the best local source.
 - syslog ingestion now reads **ISO-8601 / RFC-3339 timestamps** in addition to RFC 3164 - the
   high-precision format stock rsyslog writes on Ubuntu/Pop 24.04 and newer. ISO stamps carry an
   explicit year and offset, so they convert directly to UTC and are not subject to the RFC 3164
@@ -16,6 +29,12 @@ All notable changes to sigwood are recorded here. The format follows
 
 ### Changed
 
+- **Existing installs migrate from files-only to journal-preferred `auto`.** A config that never
+  set `syslog_source` now defaults to `auto` on a systemd host, so `sigwood syslog` prefers the
+  live journal (falling back to your `syslog_dir` files if the journal is unavailable or empty).
+  The run discloses which source it used. To keep the previous file-only behavior, set
+  `syslog_source = "files"`. A config with an explicitly-empty `syslog_dir` continues to disable
+  the local lane unchanged.
 - The "permission denied" message for an unreadable log now gives correct, least-privilege advice:
   it suggests `usermod -aG` only for a group-readable file owned by a known log-reader group
   (`adm`); for a root-only (`0600`) log, or one owned by a privileged group, it points at adjusting

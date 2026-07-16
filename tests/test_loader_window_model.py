@@ -47,6 +47,89 @@ def test_resolve_load_windows_skips_bounded_file_input(tmp_path):
     ) == []
 
 
+def test_resolve_load_windows_injects_journal_by_identity_and_plan_order(tmp_path):
+    zeek = tmp_path / "zeek"
+    zeek.mkdir()
+    (zeek / "conn.log").write_text("{}\n", encoding="utf-8")
+    capture = tmp_path / "system-journal.jsonl"
+    capture.write_text("", encoding="utf-8")
+    exact = loader.LoadWindow(
+        "journal",
+        (
+            datetime(2026, 6, 1, tzinfo=timezone.utc),
+            datetime(2026, 6, 2, tzinfo=timezone.utc),
+        ),
+        None,
+        False,
+    )
+
+    windows = loader.resolve_load_windows(
+        {"conn*.log*": "zeek_dir", "*.log*": "journal"},
+        {"zeek_dir": [zeek], "journal": [capture]},
+        "1d",
+        since=None,
+        until=None,
+        load_all=False,
+        pre_resolved_windows={"journal": exact},
+    )
+
+    assert len(windows) == 2
+    assert windows[1] is exact
+    assert [window.source for window in windows] == ["zeek_dir", "journal"]
+
+
+@pytest.mark.parametrize(
+    ("needed", "dirs", "injected"),
+    [
+        ({"*.log*": "journal"}, {"journal": [Path("capture")]},
+         {"syslog_dir": loader.LoadWindow("syslog_dir", None, None, True)}),
+        ({"*.log*": "journal"}, {"journal": [Path("capture")]},
+         {"journal": loader.LoadWindow("syslog_dir", None, None, True)}),
+        ({"*.log*": "journal"}, {"journal": [Path("capture")]},
+         {"journal": object()}),
+        ({"*.log*": "syslog_dir"}, {"journal": [Path("capture")]},
+         {"journal": loader.LoadWindow("journal", None, None, False)}),
+        ({"*.log*": "journal"}, {},
+         {"journal": loader.LoadWindow("journal", None, None, False)}),
+    ],
+)
+def test_resolve_load_windows_rejects_invalid_journal_injection(
+    needed, dirs, injected
+):
+    with pytest.raises(ValueError):
+        loader.resolve_load_windows(
+            needed,
+            dirs,
+            "1d",
+            since=None,
+            until=None,
+            load_all=False,
+            pre_resolved_windows=injected,
+        )
+
+
+def test_resolve_load_windows_short_circuit_ignores_injection_validation():
+    invalid = {"not-journal": loader.LoadWindow("not-journal", None, None, True)}
+    assert loader.resolve_load_windows(
+        {},
+        {},
+        "1d",
+        since=datetime(2026, 6, 1, tzinfo=timezone.utc),
+        until=None,
+        load_all=False,
+        pre_resolved_windows=invalid,
+    ) == []
+    assert loader.resolve_load_windows(
+        {},
+        {},
+        "all",
+        since=None,
+        until=None,
+        load_all=False,
+        pre_resolved_windows=invalid,
+    ) == []
+
+
 # ── per-family resolution shapes (the strategy resolver bodies) ───────────────
 
 

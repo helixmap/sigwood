@@ -16,6 +16,8 @@ from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
+from sigwood.common.syslog_mode import SyslogModeError, parse_syslog_mode
+
 
 class ConfigError(Exception):
     """Raised for config problems that the user needs to act on."""
@@ -58,6 +60,18 @@ def _validate_warn_above(config: dict[str, Any]) -> None:
         )
 
 
+def _validate_syslog_source(config: dict[str, Any]) -> None:
+    """Validate the system-log mode eagerly at the config boundary."""
+    value = config.get("sigwood", {}).get("syslog_source")
+    try:
+        parse_syslog_mode(value)
+    except SyslogModeError as exc:
+        raise ConfigError(
+            f"[sigwood].syslog_source={value!r} must be one of "
+            "auto, journal, files, or off"
+        ) from exc
+
+
 def validate_table_sections(
     config: object,
     sections: tuple[str, ...] | None = None,
@@ -82,6 +96,7 @@ _DEFAULTS: dict[str, Any] = {
         # stay None (opt-in - no missing-file warning when absent).
         "zeek_dir": "/var/log/zeek",
         "syslog_dir": "/var/log",
+        "syslog_source": "auto",
         "pihole_dir": None,
         "cloudtrail_dir": None,
         # Internal networks for traffic-direction classification. Topology
@@ -205,6 +220,7 @@ def load(config_file: str | Path | None = None) -> dict[str, Any]:
     # not lazily during the run, where bounded paths would never notice.
     parse_window_span(config.get("sigwood", {}).get("default_window"))
     _validate_warn_above(config)
+    _validate_syslog_source(config)
     return config
 
 

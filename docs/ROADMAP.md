@@ -10,8 +10,8 @@ What sigwood does today:
 
 - **Six detectors** - beacon (FFT periodicity), dns (density clustering over Zeek
   dns.log or Pi-hole/dnsmasq), syslog (drain3 templating with per-host burst collapse,
-  over Zeek syslog.log or flat rsyslog), scan, duration, and aws (per-principal
-  behavior over CloudTrail).
+  over the live systemd journal, flat rsyslog, or Zeek syslog.log), scan, duration, and
+  aws (per-principal behavior over CloudTrail).
 - **A `digest` verb** to orient before you hunt - a fast, honest profile of conn, DNS,
   syslog, or CloudTrail data, with a bytes-only fallback for anything it doesn't
   recognize.

@@ -29,11 +29,34 @@ from __future__ import annotations
 import fnmatch
 import stat
 from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from sigwood.common.loader import discover_for_source_key, sniff_format_detailed
+from sigwood.common.journal_probe import (
+    MAX_JOURNAL_DIAGNOSTIC_CHARS,
+    JournalProbeCode,
+    JournalProbeResult,
+)
+from sigwood.common.loader import (
+    JournalCaptureOutcome,
+    JournalError,
+    JournalExecutableMissingError,
+    JournalProcessError,
+    JournalProtocolError,
+    JournalUnavailableError,
+    PreparedJournalCapture,
+    discover_for_source_key,
+    sniff_format_detailed,
+)
 from sigwood.common.paths import effective_root, resolve_path
+from sigwood.common.sanitize import strip_control
+from sigwood.common.syslog_mode import (
+    ConfiguredSyslogMode,
+    SyslogMode,
+    classify_configured_syslog_mode,
+    parse_syslog_mode,
+)
 
 _ALL_KEYS: tuple[str, ...] = (
     "zeek_dir", "syslog_dir", "pihole_dir", "cloudtrail_dir",
@@ -299,6 +322,82 @@ class ResolvedSources:
     cloudtrail_dir: list[Path]
 
 
+class SyslogProvider(str, Enum):
+    """The one selected local system-log carrier."""
+
+    JOURNAL = "journal"
+    FILES = "files"
+    OFF = "off"
+
+
+class SyslogDecisionReason(str, Enum):
+    """Stable facts used to render provider and fallback disclosures."""
+
+    EXPLICIT_PATH_FILES = "explicit_path_files"
+    EXPLICIT_FILES = "explicit_files"
+    CONFIGURED_FILES = "configured_files"
+    EXPLICIT_JOURNAL = "explicit_journal"
+    CONFIGURED_JOURNAL = "configured_journal"
+    EXPLICIT_OFF = "explicit_off"
+    CONFIGURED_OFF = "configured_off"
+    AUTO_JOURNAL = "auto_journal"
+    AUTO_MISSING = "auto_missing"
+    AUTO_CLEAN_EMPTY = "auto_clean_empty"
+    AUTO_NO_USABLE = "auto_no_usable"
+    AUTO_FAILURE = "auto_failure"
+    PROBE_JOURNAL_READY = "probe_journal_ready"
+    PROBE_JOURNAL_EMPTY = "probe_journal_empty"
+    PROBE_AUTO_READY = "probe_auto_ready"
+    PROBE_AUTO_EMPTY = "probe_auto_empty"
+    PROBE_AUTO_MISSING = "probe_auto_missing"
+    PROBE_AUTO_FAILURE = "probe_auto_failure"
+
+
+@dataclass(frozen=True)
+class SyslogIntent:
+    """Resolved local-lane intent before a provider is probed or prepared."""
+
+    configured: ConfiguredSyslogMode
+    mode: SyslogMode
+    explicit_mode: bool
+    explicit_path: bool
+    syslog_selected: bool
+    local_lane_eligible: bool
+    report_local_lane: bool
+    adjusted_scope: frozenset[str] | None
+    flat_paths: tuple[Path, ...]
+
+
+@dataclass(frozen=True)
+class AnalyzeSources:
+    """Analyze source paths plus the local system-log intent sidecar."""
+
+    resolved: ResolvedSources
+    syslog: SyslogIntent
+
+
+@dataclass(frozen=True)
+class SyslogProviderDecision:
+    """One real-run local provider and its bounded disclosure facts."""
+
+    provider: SyslogProvider
+    reason: SyslogDecisionReason
+    capture_outcome: JournalCaptureOutcome | None = None
+    diagnostic: str | None = None
+    warnings: tuple[str, ...] = ()
+    legacy_migrated: bool = False
+
+
+@dataclass(frozen=True)
+class SyslogProbeDecision:
+    """Dry-run provider capability without a fake filesystem source."""
+
+    provider: SyslogProvider
+    reason: SyslogDecisionReason
+    diagnostic: str | None = None
+    virtual_sources: frozenset[tuple[str, str]] = frozenset()
+
+
 @dataclass(frozen=True)
 class DigestSource:
     """The single source chosen by ``resolve_digest_source`` for a digest schema.
@@ -392,6 +491,306 @@ def resolve_sources(
         else:
             resolved[key] = []
     return ResolvedSources(**resolved)
+
+
+def _configured_syslog_mode(config: dict[str, Any]) -> ConfiguredSyslogMode:
+    """Classify disk-provenanced or raw mapping configuration exactly once."""
+    cfg_sigwood = config.get("sigwood", {})
+    if not isinstance(cfg_sigwood, dict):
+        cfg_sigwood = {}
+    sidecar = config.get("__user_set__")
+    disk_shape = isinstance(sidecar, dict)
+    if disk_shape:
+        declared = sidecar.get("sigwood", set())
+        declared_keys = (
+            set(declared)
+            if isinstance(declared, (set, frozenset, list, tuple))
+            else set()
+        )
+        mode_present = "syslog_source" in declared_keys
+        dir_present = "syslog_dir" in declared_keys
+    else:
+        mode_present = "syslog_source" in cfg_sigwood
+        dir_present = "syslog_dir" in cfg_sigwood
+    return classify_configured_syslog_mode(
+        mode_present=mode_present,
+        mode_value=cfg_sigwood.get("syslog_source"),
+        dir_present=dir_present,
+        dir_value=cfg_sigwood.get("syslog_dir"),
+        disk_shape=disk_shape,
+    )
+
+
+def _scope_with_syslog(
+    scope: frozenset[str] | None, *, include: bool
+) -> frozenset[str] | None:
+    """Add or remove config fallback for the local system-log path lane."""
+    if include:
+        if scope is None:
+            return None
+        return frozenset((*scope, "syslog_dir"))
+    if scope is None:
+        return frozenset(key for key in _ALL_KEYS if key != "syslog_dir")
+    return frozenset(key for key in scope if key != "syslog_dir")
+
+
+def resolve_analyze_sources(
+    config: dict[str, Any],
+    *,
+    overrides: dict[str, str | Path | Sequence[str | Path] | None],
+    scope: frozenset[str] | None,
+    syslog_source: object | None,
+    syslog_selected: bool,
+) -> AnalyzeSources:
+    """Resolve analyze paths once after classifying local-lane raw intent.
+
+    Raw override provenance is consumed before path resolution so an explicit
+    system-log path can select files and an explicit mode can widen or suppress
+    config fallback without a preliminary resolution discarding the fallback.
+    """
+    configured = _configured_syslog_mode(config)
+    explicit_mode = syslog_source is not None
+    requested_mode = parse_syslog_mode(syslog_source) if explicit_mode else None
+    explicit_path = bool(_normalize_overrides(overrides.get("syslog_dir")))
+
+    if (
+        explicit_path
+        and requested_mode in (SyslogMode.JOURNAL, SyslogMode.OFF)
+    ):
+        raise ValueError(
+            f"syslog_source={requested_mode.value} conflicts with an explicit "
+            "syslog path"
+        )
+
+    if explicit_path:
+        mode = SyslogMode.FILES
+    elif requested_mode is not None:
+        mode = requested_mode
+    else:
+        mode = configured.mode
+
+    if (
+        explicit_mode
+        and mode in (SyslogMode.AUTO, SyslogMode.JOURNAL, SyslogMode.FILES)
+        and not syslog_selected
+    ):
+        raise ValueError(
+            f"syslog_source={mode.value} requires the syslog detector to be selected"
+        )
+
+    initially_in_scope = scope is None or "syslog_dir" in scope
+    widens = explicit_path or (
+        explicit_mode
+        and mode in (SyslogMode.AUTO, SyslogMode.JOURNAL, SyslogMode.FILES)
+    )
+    local_lane_eligible = bool(
+        syslog_selected and (initially_in_scope or widens) and mode is not SyslogMode.OFF
+    )
+    report_local_lane = bool(syslog_selected and (initially_in_scope or widens))
+    adjusted_scope = _scope_with_syslog(
+        scope,
+        include=local_lane_eligible and mode is not SyslogMode.OFF,
+    )
+    resolved = resolve_sources(
+        config,
+        overrides=overrides,
+        scope=adjusted_scope,
+    )
+    intent = SyslogIntent(
+        configured=configured,
+        mode=mode,
+        explicit_mode=explicit_mode,
+        explicit_path=explicit_path,
+        syslog_selected=syslog_selected,
+        local_lane_eligible=local_lane_eligible,
+        report_local_lane=report_local_lane,
+        adjusted_scope=adjusted_scope,
+        flat_paths=tuple(resolved.syslog_dir),
+    )
+    return AnalyzeSources(resolved=resolved, syslog=intent)
+
+
+def _base_decision_reason(intent: SyslogIntent) -> SyslogDecisionReason:
+    """Return the non-auto reason for an already-classified intent."""
+    if intent.mode is SyslogMode.OFF:
+        return (
+            SyslogDecisionReason.EXPLICIT_OFF
+            if intent.explicit_mode
+            else SyslogDecisionReason.CONFIGURED_OFF
+        )
+    if intent.mode is SyslogMode.FILES:
+        if intent.explicit_path:
+            return SyslogDecisionReason.EXPLICIT_PATH_FILES
+        return (
+            SyslogDecisionReason.EXPLICIT_FILES
+            if intent.explicit_mode
+            else SyslogDecisionReason.CONFIGURED_FILES
+        )
+    if intent.mode is SyslogMode.JOURNAL:
+        return (
+            SyslogDecisionReason.EXPLICIT_JOURNAL
+            if intent.explicit_mode
+            else SyslogDecisionReason.CONFIGURED_JOURNAL
+        )
+    raise ValueError("auto mode requires a journal result before provider selection")
+
+
+def arbitrate_syslog_capture(
+    intent: SyslogIntent,
+    *,
+    capture: PreparedJournalCapture | None = None,
+    error: JournalError | None = None,
+) -> SyslogProviderDecision:
+    """Select exactly one real-run local provider from producer facts."""
+    if capture is not None and error is not None:
+        raise ValueError("journal capture and journal error are mutually exclusive")
+
+    if not intent.local_lane_eligible or intent.mode is SyslogMode.OFF:
+        return SyslogProviderDecision(
+            SyslogProvider.OFF,
+            _base_decision_reason(intent)
+            if intent.mode is SyslogMode.OFF
+            else SyslogDecisionReason.CONFIGURED_OFF,
+        )
+    if intent.mode is SyslogMode.FILES:
+        return SyslogProviderDecision(
+            SyslogProvider.FILES, _base_decision_reason(intent)
+        )
+    if intent.mode is SyslogMode.JOURNAL:
+        if error is not None:
+            raise error
+        if capture is None:
+            raise ValueError("journal mode requires a completed journal capture")
+        return SyslogProviderDecision(
+            SyslogProvider.JOURNAL,
+            _base_decision_reason(intent),
+            capture_outcome=capture.outcome,
+            warnings=capture.warnings,
+        )
+
+    migrated_auto = bool(
+        intent.configured.legacy_migrated and not intent.explicit_mode
+    )
+    if error is not None:
+        missing = isinstance(error, JournalExecutableMissingError)
+        return SyslogProviderDecision(
+            SyslogProvider.FILES,
+            SyslogDecisionReason.AUTO_MISSING
+            if missing
+            else SyslogDecisionReason.AUTO_FAILURE,
+            diagnostic=(
+                None
+                if missing
+                else strip_control(str(error))[:MAX_JOURNAL_DIAGNOSTIC_CHARS]
+            ),
+            legacy_migrated=migrated_auto,
+        )
+    if capture is None:
+        raise ValueError("auto mode requires a completed journal capture or error")
+    if capture.has_usable_rows:
+        return SyslogProviderDecision(
+            SyslogProvider.JOURNAL,
+            SyslogDecisionReason.AUTO_JOURNAL,
+            capture_outcome=capture.outcome,
+            warnings=capture.warnings,
+            legacy_migrated=migrated_auto,
+        )
+    return SyslogProviderDecision(
+        SyslogProvider.FILES,
+        SyslogDecisionReason.AUTO_CLEAN_EMPTY
+        if capture.outcome is JournalCaptureOutcome.CLEAN_EMPTY
+        else SyslogDecisionReason.AUTO_NO_USABLE,
+        capture_outcome=capture.outcome,
+        warnings=capture.warnings,
+        legacy_migrated=migrated_auto,
+    )
+
+
+def _probe_failure_detail(result: JournalProbeResult) -> str | None:
+    """Return the first bounded terminal-safe child line from a dry probe."""
+    decoded = result.stderr.decode("utf-8", errors="replace")
+    for raw in decoded.splitlines():
+        clean = strip_control(raw).strip()
+        if clean:
+            return clean[:MAX_JOURNAL_DIAGNOSTIC_CHARS]
+    return None
+
+
+def _probe_error(result: JournalProbeResult) -> JournalError:
+    """Translate a failed dry probe into the producer's public error domain."""
+    detail = _probe_failure_detail(result)
+    if result.code is JournalProbeCode.EXECUTABLE_MISSING:
+        return JournalExecutableMissingError(
+            "journalctl not found - install systemd journal tools or choose files"
+        )
+    if result.code is JournalProbeCode.SPAWN_FAILED:
+        return JournalUnavailableError("journalctl could not be started")
+    if result.code is JournalProbeCode.SIGNALLED:
+        return JournalProcessError(
+            f"journalctl terminated by signal {abs(result.returncode or 0)}"
+        )
+    if result.code is JournalProbeCode.EXIT_NONZERO:
+        message = f"journalctl failed (exit {result.returncode or 1})"
+        if detail:
+            message += f" - {detail}"
+        return JournalProcessError(message)
+    if result.code is JournalProbeCode.INVALID_UTF8:
+        return JournalProtocolError("journalctl returned invalid UTF-8")
+    if result.code is JournalProbeCode.RECORD_TOO_LARGE:
+        return JournalProtocolError("journalctl record exceeded 1 MiB")
+    return JournalProtocolError("journalctl probe returned an unsupported result")
+
+
+def arbitrate_syslog_probe(
+    intent: SyslogIntent,
+    result: JournalProbeResult | None = None,
+) -> SyslogProbeDecision:
+    """Select dry-run capability without creating a capture or fake path."""
+    if not intent.local_lane_eligible or intent.mode is SyslogMode.OFF:
+        return SyslogProbeDecision(
+            SyslogProvider.OFF,
+            _base_decision_reason(intent)
+            if intent.mode is SyslogMode.OFF
+            else SyslogDecisionReason.CONFIGURED_OFF,
+        )
+    if intent.mode is SyslogMode.FILES:
+        return SyslogProbeDecision(
+            SyslogProvider.FILES, _base_decision_reason(intent)
+        )
+    if result is None:
+        raise ValueError("journal dry run requires a probe result")
+
+    capability = frozenset({("journal", "*.log*")})
+    if result.code is JournalProbeCode.READY:
+        return SyslogProbeDecision(
+            SyslogProvider.JOURNAL,
+            SyslogDecisionReason.PROBE_AUTO_READY
+            if intent.mode is SyslogMode.AUTO
+            else SyslogDecisionReason.PROBE_JOURNAL_READY,
+            virtual_sources=capability,
+        )
+    if result.code is JournalProbeCode.EMPTY:
+        if intent.mode is SyslogMode.JOURNAL:
+            return SyslogProbeDecision(
+                SyslogProvider.JOURNAL,
+                SyslogDecisionReason.PROBE_JOURNAL_EMPTY,
+                virtual_sources=capability,
+            )
+        return SyslogProbeDecision(
+            SyslogProvider.FILES, SyslogDecisionReason.PROBE_AUTO_EMPTY
+        )
+
+    error = _probe_error(result)
+    if intent.mode is SyslogMode.JOURNAL:
+        raise error
+    missing = isinstance(error, JournalExecutableMissingError)
+    return SyslogProbeDecision(
+        SyslogProvider.FILES,
+        SyslogDecisionReason.PROBE_AUTO_MISSING
+        if missing
+        else SyslogDecisionReason.PROBE_AUTO_FAILURE,
+        diagnostic=None if missing else strip_control(str(error))[:MAX_JOURNAL_DIAGNOSTIC_CHARS],
+    )
 
 
 def resolve_graph_source(

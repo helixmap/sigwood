@@ -12,6 +12,7 @@ The drain3 function itself has its own smoke test.
 from __future__ import annotations
 
 import io
+import json
 import sys
 import unittest
 import warnings
@@ -38,6 +39,7 @@ from sigwood.detectors.syslog import (
     run,
 )
 from sigwood.parsers.syslog import REBOOT_SIGNALS_RE, is_reboot_signal
+from sigwood.parsers.journal import parse_record as parse_journal_record
 from sigwood.outputs._render_model import Section as _Section
 
 
@@ -358,7 +360,8 @@ class SyslogDetectorTests(unittest.TestCase):
         # fed to it directly would (correctly) become a MEDIUM needle - the
         # invariant is a property of the detector, not the helper.
         reboot = [{"ts": _BASE_TS, "host": "192.0.2.1", "program": "systemd-logind",
-                   "raw": "systemd-logind[1]: System is rebooting.", "message": "reboot"}]
+                   "raw": "systemd-logind[1]: System is rebooting.",
+                   "message": "systemd-logind: System is rebooting."}]
         findings = _run_with(reboot, [1], ["reboot_t"])
         self.assertEqual(len(findings), 1)
         f = findings[0]
@@ -491,7 +494,7 @@ class SyslogDetectorTests(unittest.TestCase):
         common = [_common_row(i) for i in range(50)]
         storm = [
             {"ts": _BASE_TS + 100000 + j, "host": "192.0.2.1", "program": p,
-             "raw": r, "message": f"s{j}"}
+             "raw": r, "message": r}
             for j, (p, r) in enumerate([
                 ("kernel", "kernel: [    0.000000] Linux version 6.1"),  # ring-buffer banner
                 ("systemd", "systemd: Starting service"),
@@ -531,7 +534,8 @@ class SyslogDetectorTests(unittest.TestCase):
         common = [_common_row(i) for i in range(50)]
         reboot = [{"ts": _BASE_TS + 100000, "host": "192.0.2.1",
                    "program": "systemd-logind",
-                   "raw": "systemd-logind[1]: System is rebooting.", "message": "reboot"}]
+                   "raw": "systemd-logind[1]: System is rebooting.",
+                   "message": "systemd-logind: System is rebooting."}]
         ids  = [1] * 50 + [2]
         strs = ["common"] * 50 + ["reboot_t"]
         findings = _run_with(common + reboot, ids, strs)
@@ -553,7 +557,8 @@ class SyslogDetectorTests(unittest.TestCase):
         common = [_common_row(i) for i in range(50)]
         reboots = [{"ts": _BASE_TS + 100000 + k * 3600, "host": "192.0.2.1",
                     "program": "systemd-logind",
-                    "raw": "systemd-logind[1]: System is rebooting.", "message": "reboot"}
+                    "raw": "systemd-logind[1]: System is rebooting.",
+                    "message": "systemd-logind: System is rebooting."}
                    for k in range(n)]
         ids  = [1] * 50 + [9] * n            # ALL reboots share template 9 -> count n, NOT rare
         strs = ["common"] * 50 + ["rb"] * n
@@ -877,18 +882,19 @@ def _ctx_both(
 
 
 def test_detector_module_exposes_dns_shape_optional_contract() -> None:
-    """REQUIRED_LOGS empty; OPTIONAL_LOGS lists both feeds; ONE-OF gate on."""
+    """REQUIRED_LOGS empty; OPTIONAL_LOGS lists all feeds; ONE-OF gate on."""
     import sigwood.detectors.syslog as mod
     assert mod.REQUIRED_LOGS == []
     assert {(o["source"], o["pattern"]) for o in mod.OPTIONAL_LOGS} == {
         ("syslog_dir", "*.log*"),
+        ("journal",    "*.log*"),
         ("zeek_dir",   "syslog*.log*"),
     }
     assert mod.REQUIRES_ONE_OF_OPTIONAL is True
     # The reason carries NO detector name - both render surfaces prefix it.
     assert mod.REQUIRES_ONE_OF_OPTIONAL_REASON == (
-        "no syslog source found "
-        "(need syslog_dir files or zeek_dir syslog.log)"
+        "no syslog source found (need a readable system journal, syslog files, "
+        "or Zeek syslog.log)"
     )
     assert not mod.REQUIRES_ONE_OF_OPTIONAL_REASON.startswith("syslog")  # no double-name
 
@@ -979,6 +985,64 @@ def test_run_source_blind_no_facility_severity_required(monkeypatch) -> None:
     )
     findings = run(_ctx_zeek_only(df))
     assert findings, "detector must run on a minimal-5 frame keyed at the Zeek pattern"
+
+
+def test_flat_and_zeek_reboot_rows_have_identical_detector_semantics() -> None:
+    row = {
+        "ts": _BASE_TS,
+        "host": "host.example",
+        "program": "systemd-logind",
+        "raw": "systemd-logind[1]: System is rebooting.",
+        "message": "systemd-logind: System is rebooting.",
+    }
+    frame = pd.DataFrame([row])
+    contexts = (_ctx(frame), _ctx_zeek_only(frame))
+    observed: list[tuple[Severity, str, str]] = []
+    for context in contexts:
+        with patch(
+            "sigwood.detectors.syslog._run_drain3",
+            _patched_drain3([1], ["reboot"]),
+        ):
+            findings = run(context)
+        assert len(findings) == 1
+        observed.append(
+            (findings[0].severity, findings[0].evidence["tier"], findings[0].title)
+        )
+    assert observed == [
+        (Severity.INFO, "reboot", "host.example"),
+        (Severity.INFO, "reboot", "host.example"),
+    ]
+
+
+def test_journal_program_identity_reaches_drain3_when_raw_messages_match(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    rows: list[dict] = []
+    for program in ("sshd", "kernel"):
+        parsed = parse_journal_record(json.dumps({
+            "__REALTIME_TIMESTAMP": "1760000000000000",
+            "MESSAGE": "same payload",
+            "_HOSTNAME": "host.example",
+            "SYSLOG_IDENTIFIER": program,
+        }))
+        assert isinstance(parsed, dict)
+        rows.append(parsed)
+
+    observed: list[str] = []
+
+    def capture_messages(df, *args, **kwargs):
+        del args, kwargs
+        observed.extend(df["message"].tolist())
+        result = df.copy()
+        result["template_id"] = [1, 2]
+        result["template_str"] = ["sshd payload", "kernel payload"]
+        return result
+
+    monkeypatch.setattr(
+        "sigwood.detectors.syslog._run_drain3", capture_messages
+    )
+    run(_ctx(pd.DataFrame(rows)))
+    assert observed == ["sshd: same payload", "kernel: same payload"]
 
 
 if __name__ == "__main__":

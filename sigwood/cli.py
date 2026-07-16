@@ -46,6 +46,11 @@ from sigwood.common.errors import (
 from sigwood.common.output import get_handler
 from sigwood.common.paths import be_like_water, effective_root, resolve_path, unique_path
 from sigwood.common.sanitize import strip_control
+from sigwood.common.syslog_mode import (
+    SyslogMode,
+    SyslogModeError,
+    parse_syslog_mode,
+)
 
 
 # ── flag/verb spec ────────────────────────────────────────────────────────────
@@ -107,7 +112,9 @@ _FLAG_LIST: tuple[FlagSpec, ...] = (
     FlagSpec("pihole_dir",       "--pihole-dir",       None, True,  "PATH",
              "Pi-hole / dnsmasq log directory (overrides config)"),
     FlagSpec("syslog_dir",       "--syslog-dir",       None, True,  "PATH",
-             "rsyslog log directory (overrides config)"),
+             "file-backed syslog path; selects files for this run"),
+    FlagSpec("syslog_source",    "--syslog-source",    None, True,  "MODE",
+             "system-log input: auto, journal, files, or off"),
     FlagSpec("cloudtrail_dir",   "--cloudtrail-dir",   None, True,  "PATH",
              "CloudTrail JSON directory (overrides config)"),
 )
@@ -136,9 +143,12 @@ class VerbSpec:
 _ANALYZE_ALLOWED: frozenset[str] = frozenset({
     "help", "verbose", "yes", "all", "quiet", "out", "config", "since", "detect",
     "dry_run", "no_allowlist", "format", "until", "days", "hours", "utc",
-    "zeek_dir", "pihole_dir", "syslog_dir", "cloudtrail_dir",
+    "zeek_dir", "pihole_dir", "syslog_dir", "syslog_source", "cloudtrail_dir",
 })
-_SINGLE_DET_ALLOWED: frozenset[str] = _ANALYZE_ALLOWED - {"detect"}
+_SINGLE_DET_ALLOWED: frozenset[str] = _ANALYZE_ALLOWED - {
+    "detect", "syslog_source",
+}
+_SYSLOG_ALLOWED: frozenset[str] = _SINGLE_DET_ALLOWED | {"syslog_source"}
 _DIGEST_ALLOWED: frozenset[str] = frozenset({
     "help", "verbose", "yes", "all", "quiet", "out", "config", "since",
     "dry_run", "format", "until", "days", "hours", "utc", "zeek_dir",
@@ -163,7 +173,7 @@ _VERBS: dict[str, VerbSpec] = {
     "dns":      VerbSpec("dns",      "DNS clustering (Zeek or Pi-hole)",
                          "[PATH]", _SINGLE_DET_ALLOWED),
     "syslog":   VerbSpec("syslog",   "syslog anomaly detection",
-                         "[PATH]", _SINGLE_DET_ALLOWED),
+                         "[PATH]", _SYSLOG_ALLOWED),
     "scan":     VerbSpec("scan",     "port scan detection (conn.log)",
                          "[PATH]", _SINGLE_DET_ALLOWED),
     "duration": VerbSpec("duration", "long connection detection (conn.log)",
@@ -848,12 +858,23 @@ def _build_positional_buckets(
     return buckets
 
 
+def _cli_syslog_mode(parsed: dict[str, Any]) -> SyslogMode | None:
+    """Validate the optional system-log enum at the CLI usage boundary."""
+    if "syslog_source" not in parsed:
+        return None
+    try:
+        return parse_syslog_mode(parsed["syslog_source"])
+    except SyslogModeError as exc:
+        raise UsageError(str(exc)) from exc
+
+
 def _runner_kwargs(
     parsed: dict[str, Any],
     config: dict[str, Any],
     detect: str | None = None,
     scope: frozenset[str] | None = None,
     source_buckets: dict[str, list[str]] | None = None,
+    detector_selection: Any | None = None,
 ) -> dict[str, Any]:
     """Build the kwargs dict for runner.run() from parsed CLI args and loaded config.
 
@@ -886,6 +907,21 @@ def _runner_kwargs(
     use_utc = bool(parsed.get("utc")) or bool(cfg_sigwood.get("use_utc", False))
     since, until = _resolve_timeframe(parsed, use_utc=use_utc)
 
+    buckets = source_buckets or {}
+    family_values: dict[str, str | list[str] | None] = {
+        key: _merge_family_value(buckets.get(key, []), parsed.get(key))
+        for key in _ANALYZE_SOURCE_KEYS
+    }
+    mode = _cli_syslog_mode(parsed)
+    if (
+        mode in (SyslogMode.JOURNAL, SyslogMode.OFF)
+        and family_values["syslog_dir"]
+    ):
+        raise UsageError(
+            f"--syslog-source={mode.value} cannot be combined with a syslog "
+            "PATH or --syslog-dir"
+        )
+
     output_file, output_dir = _resolve_output_target(parsed, config)
 
     output_format = parsed.get("format", cfg_sigwood.get("output_format", "text"))
@@ -907,13 +943,7 @@ def _runner_kwargs(
             raise ValueError(PDF_TTY_ERROR)
         get_handler(output_format).preflight()
 
-    buckets = source_buckets or {}
-    family_values: dict[str, str | list[str] | None] = {
-        key: _merge_family_value(buckets.get(key, []), parsed.get(key))
-        for key in _ANALYZE_SOURCE_KEYS
-    }
-
-    return dict(
+    kwargs = dict(
         config=config,
         detect=detect or parsed.get("detect"),
         # Source-dir overrides: raw strings / lists / None - resolver owns Path conversion.
@@ -936,6 +966,11 @@ def _runner_kwargs(
         quiet=bool(parsed.get("quiet")) or bool(cfg_sigwood.get("quiet", False)),
         use_utc=use_utc,
     )
+    if "syslog_source" in parsed:
+        kwargs["syslog_source"] = parsed["syslog_source"]
+    if detector_selection is not None:
+        kwargs["_detector_selection"] = detector_selection
+    return kwargs
 
 
 # ── verb runners ──────────────────────────────────────────────────────────────
@@ -1054,14 +1089,30 @@ def _run_hunt(args: list[str], *, require_target: bool = False,
     import sigwood.runner as runner
 
     parsed = _parse_args(args, "hunt")
+    syslog_mode = _cli_syslog_mode(parsed)
 
-    if require_target and not parsed.get("paths"):
+    if (
+        require_target
+        and not parsed.get("paths")
+        and "syslog_source" not in parsed
+    ):
         raise UsageError("nothing to hunt - run 'sigwood hunt' or pass a log file")
 
     if "format" in parsed:
         get_handler(parsed["format"])
 
     config = _load_config(parsed)
+
+    selection = None
+    if syslog_mode is not None:
+        selection = runner.select_detectors(
+            parsed.get("detect") or config.get("sigwood", {}).get("detect", "all")
+        )
+        if syslog_mode is not SyslogMode.OFF and "syslog" not in selection.selected:
+            raise UsageError(
+                f"--syslog-source={syslog_mode.value} requires the syslog detector "
+                "in the final selection"
+            )
 
     paths = parsed.get("paths") or []
     if leading_flag:
@@ -1077,6 +1128,7 @@ def _run_hunt(args: list[str], *, require_target: bool = False,
 
     return runner.run(**_runner_kwargs(
         parsed, config, scope=scope, source_buckets=buckets,
+        detector_selection=selection,
     ))
 
 
@@ -1093,11 +1145,18 @@ def _run_single_detector(detector: str, args: list[str]) -> int:
     import sigwood.runner as runner
 
     parsed = _parse_args(args, detector)
+    syslog_mode = _cli_syslog_mode(parsed)
 
     if "format" in parsed:
         get_handler(parsed["format"])
 
     config = _load_config(parsed)
+
+    selection = (
+        runner.select_detectors(detector)
+        if syslog_mode is not None
+        else None
+    )
 
     paths = parsed.get("paths") or []
     _require_positionals_exist(paths)
@@ -1111,6 +1170,7 @@ def _run_single_detector(detector: str, args: list[str]) -> int:
 
     return runner.run(**_runner_kwargs(
         parsed, config, detect=detector, scope=scope, source_buckets=buckets,
+        detector_selection=selection,
     ))
 
 

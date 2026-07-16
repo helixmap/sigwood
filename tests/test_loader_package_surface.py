@@ -58,6 +58,12 @@ _SURFACE = [
     "_events_from_whole_document", "_syslog_should_skip", "_pihole_should_skip",
     "_syslog_warn_undecodable", "_pihole_warn_undecodable",
     "_NORMALIZER_MAP", "resolve_load_windows",
+    # Journal producer/strategy surface; the strategy has no public route.
+    "JournalError", "JournalUnavailableError", "JournalExecutableMissingError",
+    "JournalProcessError",
+    "JournalProtocolError", "JournalCaptureIOError", "JournalCaptureOutcome",
+    "PreparedJournalCapture", "prepare_journal_capture",
+    "_discover_journal_capture", "_journal_read_error", "_journal_strategy_parse",
 ]
 
 
@@ -74,6 +80,9 @@ def test_source_loaders_registry_identity():
     # this extraction must not break).
     for key in ("zeek_dir", "syslog_dir", "pihole_dir", "cloudtrail_dir"):
         assert key in loader._SOURCE_LOADERS
+    journal = loader._SOURCE_LOADERS["journal"]
+    assert journal.display_label == "system journal"
+    assert journal.read_error_factory is loader._journal_read_error
 
 
 def _write_conn(tmp_path: Path) -> Path:

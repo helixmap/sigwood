@@ -91,13 +91,19 @@ def _schema_warning(pattern: str, df: pd.DataFrame) -> str | None:
     return None
 
 
-def _zeek_file_read_warning(path: Path, exc: BaseException) -> str:
+def _zeek_file_read_warning(
+    path: Path,
+    exc: BaseException,
+    *,
+    display_label: str | None = None,
+) -> str:
     """Return a privacy-safe warning for a Zeek file that could not be read."""
     if isinstance(exc, (EOFError, gzip.BadGzipFile, lzma.LZMAError)):
         reason = "compressed file is incomplete or corrupt"
     else:
         reason = f"unreadable ({exc.__class__.__name__})"
-    return f"{path.name} could not be read - {reason}; skipping"
+    label = display_label or path.name
+    return f"{label} could not be read - {reason}; skipping"
 
 
 def _permission_denied_message(path: Path) -> str:

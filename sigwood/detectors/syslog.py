@@ -8,7 +8,7 @@ Pipeline:
    effective rule at the default is "flag globally-singleton templates" and
    rarity_pct is inert; rarity_pct engages only once max_count is raised above
    the percentile-derived count. A line common to many hosts is not rare.
-3. Reboot detection (full-frame, rarity-blind): a vectorized mask over `raw`
+3. Reboot detection (full-frame, rarity-blind): a vectorized mask over `message`
    selects every reboot-signal row regardless of rarity, so a banner whose drain3
    template repeats across boots is still caught. Reboot rows are removed from the
    rare set (rare_df = is_anomaly & ~reboot_mask), so a reboot row is never a rare
@@ -41,8 +41,8 @@ from sigwood.parsers.syslog import REBOOT_SIGNALS_RE
 DETECTOR_NAME = "syslog"
 STATUS = "available"
 
-# syslog is fidelity-aware: either flat rsyslog (syslog_dir/*.log*) OR Zeek's
-# own syslog.log (zeek_dir/syslog*.log*). At least one must be present; both
+# syslog is fidelity-aware: flat rsyslog, the live system journal, or Zeek's
+# own syslog.log. At least one must be present; satisfiable feeds
 # concat before drain3. Detector is SOURCE-BLIND - references only the
 # minimal-5 (ts, host, program, raw, message). Zeek's extended facility /
 # severity ride along on the frame but are NEVER read here; the digest
@@ -51,6 +51,7 @@ REQUIRED_LOGS: list[dict] = []
 
 OPTIONAL_LOGS = [
     {"source": "syslog_dir", "pattern": "*.log*"},
+    {"source": "journal",    "pattern": "*.log*"},
     {"source": "zeek_dir",   "pattern": "syslog*.log*"},
 ]
 
@@ -59,8 +60,8 @@ REQUIRES_ONE_OF_OPTIONAL = True
 # warning and the dry-run banner) prefix it, so a name here double-names ("syslog -
 # syslog - …").
 REQUIRES_ONE_OF_OPTIONAL_REASON = (
-    "no syslog source found "
-    "(need syslog_dir files or zeek_dir syslog.log)"
+    "no syslog source found (need a readable system journal, syslog files, "
+    "or Zeek syslog.log)"
 )
 
 DRAIN_SIM_THRESH          = 0.5
@@ -123,13 +124,14 @@ def run(context: DetectorContext) -> list[Finding]:
     now = datetime.now(timezone.utc)
 
     # Reboot detection is a SECOND, rarity-blind, full-frame channel: a vectorized
-    # mask over `raw` catches every reboot signal even when its drain3 template
+    # mask over canonical `message` catches every reboot signal even when its
+    # drain3 template
     # repeats across boots (count > max_count, so NOT in the rare set). Removing
     # reboot rows from the rare set is the anti-leak keystone - a reboot row can
     # never be tallied in a burst's line_count nor surface as a MEDIUM needle.
     # str.contains(na=False) is bool dtype by construction, and run() already
     # returned on an empty frame, so the combined mask is always a real boolean.
-    reboot_mask = df["raw"].astype(str).str.contains(REBOOT_SIGNALS_RE, na=False)
+    reboot_mask = df["message"].astype(str).str.contains(REBOOT_SIGNALS_RE, na=False)
     boot_events = _detect_boot_events(df[reboot_mask], cluster_seconds=cluster_seconds)
     rare_df     = df[df["is_anomaly"] & ~reboot_mask].copy()
 

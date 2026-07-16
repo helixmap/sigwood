@@ -1224,6 +1224,7 @@ def _write_probe_config(tmp_path: Path, *, detect: str | None = None) -> Path:
         f'root = "{tmp_path / "root"}"',
         f'zeek_dir = "{tmp_path / "zeek_empty"}"',
         f'syslog_dir = "{tmp_path / "syslog_empty"}"',
+        'syslog_source = "files"',
     ]
     if detect is not None:
         lines.append(f'detect = "{detect}"')

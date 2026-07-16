@@ -15,6 +15,8 @@ detect = "all"
 # Directories holding your logs. Conventional locations shown; uncomment the
 # others if you have them.
 zeek_dir   = "/var/log/zeek"
+# system logs: "auto" | "journal" | "files" | "off"
+syslog_source = "auto"
 syslog_dir = "/var/log"
 # pihole_dir     = "/var/log/pihole"
 # cloudtrail_dir = "/var/log/cloudtrail"

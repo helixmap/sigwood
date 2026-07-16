@@ -17,6 +17,7 @@ import os
 import pkgutil
 import shlex
 import sys
+from contextlib import ExitStack
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -53,15 +54,26 @@ from sigwood.common.errors import (
     GraphSourceUnreadable,
 )
 from sigwood.common.finding import DetectorContext, Finding, RunSummary
+from sigwood.common.journal_probe import probe_journal
+from sigwood.common.loader import JournalCaptureOutcome
 from sigwood.common.output import OutputHandler, Reporter
 from sigwood.common.paths import unique_path
 from sigwood.common.sources import (
     GraphKindSpec,
+    ResolvedSources,
+    SyslogDecisionReason,
+    SyslogIntent,
+    SyslogProbeDecision,
+    SyslogProvider,
+    SyslogProviderDecision,
+    arbitrate_syslog_capture,
+    arbitrate_syslog_probe,
     resolve_digest_source,
     resolve_graph_source,
-    resolve_sources,
+    resolve_analyze_sources,
 )
 from sigwood.common.sanitize import strip_control
+from sigwood.common.syslog_mode import SyslogMode
 
 _WIDTH = TEXT_RULE_WIDTH
 _SEP = TEXT_RULE
@@ -88,6 +100,26 @@ class RunPlan:
     needed_logs: dict[str, str]
 
 
+@dataclass(frozen=True)
+class DetectorSelection:
+    """Detector discovery and detect-spec resolution before source probing."""
+
+    detectors: dict[str, Any]
+    selected: list[str]
+    import_failures: dict[str, str]
+
+
+@dataclass(frozen=True)
+class _LoadedPlan:
+    """Eager load result and planning facts retained after source cleanup."""
+
+    plan: RunPlan
+    source_dirs: dict[str, list[Path]]
+    load_result: Any
+    load_windows: list[Any]
+    default_spec: str
+
+
 def run(
     config: dict[str, Any],
     detect: str | None = None,
@@ -108,6 +140,8 @@ def run(
     scope: frozenset[str] | None = None,
     quiet: bool = False,
     use_utc: bool = False,
+    syslog_source: object | None = None,
+    _detector_selection: DetectorSelection | None = None,
 ) -> int:
     """Main entry point for a detection run. Called by CLI dispatch functions.
 
@@ -153,11 +187,11 @@ def run(
     # all later render work inherit it - programmatic callers included.
     set_display_utc(use_utc)
 
-    # Single owner of source resolution: resolve_sources runs the four-key
-    # truth table (override / scope / config fallback) and is the SOLE site
-    # that converts a source-dir string to a Path. Runs BEFORE dry_run so
-    # _print_dry_run sees resolved dirs (provenance rail).
-    resolved = resolve_sources(
+    detect_spec = detect if detect is not None else cfg_sigwood.get("detect", "all")
+    with liveness("loading detectors", enabled=not quiet):
+        selection = _detector_selection or select_detectors(detect_spec)
+
+    analyze_sources = resolve_analyze_sources(
         config,
         overrides={
             "zeek_dir": zeek_dir,
@@ -166,23 +200,42 @@ def run(
             "cloudtrail_dir": cloudtrail_dir,
         },
         scope=scope,
+        syslog_source=syslog_source,
+        syslog_selected="syslog" in selection.selected,
     )
+    resolved = analyze_sources.resolved
+    syslog_intent = analyze_sources.syslog
     zeek_dirs = resolved.zeek_dir
     syslog_dirs = resolved.syslog_dir
     pihole_dirs = resolved.pihole_dir
     cloudtrail_dirs = resolved.cloudtrail_dir
 
-    with liveness("loading detectors", enabled=not quiet):
-        plan = build_run_plan(
-            detect_spec=detect if detect is not None else cfg_sigwood.get("detect", "all"),
-            zeek_dir=zeek_dirs,
-            syslog_dir=syslog_dirs,
-            pihole_dir=pihole_dirs,
-            cloudtrail_dir=cloudtrail_dirs,
-            scope=scope,
-        )
-
     if dry_run:
+        probe_result = None
+        if (
+            syslog_intent.local_lane_eligible
+            and syslog_intent.mode in (SyslogMode.AUTO, SyslogMode.JOURNAL)
+        ):
+            probe_result = probe_journal(since=since, until=until)
+        probe_decision = arbitrate_syslog_probe(syslog_intent, probe_result)
+        if (
+            probe_decision.reason is SyslogDecisionReason.PROBE_AUTO_FAILURE
+            and probe_decision.diagnostic
+        ):
+            _estderr(f"system journal: {probe_decision.diagnostic}")
+        dry_sources = _source_dirs_for_provider(
+            resolved, probe_decision.provider
+        )
+        plan = build_run_plan(
+            detect_spec=detect_spec,
+            zeek_dir=dry_sources.get("zeek_dir"),
+            syslog_dir=dry_sources.get("syslog_dir"),
+            pihole_dir=dry_sources.get("pihole_dir"),
+            cloudtrail_dir=dry_sources.get("cloudtrail_dir"),
+            scope=syslog_intent.adjusted_scope,
+            selection=selection,
+            virtual_sources=probe_decision.virtual_sources,
+        )
         _print_dry_run(
             zeek_dir=zeek_dirs,
             syslog_dir=syslog_dirs,
@@ -193,89 +246,102 @@ def run(
             load_all=load_all,
             will_run=plan.will_run,
             skipped=plan.skipped,
+            syslog_intent=syslog_intent,
+            syslog_probe=probe_decision,
         )
         return 0
 
-    # Emit per-detector skip warnings to stderr
-    for name, reason in plan.skipped.items():
-        _warn_skipped(name, reason)
-
-    if not plan.will_run:
-        # Two distinct causes, two messages: skipped populated means detectors
-        # were selected but their sources are missing; both empty means the
-        # detect spec itself selected none (a legal, disclosed no-op).
-        if plan.skipped:
-            _estderr(
-                "no detectors could run - check required log source paths in config "
-                "or CLI overrides"
-            )
-            return 1
-        else:
-            _estderr("no detectors to run - the detect spec selected none")
-            return 0
-
-    # ── Load logs ─────────────────────────────────────────────────────────────
     from sigwood.common import loader
     from sigwood.common.allowlist import matcher_from_plan, resolve_allowlist_plan
     from sigwood.common.finding import SuppressionSummary
 
-    source_dirs: dict[str, list[Path]] = {}
-    if zeek_dirs:
-        source_dirs["zeek_dir"] = zeek_dirs
-    if syslog_dirs:
-        source_dirs["syslog_dir"] = syslog_dirs
-    if pihole_dirs:
-        source_dirs["pihole_dir"] = pihole_dirs
-    if cloudtrail_dirs:
-        source_dirs["cloudtrail_dir"] = cloudtrail_dirs
+    default_spec: str = cfg_sigwood.get("default_window", "7d")
+    default_span = None
+    if not load_all and since is None and until is None:
+        default_span = parse_window_span(default_spec)
 
-    # Resolve the UNIVERSAL default window. default_window governs every source
-    # family (not just Zeek): each family anchors on its OWN max-ts, with the
-    # per-family load/trim strategy encoded in a single LoadWindow per family. The
-    # loader owns the window policy now - resolve_load_windows is the SINGLE entry
-    # point (shared with run_digest); each family's strategy declares its own
-    # resolver. Engages only on an unqualified, non---all, unbounded, in-plan,
-    # configured, eligible family.
-    _default_spec: str = cfg_sigwood.get("default_window", "7d")
-    load_windows = loader.resolve_load_windows(
-        plan.needed_logs, source_dirs, _default_spec,
-        load_all=load_all, since=since, until=until,
-    )
+    decision: SyslogProviderDecision
+    loaded_or_rc: _LoadedPlan | int | None = None
+    with ExitStack() as captures:
+        prepared = None
+        journal_error = None
+        if (
+            syslog_intent.local_lane_eligible
+            and syslog_intent.mode in (SyslogMode.AUTO, SyslogMode.JOURNAL)
+        ):
+            try:
+                with liveness("reading system journal", enabled=not quiet):
+                    prepared = captures.enter_context(
+                        loader.prepare_journal_capture(
+                            since=since,
+                            until=until,
+                            default_span=default_span,
+                        )
+                    )
+            except loader.JournalError as exc:
+                if syslog_intent.mode is SyslogMode.JOURNAL:
+                    raise
+                journal_error = exc
+
+        decision = arbitrate_syslog_capture(
+            syslog_intent, capture=prepared, error=journal_error
+        )
+        _emit_syslog_decision_warnings(decision)
+        if decision.provider is SyslogProvider.JOURNAL:
+            assert prepared is not None
+            source_dirs = _source_dirs_for_provider(
+                resolved,
+                decision.provider,
+                journal_path=prepared.capture_path,
+            )
+            pre_resolved = (
+                {"journal": prepared.load_window}
+                if prepared.load_window is not None
+                else None
+            )
+            loaded_or_rc = _plan_and_load(
+                detect_spec=detect_spec,
+                selection=selection,
+                source_dirs=source_dirs,
+                scope=syslog_intent.adjusted_scope,
+                provider_decision=decision,
+                syslog_intent=syslog_intent,
+                default_spec=default_spec,
+                load_all=load_all,
+                since=since,
+                until=until,
+                verbose_level=verbose_level,
+                quiet=quiet,
+                pre_resolved_windows=pre_resolved,
+            )
+
+    if decision.provider is not SyslogProvider.JOURNAL:
+        source_dirs = _source_dirs_for_provider(resolved, decision.provider)
+        loaded_or_rc = _plan_and_load(
+            detect_spec=detect_spec,
+            selection=selection,
+            source_dirs=source_dirs,
+            scope=syslog_intent.adjusted_scope,
+            provider_decision=decision,
+            syslog_intent=syslog_intent,
+            default_spec=default_spec,
+            load_all=load_all,
+            since=since,
+            until=until,
+            verbose_level=verbose_level,
+            quiet=quiet,
+        )
+
+    assert loaded_or_rc is not None
+    if isinstance(loaded_or_rc, int):
+        return loaded_or_rc
+    plan = loaded_or_rc.plan
+    source_dirs = loaded_or_rc.source_dirs
+    source_dirs.pop("journal", None)
+    load_result = loaded_or_rc.load_result
+    load_windows = loaded_or_rc.load_windows
+    _default_spec = loaded_or_rc.default_spec
     default_window_active = bool(load_windows)
-    # Two routing maps, split off the LoadWindow trim_span discriminator:
-    #   - source_windows: the PRECISE dated-Zeek window (select_window + trim_span
-    #     None) - row-filters at run_load AND prunes discovery.
-    #   - file_select_windows: the CONSERVATIVE flat floor (select_window +
-    #     trim_span) - feeds the rotation-peek (window_select) ONLY; the
-    #     authoritative post-load trim does the row windowing, so the floor (anchored
-    #     on a PEEKED f_max) never over-prunes real rows when its f_max source file
-    #     peeks fine but fails to load.
-    # select_window=None families load full and are trimmed post-load (neither map).
-    source_windows = (
-        {w.source: w.select_window for w in load_windows
-         if w.select_window is not None and w.trim_span is None}
-        or None
-    )
-    file_select_windows = (
-        {w.source: w.select_window for w in load_windows
-         if w.select_window is not None and w.trim_span is not None}
-        or None
-    )
-
-    if default_window_active and not quiet:
-        # One pre-load line above the loader's `loaded <file>` progress lines.
-        _estderr(default_window_advisory(_default_spec))
-
-    load_result = loader.load_required_logs(
-        plan.needed_logs,
-        source_dirs,
-        since,
-        until,
-        verbose=(verbose_level >= 1),
-        source_windows=source_windows,
-        show_progress=not quiet,
-        file_select_windows=file_select_windows,
-    )
 
     # Post-load precise trim for every family whose default window engaged with a
     # load-full / conservative select-window (flat peek-prune, cloudtrail
@@ -392,6 +458,9 @@ def run(
     home_net_note = _home_net_note(plan, config)
     if home_net_note:
         notes.append(home_net_note)
+    syslog_provider_note = _syslog_provider_note(decision, syslog_intent, plan)
+    if syslog_provider_note:
+        notes.append(syslog_provider_note)
     # Source-dir overlap disclosure: when two IN-PLAN families resolve to the
     # same directory, flat discovery globs cross-read it (one log surfaced as
     # another's finding). Derives from already-resolved source_dirs + plan, like
@@ -591,6 +660,140 @@ def run(
     return 0
 
 
+def _source_dirs_for_provider(
+    resolved: ResolvedSources,
+    provider: SyslogProvider,
+    *,
+    journal_path: Path | None = None,
+) -> dict[str, list[Path]]:
+    """Build the loader map with at most one local system-log carrier."""
+    source_dirs: dict[str, list[Path]] = {}
+    for key in ("zeek_dir", "pihole_dir", "cloudtrail_dir"):
+        paths = list(getattr(resolved, key))
+        if paths:
+            source_dirs[key] = paths
+    if provider is SyslogProvider.FILES and resolved.syslog_dir:
+        source_dirs["syslog_dir"] = list(resolved.syslog_dir)
+    elif provider is SyslogProvider.JOURNAL:
+        if journal_path is None:
+            return source_dirs
+        source_dirs["journal"] = [journal_path]
+    return source_dirs
+
+
+def _emit_syslog_decision_warnings(decision: SyslogProviderDecision) -> None:
+    """Emit completeness warnings without applying the quiet status gate."""
+    if (
+        decision.reason is SyslogDecisionReason.AUTO_FAILURE
+        and decision.diagnostic
+    ):
+        _estderr(f"system journal: {decision.diagnostic}")
+    for warning in decision.warnings:
+        _estderr(warning)
+
+
+def _emit_syslog_skip_diagnostic(
+    plan: RunPlan,
+    decision: SyslogProviderDecision,
+    intent: SyslogIntent,
+) -> None:
+    """Explain the local-provider half before the combined syslog skip."""
+    if "syslog" not in plan.skipped or not intent.report_local_lane:
+        return
+    if decision.provider is SyslogProvider.OFF:
+        _estderr("system logs: local lane off")
+    elif decision.provider is SyslogProvider.FILES:
+        _estderr("system logs: no eligible flat files found")
+
+
+def _plan_and_load(
+    *,
+    detect_spec: str | None,
+    selection: DetectorSelection,
+    source_dirs: dict[str, list[Path]],
+    scope: frozenset[str] | None,
+    provider_decision: SyslogProviderDecision,
+    syslog_intent: SyslogIntent,
+    default_spec: str,
+    load_all: bool,
+    since: datetime | None,
+    until: datetime | None,
+    verbose_level: int,
+    quiet: bool,
+    pre_resolved_windows: Mapping[str, Any] | None = None,
+) -> _LoadedPlan | int:
+    """Build the final plan and eagerly load its one-provider source map."""
+    from sigwood.common import loader
+
+    plan = build_run_plan(
+        detect_spec=detect_spec,
+        zeek_dir=source_dirs.get("zeek_dir"),
+        syslog_dir=source_dirs.get("syslog_dir"),
+        pihole_dir=source_dirs.get("pihole_dir"),
+        cloudtrail_dir=source_dirs.get("cloudtrail_dir"),
+        journal=source_dirs.get("journal"),
+        scope=scope,
+        selection=selection,
+    )
+    _emit_syslog_skip_diagnostic(plan, provider_decision, syslog_intent)
+    for name, reason in plan.skipped.items():
+        _warn_skipped(name, reason)
+    if not plan.will_run:
+        if plan.skipped:
+            _estderr(
+                "no detectors could run - check required log source paths in config "
+                "or CLI overrides"
+            )
+            return 1
+        _estderr("no detectors to run - the detect spec selected none")
+        return 0
+
+    load_windows = loader.resolve_load_windows(
+        plan.needed_logs,
+        source_dirs,
+        default_spec,
+        load_all=load_all,
+        since=since,
+        until=until,
+        pre_resolved_windows=pre_resolved_windows,
+    )
+    source_windows = (
+        {
+            window.source: window.select_window
+            for window in load_windows
+            if window.select_window is not None and window.trim_span is None
+        }
+        or None
+    )
+    file_select_windows = (
+        {
+            window.source: window.select_window
+            for window in load_windows
+            if window.select_window is not None and window.trim_span is not None
+        }
+        or None
+    )
+    if load_windows and not quiet:
+        _estderr(default_window_advisory(default_spec))
+    load_result = loader.load_required_logs(
+        plan.needed_logs,
+        source_dirs,
+        since,
+        until,
+        verbose=verbose_level >= 1,
+        source_windows=source_windows,
+        show_progress=not quiet,
+        file_select_windows=file_select_windows,
+    )
+    return _LoadedPlan(
+        plan=plan,
+        source_dirs=source_dirs,
+        load_result=load_result,
+        load_windows=load_windows,
+        default_spec=default_spec,
+    )
+
+
 def _prepare_detector_context(
     mod: Any,
     name: str,
@@ -678,6 +881,25 @@ def discover_detectors(*, _failures: dict[str, str] | None = None) -> dict[str, 
     return detectors
 
 
+def select_detectors(
+    detect_spec: str | None,
+    detectors: dict[str, Any] | None = None,
+) -> DetectorSelection:
+    """Resolve detector selection without inspecting source availability."""
+    import_failures: dict[str, str] = {}
+    all_detectors = (
+        detectors
+        if detectors is not None
+        else discover_detectors(_failures=import_failures)
+    )
+    selected = resolve_detect(
+        str(detect_spec or "all"),
+        sorted(all_detectors),
+        import_failed=sorted(import_failures),
+    )
+    return DetectorSelection(all_detectors, selected, import_failures)
+
+
 def _as_path_list(value: Path | list[Path] | None) -> list[Path]:
     """Normalize a build_run_plan / _print_dry_run source-dir param.
 
@@ -701,8 +923,11 @@ def build_run_plan(
     syslog_dir: Path | list[Path] | None = None,
     pihole_dir: Path | list[Path] | None = None,
     cloudtrail_dir: Path | list[Path] | None = None,
+    journal: Path | list[Path] | None = None,
     detectors: dict[str, Any] | None = None,
     scope: frozenset[str] | None = None,
+    selection: DetectorSelection | None = None,
+    virtual_sources: frozenset[tuple[str, str]] = frozenset(),
 ) -> RunPlan:
     """Resolve detector selection, required-log skips, and log patterns to load.
 
@@ -717,19 +942,17 @@ def build_run_plan(
     positional-scoping signal) only refines skip WORDING - a family scoped out
     by positional targets reads as out-of-scope, not "not configured".
     """
-    import_failures: dict[str, str] = {}
-    all_detectors = detectors or discover_detectors(_failures=import_failures)
-    selected = resolve_detect(
-        str(detect_spec or "all"),
-        sorted(all_detectors.keys()),
-        import_failed=sorted(import_failures),
-    )
+    resolved_selection = selection or select_detectors(detect_spec, detectors)
+    import_failures = resolved_selection.import_failures
+    all_detectors = resolved_selection.detectors
+    selected = resolved_selection.selected
 
     source_map: dict[str, list[Path]] = {}
     zeek_paths = _as_path_list(zeek_dir)
     syslog_paths = _as_path_list(syslog_dir)
     pihole_paths = _as_path_list(pihole_dir)
     cloudtrail_paths = _as_path_list(cloudtrail_dir)
+    journal_paths = _as_path_list(journal)
     if zeek_paths:
         source_map["zeek_dir"] = zeek_paths
     if syslog_paths:
@@ -738,6 +961,8 @@ def build_run_plan(
         source_map["pihole_dir"] = pihole_paths
     if cloudtrail_paths:
         source_map["cloudtrail_dir"] = cloudtrail_paths
+    if journal_paths:
+        source_map["journal"] = journal_paths
 
     will_run: list[str] = []
     skipped: dict[str, str] = {}
@@ -748,7 +973,9 @@ def build_run_plan(
         if name in import_failures:
             skipped[name] = f"import failed - {import_failures[name]}"
             continue
-        reason = _check_required_logs(all_detectors[name], source_map, scope)
+        reason = _check_required_logs(
+            all_detectors[name], source_map, scope, virtual_sources
+        )
         if reason:
             skipped[name] = reason
         else:
@@ -761,11 +988,10 @@ def build_run_plan(
     for name in will_run:
         mod = all_detectors[name]
         for req in getattr(mod, "REQUIRED_LOGS", []):
-            if req["pattern"] not in needed_logs:
-                needed_logs[req["pattern"]] = req["source"]
+            _claim_needed_log(needed_logs, req["pattern"], req["source"])
         for req in getattr(mod, "OPTIONAL_LOGS", []):
-            if _is_optional_satisfiable(req, source_map) and req["pattern"] not in needed_logs:
-                needed_logs[req["pattern"]] = req["source"]
+            if _is_optional_satisfiable(req, source_map, virtual_sources):
+                _claim_needed_log(needed_logs, req["pattern"], req["source"])
 
     return RunPlan(
         detectors=all_detectors,
@@ -986,6 +1212,7 @@ def _any_input_yields_files(
     from sigwood.common.loader import (
         _discover_syslog_files,
         _syslog_files,
+        discover_for_source_key,
         discover_cloudtrail_files,
         discover_zeek_files,
     )
@@ -1004,6 +1231,9 @@ def _any_input_yields_files(
         elif source == "pihole_dir":
             if _syslog_files(p, pattern):
                 return True
+        elif source == "journal":
+            if discover_for_source_key("journal", p, pattern):
+                return True
         else:
             # Defensive: unknown source key. Fall back to plain glob over
             # directories so an unrecognized future family doesn't silently
@@ -1018,9 +1248,12 @@ def _any_input_yields_files(
 def _is_optional_satisfiable(
     req: dict[str, str],
     source_map: dict[str, Path | list[Path]],
+    virtual_sources: frozenset[tuple[str, str]] = frozenset(),
 ) -> bool:
     """Return True if an OPTIONAL_LOGS entry has files available to load."""
     source = req["source"]
+    if (source, req["pattern"]) in virtual_sources:
+        return True
     paths = _as_path_list(source_map.get(source))
     if not paths:
         return False
@@ -1031,6 +1264,7 @@ def _check_required_logs(
     detector_module: Any,
     source_map: dict[str, Path | list[Path]],
     scope: frozenset[str] | None = None,
+    virtual_sources: frozenset[tuple[str, str]] = frozenset(),
 ) -> str | None:
     """Return None if all REQUIRED_LOGS are available, or a human-readable reason if not.
 
@@ -1043,6 +1277,9 @@ def _check_required_logs(
     for req in getattr(detector_module, "REQUIRED_LOGS", []):
         source = req["source"]
         pattern = req["pattern"]
+
+        if (source, pattern) in virtual_sources:
+            continue
 
         paths = _as_path_list(source_map.get(source))
         if not paths:
@@ -1072,7 +1309,7 @@ def _check_required_logs(
 
     if getattr(detector_module, "REQUIRES_ONE_OF_OPTIONAL", False):
         for opt in getattr(detector_module, "OPTIONAL_LOGS", []):
-            if _is_optional_satisfiable(opt, source_map):
+            if _is_optional_satisfiable(opt, source_map, virtual_sources):
                 return None
         # The reason NEVER embeds the detector name - both render surfaces prefix
         # it (the doubled-name skip-line bug class), so the fallback carries none.
@@ -1083,6 +1320,21 @@ def _check_required_logs(
         )
 
     return None
+
+
+def _claim_needed_log(
+    needed_logs: dict[str, str], pattern: str, source: str
+) -> None:
+    """Add one load claim while rejecting different-source pattern collisions."""
+    existing = needed_logs.get(pattern)
+    if existing is None:
+        needed_logs[pattern] = source
+        return
+    if existing != source:
+        raise ValueError(
+            f"log pattern {pattern!r} is claimed by both {existing} and {source} - "
+            "source arbitration must select one provider"
+        )
 
 
 def _estderr(line: str) -> None:
@@ -1182,6 +1434,8 @@ def _print_dry_run(
     load_all: bool,
     will_run: list[str],
     skipped: dict[str, str],
+    syslog_intent: SyslogIntent | None = None,
+    syslog_probe: SyslogProbeDecision | None = None,
 ) -> None:
     print("sigwood  ·  threat hunt  ·  dry run")
     print(_SEP_DOUBLE)
@@ -1194,7 +1448,22 @@ def _print_dry_run(
     # - same normalization shape as build_run_plan, so test callers passing
     # scalar Path or None work without juggling the wire shape.
     _print_family_block("zeek_dir", _as_path_list(zeek_dir), _zeek_entry_display)
-    _print_family_block("syslog_dir", _as_path_list(syslog_dir), _status_entry_display)
+    if (
+        syslog_intent is not None
+        and syslog_probe is not None
+        and syslog_intent.report_local_lane
+    ):
+        system_logs, fallback = _dry_syslog_display(syslog_intent, syslog_probe)
+        print(f"{'system logs:':<{_BANNER_LABEL_WIDTH}}  {strip_control(system_logs)}")
+        if fallback:
+            print(
+                f"{'system fallback:':<{_BANNER_LABEL_WIDTH}}  "
+                f"{strip_control(fallback)}"
+            )
+    else:
+        _print_family_block(
+            "syslog_dir", _as_path_list(syslog_dir), _status_entry_display
+        )
     _print_family_block("pihole_dir", _as_path_list(pihole_dir), _status_entry_display)
     _print_family_block(
         "cloudtrail_dir", _as_path_list(cloudtrail_dir), _status_entry_display,
@@ -1231,6 +1500,47 @@ def _print_dry_run(
     print("dry run - remove --dry-run to analyze")
 
 
+def _dry_syslog_display(
+    intent: SyslogIntent,
+    decision: SyslogProbeDecision,
+) -> tuple[str, str | None]:
+    """Return dry-run provider and optional not-loaded fallback copy."""
+    paths = _compact_syslog_paths(intent.flat_paths)
+    fallback = f"{paths} (not loaded)" if paths else None
+    reason = decision.reason
+    if decision.provider is SyslogProvider.OFF:
+        return "off", None
+    if decision.provider is SyslogProvider.JOURNAL:
+        if reason is SyslogDecisionReason.PROBE_AUTO_READY:
+            value = (
+                "journal (auto candidate; accessible; full usable-row decision "
+                "occurs on the real run)"
+            )
+        elif reason is SyslogDecisionReason.PROBE_JOURNAL_EMPTY:
+            value = "journal (selected; query empty)"
+        else:
+            value = "journal (selected; accessible)"
+        return value, fallback
+
+    base = f"files {paths}" if paths else "files"
+    if reason is SyslogDecisionReason.PROBE_AUTO_EMPTY:
+        detail = "auto fallback; journal query empty"
+    elif reason is SyslogDecisionReason.PROBE_AUTO_MISSING:
+        detail = "auto fallback; journal unavailable"
+    elif reason is SyslogDecisionReason.PROBE_AUTO_FAILURE:
+        detail = "auto fallback; journal unavailable"
+        if decision.diagnostic:
+            detail += f" - {decision.diagnostic}"
+    elif reason in (
+        SyslogDecisionReason.EXPLICIT_FILES,
+        SyslogDecisionReason.EXPLICIT_PATH_FILES,
+    ):
+        detail = "explicit"
+    else:
+        detail = "configured"
+    return f"{base} ({detail})", None
+
+
 def _derive_data_sources(
     needed_logs: dict[str, str],
     record_counts: dict[str, int],
@@ -1255,6 +1565,8 @@ def _derive_data_sources(
             labels.add("dnsmasq_dns")
         elif source == "cloudtrail_dir":
             labels.add("cloudtrail_raw")
+        elif source == "journal":
+            labels.add("syslog_journal")
     return sorted(labels)
 
 
@@ -1277,6 +1589,8 @@ def _pattern_human_label(source_key: str, pattern: str) -> str:
         return "syslog"
     if source_key == "cloudtrail_dir":
         return "CloudTrail"
+    if source_key == "journal":
+        return "system journal"
     if source_key == "zeek_dir":
         lt = _log_type(pattern)
         return f"Zeek {lt}" if lt is not None else "Zeek"
@@ -1458,6 +1772,93 @@ def _rotation_fallback_lines(
             label = _pattern_human_label(plan.needed_logs[pattern], pattern)
             out.append(_rotation_fallback_line(label, info))
     return out
+
+
+_SYSLOG_PATH_DISPLAY_CAP = 3
+_SYSLOG_PATH_CHAR_CAP = 256
+
+
+def _compact_syslog_paths(paths: Sequence[Path]) -> str:
+    """Render a bounded, terminal-safe local file-fallback path list."""
+    rendered = [
+        strip_control(compact_home(path))[:_SYSLOG_PATH_CHAR_CAP]
+        for path in paths[:_SYSLOG_PATH_DISPLAY_CAP]
+    ]
+    text = ", ".join(rendered)
+    omitted = len(paths) - len(rendered)
+    if omitted > 0:
+        text += f" (+{omitted} more)"
+    return text
+
+
+def _bounded_warning_rider(warnings: Sequence[str]) -> str | None:
+    """Render one producer warning plus a bounded omitted-warning count."""
+    if not warnings:
+        return None
+    first = strip_control(warnings[0])[:512]
+    if len(warnings) > 1:
+        first += f" (+{len(warnings) - 1} more)"
+    return first
+
+
+def _syslog_provider_note(
+    decision: SyslogProviderDecision,
+    intent: SyslogIntent,
+    plan: RunPlan,
+) -> str | None:
+    """Return the one bounded system-log provider disclosure for the report."""
+    if not intent.report_local_lane:
+        return None
+    paths = _compact_syslog_paths(intent.flat_paths)
+    fallback = f"{paths} fallback not loaded" if paths else "no file fallback configured"
+    warning = _bounded_warning_rider(decision.warnings)
+
+    if decision.provider is SyslogProvider.OFF:
+        return "system logs: off"
+    if decision.provider is SyslogProvider.JOURNAL:
+        if decision.reason is SyslogDecisionReason.AUTO_JOURNAL:
+            if decision.legacy_migrated:
+                detail = (
+                    "auto from legacy config; set syslog_source=\"files\" to keep "
+                    f"file-only behavior; {fallback}"
+                )
+            else:
+                detail = f"auto; {fallback}"
+        elif decision.reason is SyslogDecisionReason.EXPLICIT_JOURNAL:
+            detail = f"explicit; {fallback}"
+        else:
+            detail = f"configured; {fallback}"
+        if decision.capture_outcome is JournalCaptureOutcome.CLEAN_EMPTY:
+            detail += "; journal had no entries in the selected window"
+        elif decision.capture_outcome is JournalCaptureOutcome.NO_USABLE:
+            detail += "; journal had no usable entries in the selected window"
+        if warning:
+            detail += f"; {warning}"
+        return f"system logs: journal ({detail})"
+
+    base = f"system logs: files {paths}" if paths else "system logs: files"
+    if decision.reason in (
+        SyslogDecisionReason.EXPLICIT_PATH_FILES,
+        SyslogDecisionReason.EXPLICIT_FILES,
+    ):
+        detail = "explicit"
+    elif decision.reason is SyslogDecisionReason.CONFIGURED_FILES:
+        detail = "configured"
+    elif decision.reason is SyslogDecisionReason.AUTO_MISSING:
+        detail = "auto; journal unavailable"
+    elif decision.reason is SyslogDecisionReason.AUTO_CLEAN_EMPTY:
+        detail = "auto; journal had no entries in the selected window"
+    elif decision.reason is SyslogDecisionReason.AUTO_NO_USABLE:
+        detail = "auto; journal had no usable entries in the selected window"
+    else:
+        detail = "auto; journal unavailable"
+        if decision.diagnostic:
+            detail += f" - {strip_control(decision.diagnostic)[:512]}"
+    if "syslog_dir" not in plan.needed_logs.values():
+        detail += "; no eligible syslog files found"
+    if warning:
+        detail += f"; {warning}"
+    return f"{base} ({detail})"
 
 
 def _dns_nudge(data_sources: list[str]) -> str | None:

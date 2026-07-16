@@ -171,10 +171,10 @@ def test_analyze_detect_all_heterogeneous_positionals_bucket_correctly(
     assert str(dns) in out
     assert str(syslog) in out
     # The two zeek_dir entries must appear in the zeek_dir block, not syslog.
-    zeek_block = out.split("zeek_dir:")[1].split("syslog_dir:")[0]
+    zeek_block = out.split("zeek_dir:")[1].split("system logs:")[0]
     assert str(conn) in zeek_block
     assert str(dns) in zeek_block
-    syslog_block = out.split("syslog_dir:")[1].split("pihole_dir:")[0]
+    syslog_block = out.split("system logs:")[1].split("pihole_dir:")[0]
     assert str(syslog) in syslog_block
 
 

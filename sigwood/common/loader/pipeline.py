@@ -47,6 +47,11 @@ from sigwood.common.loader.discovery import (
     discover_zeek_files,
 )
 from sigwood.common.loader.io import _safe_resolve, _union_dedupe
+from sigwood.common.loader.journal import (
+    _discover_journal_capture,
+    _journal_read_error,
+    _journal_strategy_parse,
+)
 from sigwood.common.loader.sniff import _is_ndjson, _looks_binary
 from sigwood.common.loader.types import (
     _CLOUDTRAIL_COLUMNS,
@@ -150,6 +155,14 @@ class SourceLoader:
     # verbose-only wrong-family skip), so a misnamed binary never becomes drain3
     # "soup". Trailing/defaulted → existing constructions unaffected; None = no hook.
     warn_skip: Callable[[Path], str | None] | None = None
+    # Optional operator-facing identity for private/internal materializations.
+    # The pipeline owns the descriptor because display.progress has no strategy
+    # context. None preserves the path-name wording for every existing source.
+    display_label: str | None = None
+    # Optional translator for source-owned read failures. A live producer can
+    # classify its private capture I/O without entering file-permission metadata;
+    # ordinary file families retain the generic warning/skip behavior.
+    read_error_factory: Callable[[BaseException], BaseException] | None = None
 
 
 def _zeek_records_from_lines(line_iter: Any) -> list[dict[str, Any]]:
@@ -659,7 +672,7 @@ def run_load(
             with _loader._open_log(path) as fh:
                 line_iter = _loader.progress(
                     fh,
-                    desc=f"loaded {strip_control(path.name)}",
+                    desc=f"loaded {strip_control(strategy.display_label or path.name)}",
                     show_progress=show_progress,
                     unit=strategy.unit,
                 )
@@ -711,7 +724,9 @@ def run_load(
                     if not post.empty:
                         frames.append(post)
                         tracker.mark_kept()
-        except PermissionError:
+        except PermissionError as exc:
+            if strategy.read_error_factory is not None:
+                raise strategy.read_error_factory(exc) from None
             if not attempted_this_file:
                 attempted += 1
             permission_paths.append(path)
@@ -719,6 +734,8 @@ def run_load(
                 _warnings.append(_permission_denied_message(path))
             continue
         except (EOFError, gzip.BadGzipFile, lzma.LZMAError, OSError) as exc:
+            if strategy.read_error_factory is not None:
+                raise strategy.read_error_factory(exc) from None
             # ``_open_log`` returns a lazy reader; corruption may surface only
             # at the trailer after many valid-looking lines. Discard the
             # per-file buffer so the warning is honest (a "skipped with
@@ -726,7 +743,11 @@ def run_load(
             # standard read-warning. Distinct from CloudTrail's content-parse
             # warning rail (``_cloudtrail_parse_warning``).
             if _warnings is not None:
-                _warnings.append(_zeek_file_read_warning(path, exc))
+                _warnings.append(
+                    _zeek_file_read_warning(
+                        path, exc, display_label=strategy.display_label
+                    )
+                )
             continue
         if strategy.mode == "stream":
             rows.extend(file_rows)
@@ -823,6 +844,19 @@ _SOURCE_LOADERS: dict[str, SourceLoader] = {
         # aws is baseline-relative - opt CloudTrail OUT of the auto-default window
         # (an explicit --since/--until still narrows it).
         default_window_eligible=False,
+    ),
+    "journal": SourceLoader(
+        # The producer's lock-protected active-capture registry is the gate;
+        # no filename or content recognizer can route arbitrary JSON here.
+        discover=_discover_journal_capture,
+        mode="stream",
+        parse=_journal_strategy_parse,
+        ts_policy="drop",
+        columns=_SYSLOG_COLUMNS,
+        should_skip=None,
+        normalize=None,
+        display_label="system journal",
+        read_error_factory=_journal_read_error,
     ),
 }
 
@@ -1119,7 +1153,9 @@ def load_required_logs(
             try:
                 if path.is_file():
                     data_size_bytes += path.stat().st_size
-            except OSError:
+            except OSError as exc:
+                if strategy.read_error_factory is not None:
+                    raise strategy.read_error_factory(exc) from None
                 # The read loop records permission and corruption outcomes;
                 # an unreadable file simply has no reliable size to add.
                 continue
@@ -1166,6 +1202,7 @@ def resolve_load_windows(
     since: datetime | None,
     until: datetime | None,
     load_all: bool,
+    pre_resolved_windows: Mapping[str, LoadWindow] | None = None,
 ) -> list[LoadWindow]:
     """Resolve the universal default window into ONE ``LoadWindow`` per family.
 
@@ -1192,6 +1229,15 @@ def resolve_load_windows(
     span = parse_window_span(default_spec)
     if span is None:
         return []
+    injected = dict(pre_resolved_windows or {})
+    invalid_keys = set(injected) - {"journal"}
+    if invalid_keys:
+        raise ValueError("pre-resolved windows are supported only for journal")
+    if "journal" in injected and (
+        not isinstance(injected["journal"], LoadWindow)
+        or injected["journal"].source != "journal"
+    ):
+        raise ValueError("pre-resolved journal window has the wrong source")
 
     # Families present in the plan, stable order, deduped.
     planned_sources: list[str] = []
@@ -1199,9 +1245,20 @@ def resolve_load_windows(
         if src not in planned_sources:
             planned_sources.append(src)
 
+    if "journal" in injected:
+        if "journal" not in planned_sources or not source_dirs.get("journal"):
+            raise ValueError(
+                "pre-resolved journal window requires an in-plan configured source"
+            )
+
     windows: list[LoadWindow] = []
     for source in planned_sources:
         dirs = source_dirs.get(source)
+        if source in injected:
+            # The producer's exact default window wins before the temporary
+            # explicit capture is classified as bounded. Preserve object identity.
+            windows.append(injected[source])
+            continue
         if not dirs or is_bounded(dirs):
             continue
         strategy = _SOURCE_LOADERS.get(source)

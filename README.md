@@ -106,8 +106,9 @@ full run against that corpus, and the same findings as an HTML report:
   per-principal z-score composite. Every run names the technique each detector used, and `-v`
   shows the evidence behind a finding.
 - **Big-tent ingestion.** One tool reads Zeek (NDJSON *and* TSV, flat *or* date-partitioned
-  directories), Pi-hole/dnsmasq, flat syslog (Debian *and* RHEL/Fedora layouts), and
-  CloudTrail. Rotation and `.gz`/`.bz2`/`.xz` compression are handled for you.
+  directories), Pi-hole/dnsmasq, the live **systemd journal** (`journalctl`, no sudo), flat
+  syslog (Debian *and* RHEL/Fedora layouts, RFC 3164 *and* ISO-8601), and CloudTrail. Rotation
+  and `.gz`/`.bz2`/`.xz` compression are handled for you.
 - **Orient before you hunt.** `sigwood digest FILE` reports facts about a log -
   time span, top talkers, the shape of the mix - so you know where to point the
   detectors. `sigwood graph FILE` creates a visual representation of the
@@ -125,14 +126,15 @@ full run against that corpus, and the same findings as an HTML report:
 |-----------|-----------------------------------------------------|------------------------------|--------------------------------|
 | `beacon`  | periodic C2-style callbacks                         | FFT over connection timing   | Zeek `conn.log`                |
 | `dns`     | DGA / tunneling / anomalous lookups                 | HDBSCAN clustering           | Zeek `dns.log` **or** Pi-hole  |
-| `syslog`  | rare events & reboots                               | drain3 templating + rarity   | syslog (flat) **or** Zeek `syslog.log` |
+| `syslog`  | rare events & reboots                               | drain3 templating + rarity   | systemd journal, flat syslog, **or** Zeek `syslog.log` |
 | `scan`    | vertical / horizontal / block / slow port scans     | pattern (heuristic)          | Zeek `conn.log`                |
 | `duration`| abnormally long-lived connections                   | heuristics                   | Zeek `conn.log`                |
 | `aws`     | per-principal anomalous CloudTrail behavior         | statistical (z-score composite) | CloudTrail `*.json*` (incl. `.gz`) |
 
-`dns` and `syslog` each answer **one** question across **two** source families - Zeek and
-Pi-hole for DNS, flat rsyslog and Zeek's own `syslog.log` for syslog - and adapt to whichever
-fidelity they're handed.
+`dns` and `syslog` each answer **one** question across several source families - Zeek and
+Pi-hole for DNS; the live systemd journal, flat rsyslog, and Zeek's own `syslog.log` for syslog -
+and adapt to whichever fidelity they're handed. On a systemd host `syslog` prefers the live
+journal by default (`--syslog-source=auto`); `--syslog-source=files` keeps the flat-file behavior.
 
 Run them all (`sigwood hunt`), select some (`sigwood hunt --detect=beacon,dns`), or exclude
 (`sigwood hunt --detect='all,!syslog'`). Each detector is also its own subcommand:

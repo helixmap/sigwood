@@ -148,14 +148,16 @@ govern-don't-grep promotion discipline as `program` on syslog.
 `was_blocked` / `block_ratio` are evidence-only for DNS clustering - never feature
 -matrix inputs.
 
-### Fidelity-aware syslog schema (flat rsyslog + Zeek syslog.log)
+### Fidelity-aware syslog schema (systemd journal + flat rsyslog + Zeek syslog.log)
 
-Source: `parsers/syslog.py` (flat RFC 3164 or ISO-8601 rsyslog), `parsers/zeek.py`
+Source: `parsers/syslog.py` (flat RFC 3164 or ISO-8601 rsyslog), `parsers/journal.py`
+(the live systemd journal via `journalctl --output=json`), `parsers/zeek.py`
 (`_normalize_zeek_syslog_df` - Zeek `syslog.log`, TSV + NDJSON front-ends).
 Consumers: syslog detector (source-blind - reads only the minimal-5), digest
-(syslog card - fidelity-aware, reads both feeds), future auth. The second
+(syslog card - fidelity-aware, reads both flat/Zeek feeds), future auth. The second
 source-spanning detector after dns; same question (rare events / reboots)
-over two source families.
+over three physical feeds of one logical lane. Exactly ONE local carrier (the live
+journal OR flat files) is selected per run; Zeek `syslog.log` remains independent.
 
 Minimal (both feeds produce, v1-required):
 ```
@@ -190,6 +192,22 @@ Derivation rules - Zeek `syslog.log`:
   (parsers/syslog.py helpers), so the doubled-timestamp invariant -
   `strip_header` is `^`-anchored, only strips the leading transport header -
   holds for both feeds.
+
+Derivation rules - systemd journal (one compact-JSON object per entry):
+- `ts      = __REALTIME_TIMESTAMP / 1_000_000` - the journal receipt time only
+             (the clock journalctl seeks and windows on); `_SOURCE_REALTIME_TIMESTAMP`
+             is ignored, an unparseable/absent timestamp drops the row
+- `raw     = the decoded MESSAGE exactly` (a byte-array MESSAGE is strict-UTF-8
+             decoded; embedded newlines/controls preserved - render sanitizers
+             own line discipline)
+- `host    = _HOSTNAME` when it is one non-whitespace token, else "unknown"
+- `program = SYSLOG_IDENTIFIER, else _COMM`, through the shared `parse_program` rule
+- `message = normalize_pids("<program>[pid]: <MESSAGE>")` when program is known,
+             else `normalize_pids(MESSAGE)` - so a bare journal MESSAGE gains the
+             program tag drain3 (and reboot matching) rely on
+Journal rows carry no `facility`/`severity`. The journal is a loader-owned producer
+(`journalctl --output=json`, no sudo, a bounded private transient capture removed
+after load); see the loading/runner rails.
 
 Ownership: parser/loader carry `facility` and `severity`; the detector
 receives them in the frame but never reads or assumes them - minimal-5 only.

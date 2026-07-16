@@ -12,6 +12,7 @@ Sections:
 
 from __future__ import annotations
 
+import ast
 import bz2
 import gzip
 import os
@@ -74,11 +75,20 @@ def _stub_candidates(
     zeek: tuple[str, ...] = (),
     pihole: tuple[tuple[str, str], ...] = (),
     syslog: str = "/nonexistent-syslog-dir",
+    journal_code: cli.journal_probe.JournalProbeCode | None = None,
+    journal_stderr: bytes = b"",
 ) -> None:
-    """Replace the module-level probe constants so no real path is touched."""
+    """Replace all live probes so tests never touch host logs or journal."""
     monkeypatch.setattr(cli, "_ZEEK_CANDIDATES", zeek)
     monkeypatch.setattr(cli, "_PIHOLE_CANDIDATES", pihole)
     monkeypatch.setattr(cli, "_SYSLOG_CANDIDATE", syslog)
+    if journal_code is None:
+        journal_code = cli.journal_probe.JournalProbeCode.EXECUTABLE_MISSING
+    result = cli.journal_probe.JournalProbeResult(
+        journal_code,
+        stderr=journal_stderr,
+    )
+    monkeypatch.setattr(cli.journal_probe, "probe_journal", lambda: result)
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -155,6 +165,25 @@ def test_upsert_existing_active_key_updated() -> None:
     assert parsed["sigwood"]["zeek_dir"] == "/y"
     # syslog_dir line preserved byte-identical
     assert 'syslog_dir = "/var/log"' in out
+
+
+def test_compound_system_keys_preserve_inline_comments_and_section_bounds() -> None:
+    base = (
+        '[sigwood]\n'
+        'syslog_source = "files"  # operator mode\n'
+        'syslog_dir = "/var/log"  # operator fallback\n'
+        '[export.splunk]\n'
+        'syslog_source = "outside"\n'
+    )
+    out = cli._apply_action(
+        base, "syslog_source", cli._set("journal"), fresh=False,
+    )
+    out = cli._apply_action(
+        out, "syslog_dir", cli._set("/srv/system"), fresh=False,
+    )
+    assert 'syslog_source = "journal"  # operator mode' in out
+    assert 'syslog_dir = "/srv/system"  # operator fallback' in out
+    assert '[export.splunk]\nsyslog_source = "outside"\n' in out
 
 
 def test_upsert_existing_commented_key_uncommented() -> None:
@@ -880,6 +909,7 @@ def test_flow_all_found_all_accepted_root_enter(
     assert parsed["sigwood"]["root"] == "~/.sigwood"
     assert parsed["sigwood"]["zeek_dir"] == zeek
     assert parsed["sigwood"]["pihole_dir"] == pihole_dir
+    assert parsed["sigwood"]["syslog_source"] == "files"
     assert parsed["sigwood"]["syslog_dir"] == syslog
     assert "cloudtrail_dir" not in parsed["sigwood"]  # skipped → commented
 
@@ -950,6 +980,13 @@ def test_flow_summary_redo_rebuilds_answers(
     _, pihole_candidates = _setup_pihole(tmp_path)
     syslog = _setup_syslog(tmp_path)
     _stub_candidates(monkeypatch, zeek=(zeek,), pihole=pihole_candidates, syslog=syslog)
+    probes = iter(
+        [
+            _journal_result(cli.journal_probe.JournalProbeCode.EXECUTABLE_MISSING),
+            _journal_result(cli.journal_probe.JournalProbeCode.READY),
+        ]
+    )
+    monkeypatch.setattr(cli.journal_probe, "probe_journal", lambda: next(probes))
     # Redo discards pass-1 answers. Pass 1: zeek → type a sentinel path (the
     # would-be leak), pihole/syslog keep, cloudtrail skip, location Enter, redo.
     # Pass 2: keep zeek/pihole/syslog (Enter), skip cloudtrail, location, accept.
@@ -962,6 +999,7 @@ def test_flow_summary_redo_rebuilds_answers(
     parsed = tomllib.loads((home / "config.toml").read_text(encoding="utf-8"))
     assert parsed["sigwood"]["zeek_dir"] == zeek   # pass-1 /stale/leak discarded
     assert parsed["sigwood"]["pihole_dir"] != ""  # set
+    assert parsed["sigwood"]["syslog_source"] == "auto"
     assert parsed["sigwood"]["syslog_dir"] == syslog
 
 
@@ -983,6 +1021,7 @@ def test_flow_all_skipped_proceeds_no_gate(
     # explicit empty so config fallback can't re-enable it; a COMMENTED source
     # (pihole_dir/cloudtrail_dir) stays absent. All four resolve off.
     assert parsed["sigwood"]["zeek_dir"] == ""
+    assert parsed["sigwood"]["syslog_source"] == "off"
     assert parsed["sigwood"]["syslog_dir"] == ""
     assert "pihole_dir" not in parsed["sigwood"]
     assert "cloudtrail_dir" not in parsed["sigwood"]
@@ -1555,15 +1594,18 @@ def test_summary_annotations_added_changed_removed(
     )
     _stub_candidates(monkeypatch)  # nothing detected
     # merge; zeek configured → type /new (was: /old); pihole nothing → type /p
-    # (added); syslog/cloudtrail nothing → skip ((not set)); root present → `-`
-    # removes; accept.
+    # (added); legacy system logs preserve the effective default; cloudtrail skips;
+    # root present → `-` removes; accept.
     _stage_inputs(monkeypatch, ["", "/new", "/p", "", "", "-", ""])
     cli._run_init([])
 
     out = capsys.readouterr().out
     assert re.search(r'zeek_dir\s+/new\s+was: /old', out)
     assert re.search(r'pihole_dir\s+/p\s+added', out)
-    assert re.search(r'syslog_dir\s+-\s+\(not set\)', out)
+    assert re.search(
+        r'file fallback\s+/var/log\s+preserved \(default; key not set\)', out,
+    )
+    assert re.search(r'system logs\s+auto\s+added', out)
     assert re.search(r'root\s+-\s+removed \(reverts to default\)', out)
 
 
@@ -1785,6 +1827,222 @@ def test_prompt_source_dash_escape_is_a_path(
         cli._set(os.path.abspath("-"))
 
 
+def _journal_result(
+    code: cli.journal_probe.JournalProbeCode,
+    *,
+    stderr: bytes = b"",
+) -> cli.journal_probe.JournalProbeResult:
+    return cli.journal_probe.JournalProbeResult(code, stderr=stderr)
+
+
+def _system_state(
+    monkeypatch: pytest.MonkeyPatch,
+    existing: dict,
+    *,
+    fresh: bool,
+    code: cli.journal_probe.JournalProbeCode,
+    detected: str | None = None,
+) -> tuple[cli._SystemLogsState, cli.journal_probe.JournalProbeResult]:
+    monkeypatch.setattr(cli, "_detect_syslog", lambda: detected)
+    monkeypatch.setattr(cli, "_profile_dir", lambda *_a, **_k: None)
+    probe = _journal_result(code)
+    state = cli._system_logs_state(
+        existing,
+        fresh_install=fresh,
+        probe=probe,
+        root="",
+    )
+    return state, probe
+
+
+@pytest.mark.parametrize(
+    ("code", "detected", "mode", "dir_action"),
+    [
+        ("READY", "/logs", "auto", cli._set("/logs")),
+        ("READY", None, "auto", cli._set("")),
+        ("EMPTY", "/logs", "files", cli._set("/logs")),
+        ("EMPTY", None, "off", cli._set("")),
+        ("EXECUTABLE_MISSING", "/logs", "files", cli._set("/logs")),
+        ("EXIT_NONZERO", None, "off", cli._set("")),
+    ],
+)
+def test_system_logs_fresh_recommendation_table(
+    monkeypatch: pytest.MonkeyPatch,
+    code: str,
+    detected: str | None,
+    mode: str,
+    dir_action: object,
+) -> None:
+    probe_code = getattr(cli.journal_probe.JournalProbeCode, code)
+    state, probe = _system_state(
+        monkeypatch, {}, fresh=True, code=probe_code, detected=detected,
+    )
+    _one_input(monkeypatch, "")
+    assert cli._prompt_system_logs(state, probe) == (cli._set(mode), dir_action)
+
+
+@pytest.mark.parametrize("mode", ["auto", "journal", "files", "off"])
+@pytest.mark.parametrize(
+    ("dir_shape", "expected_dir"),
+    [
+        ({"syslog_dir": "logs/system"}, cli._set("logs/system")),
+        ({"syslog_dir": ""}, cli._set("")),
+        ({}, cli._REMOVE),
+    ],
+)
+def test_system_logs_explicit_mode_enter_preserves_raw_dir(
+    monkeypatch: pytest.MonkeyPatch,
+    mode: str,
+    dir_shape: dict,
+    expected_dir: object,
+) -> None:
+    state, probe = _system_state(
+        monkeypatch,
+        {"syslog_source": mode, **dir_shape},
+        fresh=False,
+        code=cli.journal_probe.JournalProbeCode.EXECUTABLE_MISSING,
+    )
+    _one_input(monkeypatch, "")
+    assert cli._prompt_system_logs(state, probe) == (
+        cli._set(mode), expected_dir,
+    )
+
+
+@pytest.mark.parametrize(
+    ("existing", "mode", "dir_action", "migrated"),
+    [
+        ({"syslog_dir": "/var/log"}, "auto", cli._set("/var/log"), True),
+        ({"syslog_dir": ""}, "off", cli._set(""), False),
+        ({}, "auto", cli._REMOVE, True),
+    ],
+)
+def test_system_logs_legacy_enter_transition_table(
+    monkeypatch: pytest.MonkeyPatch,
+    existing: dict,
+    mode: str,
+    dir_action: object,
+    migrated: bool,
+) -> None:
+    state, probe = _system_state(
+        monkeypatch,
+        existing,
+        fresh=False,
+        code=cli.journal_probe.JournalProbeCode.EMPTY,
+    )
+    assert state.migrated is migrated
+    _one_input(monkeypatch, "")
+    assert cli._prompt_system_logs(state, probe) == (cli._set(mode), dir_action)
+
+
+def test_system_logs_explicit_selections_and_typed_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state, probe = _system_state(
+        monkeypatch,
+        {"syslog_source": "auto", "syslog_dir": "logs/system"},
+        fresh=False,
+        code=cli.journal_probe.JournalProbeCode.READY,
+    )
+    _one_input(monkeypatch, "journal")
+    assert cli._prompt_system_logs(state, probe) == (
+        cli._set("journal"), cli._set("logs/system"),
+    )
+    _one_input(monkeypatch, "auto")
+    assert cli._prompt_system_logs(state, probe) == (
+        cli._set("auto"), cli._set("logs/system"),
+    )
+    _one_input(monkeypatch, "-")
+    assert cli._prompt_system_logs(state, probe) == (
+        cli._set("off"), cli._set(""),
+    )
+    _one_input(monkeypatch, "relative-system")
+    assert cli._prompt_system_logs(state, probe) == (
+        cli._set("files"), cli._set(os.path.abspath("relative-system")),
+    )
+
+
+def test_system_logs_selection_fallback_edge_table(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fresh, fresh_probe = _system_state(
+        monkeypatch,
+        {},
+        fresh=True,
+        code=cli.journal_probe.JournalProbeCode.READY,
+        detected="/detected-system",
+    )
+    _one_input(monkeypatch, "journal")
+    assert cli._prompt_system_logs(fresh, fresh_probe) == (
+        cli._set("journal"), cli._set(""),
+    )
+    _one_input(monkeypatch, "auto")
+    assert cli._prompt_system_logs(fresh, fresh_probe) == (
+        cli._set("auto"), cli._set("/detected-system"),
+    )
+    _one_input(monkeypatch, "files")
+    assert cli._prompt_system_logs(fresh, fresh_probe) == (
+        cli._set("files"), cli._set("/detected-system"),
+    )
+
+    absent, absent_probe = _system_state(
+        monkeypatch,
+        {"syslog_source": "journal"},
+        fresh=False,
+        code=cli.journal_probe.JournalProbeCode.READY,
+    )
+    _one_input(monkeypatch, "auto")
+    assert cli._prompt_system_logs(absent, absent_probe) == (
+        cli._set("auto"), cli._set(""),
+    )
+    _one_input(monkeypatch, "files")
+    assert cli._prompt_system_logs(absent, absent_probe) == (
+        cli._set("files"), cli._REMOVE,
+    )
+
+
+def test_system_logs_files_requires_path_when_fallback_explicit_empty(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    state, probe = _system_state(
+        monkeypatch,
+        {"syslog_source": "auto", "syslog_dir": ""},
+        fresh=False,
+        code=cli.journal_probe.JournalProbeCode.EMPTY,
+    )
+    _stage_inputs(monkeypatch, ["files", "", "typed-system"])
+    assert cli._prompt_system_logs(state, probe) == (
+        cli._set("files"), cli._set(os.path.abspath("typed-system")),
+    )
+    assert capsys.readouterr().out.count(
+        "files needs a non-empty system-log directory"
+    ) == 2
+
+
+def test_system_logs_probe_copy_ignores_child_stderr(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    token = "HOSTILE_CHILD_DETAIL"
+    state, _ = _system_state(
+        monkeypatch,
+        {},
+        fresh=True,
+        code=cli.journal_probe.JournalProbeCode.EXIT_NONZERO,
+    )
+    probe = _journal_result(
+        cli.journal_probe.JournalProbeCode.EXIT_NONZERO,
+        stderr=f"{token}\x1b[31m".encode(),
+    )
+    _one_input(monkeypatch, "")
+    cli._prompt_system_logs(state, probe)
+    out = capsys.readouterr().out
+    assert "unavailable, journal query failed" in out
+    assert token not in out
+
+
+def test_system_logs_probe_copy_covers_every_reason_code() -> None:
+    assert set(cli._JOURNAL_PROBE_COPY) == set(cli.journal_probe.JournalProbeCode)
+
+
 def test_prompt_root_present_keep_change_remove(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1947,6 +2205,187 @@ def test_fresh_asks_home_once_no_separate_root_prompt(
     assert "root is set to" not in out
     parsed = tomllib.loads((home / "config.toml").read_text(encoding="utf-8"))
     assert parsed["sigwood"]["root"] == "~/.sigwood"
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# Compound system-log flow boundaries
+# ════════════════════════════════════════════════════════════════════════════
+
+
+def test_reset_explicit_mode_preserves_raw_absent_fallback_and_backup(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    home = _isolated_home(monkeypatch, tmp_path)
+    home.mkdir(parents=True)
+    original = (
+        b'[sigwood]\r\nroot = "~/.sigwood"\r\n'
+        b'syslog_source = "journal"\r\n'
+    )
+    (home / "config.toml").write_bytes(original)
+    _stub_candidates(monkeypatch)
+    _stage_inputs(
+        monkeypatch,
+        ["r", "c", "reset", "", "", "", "", "", ""],
+    )
+
+    cli._run_init([])
+
+    parsed = tomllib.loads((home / "config.toml").read_text(encoding="utf-8"))
+    assert parsed["sigwood"]["syslog_source"] == "journal"
+    assert "syslog_dir" not in parsed["sigwood"]
+    assert (home / "config.toml.bak").read_bytes() == original
+
+
+def test_fresh_off_writes_both_compatibility_keys(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    home = _isolated_home(monkeypatch, tmp_path)
+    _stub_candidates(monkeypatch)
+    _stage_inputs(monkeypatch, ["", "", "", "", "", ""])
+
+    cli._run_init([])
+
+    parsed = tomllib.loads((home / "config.toml").read_text(encoding="utf-8"))
+    assert parsed["sigwood"]["syslog_source"] == "off"
+    assert parsed["sigwood"]["syslog_dir"] == ""
+
+
+def test_summary_counts_system_logs_once_and_separates_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _isolated_home(monkeypatch, tmp_path)
+    _stub_candidates(
+        monkeypatch,
+        journal_code=cli.journal_probe.JournalProbeCode.READY,
+    )
+    _stage_inputs(monkeypatch, ["", "", "", "", "", ""])
+
+    cli._run_init([])
+
+    out = capsys.readouterr().out
+    assert "No sources set" not in out
+    assert re.search(r"system logs\s+auto\s+added", out)
+    assert "reading:  system logs (auto)" in out
+    assert "file fallback: (none)" in out
+    assert "journal probe: available" in out
+    assert "journal (/" not in out
+
+
+@pytest.mark.parametrize(
+    "answers",
+    [
+        [""],
+        ["r", "c", "reset"],
+    ],
+)
+def test_invalid_explicit_mode_fails_before_probe_and_source_prompts(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    answers: list[str],
+) -> None:
+    from sigwood import cli as public_cli
+
+    home = _isolated_home(monkeypatch, tmp_path)
+    home.mkdir(parents=True)
+    original = b'[sigwood]\nsyslog_source = "automatic"\n'
+    (home / "config.toml").write_bytes(original)
+    _stub_candidates(monkeypatch)
+    monkeypatch.setattr(
+        cli.journal_probe,
+        "probe_journal",
+        lambda: (_ for _ in ()).throw(AssertionError("probe must not run")),
+    )
+    _stage_inputs(monkeypatch, answers)
+
+    with pytest.raises(SystemExit) as exc:
+        public_cli.main(["init"])
+
+    assert exc.value.code == 1
+    captured = capsys.readouterr()
+    assert (
+        "sigwood: syslog_source must be one of auto, journal, files, or off"
+        in captured.err
+    )
+    assert "run 'sigwood --help' for usage" not in captured.err
+    assert "Traceback" not in captured.err
+    assert "System logs:" not in captured.out
+    assert (home / "config.toml").read_bytes() == original
+    assert not (home / "config.toml.bak").exists()
+
+
+def test_invalid_mode_does_not_block_allowlist_only_reset(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    home = _isolated_home(monkeypatch, tmp_path)
+    home.mkdir(parents=True)
+    original = '[sigwood]\nsyslog_source = "automatic"\n'
+    (home / "config.toml").write_text(original, encoding="utf-8")
+    allowlist_d = home / "allowlist.d"
+    allowlist_d.mkdir()
+    (allowlist_d / "domains_extra").write_text(
+        "*.placeholder.example\n", encoding="utf-8",
+    )
+    _stub_candidates(monkeypatch)
+    _stage_inputs(monkeypatch, ["r", "a", "reset"])
+
+    cli._run_init([])
+
+    assert (home / "config.toml").read_text(encoding="utf-8") == original
+    assert not (allowlist_d / "domains_extra").exists()
+    assert (allowlist_d / "domains_user").exists()
+
+
+def test_import_boundary_allows_only_three_pure_common_leaves() -> None:
+    source_path = Path("sigwood/cli_init.py")
+    tree = ast.parse(source_path.read_text(encoding="utf-8"))
+    project_imports: set[tuple[str, tuple[str, ...]]] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name.startswith("sigwood"):
+                    project_imports.add((alias.name, ()))
+        elif (
+            isinstance(node, ast.ImportFrom)
+            and (node.module or "").startswith("sigwood")
+        ):
+            project_imports.add(
+                (node.module or "", tuple(sorted(alias.name for alias in node.names)))
+            )
+
+    assert project_imports == {
+        ("sigwood.common.journal_probe", ()),
+        ("sigwood.common.syslog_mode", ()),
+        ("sigwood.common.paths", ("effective_root", "resolve_path")),
+    }
+
+
+def test_init_uses_shared_probe_once_and_creates_no_capture_before_abort(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    home = _isolated_home(monkeypatch, tmp_path)
+    _stub_candidates(monkeypatch)
+    calls = 0
+
+    def _probe() -> cli.journal_probe.JournalProbeResult:
+        nonlocal calls
+        calls += 1
+        return _journal_result(cli.journal_probe.JournalProbeCode.EMPTY)
+
+    monkeypatch.setattr(cli.journal_probe, "probe_journal", _probe)
+    _stage_inputs(monkeypatch, ["", "", "", "", "", "a"])
+
+    cli._run_init([])
+
+    assert calls == 1
+    assert not home.exists()
+    assert not list(tmp_path.rglob("sigwood-journal-*"))
+    source = Path("sigwood/cli_init.py").read_text(encoding="utf-8")
+    assert "prepare_journal_capture" not in source
+    assert "build_journal_argv" not in source
 
 
 # ════════════════════════════════════════════════════════════════════════════

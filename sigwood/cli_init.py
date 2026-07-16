@@ -27,10 +27,11 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Callable
 
-# Sanctioned exception to cli_init's stdlib-only rail:
-# the PURE path helpers from common/paths - and ONLY those - may be imported, so
-# path/root resolution keeps its single owner (the SIGWOOD_ROOT rail) instead of being
-# mirrored here. NO detector/runner/output/loader/config imports.
+# Sanctioned pure stdlib-only leaves. Path/root resolution, bounded journal
+# capability, and system-log mode classification each keep one owner. No
+# detector/runner/output/loader/config imports.
+import sigwood.common.journal_probe as journal_probe
+import sigwood.common.syslog_mode as syslog_mode
 from sigwood.common.paths import effective_root, resolve_path
 
 # ── detection ─────────────────────────────────────────────────────────────────
@@ -114,6 +115,7 @@ _ALLOWLIST_SEED_FILES: tuple[str, ...] = ("domains_user", "connections")
 
 _DEFAULT_ROOT: str = "~/.sigwood"
 _SYSTEM_ROOT: str = "/etc/sigwood"
+_DEFAULT_SYSLOG_DIR: str = "/var/log"
 
 # Shared HOME MENU leads - the option parser/renderer is shared, the LEAD differs
 # by caller so copy never advertises an action the caller can't perform: the fresh
@@ -530,7 +532,7 @@ def _toml_str(value: str) -> str:
 
 # ── Section-bound keyed upsert ────────────────────────────────────────────────
 #
-# The five managed keys (root, zeek_dir, pihole_dir, syslog_dir, cloudtrail_dir)
+# The six managed keys
 # are rewritten ONLY inside the [sigwood] table span. A token appearing in any
 # other stanza, a comment outside the span, or even a [sigwood.subtable] is
 # never matched - that IS the non-clobber guarantee.
@@ -538,6 +540,7 @@ def _toml_str(value: str) -> str:
 _SIGWOOD_HEADER_RE = re.compile(r'^\[sigwood\]\s*(?:#.*)?$', re.MULTILINE)
 _MANAGED_KEYS: tuple[str, ...] = (
     "root", "zeek_dir", "pihole_dir", "syslog_dir", "cloudtrail_dir",
+    "syslog_source",
 )
 
 
@@ -764,14 +767,6 @@ _SOURCE_SPECS: tuple[_SourceSpec, ...] = (
         ),
     ),
     _SourceSpec(
-        "syslog_dir", "syslog", _detect_syslog, (_SYSLOG_GLOB,), None,
-        (
-            "syslog isn't where I'd expect - point me at the logs if they're "
-            "elsewhere.",
-        ),
-        head_sniff=_looks_like_syslog_head,
-    ),
-    _SourceSpec(
         "cloudtrail_dir", "CloudTrail", None, (_CLOUDTRAIL_GLOB,), "CloudTrail JSON",
         (
             "CloudTrail logs? (opt-in) Point me at a directory of CloudTrail JSON -",
@@ -781,9 +776,19 @@ _SOURCE_SPECS: tuple[_SourceSpec, ...] = (
     ),
 )
 
-# Summary uses the config KEYS; the reading line uses the friendly labels.
-_SOURCE_KEYS: tuple[str, ...] = tuple(s.key for s in _SOURCE_SPECS)
-_SUMMARY_ORDER: tuple[str, ...] = _SOURCE_KEYS + ("root",)
+# System logs is one logical source. Its mode is counted; its file fallback is
+# displayed separately and never counted as a second source.
+_SOURCE_KEYS: tuple[str, ...] = (
+    "zeek_dir", "pihole_dir", "syslog_source", "cloudtrail_dir",
+)
+_SUMMARY_ORDER: tuple[str, ...] = (
+    "zeek_dir", "pihole_dir", "syslog_source", "syslog_dir",
+    "cloudtrail_dir", "root",
+)
+_SUMMARY_LABELS: dict[str, str] = {
+    "syslog_source": "system logs",
+    "syslog_dir": "file fallback",
+}
 _SOURCE_LABELS: tuple[tuple[str, str], ...] = tuple(
     (s.key, s.label) for s in _SOURCE_SPECS
 )
@@ -839,6 +844,226 @@ def _prompt_source(
     if ans == "" or ans == _DROP_SENTINEL:
         return _SKIP
     return _set(_normalize_typed(ans))
+
+
+_JOURNAL_PROBE_COPY: dict[journal_probe.JournalProbeCode, str] = {
+    journal_probe.JournalProbeCode.READY: "available",
+    journal_probe.JournalProbeCode.EMPTY: "reachable, no entries returned",
+    journal_probe.JournalProbeCode.EXECUTABLE_MISSING: (
+        "unavailable, journalctl not found"
+    ),
+    journal_probe.JournalProbeCode.SPAWN_FAILED: (
+        "unavailable, journalctl could not start"
+    ),
+    journal_probe.JournalProbeCode.EXIT_NONZERO: (
+        "unavailable, journal query failed"
+    ),
+    journal_probe.JournalProbeCode.SIGNALLED: (
+        "unavailable, journal query was interrupted"
+    ),
+    journal_probe.JournalProbeCode.INVALID_UTF8: (
+        "unavailable, journal returned invalid UTF-8"
+    ),
+    journal_probe.JournalProbeCode.RECORD_TOO_LARGE: (
+        "unavailable, journal entry exceeded the probe limit"
+    ),
+}
+
+
+def _journal_probe_copy(result: journal_probe.JournalProbeResult) -> str:
+    """Render only the tool-owned reason code, never child output."""
+    return _JOURNAL_PROBE_COPY[result.code]
+
+
+@dataclass(frozen=True)
+class _SystemLogsState:
+    """One compound system-log prompt's starting state and Enter actions."""
+
+    mode: syslog_mode.SyslogMode
+    migrated: bool
+    existing_config: bool
+    dir_present: bool
+    dir_value: str | None
+    detected: str | None
+    fallback_display: str | None
+    fallback_defaulted: bool
+    profile: dict | None
+    enter_mode: Action
+    enter_dir: Action
+
+
+def _preserve_syslog_dir(*, present: bool, value: str | None) -> Action:
+    """Preserve a raw fallback value, including explicit empty or absence."""
+    if present:
+        return _set(value or "")
+    # Against an absent merge key this is a no-op. Against the active reset
+    # template it comments the default, preserving raw absence in both flows.
+    return _REMOVE
+
+
+def _system_logs_state(
+    existing: dict,
+    *,
+    fresh_install: bool,
+    probe: journal_probe.JournalProbeResult,
+    root: str,
+) -> _SystemLogsState:
+    """Build a compound default without letting live probes rewrite config intent."""
+    if fresh_install:
+        detected = _detect_syslog()
+        if probe.code is journal_probe.JournalProbeCode.READY:
+            mode = syslog_mode.SyslogMode.AUTO
+            dir_action = _set(detected or "")
+        elif detected is not None:
+            mode = syslog_mode.SyslogMode.FILES
+            dir_action = _set(detected)
+        else:
+            mode = syslog_mode.SyslogMode.OFF
+            dir_action = _set("")
+        fallback = detected
+        profile = None
+        if fallback is not None:
+            profile = _profile_dir(
+                resolve_path(fallback, root),
+                (_SYSLOG_GLOB,),
+                logs_label=None,
+                head_sniff=_looks_like_syslog_head,
+            )
+        return _SystemLogsState(
+            mode=mode,
+            migrated=False,
+            existing_config=False,
+            dir_present=False,
+            dir_value=None,
+            detected=detected,
+            fallback_display=fallback,
+            fallback_defaulted=False,
+            profile=profile,
+            enter_mode=_set(mode.value),
+            enter_dir=dir_action,
+        )
+
+    mode_present = "syslog_source" in existing
+    dir_present = "syslog_dir" in existing
+    raw_dir = existing.get("syslog_dir")
+    if dir_present and not isinstance(raw_dir, str):
+        raise ValueError(
+            f"syslog_dir must be a path string (got {raw_dir!r})"
+        )
+    classified = syslog_mode.classify_configured_syslog_mode(
+        mode_present=mode_present,
+        mode_value=existing.get("syslog_source"),
+        dir_present=dir_present,
+        dir_value=raw_dir,
+        disk_shape=True,
+    )
+    fallback = raw_dir if dir_present and raw_dir else (
+        None if dir_present else _DEFAULT_SYSLOG_DIR
+    )
+    profile = None
+    if fallback is not None and dir_present:
+        profile = _profile_dir(
+            resolve_path(fallback, root),
+            (_SYSLOG_GLOB,),
+            logs_label=None,
+            head_sniff=_looks_like_syslog_head,
+        )
+    return _SystemLogsState(
+        mode=classified.mode,
+        migrated=classified.legacy_migrated,
+        existing_config=True,
+        dir_present=dir_present,
+        dir_value=raw_dir,
+        detected=None,
+        fallback_display=fallback,
+        fallback_defaulted=not dir_present,
+        profile=profile,
+        enter_mode=_set(classified.mode.value),
+        enter_dir=_preserve_syslog_dir(present=dir_present, value=raw_dir),
+    )
+
+
+def _prompt_system_log_path() -> tuple[Action, Action]:
+    """Require a file fallback after an explicit files selection."""
+    while True:
+        print("files needs a non-empty system-log directory")
+        print("[type a path  ·  - to turn system logs off]")
+        ans = input("> ").strip()
+        if ans == _DROP_SENTINEL or ans.lower() == "off":
+            return (_set(syslog_mode.SyslogMode.OFF.value), _set(""))
+        if ans:
+            return (
+                _set(syslog_mode.SyslogMode.FILES.value),
+                _set(_normalize_typed(ans)),
+            )
+
+
+def _prompt_system_logs(
+    state: _SystemLogsState,
+    probe: journal_probe.JournalProbeResult,
+) -> tuple[Action, Action]:
+    """Prompt once for the compound mode plus its optional file fallback."""
+    migrated = " (migrated from legacy config)" if state.migrated else ""
+    if state.fallback_display is None:
+        fallback = "(none)"
+    else:
+        fallback = state.fallback_display
+        if state.fallback_defaulted:
+            fallback += " (default; key not set)"
+    if state.profile is not None:
+        fallback += f" - {_render_profile(state.profile)}"
+
+    print(f"System logs: {state.mode.value}{migrated}")
+    print(f"  journal: {_journal_probe_copy(probe)}")
+    print(f"  file fallback: {fallback}")
+    print("[Enter] use this setting   [a] auto   [j] journal   [f] files")
+    print("[type a path for files  ·  - to turn system logs off]")
+    ans = input("> ").strip()
+    low = ans.lower()
+
+    if ans == "":
+        return (state.enter_mode, state.enter_dir)
+    if ans == _DROP_SENTINEL or low == "off":
+        return (_set(syslog_mode.SyslogMode.OFF.value), _set(""))
+    if low in ("j", "journal"):
+        dir_action = (
+            _preserve_syslog_dir(
+                present=state.dir_present, value=state.dir_value,
+            )
+            if state.existing_config
+            else _set("")
+        )
+        return (_set(syslog_mode.SyslogMode.JOURNAL.value), dir_action)
+    if low in ("a", "auto"):
+        if state.existing_config and state.dir_present:
+            dir_action = _set(state.dir_value or "")
+        elif not state.existing_config and state.detected is not None:
+            dir_action = _set(state.detected)
+        else:
+            dir_action = _set("")
+        return (_set(syslog_mode.SyslogMode.AUTO.value), dir_action)
+    if low in ("f", "files"):
+        if state.existing_config and state.dir_present and state.dir_value:
+            return (
+                _set(syslog_mode.SyslogMode.FILES.value),
+                _set(state.dir_value),
+            )
+        if state.existing_config and not state.dir_present:
+            return (
+                _set(syslog_mode.SyslogMode.FILES.value),
+                _REMOVE,
+            )
+        if state.detected is not None:
+            return (
+                _set(syslog_mode.SyslogMode.FILES.value),
+                _set(state.detected),
+            )
+        return _prompt_system_log_path()
+
+    return (
+        _set(syslog_mode.SyslogMode.FILES.value),
+        _set(_normalize_typed(ans)),
+    )
 
 
 def _disp_root(value: str) -> str:
@@ -938,39 +1163,87 @@ def _resolve_row(
 def _resolve_all(
     actions: dict[str, Action], existing: dict, *, flow: str,
 ) -> dict[str, tuple[str | None, str]]:
-    """Resolve every managed key once. Sources follow §A truthiness; root
-    follows KEY PRESENCE (an explicit ``root = ""`` is a set value)."""
+    """Resolve every managed key once, preserving compound fallback provenance."""
     out: dict[str, tuple[str | None, str]] = {}
     for key in _MANAGED_KEYS:
+        if key in ("syslog_source", "syslog_dir"):
+            continue
         present = key in existing
         ev = existing.get(key)
         if key != "root":
             ev = ev or None
         out[key] = _resolve_row(key, actions[key], ev, present=present, flow=flow)
+
+    mode_present = "syslog_source" in existing
+    out["syslog_source"] = _resolve_row(
+        "syslog_source",
+        actions["syslog_source"],
+        existing.get("syslog_source") if mode_present else None,
+        present=mode_present,
+        flow=flow,
+    )
+
+    dir_present = "syslog_dir" in existing
+    raw_dir, dir_ann = _resolve_row(
+        "syslog_dir",
+        actions["syslog_dir"],
+        existing.get("syslog_dir") if dir_present else None,
+        present=dir_present,
+        flow=flow,
+    )
+    if actions["syslog_dir"].kind == "remove":
+        raw_dir = _DEFAULT_SYSLOG_DIR
+        dir_ann = (
+            "removed (reverts to default)"
+            if dir_present
+            else "preserved (default; key not set)"
+        )
+    out["syslog_dir"] = (raw_dir, dir_ann)
     return out
 
 
-def _disp_value(value: str | None) -> str:
-    """Summary VALUE column: absent → `-`, explicit-empty root → the same
-    `(current directory)` the prompt and confirm use (`_disp_root`), so an empty
-    root reads identically across all three surfaces."""
+def _disp_value(key: str, value: str | None) -> str:
+    """Render root-empty and fallback-empty without conflating their meanings."""
     if value is None:
         return "-"
     if value == "":
-        return _disp_root(value)
+        return _disp_root(value) if key == "root" else "(none)"
     return value
 
 
-def _render_summary(config_path: Path, resolved: dict[str, tuple[str | None, str]]) -> None:
+def _source_active(
+    key: str, resolved: dict[str, tuple[str | None, str]],
+) -> bool:
+    """Return whether one logical source lane is enabled."""
+    value = resolved[key][0]
+    if key == "syslog_source":
+        return value != syslog_mode.SyslogMode.OFF.value
+    return value is not None
+
+
+def _render_summary(
+    config_path: Path,
+    resolved: dict[str, tuple[str | None, str]],
+    probe: journal_probe.JournalProbeResult,
+) -> None:
     """Print the change summary (aligned) BEFORE any write. The VALUE column is
     the resulting config value; the ANNOTATION is the change verb."""
     print(f"About to write {config_path}:")
-    keyw = max(len(k) for k in _SUMMARY_ORDER)
-    valw = max(len(_disp_value(resolved[k][0])) for k in _SUMMARY_ORDER)
+    labels = {
+        key: _SUMMARY_LABELS.get(key, key) for key in _SUMMARY_ORDER
+    }
+    keyw = max(
+        [len(label) for label in labels.values()] + [len("journal probe")]
+    )
+    valw = max(
+        len(_disp_value(key, resolved[key][0])) for key in _SUMMARY_ORDER
+    )
     for key in _SUMMARY_ORDER:
         value, ann = resolved[key]
-        print(f"  {key.ljust(keyw)}  {_disp_value(value).ljust(valw)}  {ann}")
-    if not any(resolved[k][0] is not None for k in _SOURCE_KEYS):
+        shown = _disp_value(key, value)
+        print(f"  {labels[key].ljust(keyw)}  {shown.ljust(valw)}  {ann}")
+    print(f"  {'journal probe'.ljust(keyw)}  {_journal_probe_copy(probe)}")
+    if not any(_source_active(k, resolved) for k in _SOURCE_KEYS):
         print()
         print("No sources set - sigwood will need files on the command line.")
     print()
@@ -990,12 +1263,23 @@ def _confirm_accept() -> str:
             return "abort"
 
 
-def _print_confirm(config_path: Path, resolved: dict[str, tuple[str | None, str]]) -> None:
-    active = [
-        (label, resolved[key][0])
-        for key, label in _SOURCE_LABELS
-        if resolved[key][0] is not None
-    ]
+def _print_confirm(
+    config_path: Path,
+    resolved: dict[str, tuple[str | None, str]],
+    probe: journal_probe.JournalProbeResult,
+) -> None:
+    labels = dict(_SOURCE_LABELS)
+    active: list[tuple[str, str]] = []
+    for key in ("zeek_dir", "pihole_dir"):
+        value = resolved[key][0]
+        if value is not None:
+            active.append((labels[key], value))
+    mode = resolved["syslog_source"][0]
+    if mode != syslog_mode.SyslogMode.OFF.value:
+        active.append(("system logs", mode or syslog_mode.SyslogMode.AUTO.value))
+    cloudtrail = resolved["cloudtrail_dir"][0]
+    if cloudtrail is not None:
+        active.append((labels["cloudtrail_dir"], cloudtrail))
     if active:
         sources_line = ", ".join(f"{label} ({path})" for label, path in active)
     else:
@@ -1004,6 +1288,8 @@ def _print_confirm(config_path: Path, resolved: dict[str, tuple[str | None, str]
     data_line = _disp_root(root_val) if root_val is not None else _DEFAULT_ROOT
     print(f"Done - settings written to {config_path}.")
     print(f"  reading:  {sources_line}")
+    print(f"  file fallback: {_disp_value('syslog_dir', resolved['syslog_dir'][0])}")
+    print(f"  journal probe: {_journal_probe_copy(probe)}")
     print(f"  data:     {data_line}")
     print()
     print(f"sigwood documentation lives here: {_DOCS_URL}")
@@ -1022,34 +1308,51 @@ def _effective_root_with_default(section: dict) -> str:
     return effective_root({"sigwood": section})
 
 
-def _collect_actions(existing: dict) -> dict[str, Action]:
-    """Run the four DEFAULT-DRIVEN source prompts. ``existing`` seeds the
-    configured state (the parsed [sigwood] values; {} for fresh). Detection
-    runs ONLY when a key is not configured. Returns {source_key: Action}."""
-    actions: dict[str, Action] = {}
-    # A config-relative source is previewed under the root cfg.load will use - the
-    # default ~/.sigwood for a rootless config, not the CWD (else a populated
-    # dir reads as "nothing there now").
-    root = _effective_root_with_default(existing)
-    for spec in _SOURCE_SPECS:
-        configured = existing.get(spec.key) or None
-        detected: str | None = None
-        if configured is None and spec.detect is not None:
-            detected = spec.detect()  # type: ignore[operator]
-        default = configured or detected
-        profile = None
-        if default is not None:
-            resolved_default = resolve_path(default, root)
-            profile = _profile_dir(
-                resolved_default, spec.globs,
-                logs_label=spec.logs_label, recursive=spec.recursive,
-                head_sniff=spec.head_sniff, zeek_layout=spec.zeek_layout,
-            )
-        actions[spec.key] = _prompt_source(
-            spec.label, configured, detected, profile, spec.nudge,
+def _collect_source_action(
+    spec: _SourceSpec, existing: dict, *, root: str,
+) -> Action:
+    """Collect one ordinary directory-source action."""
+    configured = existing.get(spec.key) or None
+    detected: str | None = None
+    if configured is None and spec.detect is not None:
+        detected = spec.detect()  # type: ignore[operator]
+    default = configured or detected
+    profile = None
+    if default is not None:
+        resolved_default = resolve_path(default, root)
+        profile = _profile_dir(
+            resolved_default, spec.globs,
+            logs_label=spec.logs_label, recursive=spec.recursive,
+            head_sniff=spec.head_sniff, zeek_layout=spec.zeek_layout,
         )
+    return _prompt_source(
+        spec.label, configured, detected, profile, spec.nudge,
+    )
+
+
+def _collect_actions(
+    existing: dict, *, fresh_install: bool,
+) -> tuple[dict[str, Action], journal_probe.JournalProbeResult]:
+    """Collect three directory sources plus one compound system-log lane."""
+    actions: dict[str, Action] = {}
+    root = _effective_root_with_default(existing)
+    for spec in _SOURCE_SPECS[:2]:
+        actions[spec.key] = _collect_source_action(spec, existing, root=root)
         print()
-    return actions
+
+    probe = journal_probe.probe_journal()
+    state = _system_logs_state(
+        existing, fresh_install=fresh_install, probe=probe, root=root,
+    )
+    mode_action, dir_action = _prompt_system_logs(state, probe)
+    actions["syslog_source"] = mode_action
+    actions["syslog_dir"] = dir_action
+    print()
+
+    for spec in _SOURCE_SPECS[2:]:
+        actions[spec.key] = _collect_source_action(spec, existing, root=root)
+        print()
+    return actions, probe
 
 
 # ── Home discovery, pre-flight, allowlist.d seeding ───────────────────────────
@@ -1226,6 +1529,12 @@ def _read_existing_config_for_root(
     return (raw, text, parsed.get("sigwood", {}))
 
 
+def _validate_existing_syslog_source(existing: dict) -> None:
+    """Fail on an explicit invalid mode before probing or source prompts."""
+    if "syslog_source" in existing:
+        syslog_mode.parse_syslog_mode(existing["syslog_source"])
+
+
 def _load_example_text() -> str:
     """Return the shipped config_example.toml contents."""
     try:
@@ -1328,14 +1637,17 @@ def _do_merge(
     preserve user values; tuning and exporter stanzas survive byte-identical).
     merge now also MANAGES root (presence-based). Summary + accept/redo/abort
     gate every write."""
+    _validate_existing_syslog_source(existing_section)
     while True:
-        actions = _collect_actions(existing_section)
+        actions, probe = _collect_actions(
+            existing_section, fresh_install=False,
+        )
         actions["root"] = _prompt_root(
             present="root" in existing_section, default=existing_section.get("root"),
         )
         print()
         resolved = _resolve_all(actions, existing_section, flow="merge")
-        _render_summary(config_path, resolved)
+        _render_summary(config_path, resolved, probe)
         decision = _confirm_accept()
         if decision == "abort":
             print("Aborted - nothing changed.")
@@ -1349,7 +1661,7 @@ def _do_merge(
         config_path, existing_text, actions, fresh=False, existing_raw=existing_bytes,
     )
     print()
-    _print_confirm(config_path, resolved)
+    _print_confirm(config_path, resolved, probe)
 
 
 def _entry_for_config(config_path: Path) -> None:
@@ -1402,19 +1714,22 @@ def _do_reset(config_path: Path, existing_section: dict) -> None:
         # MENU, whose Enter writes the explicit default ~/.sigwood. Pre-flight
         # writability of the config home FIRST (friendly message, existing home →
         # mutating probe is a no-op), BEFORE any question.
+        _validate_existing_syslog_source(existing_section)
         reason = _writability_error(config_path.parent)
         if reason is not None:
             print(reason)
             return
 
         while True:
-            actions = _collect_actions(existing_section)
+            actions, probe = _collect_actions(
+                existing_section, fresh_install=False,
+            )
             actions["root"] = _prompt_root(
                 present="root" in existing_section, default=existing_section.get("root"),
             )
             print()
             resolved = _resolve_all(actions, existing_section, flow="reset")
-            _render_summary(config_path, resolved)
+            _render_summary(config_path, resolved, probe)
             decision = _confirm_accept()
             if decision == "abort":
                 print("Aborted - nothing changed.")
@@ -1432,7 +1747,7 @@ def _do_reset(config_path: Path, existing_section: dict) -> None:
         if scope == "both":
             _reset_allowlist_d(_resolve_allowlist_dir_from_config(config_path))
         print()
-        _print_confirm(config_path, resolved)
+        _print_confirm(config_path, resolved, probe)
         return
 
     # scope == "allowlist": honor the existing config's [allowlist].allowlist_dir
@@ -1452,7 +1767,7 @@ def _fresh_flow() -> None:
     - asked once), summarize, and only on accept write fresh + seed allowlist.d."""
     _print_intro(False)
     while True:
-        actions = _collect_actions({})
+        actions, probe = _collect_actions({}, fresh_install=True)
         loc = _location_flow()
         if isinstance(loc, _Redirect):
             # The typed custom home already holds a config - discard sources,
@@ -1465,7 +1780,7 @@ def _fresh_flow() -> None:
         actions["root"] = _set(root_value)
         config_path = home / "config.toml"
         resolved = _resolve_all(actions, {}, flow="fresh")
-        _render_summary(config_path, resolved)
+        _render_summary(config_path, resolved, probe)
         decision = _confirm_accept()
         if decision == "abort":
             print("Aborted - nothing changed.")
@@ -1481,7 +1796,7 @@ def _fresh_flow() -> None:
     )
     _seed_allowlist_d(_resolve_allowlist_dir_from_config(config_path))
     print()
-    _print_confirm(config_path, resolved)
+    _print_confirm(config_path, resolved, probe)
 
 
 def run_init() -> None:

@@ -6,6 +6,8 @@ All notable changes to sigwood are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.2.3] - 2026-07-16
+
 ### Added
 
 - **The syslog detector now reads the live systemd journal directly** - no `sudo`, no export
@@ -29,6 +31,16 @@ All notable changes to sigwood are recorded here. The format follows
 
 ### Changed
 
+- **A connection graph now replays bytes across each connection's lifetime.** `sigwood graph` on a
+  Zeek conn log previously drew a connection's entire byte total in the single bin where it started,
+  so one long transfer landed as a spike at its start and the rest of its life looked idle. Byte
+  ribbons now spread that recorded total at a constant rate across the connection's recorded
+  duration, while connection counts stay anchored at starts (those surfaces read `conn starts`).
+  Zeek records a connection's total and duration but not the timing of bytes within it, so the even
+  spread is an explicit model, not a claim that a bursty transfer was uniform - the artifact names
+  the assumption, and discloses any recorded byte mass clipped outside the window it shows. Bands
+  engage only where a row carries both positive bytes and a positive duration; zero-duration rows,
+  DNS, and Pi-hole graphs are unchanged.
 - **Existing installs migrate from files-only to journal-preferred `auto`.** A config that never
   set `syslog_source` now defaults to `auto` on a systemd host, so `sigwood syslog` prefers the
   live journal (falling back to your `syslog_dir` files if the journal is unavailable or empty).
@@ -201,7 +213,8 @@ agent, no account.
 - Analysis-window controls (`--since`/`--until`/`--days`/`--all`), a per-source default
   lookback window, and local-or-UTC time rendering.
 
-[Unreleased]: https://github.com/helixmap/sigwood/compare/v0.2.2...HEAD
+[Unreleased]: https://github.com/helixmap/sigwood/compare/v0.2.3...HEAD
+[0.2.3]: https://github.com/helixmap/sigwood/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/helixmap/sigwood/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/helixmap/sigwood/compare/v0.1.1...v0.2.1
 [0.1.1]: https://github.com/helixmap/sigwood/compare/v0.1.0...v0.1.1

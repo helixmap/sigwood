@@ -46,7 +46,9 @@ Do this on **both** [pypi.org](https://pypi.org) and [test.pypi.org](https://tes
 
 **Also:** `gh` authenticated (`gh auth status`) against the account that owns `helixmap/sigwood`,
 for the GitHub Release. For the local validate below, install the packaging tools into your
-release venv (`pip install build twine`; `.[dev]` does not pull them).
+release venv (`pip install build twine`; `.[dev]` does not pull them). The preflight suite runs
+from the working clone's own venv (`.venv/bin/python`) - a bare `python` is whatever the shell
+resolves and generally has no pytest.
 
 ## Versioning
 
@@ -63,15 +65,27 @@ and refuses to publish a mismatch.
 real PyPI. The workflow's `workflow_dispatch` trigger publishes to **TestPyPI** under a
 throwaway `X.Y.Z.dev<run>` version, so the whole chain runs harmlessly:
 
-1. Actions -> **release** -> **Run workflow** (on `main`). It builds, runs the 3.11-3.14 test
+### In the github repo
+
+1. **Actions** -> **release** -> **Run workflow** (on `main`). It builds, runs the 3.11-3.14 test
    matrix, and stops at the `testpypi` environment.
 2. Watch the matrix go green.
-3. Confirm the three things only a live run can prove - it published, it installs, the
+3. Pull up https://test.pypi.org/manage/project/sigwood/releases/ and look for the dev release
+4. Confirm the three things only a live run can prove - it published, it installs, the
    attestation is attached:
+
+   Substitute the real `.dev` number from step 3 - the `0.2.3.dev7` below is an example, not a
+   literal to paste. **Both index flags are required:** `-i` REPLACES the default index, so
+   sigwood resolves from TestPyPI while `--extra-index-url` lets its dependencies (pandas and
+   the rest) come from real PyPI, which is the only place they exist. Without it the install
+   fails on `No matching distribution found for pandas`, and the rehearsal never gets far
+   enough to prove anything.
 
    ```bash
    python3 -m venv /tmp/sw-test && /tmp/sw-test/bin/pip install \
-     -i https://test.pypi.org/simple/ "sigwood==<the .dev version>"
+     -i https://test.pypi.org/simple/ \
+     --extra-index-url https://pypi.org/simple/ \
+     "sigwood==0.2.3.dev7"
    /tmp/sw-test/bin/sigwood --version
    rm -rf /tmp/sw-test
    ```
@@ -88,7 +102,7 @@ throwaway `X.Y.Z.dev<run>` version, so the whole chain runs harmlessly:
 git switch main && git pull
 git status --short                                    # clean tree
 git rev-list --left-right --count origin/main...main  # 0  0 - nothing unpushed
-python -m pytest -q                                   # full suite green locally
+.venv/bin/python -m pytest -q                         # full suite green locally
 grep __version__ sigwood/__init__.py                  # the version you intend to ship
 ```
 

@@ -319,7 +319,8 @@ generated config (you rarely need to mess around in there). And `sigwood
 - **Zeek** - `conn.log`, `dns.log`, `syslog.log`, in NDJSON or TSV, from a flat directory or
   date-partitioned subdirectories. Rotation and gzip/bzip2/xz compression are transparent.
 - **Pi-hole / dnsmasq** - DNS event logs, aggregated per domain for clustering.
-- **syslog** - flat RFC 3164. Discovery is content-sniffed, not filename-matched, so it handles
+- **syslog** - flat RFC 3164 and ISO-8601 (the high-precision format stock rsyslog writes on
+  Ubuntu/Pop 24.04 and newer). Discovery is content-sniffed, not filename-matched, so it handles
   both the Debian convention (`syslog`, `auth.log`, `kern.log`) and the RHEL/Fedora one
   (extensionless `messages`, `secure`, `maillog`) - and won't mistake `dnf.log` or a binary like
   `wtmp` for a log stream.

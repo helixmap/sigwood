@@ -12,8 +12,8 @@ Slots (fixed order):
 Fidelity fork (DNS precedent):
 
   - feed ``"syslog"`` (flat rsyslog): the normalized frame carries no
-    severity field (RFC 3164 PRI is stripped by the parser), so "error" is
-    a keyword-token heuristic over the message body. Kind definition like
+    PRI-derived severity under either RFC 3164 or ISO-8601, so "error" is a
+    keyword-token heuristic over the message body. Kind definition like
     dns's "rcode == 3", not a badness threshold - gated only by RATE_FLOOR.
   - feed ``"zeek"`` (Zeek syslog.log): Zeek emits an explicit ``severity``
     enum on every line, so "error" is the real RFC 5424 error set
@@ -51,9 +51,9 @@ from sigwood.digest.conn import (
 # ── Calibration constants ───────────────────────────────────────────────────
 
 # Kind-definition heuristic. The normalized syslog frame carries no severity
-# field - RFC 3164 PRI is stripped by the parser and discarded. This is plain
-# text matching against an error-indicating token list, sorted longest-first so
-# multi-word phrases survive alternation as the list grows.
+# field - flat rsyslog exposes no PRI-derived severity, RFC 3164 or ISO-8601.
+# This is plain text matching against an error-indicating token list, sorted
+# longest-first so multi-word phrases survive alternation as the list grows.
 _ERROR_TOKENS = (
     "out of memory",
     "unreachable",

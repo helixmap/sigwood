@@ -122,8 +122,8 @@ leaves any sparse edge inside that retained window alone. Shell-expanded bounded
 files can receive the density trim when no timeframe or `--all` is supplied. This
 one-window rule avoids silently stacking two automatic window selections.
 
-**Syslog and Pi-hole timestamps carry no year and no timezone, so sigwood infers
-both.** The RFC 3164 / dnsmasq wall-clock format simply doesn't record them. sigwood
+**RFC 3164 syslog and Pi-hole timestamps carry no year and no timezone, so sigwood
+infers both.** The RFC 3164 / dnsmasq wall-clock format simply doesn't record them. sigwood
 stamps each line with the analysis machine's current year (rolling back one year only
 when that would place it more than a week in the future - a stamp a few hours or days
 ahead stays future-dated in the current year) and reads the time in the analysis
@@ -131,10 +131,19 @@ machine's local timezone before converting to UTC. Two consequences: a syslog ar
 old is silently re-dated into the last twelve months, and a log written on a host in a
 different timezone (shipped or exported logs) stays offset by the timezone difference -
 and those shifted dates flow into window filtering, digest timelines, and finding data
-windows looking confident. Zeek (epoch) and CloudTrail (zoned ISO-8601) are unaffected.
+windows looking confident. Zeek (epoch), CloudTrail (zoned ISO-8601), and ISO-8601 /
+RFC-3339 syslog (Ubuntu/Pop 24.04+, which carries an explicit year and offset) are unaffected.
 Analyze wall-clock logs on a machine in the log's own timezone, and treat dates on
 year-old syslog archives with suspicion; a per-source timezone setting is on the list
 if a real deployment needs it.
+
+**ISO-8601 syslog discovery keys on the line shape, so a syslog-shaped application log
+can be picked up.** sigwood recognizes an ISO-8601 syslog line by its `<timestamp> <host>
+<program>: <message>` shape - an explicit offset plus a colon-terminated program tag. An
+ISO-timestamped application log that happens to share that shape and sits in the syslog
+directory can be hunted as syslog; a differently-shaped one (like `dnf.log`) is correctly
+skipped. If a non-syslog file is picked up, point sigwood at the specific syslog file
+rather than the directory.
 
 **A directory positional is hunted as one log family.** When you pass a directory to
 `sigwood hunt` (or to `dns`/`syslog`, the two-source detectors), sigwood samples up to

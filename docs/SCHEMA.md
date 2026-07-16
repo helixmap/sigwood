@@ -150,7 +150,7 @@ govern-don't-grep promotion discipline as `program` on syslog.
 
 ### Fidelity-aware syslog schema (flat rsyslog + Zeek syslog.log)
 
-Source: `parsers/syslog.py` (flat RFC 3164 rsyslog), `parsers/zeek.py`
+Source: `parsers/syslog.py` (flat RFC 3164 or ISO-8601 rsyslog), `parsers/zeek.py`
 (`_normalize_zeek_syslog_df` - Zeek `syslog.log`, TSV + NDJSON front-ends).
 Consumers: syslog detector (source-blind - reads only the minimal-5), digest
 (syslog card - fidelity-aware, reads both feeds), future auth. The second

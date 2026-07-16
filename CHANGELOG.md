@@ -6,6 +6,22 @@ All notable changes to sigwood are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- syslog ingestion now reads **ISO-8601 / RFC-3339 timestamps** in addition to RFC 3164 - the
+  high-precision format stock rsyslog writes on Ubuntu/Pop 24.04 and newer. ISO stamps carry an
+  explicit year and offset, so they convert directly to UTC and are not subject to the RFC 3164
+  year-guess. Discovery accepts an ISO line only when it also carries a host and a colon-terminated
+  program tag, so an ISO-timestamped application log (such as `dnf.log`) is not mistaken for syslog.
+
+### Changed
+
+- The "permission denied" message for an unreadable log now gives correct, least-privilege advice:
+  it suggests `usermod -aG` only for a group-readable file owned by a known log-reader group
+  (`adm`); for a root-only (`0600`) log, or one owned by a privileged group, it points at adjusting
+  group ownership or an ACL instead of recommending a group join that would not help or would
+  over-grant.
+
 ## [0.2.2] - 2026-07-15
 
 ### Changed

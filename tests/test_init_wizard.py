@@ -420,16 +420,24 @@ def test_profile_syslog_uses_loader_content_universe(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Syslog detection/profile use the loader's accepted-file universe:
-    extensionless RFC-3164 streams count; systemd/package logs and binaries do not."""
+    RFC-3164 and ISO-8601 streams count; package logs and binaries do not."""
     d = tmp_path / "var-log"
     d.mkdir()
     messages = "May 31 12:00:00 host-a kernel: link up\n"
     secure = "<134>May 31 12:01:00 host-b sshd[100]: Accepted publickey for user\n"
+    iso_syslog = (
+        "2026-06-28T14:34:43.200533-05:00 host-c systemd[1]: Started x\n"
+    )
     (d / "messages").write_text(messages, encoding="utf-8")
     (d / "secure").write_text(secure, encoding="utf-8")
+    (d / "syslog").write_text(iso_syslog, encoding="utf-8")
     (d / "boot.log").write_text("[  OK  ] Started Some Service.\n", encoding="utf-8")
     (d / "dpkg.log").write_text(
         "2026-06-01 12:00:00 status installed placeholder\n",
+        encoding="utf-8",
+    )
+    (d / "dnf.log").write_text(
+        "2026-06-01T12:00:00+0000 INFO --- logging initialized ---\n",
         encoding="utf-8",
     )
     (d / "alternatives.log").write_text(
@@ -446,7 +454,9 @@ def test_profile_syslog_uses_loader_content_universe(
         head_sniff=cli._looks_like_syslog_head,
     )
     assert profile is not None
-    assert profile["size_bytes"] == len(messages.encode()) + len(secure.encode())
+    assert profile["size_bytes"] == (
+        len(messages.encode()) + len(secure.encode()) + len(iso_syslog.encode())
+    )
 
     only_non_syslog = tmp_path / "only-non-syslog"
     only_non_syslog.mkdir()
@@ -455,6 +465,10 @@ def test_profile_syslog_uses_loader_content_universe(
     )
     (only_non_syslog / "dpkg.log").write_text(
         "2026-06-01 12:00:00 status installed placeholder\n",
+        encoding="utf-8",
+    )
+    (only_non_syslog / "dnf.log").write_text(
+        "2026-06-01T12:00:00+0000 INFO --- logging initialized ---\n",
         encoding="utf-8",
     )
     monkeypatch.setattr(cli, "_SYSLOG_CANDIDATE", str(only_non_syslog))
@@ -768,8 +782,24 @@ def test_looks_like_syslog_head_mirrors_loader(tmp_path: Path) -> None:
         "dnsmasq.log",
         "<30>May 31 12:00:00 host-a dnsmasq[1]: query[A] example.test from 192.0.2.10\n",
     )
+    _text(
+        "syslog-iso-colon",
+        "2026-06-28T14:34:43.200533-05:00 host-a systemd[1]: Started x\n",
+    )
+    _text(
+        "syslog-iso-no-colon",
+        "2026-07-15T17:04:24.321412-0500 host-a sshd[1]: session opened\n",
+    )
     _text("boot.log", "[  OK  ] Started Some Service.\n")
     _text("dpkg.log", "2026-06-01 12:00:00 status installed placeholder\n")
+    _text(
+        "dnf.log",
+        "2026-06-01T12:00:00+0000 INFO --- logging initialized ---\n",
+    )
+    _text(
+        "embedded-colon.log",
+        "2026-06-28T14:34:43-05:00 host-a key:value pair\n",
+    )
     _text("alternatives.log", "update-alternatives 2026-06-01 placeholder\n")
     binary = tmp_path / "btmp"
     binary.write_bytes(b"\x00\x01\x02")

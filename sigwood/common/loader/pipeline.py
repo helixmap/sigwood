@@ -392,13 +392,13 @@ def _zeek_normalize(df: pd.DataFrame, pattern: str) -> pd.DataFrame:
 def _syslog_strategy_parse(line_iter, *, path, warnings):  # noqa: ARG001
     """Syslog stream parse: yield canonical rows with float/NaN ``ts``.
 
-    Host derivation: prefer the in-content RFC-3164 host (``parse_host``:
-    field 4, or ``"unknown"`` when <4 tokens); fall back to the filename stem
-    (``_stem_hostname``) only when the line is hostless. Applies uniformly to
-    every stream file, with the per-host-file case preserved by the fallback.
-    ``ts`` is converted to float seconds, or
-    ``float('nan')`` when the RFC 3164 line has no parseable timestamp - KEEP
-    policy applies at the pipeline.
+    Host derivation prefers the in-content host (``parse_host``: field 2 for
+    ISO-8601, field 4 for RFC 3164, or ``"unknown"`` when the selected layout
+    is too short); it falls back to the filename stem (``_stem_hostname``) only
+    when the line is hostless. Applies uniformly to every stream file, with the
+    per-host-file case preserved by the fallback. ``ts`` is converted to float
+    seconds, or ``float('nan')`` when the line has no parseable supported
+    timestamp - KEEP policy applies at the pipeline.
     """
     stem = _stem_hostname(path.name)
     for line in line_iter:
@@ -1073,7 +1073,8 @@ def load_required_logs(
             ])
             # Silent-miss disclosure, forked by source. syslog discovery is
             # content-gated, so "zero candidates from a dir that holds files"
-            # means nothing read as RFC 3164 - distinct from pihole's
+            # means nothing matched a supported syslog format - distinct from
+            # pihole's
             # filename-pattern mismatch. Either way a security tool must not
             # swallow it silently. Explicit files load regardless and never
             # reach this check.
@@ -1087,7 +1088,8 @@ def load_required_logs(
                         names = ", ".join(str(d) for d in offending)
                         warnings.append(
                             f"syslog_dir: nothing in {names} looks like syslog "
-                            f"(RFC 3164) - nothing loaded (check the path)."
+                            f"(RFC 3164 or ISO-8601) - nothing loaded "
+                            f"(check the path)."
                         )
                 elif any(_syslog_files(d, "*.log*") for d in dir_inputs):
                     warnings.append(

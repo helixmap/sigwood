@@ -75,14 +75,15 @@ def _looks_binary(path: Path) -> bool:
 
 def _looks_like_syslog(path: Path) -> bool:
     """Content-sniff gate: True iff a BOUNDED decompressed prefix of ``path``
-    reads as RFC 3164 syslog.
+    reads as flat RFC 3164 or ISO-8601 syslog.
 
     Byte-bounded printable gate FIRST, then the syslog recognizer DIRECTLY - NOT
     the full ``sniff_format`` cascade. Rationale: dnsmasq lines ARE RFC 3164 and
     ``dnsmasq.sniff`` is strict, so the cascade would route a dnsmasq-query-first
-    ``messages`` to "dns"; the syslog recognizer claims any real RFC-3164 header
-    (incl. dnsmasq's) and cleanly rejects ISO-timestamped ``dnf``/``hawkey``,
-    systemd ``boot.log``, and binaries.
+    ``messages`` to "dns"; the syslog recognizer claims RFC-3164 headers
+    (including dnsmasq's) and ISO-8601 syslog headers carrying a terminated
+    program tag, while rejecting ISO-timestamped ``dnf``/``hawkey``, systemd
+    ``boot.log``, and binaries.
 
     Conservative-include on a read error: return True so the file defers to
     ``run_load``'s disclosed corruption rail (``_zeek_file_read_warning``) rather

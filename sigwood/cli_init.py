@@ -8,9 +8,9 @@ The wizard mostly works by hitting Enter: it LOOKS before it asks (detect +
 profile what's on disk), is DEFAULT-DRIVEN (an existing config seeds the
 prompts, never re-detected from scratch), and NEVER clobbers config a user
 already set. Path profiling is glob + stat only except for syslog's bounded
-RFC-3164 shape sniff; init never displays, stores, summarizes, or extracts log
-content. No filesystem mutation happens before the change-summary is accepted,
-so abort and redo truthfully change nothing.
+RFC-3164 / ISO-8601 shape sniff; init never displays, stores, summarizes, or
+extracts log content. No filesystem mutation happens before the change-summary
+is accepted, so abort and redo truthfully change nothing.
 """
 
 from __future__ import annotations
@@ -36,9 +36,9 @@ from sigwood.common.paths import effective_root, resolve_path
 # ── detection ─────────────────────────────────────────────────────────────────
 #
 # Detection looks at conventional public paths. Source profiling is stat/glob
-# only except for syslog's bounded RFC-3164 format sniff; no content is ever
-# displayed, stored, summarized, or extracted. Constants are module-level so
-# flow tests can monkeypatch them off the developer's real filesystem.
+# only except for syslog's bounded RFC-3164 / ISO-8601 format sniff; no content
+# is ever displayed, stored, summarized, or extracted. Constants are module-
+# level so flow tests can monkeypatch them off the developer's real filesystem.
 
 _ZEEK_CANDIDATES: tuple[str, ...] = (
     "/var/log/zeek",
@@ -74,7 +74,7 @@ _ZEEK_DATE_DIR_RE: re.Pattern[str] = re.compile(r"^\d{4}-\d{2}-\d{2}")
 # glob mirrors the runtime Pi-hole pattern OWNED by the DNS detector
 # (dns.OPTIONAL_LOGS, the pihole_dir entry); a drift tripwire pins the agreement.
 _PIHOLE_GLOB: str = "pihole*.log*"
-# Syslog profiles by the bounded RFC-3164 head sniff below, not by this glob.
+# Syslog profiles by the bounded content head sniff below, not by this glob.
 # The glob remains the detector/source key shape shown elsewhere.
 _SYSLOG_GLOB: str = "*.log*"
 # CloudTrail is opt-in (never detected); a CONFIGURED value is profiled with
@@ -91,6 +91,14 @@ _SYSLOG_HDR_RE: re.Pattern[str] = re.compile(
 )
 _SYSLOG_TS_RE: re.Pattern[str] = re.compile(
     r"^(\w{3})\s+(\d{1,2})\s+(\d{2}:\d{2}:\d{2})"
+)
+_ISO_TS: str = (
+    r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}"
+    r"(?:\.\d+)?(?:[+-]\d{2}:?\d{2}|Z)"
+)
+_ISO_TS_RE: re.Pattern[str] = re.compile(rf"^{_ISO_TS}(?=\s|$)")
+_ISO_SNIFF_RE: re.Pattern[str] = re.compile(
+    rf"^{_ISO_TS}\s+\S+\s+\S+:(?=\s|$)"
 )
 
 # The sigwood HOMEs, in discovery precedence - a CALL-TIME mirror of
@@ -181,8 +189,21 @@ def _syslog_ts_parseable(line: str) -> bool:
     return True
 
 
+def _iso_ts_parseable(line: str) -> bool:
+    """Return True when the ISO-8601 timestamp prefix is offset-aware."""
+    stripped = _SYSLOG_PRI_RE.sub("", line).strip()
+    if not _ISO_TS_RE.match(stripped):
+        return False
+    token = stripped.split(maxsplit=1)[0]
+    try:
+        parsed = datetime.fromisoformat(token)
+    except ValueError:
+        return False
+    return parsed.tzinfo is not None
+
+
 def _looks_like_syslog_head(path: Path) -> bool:
-    """Bounded stdlib mirror of the loader's syslog RFC-3164 content gate."""
+    """Bounded stdlib mirror of the loader's flat-syslog content gate."""
     try:
         with _open_log_head(path) as fh:
             chunk = fh.read(_SYSLOG_SNIFF_BYTES)
@@ -194,7 +215,13 @@ def _looks_like_syslog_head(path: Path) -> bool:
         if not raw_line or raw_line.lstrip().startswith("#"):
             continue
         stripped = _SYSLOG_PRI_RE.sub("", raw_line).lstrip()
-        if _SYSLOG_HDR_RE.match(stripped) and _syslog_ts_parseable(raw_line):
+        if (
+            _SYSLOG_HDR_RE.match(stripped)
+            and _syslog_ts_parseable(raw_line)
+        ) or (
+            _ISO_SNIFF_RE.match(stripped)
+            and _iso_ts_parseable(raw_line)
+        ):
             return True
     return False
 
@@ -333,7 +360,7 @@ def _detect_pihole() -> str | None:
 
 
 def _detect_syslog() -> str | None:
-    """Return the syslog candidate dir when at least one file sniffs as RFC 3164."""
+    """Return the syslog candidate dir when at least one file sniffs as syslog."""
     try:
         candidate = Path(_SYSLOG_CANDIDATE)
         if not candidate.is_dir():

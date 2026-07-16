@@ -31,6 +31,10 @@ from sigwood.parsers.zeek import (
     _REQUIRED_COLUMNS,
 )
 
+# Exact usermod advice is restricted to dedicated least-privilege log-reader
+# groups; joining an arbitrary owning group can confer elevated authority.
+_LOG_READER_GROUPS: frozenset[str] = frozenset({"adm"})
+
 
 def _log_type(pattern: str) -> str | None:
     """Return the canonical log type inferred from a loader glob pattern."""
@@ -122,15 +126,20 @@ def _permission_denied_message(path: Path) -> str:
         owner = str(st.st_uid)
     try:
         group = grp.getgrgid(st.st_gid).gr_name
-        # The group-add is the least-privilege fix for a 0640 log; a new
-        # login session is required for it to take effect ("log back in").
-        # sudo is deliberately NOT suggested - it fails for a venv install
-        # (the console script is off root's PATH) and running a security
-        # tool as root is poor practice.
-        remedy = (
-            f"add your user to the '{group}' group "
-            f"(sudo usermod -aG {group} $USER) and log back in"
-        )
+        if (st.st_mode & stat.S_IRGRP) and group in _LOG_READER_GROUPS:
+            # A new login session is required for group membership to take
+            # effect. Do not suggest running sigwood through sudo: a venv's
+            # console script may be off root's PATH, and running the security
+            # tool as root is poor practice. This sudo changes membership only.
+            remedy = (
+                f"add your user to the '{group}' group "
+                f"(sudo usermod -aG {group} $USER) and log back in"
+            )
+        else:
+            remedy = (
+                "grant your user read access to it (adjust its group "
+                "ownership or add an ACL) and retry"
+            )
     except KeyError:
         group = str(st.st_gid)
         remedy = "grant your user read access to it and retry"

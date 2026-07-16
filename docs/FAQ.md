@@ -94,9 +94,9 @@ to look at instead of an error.
 ### What log sources can it read?
 
 Zeek (`conn.log`, `dns.log`, `syslog.log`, in NDJSON or TSV, flat or date-partitioned
-directories), Pi-hole/dnsmasq, flat RFC 3164 syslog (both the Debian `*.log` convention and
-the extensionless RHEL/Fedora one), and CloudTrail JSON. Rotation and `.gz`/`.bz2`/`.xz`
-compression are handled for you. Forthcoming, possibly: more.
+directories), Pi-hole/dnsmasq, flat syslog in RFC 3164 or ISO-8601 form (both the
+Debian `*.log` convention and the extensionless RHEL/Fedora one), and CloudTrail JSON.
+Rotation and `.gz`/`.bz2`/`.xz` compression are handled for you. Forthcoming, possibly: more.
 
 ---
 

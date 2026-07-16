@@ -517,11 +517,11 @@ def test_load_pihole_single_file_path(tmp_path: Path) -> None:
     assert len(df) == 1
 
 
-def test_permission_denied_message_includes_owner_group_mode(
+def test_permission_denied_message_advises_allowlisted_readable_group(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The permission formatter owns the actionable owner/group wording."""
+    """A group-readable adm log gets the exact least-privilege group remedy."""
     import sigwood.common.loader.diagnostics as diagnostics
 
     target = tmp_path / "pihole.log"
@@ -540,16 +540,61 @@ def test_permission_denied_message_includes_owner_group_mode(
     monkeypatch.setattr(
         diagnostics.grp,
         "getgrgid",
-        lambda _gid: SimpleNamespace(gr_name="logreaders"),
+        lambda _gid: SimpleNamespace(gr_name="adm"),
     )
 
     msg = _permission_denied_message(target)
 
     assert msg == (
-        "pihole.log: permission denied - owned loguser:logreaders "
-        "(mode 0640); add your user to the 'logreaders' group "
-        "(sudo usermod -aG logreaders $USER) and log back in"
+        "pihole.log: permission denied - owned loguser:adm "
+        "(mode 0640); add your user to the 'adm' group "
+        "(sudo usermod -aG adm $USER) and log back in"
     )
+
+
+@pytest.mark.parametrize(
+    ("group", "mode"),
+    [
+        ("adm", 0o600),
+        ("wheel", 0o640),
+        ("sudo", 0o640),
+        ("root", 0o640),
+    ],
+)
+def test_permission_denied_message_avoids_unsafe_or_ineffective_group_add(
+    group: str,
+    mode: int,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Unsafe groups and mode-ineffective membership receive generic advice."""
+    import sigwood.common.loader.diagnostics as diagnostics
+
+    target = tmp_path / "messages"
+    target.write_text("", encoding="utf-8")
+    fake_stat = SimpleNamespace(
+        st_uid=1001,
+        st_gid=1002,
+        st_mode=stat.S_IFREG | mode,
+    )
+    monkeypatch.setattr(diagnostics.os, "stat", lambda _path: fake_stat)
+    monkeypatch.setattr(
+        diagnostics.pwd,
+        "getpwuid",
+        lambda _uid: SimpleNamespace(pw_name="loguser"),
+    )
+    monkeypatch.setattr(
+        diagnostics.grp,
+        "getgrgid",
+        lambda _gid: SimpleNamespace(gr_name=group),
+    )
+
+    msg = _permission_denied_message(target)
+
+    assert "grant your user read access" in msg
+    assert "adjust its group ownership or add an ACL" in msg
+    assert "usermod" not in msg
+    assert "usermod -aG root" not in msg
 
 
 def test_permission_denied_message_numeric_lookup_fallback(
@@ -4679,7 +4724,10 @@ def test_syslog_zero_accepted_dir_one_summary_warning(tmp_path: Path) -> None:
     (bad / "junk").write_bytes(b"\x00\x01\x02")
     res = load_required_logs({"*.log*": "syslog_dir"}, {"syslog_dir": [bad]})
     assert res.record_counts.get("*.log*", 0) == 0
-    matches = [w for w in res.warnings if "looks like syslog (RFC 3164)" in w]
+    matches = [
+        w for w in res.warnings
+        if "looks like syslog (RFC 3164 or ISO-8601)" in w
+    ]
     assert len(matches) == 1, res.warnings
     assert "nothing in" in matches[0]
     assert str(bad) in matches[0]
@@ -4699,8 +4747,7 @@ def test_syslog_zero_accepted_dir_one_summary_warning(tmp_path: Path) -> None:
 
 
 def test_syslog_explicit_file_bypasses_gate(tmp_path: Path) -> None:
-    """A named non-RFC-3164 file loads as operator intent - the gate is bypassed
-    for an explicit FILE input."""
+    """A named unrecognized file loads as intent because discovery is bypassed."""
     f = tmp_path / "dnf.log"
     f.write_text("2026-06-01T12:00:00 INFO x\n", encoding="utf-8")
     assert _discover_syslog_files(f) == [f]
@@ -4714,7 +4761,10 @@ def test_syslog_plan_time_lockstep_with_gate(tmp_path: Path) -> None:
 
     dnf_only = tmp_path / "dnf"
     dnf_only.mkdir()
-    (dnf_only / "dnf.log").write_text("2026-06-01T12:00:00 INFO x\n", encoding="utf-8")
+    (dnf_only / "dnf.log").write_text(
+        "2026-06-01T12:00:00+0000 INFO --- logging initialized ---\n",
+        encoding="utf-8",
+    )
     assert _any_input_yields_files("syslog_dir", [dnf_only], "*.log*") is False
 
     msgs = tmp_path / "msgs"

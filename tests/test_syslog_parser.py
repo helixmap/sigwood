@@ -19,8 +19,10 @@ from sigwood.common.loader import (
 from sigwood.common.display import fmt_timestamp
 from sigwood.parsers.syslog import (
     is_reboot_signal,
+    parse_host,
     parse_program,
     parse_timestamp,
+    sniff,
     strip_header,
 )
 
@@ -46,6 +48,77 @@ def test_parse_timestamp_returns_utc_aware() -> None:
 
 def test_parse_timestamp_unparseable_returns_none() -> None:
     assert parse_timestamp("not a valid syslog line at all") is None
+
+
+# ── parse_timestamp: aware ISO-8601 ───────────────────────────────────────────
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        (
+            "2026-06-28T14:34:43.200533-05:00 web01 systemd[1]: Started x",
+            datetime(2026, 6, 28, 19, 34, 43, 200533, tzinfo=timezone.utc),
+        ),
+        (
+            "2026-07-15T17:04:24.321412-0500 web01 sshd[1]: session opened",
+            datetime(2026, 7, 15, 22, 4, 24, 321412, tzinfo=timezone.utc),
+        ),
+        (
+            "2026-06-28T14:34:43-05:00 web01 cron[1]: run",
+            datetime(2026, 6, 28, 19, 34, 43, tzinfo=timezone.utc),
+        ),
+        (
+            "2026-06-28T14:34:43Z web01 cron[1]: run",
+            datetime(2026, 6, 28, 14, 34, 43, tzinfo=timezone.utc),
+        ),
+    ],
+)
+def test_parse_timestamp_iso_aware(raw: str, expected: datetime) -> None:
+    """Aware ISO-8601 stamps bypass host-local year inference and return UTC."""
+    assert parse_timestamp(raw) == expected
+
+
+def test_iso_header_parsing() -> None:
+    """ISO transport fields normalize through the flat-syslog parser."""
+    raw = "2026-06-28T14:34:43.200533-05:00 web01 systemd[1]: Started x"
+    body = strip_header(raw)
+
+    assert parse_host(raw) == "web01"
+    assert body == "systemd[1]: Started x"
+    assert parse_program(body) == "systemd"
+    assert sniff([raw]) == "syslog"
+
+
+def test_iso_tagless_line_normalizes_but_does_not_anchor_discovery() -> None:
+    """Tag-less ISO rows stay lenient after another row identifies the stream."""
+    raw = "2026-06-28T14:34:43-05:00 web01 message without a tag"
+
+    assert parse_timestamp(raw) == datetime(
+        2026, 6, 28, 19, 34, 43, tzinfo=timezone.utc,
+    )
+    assert parse_host(raw) == "web01"
+    assert strip_header(raw) == "message without a tag"
+    assert sniff([raw]) is None
+
+
+def test_parse_timestamp_rejects_naive_iso() -> None:
+    """A datestamp without an offset does not enter the aware ISO branch."""
+    raw = "2026-06-01T12:00:00 web01 dpkg: status installed"
+    assert parse_timestamp(raw) is None
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "2026-06-01T12:00:00+0000 INFO --- logging initialized ---",
+        "2026-06-28T14:34:43-05:00 web01 key:value pair",
+        "2026-06-01T12:00:00 web01 dpkg: status installed",
+        "2026-06-28T14:34:43-05:00junk web01 x:",
+    ],
+)
+def test_sniff_rejects_non_syslog_iso_shapes(raw: str) -> None:
+    """ISO discovery requires an aware stamp and a terminated program tag."""
+    assert sniff([raw]) is None
 
 
 # ── parse_timestamp: host-local wall-clock interpretation ─────────────────────
@@ -205,6 +278,36 @@ def test_load_syslog_non_host_filename_reads_in_content_host(tmp_path: Path) -> 
     assert list(df.columns) == ["ts", "host", "program", "raw", "message"]
     assert len(df) == 2
     assert set(df["host"]) == {"router", "webserver"}
+
+
+def test_load_required_logs_discovers_iso_and_rejects_offset_dnf(
+    tmp_path: Path,
+) -> None:
+    """Directory discovery accepts ISO syslog without claiming aware app logs."""
+    syslog_dir = tmp_path / "varlog"
+    syslog_dir.mkdir()
+    raw = "2026-06-28T14:34:43.200533-05:00 web01 systemd[1]: Started x"
+    (syslog_dir / "syslog").write_text(f"{raw}\n", encoding="utf-8")
+    (syslog_dir / "dnf.log").write_text(
+        "2026-06-01T12:00:00+0000 INFO --- logging initialized ---\n",
+        encoding="utf-8",
+    )
+
+    result = load_required_logs(
+        {"*.log*": "syslog_dir"},
+        {"syslog_dir": [syslog_dir]},
+    )
+    frame = result.logs["*.log*"]
+
+    assert len(frame) == 1
+    row = frame.iloc[0]
+    assert row["ts"] == datetime(
+        2026, 6, 28, 19, 34, 43, 200533, tzinfo=timezone.utc,
+    ).timestamp()
+    assert row["host"] == "web01"
+    assert row["program"] == "systemd"
+    assert row["raw"] == raw
+    assert row["message"] == "systemd[*]: Started x"
 
 
 def test_load_syslog_multi_host_dump_keeps_distinct_in_content_hosts(tmp_path: Path) -> None:

@@ -1,235 +1,438 @@
 # Releasing sigwood
 
-The maintainer runbook for cutting a release to PyPI and GitHub. It is a checklist, not a
-script - read each step, run it, confirm the result before the next. The irreversible steps
-(tagging, publishing to PyPI, publishing a GitHub Release) are called out; everything before
-them is safe to redo.
+This is the maintainer checklist for publishing sigwood to PyPI and GitHub. Run it from the
+repository root in one Bash session, and confirm each step before continuing. The pushed tag
+can still be replaced before PyPI approval; publishing a version to PyPI cannot be undone or
+repeated.
 
-sigwood publishes through **Trusted Publishing**: the release is built and uploaded by a
-tag-triggered GitHub Actions workflow (`.github/workflows/release.yml`) that authenticates to
-PyPI over OpenID Connect - **no long-lived API token is stored anywhere**. Each upload also
-carries a **PEP 740 PyPI Publish Attestation**, a Sigstore-backed proof that the distribution
-was published through this project's Trusted Publisher identity. That is *publication*
-provenance - which pipeline uploaded it - not a claim about how the code was built, and not a
-statement that the code is safe.
+sigwood publishes through **Trusted Publishing**. A tag-triggered GitHub Actions workflow
+(`.github/workflows/release.yml`) builds the distributions and authenticates to PyPI with
+OpenID Connect, so no long-lived API token is stored. Each upload also carries a **PEP 740
+PyPI Publish Attestation**, a Sigstore-backed record of which Trusted Publisher uploaded the
+distribution. That is publication provenance, not a claim that the code is safe.
 
-Two disciplines carry over from the older manual runbook and are not optional: you still
-**build and validate locally** before you tag (the go/no-go gate), and a **human still
-approves** the publish - the workflow pauses at a GitHub environment gate that a maintainer
-must approve before anything reaches PyPI. CI adds the cryptographic receipt; it does not
-replace your verification.
+Two human gates remain deliberate:
+
+- Build and validate locally before creating a tag.
+- Approve the `pypi` GitHub environment only after the tagged commit passes the complete CI
+  matrix.
 
 ## One-time setup
 
-Needed once, not per release. No API token is involved.
+No API token is involved in the normal release path.
 
-**Trusted publishers.** On each index, register a trusted publisher for `sigwood`:
+### Trusted publishers
 
-| Field       | Value                                          |
-|-------------|------------------------------------------------|
-| Owner       | `helixmap`                                     |
-| Repository  | `sigwood`                                      |
-| Workflow    | `release.yml`                                  |
-| Environment | `pypi` (on PyPI) / `testpypi` (on TestPyPI)    |
+Register a trusted publisher for `sigwood` on both [PyPI](https://pypi.org) and
+[TestPyPI](https://test.pypi.org). TestPyPI uses a separate account and publisher.
 
-Do this on **both** [pypi.org](https://pypi.org) and [test.pypi.org](https://test.pypi.org)
-(a separate account) - the TestPyPI publisher is what makes the rehearsal possible.
+| Field | PyPI | TestPyPI |
+|---|---|---|
+| Owner | `helixmap` | `helixmap` |
+| Repository | `sigwood` | `sigwood` |
+| Workflow | `release.yml` | `release.yml` |
+| Environment | `pypi` | `testpypi` |
 
-**GitHub environments** (repo Settings -> Environments):
+### GitHub environments
 
-- `pypi` - add yourself as a **required reviewer** (this is the approval gate) and, where
-  available, restrict deployments to the tag pattern `v*` and disable admin bypass. Do **not**
-  enable "prevent self-review": with a single maintainer it would deadlock, since no one else
-  can approve. The gate is a deliberate manual confirmation before an irreversible publish, not
-  a two-person control.
-- `testpypi` - no reviewer needed (it is a dry run); restrict dispatch to the default branch.
+In repository **Settings -> Environments**:
 
-**Also:** `gh` authenticated (`gh auth status`) against the account that owns `helixmap/sigwood`,
-for the GitHub Release. For the local validate below, install the packaging tools into your
-release venv (`pip install build twine`; `.[dev]` does not pull them). The preflight suite runs
-from the working clone's own venv (`.venv/bin/python`) - a bare `python` is whatever the shell
-resolves and generally has no pytest.
+- `pypi`: add yourself as a required reviewer. Where available, restrict deployment branches
+  and tags to `v*` and disable administrator bypass. Do not enable **Prevent self-review** for
+  a single-maintainer project; that would make the release impossible to approve.
+- `testpypi`: no reviewer is needed because this is the rehearsal path. Restrict deployments
+  to the default branch.
+
+Also authenticate `gh` as a maintainer of `helixmap/sigwood`:
+
+```bash
+gh auth status
+```
+
+The working clone needs a development venv at `.venv`. Packaging tools are installed into a
+separate temporary venv during validation; `.[dev]` does not install `build` or `twine` by
+itself.
 
 ## Versioning
 
-The version lives in **one place**: `sigwood/__init__.py` (`__version__`). `pyproject.toml`
-reads it dynamically, and `sigwood --version` prints it. To bump a release, edit that single
-literal, and pair it with the README status line (rendered prose, not code) in the same commit.
-Tags are `v<version>` (e.g. `v0.2.2`); the workflow asserts the tag matches the version literal
-and refuses to publish a mismatch.
+The executable package version has one owner: `sigwood/__init__.py` (`__version__`).
+`pyproject.toml` reads it dynamically and `sigwood --version` prints it. The README status
+line deliberately repeats the version as rendered prose, so update it in the same commit.
 
-## Rehearse on TestPyPI first
+Stable versions use `X.Y.Z`; tags use `vX.Y.Z`. The release workflow rejects a tag whose
+version does not exactly match `__version__`.
 
-**Non-negotiable before the first Trusted-Publishing cut, and again after any change to
-`release.yml`.** Nothing about the published artifact should be verified for the first time on
-real PyPI. The workflow's `workflow_dispatch` trigger publishes to **TestPyPI** under a
-throwaway `X.Y.Z.dev<run>` version, so the whole chain runs harmlessly:
+## Release checklist
 
-### In the github repo
+### 0 - Preflight the current branch
 
-1. **Actions** -> **release** -> **Run workflow** (on `main`). It builds, runs the 3.11-3.14 test
-   matrix, and stops at the `testpypi` environment.
-2. Watch the matrix go green.
-3. Pull up https://test.pypi.org/manage/project/sigwood/releases/ and look for the dev release
-4. Confirm the three things only a live run can prove - it published, it installs, the
-   attestation is attached:
-
-   Substitute the real `.dev` number from step 3 - the `0.2.3.dev7` below is an example, not a
-   literal to paste. **Both index flags are required:** `-i` REPLACES the default index, so
-   sigwood resolves from TestPyPI while `--extra-index-url` lets its dependencies (pandas and
-   the rest) come from real PyPI, which is the only place they exist. Without it the install
-   fails on `No matching distribution found for pandas`, and the rehearsal never gets far
-   enough to prove anything.
-
-   ```bash
-   python3 -m venv /tmp/sw-test && /tmp/sw-test/bin/pip install \
-     -i https://test.pypi.org/simple/ \
-     --extra-index-url https://pypi.org/simple/ \
-     "sigwood==0.2.3.dev7"
-   /tmp/sw-test/bin/sigwood --version
-   rm -rf /tmp/sw-test
-   ```
-
-   Then open the file on the TestPyPI project page and confirm its provenance/attestation
-   panel. Re-rehearse with a fresh dispatch (a new `.dev` number) if anything is off - TestPyPI
-   will not accept the same version twice.
-
-## The release checklist
-
-### 0 - Preflight, all green before you touch anything
+Start from an up-to-date, clean `main` and run the complete local suite:
 
 ```bash
-git switch main && git pull
-git status --short                                    # clean tree
-git rev-list --left-right --count origin/main...main  # 0  0 - nothing unpushed
-.venv/bin/python -m pytest -q                         # full suite green locally
-grep __version__ sigwood/__init__.py                  # the version you intend to ship
+git switch main &&
+  test -z "$(git status --short)" &&
+  git pull --ff-only &&
+  test "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)" &&
+  .venv/bin/python -m pytest -q
 ```
 
-The repo is public and anything pushed is cached forever - confirm nothing sensitive is
-tracked:
+Anything pushed to the public repository may be cached permanently. Confirm that no private
+or secret-bearing path is tracked:
 
 ```bash
-git ls-files | grep -iE 'privdocs|scratch|memory/|secret|token|\.env' || echo clean
+if git ls-files | grep -iE 'privdocs|scratch|memory/|secret|token|\.env'; then
+  printf 'review the tracked paths above before continuing\n' >&2
+  false
+else
+  printf 'tracked-path scan: clean\n'
+fi
 ```
 
-### 1 - Bump the version, and 2 - land release docs
+### 1 - Prepare and land the release state
 
-Edit `__version__` in `sigwood/__init__.py`; bump the README status line
-(`> **Status: ... (`X.Y.Z`)**`) in the SAME commit (it is rendered prose and does not track the
-literal automatically). Roll the changelog: move every `[Unreleased]` entry into a new
-`## [X.Y.Z] - <today>` section, leave `[Unreleased]` empty, and repoint the compare links at
-the bottom. Anything that ships (README, new docs) lands and is pushed **now** - the tagged
-commit is the released state. Keep the new changelog section to paste as the GitHub Release
-notes (step 6).
+Before tagging:
 
-### 3 - Build and validate locally, the go/no-go gate
+1. Set `__version__` in `sigwood/__init__.py` to the stable version being released.
+2. Update the README status line to the same version.
+3. Move every `[Unreleased]` changelog entry into a new dated `## [X.Y.Z]` section, leave
+   `[Unreleased]` empty, and update the comparison links at the bottom of `CHANGELOG.md`.
+4. Land every other file that belongs in the release, including new documentation.
+5. Review the diff, commit only the intended release state, and push `main`.
 
-CI rebuilds the artifact, but you validate locally first: this is your confidence gate, and it
-catches packaging bugs before you create an irreversible tag. Build from a **clean export of
-the tracked tree**, never the working tree - a working-tree build can sweep untracked files
-into the wheel:
+The tagged commit is the released state. Do not plan to add documentation or packaging fixes
+after the tag.
+
+### 2 - Capture the release identity once
+
+Run this block after the release-state commit is on `main`. Every version-specific command
+below uses these variables without editing. If the shell closes or `__version__` changes, run
+the block again.
 
 ```bash
-BUILD=/tmp/sigwood-build; rm -rf "$BUILD" && mkdir "$BUILD"
-git archive HEAD | tar -x -C "$BUILD" && cd "$BUILD"
+REPO=helixmap/sigwood
+VERSION=$(
+  .venv/bin/python - <<'PY'
+import pathlib
+import re
 
-# packaging tools live in a release venv (`.[dev]` does not pull build/twine):
-python3 -m venv .venv-rel && ./.venv-rel/bin/pip install -q -e ".[dev]" build twine
-./.venv-rel/bin/python -m pytest -q
-
-./.venv-rel/bin/python -m build               # sdist + wheel into dist/
-./.venv-rel/bin/python -m twine check dist/*  # metadata + README render must PASS
-./.venv-rel/bin/python tools/validate_distribution.py dist
-
-# README is baked into the release and PyPI never refetches it - every absolute image/badge
-# URL must resolve NOW (a broken hero image is permanent):
-grep -oE 'https://[^") ]+' README.md | sort -u | xargs -I{} curl -s -o /dev/null -w "%{http_code} {}\n" {}
-
-# clean-venv smoke - catches packaging bugs a metadata check cannot:
-python3 -m venv /tmp/sw-relcheck && /tmp/sw-relcheck/bin/pip install -q dist/*.whl
-/tmp/sw-relcheck/bin/sigwood --version        # prints the release version
-/tmp/sw-relcheck/bin/sigwood --help
-/tmp/sw-relcheck/bin/python -c "import importlib.resources as r; \
-  print((r.files('sigwood')/'data'/'config_example.toml').read_text()[:1] and 'data OK')"
-rm -rf /tmp/sw-relcheck; cd -
+text = pathlib.Path("sigwood/__init__.py").read_text()
+versions = re.findall(r'^__version__ = "([^"]+)"$', text, re.M)
+assert len(versions) == 1
+print(versions[0])
+PY
+)
+if [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  TAG="v${VERSION}"
+  printf 'repository: %s\nversion:    %s\ntag:        %s\n' "$REPO" "$VERSION" "$TAG" &&
+    grep -F "$VERSION" README.md &&
+    grep -F "## [$VERSION] - " CHANGELOG.md &&
+    test -z "$(git status --short)" &&
+    test "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)"
+else
+  TAG=
+  printf 'not a stable release version: %s\n' "$VERSION" >&2
+  false
+fi
 ```
 
-Every check green is the go/no-go line. Nothing above this point is irreversible.
+All checks must succeed.
 
-### 4 - Tag, which triggers the release workflow
+### 3 - Build and validate locally
+
+GitHub Actions rebuilds the artifacts, but local validation is the go/no-go gate before any
+tag exists. Build from a clean export of the tracked commit, never from the working tree; a
+working-tree build can accidentally include untracked files.
+
+The block runs fail-fast inside a subshell, leaves the caller in the repository root, removes
+its temporary export on success, and retains it for inspection on failure.
 
 ```bash
-git tag -a v0.2.2 -m "sigwood v0.2.2"
-git push origin v0.2.2
+BUILD=$(mktemp -d "${TMPDIR:-/tmp}/sigwood-build.XXXXXX")
+(
+  set -euo pipefail
+
+  git archive HEAD | tar -x -C "$BUILD"
+  cd "$BUILD"
+
+  python3 -m venv .venv-rel
+  .venv-rel/bin/python -m pip install -q --upgrade pip
+  .venv-rel/bin/python -m pip install -q -e ".[dev]" build twine
+  .venv-rel/bin/python -m pytest -q
+
+  .venv-rel/bin/python -m build
+  .venv-rel/bin/python -m twine check dist/*
+  .venv-rel/bin/python tools/validate_distribution.py dist
+
+  README_URLS=$(grep -oE 'https://[^\") ]+' README.md | sort -u)
+  test -n "$README_URLS"
+  while IFS= read -r url; do
+    printf 'checking %s\n' "$url"
+    curl --fail --silent --show-error --location --output /dev/null "$url"
+  done <<< "$README_URLS"
+
+  shopt -s nullglob
+  WHEELS=(dist/*.whl)
+  (( ${#WHEELS[@]} == 1 ))
+  python3 -m venv .venv-smoke
+  .venv-smoke/bin/python -m pip install -q "${WHEELS[0]}"
+  .venv-smoke/bin/python -m pip check
+  test "$(.venv-smoke/bin/sigwood --version)" = "sigwood $VERSION"
+  .venv-smoke/bin/sigwood --help >/dev/null
+  .venv-smoke/bin/python - <<'PY'
+import importlib.resources as resources
+
+assert (resources.files("sigwood") / "data" / "config_example.toml").is_file()
+print("data OK")
+PY
+)
+BUILD_STATUS=$?
+
+if (( BUILD_STATUS == 0 )); then
+  rm -rf "$BUILD"
+  printf 'local release validation passed\n'
+else
+  printf 'local release validation failed; inspect %s\n' "$BUILD" >&2
+  false
+fi
 ```
 
-The pushed tag starts `release.yml`. It reruns the full suite on the **3.11-3.14 matrix against
-the exact tagged commit** - this is the automated "green on the release SHA" gate; the publish
-job cannot run unless the whole matrix passes - rebuilds the sdist + wheel, and then **waits**
-at the `pypi` environment gate. Nothing has reached PyPI yet. (A local suite can be green while
-CI is red - a recursion-depth difference between macOS and Linux once shipped a broken tag - so
-this matrix gate, not your laptop, is the release-SHA proof.)
+Nothing above this point changes remote release state.
 
-### 5 - Approve the publish, **irreversible**
+### 4 - Rehearse on TestPyPI when required
 
-Watch the run (Actions -> release, or `gh run watch`). When the matrix is green and the
-`publish` job is waiting for review, approve the `pypi` environment in the GitHub UI. The
-workflow uploads to PyPI over OIDC and attaches the attestation. A version number is permanent:
-you cannot re-upload `X.Y.Z`, only yank it and publish a new number - so approve only after the
-matrix is green and you have rehearsed on TestPyPI.
+This step is non-negotiable before the first Trusted Publishing release and after any change
+to `.github/workflows/release.yml`. It is optional for later releases when that workflow is
+unchanged.
 
-If the matrix is red, the gate never opens. If the tag is wrong, do **not** approve - the gate
-is your last stop before the irreversible step.
-
-**First real Trusted-Publishing release only:** if a `0.0.0` name-reservation placeholder
-release still exists, delete that RELEASE (Manage -> release 0.0.0 -> Delete) - never the
-PROJECT, since deleting a project frees the name for anyone to claim.
-
-### 6 - GitHub Release
+The manual dispatch builds and tests `main`, changes the artifact version to the throwaway
+`X.Y.Z.dev<run-number>` form, and publishes through the ungated `testpypi` environment. The
+commands derive that version from the run itself; there is no placeholder to replace.
 
 ```bash
-gh release create v0.2.2 --repo helixmap/sigwood --title "sigwood v0.2.2" \
-  --notes-file <(printf '%s\n' "...release notes, from the changelog section...")
+REHEARSAL_URL=$(gh workflow run release.yml --repo "$REPO" --ref main)
+REHEARSAL_RUN_ID=${REHEARSAL_URL##*/}
+if [[ "$REHEARSAL_RUN_ID" =~ ^[0-9]+$ ]] &&
+  gh run watch "$REHEARSAL_RUN_ID" --repo "$REPO" --compact --exit-status &&
+  test "$(gh run view "$REHEARSAL_RUN_ID" --repo "$REPO" --json headSha --jq .headSha)" = "$(git rev-parse HEAD)" &&
+  REHEARSAL_RUN_NUMBER=$(gh run view "$REHEARSAL_RUN_ID" --repo "$REPO" --json number --jq .number) &&
+  [[ "$REHEARSAL_RUN_NUMBER" =~ ^[0-9]+$ ]]; then
+  DEV_VERSION="${VERSION}.dev${REHEARSAL_RUN_NUMBER}"
+  printf 'TestPyPI version: %s\n' "$DEV_VERSION"
+
+  TEST_VENV=$(mktemp -d "${TMPDIR:-/tmp}/sigwood-testpypi.XXXXXX")
+  if python3 -m venv "$TEST_VENV" &&
+    "$TEST_VENV/bin/python" -m pip --isolated install \
+      --index-url https://test.pypi.org/simple/ \
+      --extra-index-url https://pypi.org/simple/ \
+      "sigwood==$DEV_VERSION" &&
+    "$TEST_VENV/bin/python" -m pip check &&
+    test "$("$TEST_VENV/bin/sigwood" --version)" = "sigwood $DEV_VERSION"; then
+    rm -rf "$TEST_VENV"
+  else
+    printf 'TestPyPI install verification failed; inspect %s\n' "$TEST_VENV" >&2
+    false
+  fi
+else
+  printf 'TestPyPI rehearsal failed for %s\n' "${REHEARSAL_URL:-no run URL}" >&2
+  false
+fi
 ```
 
-Attaching the built artifacts is optional (PyPI is the source of truth).
+Both index flags are required. `--index-url` selects the sigwood package from TestPyPI;
+`--extra-index-url` allows dependencies such as pandas to resolve from real PyPI.
 
-### 7 - Post-publish verify
+On the [TestPyPI project page](https://test.pypi.org/project/sigwood/), confirm that the dev
+release and its provenance/attestation panel are present. Rehearsing again creates a fresh
+`.dev` version because package indexes never accept the same version twice.
+
+### 5 - Push the tag
+
+This starts the production release workflow against the exact tagged commit:
 
 ```bash
-python3 -m venv /tmp/sw-postpub && /tmp/sw-postpub/bin/pip install sigwood
-/tmp/sw-postpub/bin/sigwood --version    # matches the release
-rm -rf /tmp/sw-postpub
+if test -z "$(git tag --list "$TAG")" &&
+  test -z "$(git ls-remote --tags origin "refs/tags/$TAG")" &&
+  git tag -a "$TAG" -m "sigwood $TAG" &&
+  git show --no-patch --decorate "$TAG" &&
+  git push origin "$TAG"; then
+  printf 'pushed %s\n' "$TAG"
+else
+  printf 'tag creation or push failed for %s\n' "$TAG" >&2
+  false
+fi
 ```
 
-A fresh `pip install` pulling the new version is the authoritative "it is live" signal. The
-JSON endpoint (`https://pypi.org/pypi/sigwood/json`) is Fastly-cached and lags the file index
-pip resolves against - it can still list the previous version for a minute or two after a
-successful upload, so trust the install, not the JSON. On the PyPI file page, confirm the
-**provenance/attestation panel** shows the publish attestation.
+Capture the workflow run belonging to the tagged commit. This lookup block is safe to rerun
+if the shell closes after the tag push; initialize `REPO`, `VERSION`, and `TAG` again first.
 
-On a PEP 668 box (Debian 12+ / Raspberry Pi OS), confirm the documented path: a bare
-`pip install sigwood` outside a venv is REFUSED (`externally-managed-environment`) and
-`pipx install sigwood` succeeds with `sigwood --help` running - the README leads with pipx, so
-that path must work.
+```bash
+if TAG_SHA=$(git rev-list -n 1 "$TAG") && [[ -n "$TAG_SHA" ]]; then
+  RUN_ID=
+  for _ in {1..30}; do
+    RUN_ID=$(gh run list --repo "$REPO" --workflow release.yml --event push \
+      --commit "$TAG_SHA" --limit 1 --json databaseId --jq '.[0].databaseId')
+    [[ -n "$RUN_ID" ]] && break
+    sleep 2
+  done
 
-Then eyeball the PyPI project page (README + image render) and the GitHub Release.
+  if [[ "$RUN_ID" =~ ^[0-9]+$ ]]; then
+    gh run view "$RUN_ID" --repo "$REPO" --web
+  else
+    printf 'release workflow did not appear for %s\n' "$TAG" >&2
+    false
+  fi
+else
+  printf 'could not resolve tagged commit for %s\n' "$TAG" >&2
+  false
+fi
+```
+
+The workflow reruns the complete Python 3.11-3.14 matrix, validates a fresh sdist and wheel,
+and waits at the `pypi` environment before upload. The browser command opens the exact run;
+monitor that page until it reaches the approval trigger below.
+
+### 6 - Approve the PyPI publish (irreversible)
+
+Approve only when every `build + verify` job is green and `publish PyPI` is waiting for
+review. In the run opened above:
+
+1. Click **Review deployments**.
+2. Select the `pypi` environment.
+3. Click **Approve and deploy**.
+
+Then confirm that the upload completes successfully:
+
+```bash
+[[ "$RUN_ID" =~ ^[0-9]+$ ]] &&
+  gh run watch "$RUN_ID" --repo "$REPO" --compact --exit-status
+```
+
+If the matrix is red, the approval gate never opens. If the tag is wrong, do not approve;
+follow the pre-publish recovery steps below.
+
+PyPI permanently reserves a published version. A bad `X.Y.Z` can be yanked, but it cannot be
+deleted and uploaded again under the same version.
+
+For the first production release only: if a `0.0.0` name-reservation release still exists,
+delete that **release** from the PyPI project management page. Never delete the project,
+because that releases the package name.
+
+### 7 - Create, inspect, and publish the GitHub Release
+
+Extract the matching changelog section into a temporary notes file. The section heading is
+omitted because the release title already carries the version.
+
+```bash
+if NOTES_FILE=$(mktemp "${TMPDIR:-/tmp}/sigwood-${VERSION}-notes.XXXXXX") &&
+  awk -v version="$VERSION" '
+    index($0, "## [" version "] - ") == 1 { copying = 1; next }
+    copying && /^## \[/ { exit }
+    copying { print }
+    END { if (!copying) exit 1 }
+  ' CHANGELOG.md > "$NOTES_FILE" &&
+  test -s "$NOTES_FILE"; then
+  cat "$NOTES_FILE"
+else
+  printf 'could not extract release notes for %s\n' "$VERSION" >&2
+  false
+fi
+```
+
+Create a draft from the existing remote tag, then open it for rendered inspection:
+
+```bash
+if gh release create "$TAG" --repo "$REPO" --title "sigwood $TAG" \
+  --verify-tag --fail-on-no-commits --draft --notes-file "$NOTES_FILE"; then
+  gh release view "$TAG" --repo "$REPO" --web
+else
+  printf 'GitHub Release draft creation failed; notes remain at %s\n' "$NOTES_FILE" >&2
+  false
+fi
+```
+
+The draft appears on the repository's **Releases** page and remains editable. Confirm the
+title, tag, and rendered notes. Publishing is a separate explicit action:
+
+```bash
+if gh release edit "$TAG" --repo "$REPO" --draft=false; then
+  [[ -z "${NOTES_FILE:-}" ]] || rm -f "$NOTES_FILE"
+else
+  printf 'GitHub Release publication failed; notes remain at %s\n' "${NOTES_FILE:-unknown}" >&2
+  false
+fi
+```
+
+Attaching built artifacts is optional; PyPI remains the distribution source of truth.
+
+### 8 - Verify the public release
+
+Install the exact version from real PyPI into a clean venv. `--no-cache-dir` prevents a local
+wheel cache from satisfying the check.
+
+```bash
+if POST_VENV=$(mktemp -d "${TMPDIR:-/tmp}/sigwood-postpub.XXXXXX") &&
+  python3 -m venv "$POST_VENV" &&
+  "$POST_VENV/bin/python" -m pip --isolated install --no-cache-dir \
+    --index-url https://pypi.org/simple/ "sigwood==$VERSION" &&
+  "$POST_VENV/bin/python" -m pip check &&
+  test "$("$POST_VENV/bin/sigwood" --version)" = "sigwood $VERSION" &&
+  "$POST_VENV/bin/sigwood" --help >/dev/null; then
+  rm -rf "$POST_VENV"
+else
+  printf 'public-release verification failed; inspect %s\n' "${POST_VENV:-no venv}" >&2
+  false
+fi
+```
+
+This exact-version install is the authoritative signal that the release is live. PyPI's JSON
+endpoint is CDN-cached and can briefly lag the file index used by pip.
+
+Then confirm:
+
+- The PyPI project page renders the README and images correctly.
+- The PyPI file page shows the provenance/attestation panel.
+- The GitHub Release is published with the intended notes.
+- On a PEP 668 system such as Debian 12 or Raspberry Pi OS, bare `pip install sigwood` is
+  refused with `externally-managed-environment`, while `pipx install sigwood` succeeds and
+  `sigwood --help` runs.
 
 ## If something goes wrong
 
-- **Matrix red, or the publish job failed** - nothing was published (the gate never opened, or
-  the build failed before upload). Fix the cause, delete the tag (below), and re-cut.
-- **Tag points at the wrong commit, not yet approved** - do NOT approve the environment; delete
-  and re-tag: `git push origin :refs/tags/v0.2.2 && git tag -d v0.2.2`.
-- **Bad artifact already on PyPI** - you cannot overwrite or un-upload it. Bump the patch
-  version, fix, publish the new number, and yank the bad one (Manage -> Release -> Yank) so pip
-  stops resolving to it while leaving it installable by exact pin.
-- **Trusted Publishing unavailable (break-glass)** - if PyPI's OIDC or the workflow is down and
-  a release is genuinely urgent, a maintainer can fall back to a one-time manual upload with a
-  **freshly generated, immediately revoked** project-scoped token (`twine upload` from the
-  step-3 release venv). Emergency-only; it leaves no stored credential. The standing path is
-  Trusted Publishing.
-- **Something sensitive reached the public repo** - flipping visibility or force-pushing does
-  not un-publish it; assume it was seen and cached. Rotate any exposed secret. Prevention (the
-  preflight scan) is the only real control.
+### Before PyPI approval
+
+No package has been published. If the run is active or waiting for approval, cancel it first:
+
+```bash
+[[ "$RUN_ID" =~ ^[0-9]+$ ]] && gh run cancel "$RUN_ID" --repo "$REPO"
+```
+
+Once GitHub shows the run as failed or cancelled and you have confirmed that PyPI has no such
+version, remove the remote tag before the local tag:
+
+```bash
+git push origin ":refs/tags/$TAG" &&
+  git tag -d "$TAG"
+```
+
+Fix and push the release state, rerun the identity and validation steps, and create a new tag.
+If the workflow had already failed or been cancelled, the cancel command is unnecessary. If
+the shell restarted, rerun the exact-run lookup in step 5 before cancelling an active run.
+
+### After PyPI publication
+
+Do not move or reuse the tag. Bump the patch version, fix the problem, and publish a new
+release. Yank the bad version from **PyPI project -> Manage -> Release -> Yank** so normal
+resolution avoids it while exact pins remain available.
+
+### Trusted Publishing is unavailable
+
+If PyPI OIDC or GitHub Actions is unavailable and a release is genuinely urgent, rerun local
+build validation and use `twine upload` with a freshly generated, project-scoped token. Revoke
+the token immediately afterward. This is an emergency path only; the normal path stores no
+credential.
+
+### Sensitive material reached the public repository
+
+Assume it was seen and cached. Force-pushing or changing repository visibility does not
+unpublish it. Rotate exposed credentials immediately; the preflight scan is preventive, not a
+cleanup mechanism.

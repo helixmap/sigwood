@@ -221,7 +221,7 @@ packaging tools and run the same distribution check as CI:
 python -m pip install build twine
 python -m build
 python -m twine check dist/*
-python scripts/validate_distribution.py dist
+python tools/validate_distribution.py dist
 ```
 
 This catches missing package data, accidental test-suite leakage, malformed

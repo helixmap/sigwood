@@ -126,7 +126,7 @@ python3 -m venv .venv-rel && ./.venv-rel/bin/pip install -q -e ".[dev]" build tw
 
 ./.venv-rel/bin/python -m build               # sdist + wheel into dist/
 ./.venv-rel/bin/python -m twine check dist/*  # metadata + README render must PASS
-./.venv-rel/bin/python scripts/validate_distribution.py dist
+./.venv-rel/bin/python tools/validate_distribution.py dist
 
 # README is baked into the release and PyPI never refetches it - every absolute image/badge
 # URL must resolve NOW (a broken hero image is permanent):

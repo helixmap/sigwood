@@ -86,7 +86,7 @@ jobs:
         run: |
           python -m build
           python -m twine check dist/*
-          python scripts/validate_distribution.py dist
+          python tools/validate_distribution.py dist
       - name: Install and smoke-test wheel outside the checkout
         run: |
           WHEEL="$(python -c 'from pathlib import Path; print(next(Path("dist").glob("*.whl")).resolve())')"

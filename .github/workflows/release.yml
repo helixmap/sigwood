@@ -76,7 +76,7 @@ jobs:
         run: |
           python -m build
           python -m twine check dist/*
-          python scripts/validate_distribution.py dist
+          python tools/validate_distribution.py dist
 
       - name: Clean-venv wheel smoke
         if: matrix.python-version == '3.12'

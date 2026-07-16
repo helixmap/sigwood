@@ -231,7 +231,7 @@ input[type=range] { accent-color: var(--accent); width: 110px; }
       <div class="readout-cell"><span class="readout-label">records</span><span class="readout-value mono" id="meta-count"></span></div>
       <div class="readout-cell" id="meta-entities-cell"><span class="readout-label">entities</span><span class="readout-value mono" id="meta-entities"></span></div>
       <div class="readout-cell"><span class="readout-label">bin</span><span class="readout-value mono" id="meta-bin"></span></div>
-      <div class="readout-cell" id="meta-derivation-cell"><span class="readout-label" id="meta-derivation-label">derivation</span><span class="readout-value" id="meta-derivation"></span><span class="readout-sub" id="meta-degrade"></span></div>
+      <div class="readout-cell" id="meta-derivation-cell"><span class="readout-label" id="meta-derivation-label">derivation</span><span class="readout-value" id="meta-derivation"></span><span class="readout-sub" id="meta-degrade"></span><span class="readout-sub" id="meta-band-loss"></span><span class="readout-sub" id="meta-straddler"></span><span class="readout-sub" id="meta-clip-loss"></span></div>
     </div>
     <div class="readout-foot" id="meta-hunt-foot">
       <button class="copy-hunt" id="copy-hunt" type="button" title="copy exact hunt command">copy hunt</button>
@@ -1119,10 +1119,15 @@ function downloadClip() {
   const flows = [];
   const usedS = new Set(), usedD = new Set(), usedV = new Set();
   const ntotB = new Float64Array(nb), ntotC = new Float64Array(nb);
+  let ownBefore = 0, ownAfter = 0;
   RAW.FLOWS.forEach((f, i) => {
     if (maskT[rawToModel[i]] < 0.5) return;   // bake current filters
     const db = rawDenseB[i], dc = rawDenseC[i];
     const pb = [], pc = [];
+    if (M.bands_active === true) {
+      for (let x = 0; x < a; x++) ownBefore += db[x];
+      for (let x = b; x < B; x++) ownAfter += db[x];
+    }
     for (let x = a; x < b; x++) {
       if (db[x]) { pb.push(x - a, db[x]); ntotB[x-a] += db[x]; }
       if (dc[x]) { pc.push(x - a, dc[x]); ntotC[x-a] += dc[x]; }
@@ -1147,12 +1152,43 @@ function downloadClip() {
   const [sKeep, sMap] = remap(usedS), [dKeep, dMap] = remap(usedD);
   flows.forEach(f => { f.s = sMap.get(f.s); f.d = dMap.get(f.d); });
   let rows = 0; for (const v of ntotC) rows += v;
+  const validLoss = value => typeof value === "number" && Number.isFinite(value) && value >= 0
+    ? Math.round(value) : 0;
+  const inherited = M.clip_loss && typeof M.clip_loss === "object"
+    ? validLoss(validLoss(M.clip_loss.prior_bytes) +
+      validLoss(M.clip_loss.own_before) + validLoss(M.clip_loss.own_after))
+    : 0;
+  const clipLoss = M.bands_active === true ? {
+    prior_bytes: inherited,
+    own_before: Math.max(0, Math.round(ownBefore)),
+    own_after: Math.max(0, Math.round(ownAfter)),
+  } : null;
+  const clipParts = [];
+  if (clipLoss && clipLoss.own_before) clipParts.push(`${fmtB(clipLoss.own_before)} before`);
+  if (clipLoss && clipLoss.own_after) clipParts.push(`${fmtB(clipLoss.own_after)} after`);
+  let clipLossNote = clipParts.length
+    ? `clip excludes ${clipParts.join(" and ")} its window`
+    : null;
+  if (clipLoss && clipLoss.prior_bytes) {
+    const ancestor = `ancestor clips excluded a further ${fmtB(clipLoss.prior_bytes)} within the source window`;
+    clipLossNote = clipLossNote ? `${clipLossNote}; ${ancestor}` : ancestor;
+  }
+  const sourceBandLoss = typeof M.band_loss_note === "string" && M.band_loss_note
+    ? (M.band_loss_scoped === true
+      ? M.band_loss_note
+      : `source window: ${M.band_loss_note}`)
+    : null;
   const payload = {
     meta: { ...M,
       source: (M.source || "").replace(/ · clip$/, "") + " · clip",
       rows, clip: true,
       t0: M.t0 + a * BIN, t1: Math.min(M.t1, M.t0 + b * BIN), bins: nb,
       distinct_hosts: null,
+      ...(sourceBandLoss ? {
+        band_loss_note: sourceBandLoss, band_loss_scoped: true,
+      } : {}),
+      ...(clipLoss ? { clip_loss: clipLoss } : {}),
+      clip_loss_note: clipLossNote,
       generated_utc: new Date().toISOString().slice(0, 16).replace("T", " ") + " UTC",
     },
     srcNodes: sKeep.map(o => RAW.SRC[o]),
@@ -1446,12 +1482,21 @@ document.addEventListener("keydown", ev => {
   $("meta-bin").textContent = fmtDur(BIN);
   const hasDerivation = Boolean(M.metric_note);
   const hasDegrade = Boolean(M.degrade_note);
-  $("meta-derivation-cell").hidden = !hasDerivation && !hasDegrade;
+  const hasBandLoss = typeof M.band_loss_note === "string" && Boolean(M.band_loss_note);
+  const hasStraddler = typeof M.straddler_note === "string" && Boolean(M.straddler_note);
+  const hasClipLoss = typeof M.clip_loss_note === "string" && Boolean(M.clip_loss_note);
+  $("meta-derivation-cell").hidden = !hasDerivation && !hasDegrade && !hasBandLoss && !hasStraddler && !hasClipLoss;
   $("meta-derivation-label").textContent = hasDerivation ? "derivation" : "note";
   $("meta-derivation").hidden = !hasDerivation;
   $("meta-degrade").hidden = !hasDegrade;
+  $("meta-band-loss").hidden = !hasBandLoss;
+  $("meta-straddler").hidden = !hasStraddler;
+  $("meta-clip-loss").hidden = !hasClipLoss;
   if (hasDerivation) $("meta-derivation").textContent = M.metric_note;
   if (hasDegrade) $("meta-degrade").textContent = M.degrade_note;
+  if (hasBandLoss) $("meta-band-loss").textContent = M.band_loss_note;
+  if (hasStraddler) $("meta-straddler").textContent = M.straddler_note;
+  if (hasClipLoss) $("meta-clip-loss").textContent = M.clip_loss_note;
   $("meta-kind").textContent = M.kind || "graph";
   $("meta-hunt-foot").hidden = !M.hunt_hint;
   if (M.mid_label) {
@@ -1460,13 +1505,15 @@ document.addEventListener("keydown", ev => {
     $("k-svc").textContent = "top " + (M.mid_singular || M.mid_label);
   }
   if (M.hosts_label) $("k-hosts").textContent = M.hosts_label;
+  if (M.single_metric || M.bands_active === true) {
+    $("k-conns").textContent = M.rows_label || "events";
+    $("k-cps").textContent = (M.rows_label || "events") + " / s";
+  }
   if (M.single_metric) {
     metric = "c";
     $("metricgrp").style.display = "none";
     $("tile-rate").style.display = "none";
     $("tile-cum").style.display = "none";
-    $("k-conns").textContent = M.rows_label || "events";
-    $("k-cps").textContent = (M.rows_label || "events") + " / s";
   }
 }
 

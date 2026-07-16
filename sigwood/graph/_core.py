@@ -11,7 +11,7 @@ import numpy as np
 import pandas as pd
 
 from sigwood import __version__
-from sigwood.common.display import fmt_timestamp, plural
+from sigwood.common.display import fmt_timestamp, human_bytes, plural
 from sigwood.common.errors import GraphEmpty
 from sigwood.common.sanitize import strip_control
 
@@ -19,6 +19,7 @@ from sigwood.common.sanitize import strip_control
 GRAPH_MAX_FLOWS = 4_000
 GRAPH_MAX_SMOOTH_OPS = 400_000_000
 GRAPH_MAX_PAYLOAD_PAIRS = 1_500_000
+GRAPH_MAX_SPREAD_FRAGMENTS = 3_000_000
 TRIM_DENSITY_FRACTION = 0.05
 MIN_DENSE_BINS = 8
 TRIM_MIN_TAIL_BINS = 6
@@ -130,6 +131,17 @@ def _coerce_metric(value: object) -> float:
     return _coerce_metric_with_flag(value)[0]
 
 
+def _coerce_duration(value: object) -> float:
+    """Return one finite non-negative optional duration or zero."""
+    try:
+        duration = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return 0.0
+    if not math.isfinite(duration) or duration < 0:
+        return 0.0
+    return duration
+
+
 def _metric_error() -> ValueError:
     return ValueError("graph metric values are too large to render safely")
 
@@ -207,27 +219,40 @@ def _rank_values(frame: pd.DataFrame, column: str) -> list[str]:
     ]
 
 
-@dataclass
-class _GroupState:
-    """One recomputable folded/binned graph shape."""
+@dataclass(frozen=True)
+class _ShapeMeasure:
+    """Scalar-only measurement for one folded graph candidate."""
 
-    frame: pd.DataFrame
-    grouped: pd.DataFrame
-    keep_src: list[str]
-    keep_dst: list[str]
-    keep_svc: list[str]
     host_limit: int
     service_limit: int
     bin_seconds: int
     bins: int
+    flow_count: int
+    payload_pairs: int
 
-    @property
-    def flow_count(self) -> int:
-        return int(self.grouped.groupby(["s", "d", "v"], sort=False).ngroups)
 
-    @property
-    def payload_pairs(self) -> int:
-        return 2 * len(self.grouped)
+@dataclass
+class _RawBasis:
+    """Current-width code-keyed bases retained while candidates are measured."""
+
+    b: pd.DataFrame
+    c: pd.DataFrame
+    bins: int
+    bin_seconds: int
+    prune_dead: bool
+    preserve_fraction: bool
+
+
+@dataclass(frozen=True)
+class _Codebook:
+    """First-seen labels and ranked compact identity codes for one build."""
+
+    src: tuple[str, ...]
+    dst: tuple[str, ...]
+    svc: tuple[str, ...]
+    ranked_src: tuple[int, ...]
+    ranked_dst: tuple[int, ...]
+    ranked_svc: tuple[int, ...]
 
 
 @dataclass(frozen=True)
@@ -239,6 +264,9 @@ class _TrimResult:
     trimmed_trailing: int = 0
     lead_boundary_epoch: float | None = None
     trail_boundary_epoch: float | None = None
+    retained_start_epoch: float | None = None
+    retained_end_epoch: float | None = None
+    retained_straddlers: int = 0
 
 
 def _trim_sparse_edges(
@@ -277,66 +305,404 @@ def _trim_sparse_edges(
     if trimmed * _TRIM_MASS_CAP_DEN > total:
         return _TrimResult(frame)
 
-    keep = indexes.between(leading_bin, trailing_bin)
+    retained_start = t0 + leading_bin * bin_seconds
+    retained_end = t0 + (trailing_bin + 1) * bin_seconds
+    ordinary_keep = indexes.between(leading_bin, trailing_bin)
+    straddlers = np.zeros(len(frame), dtype=bool)
+    if "dur" in frame.columns and leading_bin:
+        with np.errstate(over="ignore", invalid="ignore"):
+            ends = frame["ts"].to_numpy(dtype=float) + frame["dur"].to_numpy(
+                dtype=float,
+            )
+        straddlers = (
+            (frame["ts"].to_numpy(dtype=float) < retained_start)
+            & (frame["dur"].to_numpy(dtype=float) > 0)
+            & (ends > retained_start)
+        )
+    keep = ordinary_keep.to_numpy() | straddlers
     # This is a positional mask. Loader concatenation can preserve duplicate
     # source indexes, so label-aligned boolean selection is the wrong seam.
-    kept = frame.loc[keep.to_numpy()].copy()
-    lead_epoch = float(kept["ts"].min()) if trimmed_leading else None
-    trail_epoch = float(kept["ts"].max()) if trimmed_trailing else None
+    kept = frame.loc[keep].copy()
+    kept_start = float(
+        np.maximum(kept["ts"].to_numpy(dtype=float), retained_start).min()
+    )
+    kept_end = float(kept["ts"].max())
+    actual_leading = int((~keep & (indexes.to_numpy() < leading_bin)).sum())
+    actual_trailing = int(
+        (~keep & (indexes.to_numpy() > trailing_bin)).sum()
+    )
+    straddler_count = int(straddlers.sum())
+    lead_epoch = kept_start if actual_leading else None
+    trail_epoch = kept_end if actual_trailing else None
     return _TrimResult(
         kept,
-        trimmed_leading=trimmed_leading,
-        trimmed_trailing=trimmed_trailing,
+        trimmed_leading=actual_leading,
+        trimmed_trailing=actual_trailing,
         lead_boundary_epoch=lead_epoch,
         trail_boundary_epoch=trail_epoch,
+        retained_start_epoch=kept_start,
+        retained_end_epoch=kept_end,
+        retained_straddlers=straddler_count,
     )
 
 
-def _group_shape(
+def _factor_identities(
     frame: pd.DataFrame,
     *,
     rankings: dict[str, list[str]],
+) -> tuple[pd.DataFrame, _Codebook]:
+    """Factor graph identities once while preserving first-seen label tables."""
+    coded = frame.copy()
+    labels: dict[str, tuple[str, ...]] = {}
+    ranked: dict[str, tuple[int, ...]] = {}
+    for column, code_column in (("src", "sc"), ("dst", "dc"), ("svc", "vc")):
+        codes, uniques = pd.factorize(coded[column], sort=False)
+        coded[code_column] = codes.astype(np.int32, copy=False)
+        table = tuple(str(value) for value in uniques)
+        labels[column] = table
+        by_label = {value: index for index, value in enumerate(table)}
+        ranked[column] = tuple(by_label[value] for value in rankings[column])
+    return coded, _Codebook(
+        src=labels["src"],
+        dst=labels["dst"],
+        svc=labels["svc"],
+        ranked_src=ranked["src"],
+        ranked_dst=ranked["dst"],
+        ranked_svc=ranked["svc"],
+    )
+
+
+def _bin_extent(
+    frame: pd.DataFrame, *, t0: float, t1: float, bin_seconds: int,
+) -> tuple[np.ndarray, int, float]:
+    """Return clamped start bins, bin count, and exclusive render end."""
+    raw = np.floor(
+        (frame["ts"].to_numpy(dtype=float) - t0) / bin_seconds
+    ).astype(np.int64)
+    bins = max(
+        int(raw.max(initial=0)) + 1,
+        math.floor((t1 - t0) / bin_seconds) + 1,
+    )
+    starts = np.clip(raw, 0, bins - 1)
+    return starts, bins, t0 + bins * bin_seconds
+
+
+def _band_extents(
+    frame: pd.DataFrame,
+    *,
+    t0: float,
+    t1: float,
+    bin_seconds: int,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, int, float]:
+    """Return vectorized clipped duration-band extents for one width."""
+    starts, bins, render_end = _bin_extent(
+        frame, t0=t0, t1=t1, bin_seconds=bin_seconds,
+    )
+    ts = frame["ts"].to_numpy(dtype=float)
+    dur = frame["dur"].to_numpy(dtype=float)
+    with np.errstate(over="ignore", invalid="ignore"):
+        ends = ts + dur
+    clipped_start = np.maximum(ts, t0)
+    clipped_end = np.minimum(ends, render_end)
+    positive = (dur > 0) & (clipped_end > clipped_start)
+    first = np.clip(
+        np.floor((clipped_start - t0) / bin_seconds).astype(np.int64),
+        0,
+        bins - 1,
+    )
+    last = np.clip(
+        np.floor(
+            (np.nextafter(clipped_end, -np.inf) - t0) / bin_seconds
+        ).astype(np.int64),
+        0,
+        bins - 1,
+    )
+    touches = np.where(positive, last - first + 1, 0).astype(np.int64)
+    return starts, first, touches, ends, bins, render_end
+
+
+def _spread_fragment_count(
+    frame: pd.DataFrame, *, t0: float, t1: float, bin_seconds: int,
+) -> int:
+    """Count exactly the positive-byte multi-bin fragments that can explode."""
+    _, _, touches, _, _, _ = _band_extents(
+        frame, t0=t0, t1=t1, bin_seconds=bin_seconds,
+    )
+    positive_mass = frame["metric"].to_numpy(dtype=float) > 0
+    return int(touches[(touches > 1) & positive_mass].sum())
+
+
+def _group_base(
+    cells: pd.DataFrame, *, value: str, altered: bool = False,
+) -> pd.DataFrame:
+    """Aggregate one code-keyed raw basis without materializing labels."""
+    aggregations: dict[str, tuple[str, str]] = {value: (value, "sum")}
+    if altered:
+        aggregations["_metric_altered"] = ("_metric_altered", "any")
+    return (
+        cells.groupby(["sc", "dc", "vc", "bin"], sort=False)
+        .agg(**aggregations)
+        .reset_index()
+    )
+
+
+def _build_raw_basis(
+    frame: pd.DataFrame,
+    *,
+    t0: float,
+    t1: float,
+    bin_seconds: int,
+    count_by: Literal["size", "weight"],
+) -> _RawBasis:
+    """Build the only retained code-keyed bases for one candidate width."""
+    starts, bins, _ = _bin_extent(
+        frame, t0=t0, t1=t1, bin_seconds=bin_seconds,
+    )
+    keys = ["sc", "dc", "vc"]
+    unique_flows = not bool(frame.duplicated(keys).any())
+
+    def raw_or_grouped(
+        cells: pd.DataFrame, *, value: str, altered: bool = False,
+    ) -> pd.DataFrame:
+        if unique_flows:
+            return cells.reset_index(drop=True)
+        return _group_base(cells, value=value, altered=altered)
+
+    c_cells = frame[keys].copy()
+    c_cells["bin"] = starts
+    if count_by == "weight":
+        c_cells["c"] = frame["metric"].to_numpy(dtype=float)
+        c_base = raw_or_grouped(c_cells, value="c")
+    else:
+        c_cells["c"] = np.int64(1)
+        c_base = raw_or_grouped(c_cells, value="c")
+        c_base["c"] = c_base["c"].astype(np.int64)
+
+    if "dur" not in frame.columns:
+        b_cells = frame[keys].copy()
+        b_cells["bin"] = starts
+        b_cells["b"] = frame["metric"].to_numpy(dtype=float)
+        b_cells["_metric_altered"] = frame["_metric_altered"].to_numpy(
+            dtype=bool,
+        )
+        return _RawBasis(
+            raw_or_grouped(b_cells, value="b", altered=True),
+            c_base,
+            bins,
+            bin_seconds,
+            False,
+            count_by == "weight",
+        )
+
+    starts, first, touches, ends, bins, render_end = _band_extents(
+        frame, t0=t0, t1=t1, bin_seconds=bin_seconds,
+    )
+    metric = frame["metric"].to_numpy(dtype=float)
+    duration = frame["dur"].to_numpy(dtype=float)
+    positive_mass = metric > 0
+    pieces: list[pd.DataFrame] = []
+
+    point_rows = np.flatnonzero(positive_mass & (duration <= 0))
+    if point_rows.size:
+        points = frame.iloc[point_rows][keys].copy()
+        points["bin"] = starts[point_rows]
+        points["b"] = metric[point_rows]
+        points["_metric_altered"] = frame["_metric_altered"].to_numpy(
+            dtype=bool,
+        )[point_rows]
+        pieces.append(points)
+
+    one_rows = np.flatnonzero(positive_mass & (duration > 0) & (touches == 1))
+    if one_rows.size:
+        one = frame.iloc[one_rows][keys].copy()
+        one["bin"] = first[one_rows]
+        left = np.maximum(
+            frame["ts"].to_numpy(dtype=float)[one_rows],
+            t0 + first[one_rows] * bin_seconds,
+        )
+        right = np.minimum(
+            ends[one_rows], t0 + (first[one_rows] + 1) * bin_seconds,
+        )
+        one["b"] = metric[one_rows] * (
+            (right - left) / duration[one_rows]
+        )
+        one["_metric_altered"] = frame["_metric_altered"].to_numpy(
+            dtype=bool,
+        )[one_rows]
+        pieces.append(one)
+
+    multi_rows = np.flatnonzero(positive_mass & (touches > 1))
+    if multi_rows.size:
+        counts = touches[multi_rows]
+        row_ids = np.repeat(multi_rows.astype(np.int64), counts)
+        beginnings = np.repeat(np.cumsum(counts) - counts, counts)
+        fragment_bins = first[row_ids] + (
+            np.arange(row_ids.size, dtype=np.int64) - beginnings
+        )
+        left = np.maximum(
+            frame["ts"].to_numpy(dtype=float)[row_ids],
+            t0 + fragment_bins * bin_seconds,
+        )
+        right = np.minimum(
+            ends[row_ids], t0 + (fragment_bins + 1) * bin_seconds,
+        )
+        multi = pd.DataFrame({
+            "sc": frame["sc"].to_numpy(dtype=np.int32)[row_ids],
+            "dc": frame["dc"].to_numpy(dtype=np.int32)[row_ids],
+            "vc": frame["vc"].to_numpy(dtype=np.int32)[row_ids],
+            "bin": fragment_bins,
+            "b": metric[row_ids] * (
+                (right - left) / duration[row_ids]
+            ),
+            "_metric_altered": frame["_metric_altered"].to_numpy(
+                dtype=bool,
+            )[row_ids],
+        })
+        pieces.append(multi)
+
+    if pieces:
+        b_cells = (
+            pieces[0].reset_index(drop=True)
+            if len(pieces) == 1
+            else pd.concat(pieces, ignore_index=True, copy=False)
+        )
+        b_base = raw_or_grouped(b_cells, value="b", altered=True)
+    else:
+        b_base = pd.DataFrame({
+            "sc": pd.Series(dtype=np.int32),
+            "dc": pd.Series(dtype=np.int32),
+            "vc": pd.Series(dtype=np.int32),
+            "bin": pd.Series(dtype=np.int64),
+            "b": pd.Series(dtype=float),
+            "_metric_altered": pd.Series(dtype=bool),
+        })
+    del pieces
+    return _RawBasis(
+        b_base, c_base, bins, bin_seconds, True, count_by == "weight",
+    )
+
+
+def _fold_basis(
+    basis: _RawBasis,
+    *,
+    codebook: _Codebook,
+    host_limit: int,
+    service_limit: int,
+) -> pd.DataFrame:
+    """Fold current-width bases and return one ephemeral code-keyed grouping."""
+    keep = {
+        "sc": np.asarray(codebook.ranked_src[:host_limit], dtype=np.int32),
+        "dc": np.asarray(codebook.ranked_dst[:host_limit], dtype=np.int32),
+        "vc": np.asarray(codebook.ranked_svc[:service_limit], dtype=np.int32),
+    }
+
+    def fold(raw: pd.DataFrame, values: dict[str, tuple[str, str]]) -> pd.DataFrame:
+        columns: dict[str, np.ndarray] = {}
+        for column in ("sc", "dc", "vc"):
+            data = raw[column].to_numpy(dtype=np.int32)
+            columns[column] = np.where(
+                np.isin(data, keep[column]), data, np.int32(-1),
+            ).astype(np.int32, copy=False)
+        columns["bin"] = raw["bin"].to_numpy(copy=False)
+        for source, _aggregation in values.values():
+            columns[source] = raw[source].to_numpy(copy=False)
+        candidate = pd.DataFrame(columns, copy=False)
+        return (
+            candidate.groupby(["sc", "dc", "vc", "bin"], sort=False)
+            .agg(**values)
+            .reset_index()
+        )
+
+    folded_b = fold(
+        basis.b,
+        {"b": ("b", "sum"), "_metric_altered": ("_metric_altered", "any")},
+    )
+    folded_c = fold(basis.c, {"c": ("c", "sum")})
+    grouped = folded_b.merge(
+        folded_c,
+        how="outer",
+        on=["sc", "dc", "vc", "bin"],
+        sort=False,
+    )
+    grouped["b"] = grouped["b"].fillna(0.0).astype(float)
+    grouped["c"] = grouped["c"].fillna(0)
+    if not basis.preserve_fraction:
+        grouped["c"] = grouped["c"].astype(np.int64)
+    grouped["_metric_altered"] = grouped["_metric_altered"].eq(True)
+    if basis.prune_dead:
+        grouped = grouped.loc[
+            (grouped["c"] != 0) | grouped["b"].round().ne(0)
+        ].copy()
+    return grouped
+
+
+def _measure_basis(
+    basis: _RawBasis,
+    *,
+    codebook: _Codebook,
+    host_limit: int,
+    service_limit: int,
+) -> _ShapeMeasure:
+    """Measure and release one ephemeral folded candidate."""
+    grouped = _fold_basis(
+        basis,
+        codebook=codebook,
+        host_limit=host_limit,
+        service_limit=service_limit,
+    )
+    measure = _ShapeMeasure(
+        host_limit=host_limit,
+        service_limit=service_limit,
+        bin_seconds=basis.bin_seconds,
+        bins=basis.bins,
+        flow_count=int(grouped.groupby(["sc", "dc", "vc"], sort=False).ngroups),
+        payload_pairs=2 * len(grouped),
+    )
+    del grouped
+    return measure
+
+
+def _shape_rows(
+    frame: pd.DataFrame,
+    *,
+    codebook: _Codebook,
     host_limit: int,
     service_limit: int,
     bin_seconds: int,
     t0: float,
-    t1: float,
-    count_by: Literal["size", "weight"],
-) -> _GroupState:
-    """Fold, bin, and group one candidate build shape."""
+    bins: int,
+) -> tuple[pd.DataFrame, list[str], list[str], list[str]]:
+    """Materialize the final row-true folded frame exactly once."""
     shaped = frame.copy()
-    shaped["bin"] = ((shaped["ts"] - t0) // bin_seconds).astype(int)
-    bins = max(
-        int(shaped["bin"].max()) + 1,
-        math.floor((t1 - t0) / bin_seconds) + 1,
-    )
-    keep_src = rankings["src"][:host_limit]
-    keep_dst = rankings["dst"][:host_limit]
-    keep_svc = rankings["svc"][:service_limit]
-    shaped["s"] = shaped["src"].where(shaped["src"].isin(keep_src), _OTHER)
-    shaped["d"] = shaped["dst"].where(shaped["dst"].isin(keep_dst), _OTHER)
-    shaped["v"] = shaped["svc"].where(shaped["svc"].isin(keep_svc), _OTHER)
-    count_aggregation = "sum" if count_by == "weight" else "size"
-    grouped = (
-        shaped.groupby(["s", "d", "v", "bin"], sort=False)
-        .agg(
-            b=("metric", "sum"),
-            c=("metric", count_aggregation),
-            _metric_altered=("_metric_altered", "any"),
-        )
-        .reset_index()
-    )
-    return _GroupState(
-        frame=shaped,
-        grouped=grouped,
-        keep_src=keep_src,
-        keep_dst=keep_dst,
-        keep_svc=keep_svc,
-        host_limit=host_limit,
-        service_limit=service_limit,
-        bin_seconds=bin_seconds,
-        bins=bins,
-    )
+    raw_bins = np.floor(
+        (shaped["ts"].to_numpy(dtype=float) - t0) / bin_seconds
+    ).astype(np.int64)
+    shaped["bin"] = np.clip(raw_bins, 0, bins - 1)
+    keep_src_codes = codebook.ranked_src[:host_limit]
+    keep_dst_codes = codebook.ranked_dst[:host_limit]
+    keep_svc_codes = codebook.ranked_svc[:service_limit]
+    keep_src = [codebook.src[code] for code in keep_src_codes]
+    keep_dst = [codebook.dst[code] for code in keep_dst_codes]
+    keep_svc = [codebook.svc[code] for code in keep_svc_codes]
+    shaped["s"] = shaped["src"].where(shaped["sc"].isin(keep_src_codes), _OTHER)
+    shaped["d"] = shaped["dst"].where(shaped["dc"].isin(keep_dst_codes), _OTHER)
+    shaped["v"] = shaped["svc"].where(shaped["vc"].isin(keep_svc_codes), _OTHER)
+    return shaped, keep_src, keep_dst, keep_svc
+
+
+def _label_grouped(grouped: pd.DataFrame, codebook: _Codebook) -> pd.DataFrame:
+    """Map final compact codes to their stable wire labels."""
+    labeled = grouped.copy()
+    for column, labels, target in (
+        ("sc", codebook.src, "s"),
+        ("dc", codebook.dst, "d"),
+        ("vc", codebook.svc, "v"),
+    ):
+        labeled[target] = [
+            _OTHER if int(code) < 0 else labels[int(code)]
+            for code in labeled[column]
+        ]
+    return labeled.drop(columns=["sc", "dc", "vc"])
 
 
 def _largest_fitting_limit(upper: int, fits: Any) -> int | None:
@@ -389,21 +755,21 @@ def _saturate_grouped_metrics(
     absolute = safe["b"].abs().groupby(safe["bin"], sort=False).transform("sum")
     scale = pd.Series(1.0, index=safe.index, dtype=float)
     over = absolute > _FLOAT32_MAX
-    scale.loc[over] = _FLOAT32_MAX / absolute.loc[over]
+    scale.loc[over] = (_FLOAT32_MAX * 0.5) / absolute.loc[over]
     if over.any():
         safe.loc[over, "b"] = safe.loc[over, "b"] * scale.loc[over]
-        cell_changed.loc[over] = True
+        cell_changed.loc[over & raw.ne(0)] = True
 
     # Values round once more when the player loads them into Float32Array.
-    # If exact-ceiling scaling still overflows a sequential Float32 sum, add
-    # generous headroom for that bin and prove the representation again.
+    # The unconditional half-ceiling target leaves reordering headroom for
+    # every player partition; this loop remains a representation tripwire.
     for bin_index, indexes in safe.groupby("bin", sort=False).groups.items():
         del bin_index
         values = safe.loc[indexes, "b"]
         if _float32_abs_sum_is_finite(values):
             continue
         safe.loc[indexes, "b"] = values * 0.5
-        cell_changed.loc[indexes] = True
+        cell_changed.loc[indexes] |= values.ne(0)
         assert _float32_abs_sum_is_finite(safe.loc[indexes, "b"])
 
     if count_by == "weight":
@@ -426,6 +792,82 @@ def _format_trim_boundary(value: object) -> str:
     if epoch is None:
         raise ValueError("graph trim boundary must be a finite timestamp")
     return fmt_timestamp(datetime.fromtimestamp(epoch, tz=timezone.utc))
+
+
+def _band_loss(
+    frame: pd.DataFrame, *, t0: float, render_end: float,
+) -> dict[str, int] | None:
+    """Compute finite hidden duration-band mass outside the render window."""
+    ts = frame["ts"].to_numpy(dtype=float)
+    dur = frame["dur"].to_numpy(dtype=float)
+    metric = frame["metric"].to_numpy(dtype=float)
+    with np.errstate(over="ignore", invalid="ignore"):
+        ends = ts + dur
+    positive = (dur > 0) & (metric > 0)
+    lead_seconds = np.where(
+        positive,
+        np.clip(np.minimum(ends, t0) - ts, 0.0, dur),
+        0.0,
+    )
+    trail_seconds = np.where(
+        positive,
+        np.clip(ends - render_end, 0.0, dur),
+        0.0,
+    )
+    lead_fraction = np.divide(
+        lead_seconds, dur, out=np.zeros_like(metric), where=dur > 0,
+    )
+    trail_fraction = np.divide(
+        trail_seconds, dur, out=np.zeros_like(metric), where=dur > 0,
+    )
+    lead_mass = metric * lead_fraction
+    trail_mass = metric * trail_fraction
+    facts = {
+        "lead_conns": int((lead_mass > 0).sum()),
+        "lead_bytes": max(0, int(round(float(lead_mass.sum())))),
+        "trail_conns": int((trail_mass > 0).sum()),
+        "trail_bytes": max(0, int(round(float(trail_mass.sum())))),
+    }
+    if facts["lead_bytes"] == 0 and facts["trail_bytes"] == 0:
+        return None
+    return facts
+
+
+def _format_band_loss_note(
+    facts: dict[str, int], *, t0: float, render_end: float,
+) -> str:
+    """Render one exact builder-owned duration-band loss disclosure."""
+    parts: list[str] = []
+    if facts["lead_bytes"]:
+        count = facts["lead_conns"]
+        noun = plural(count, "connection", "connections")
+        parts.append(
+            f"{count} {noun} began before the retained window; "
+            f"{human_bytes(facts['lead_bytes'])} not shown before "
+            f"{_format_trim_boundary(t0)}"
+        )
+    if facts["trail_bytes"]:
+        count = facts["trail_conns"]
+        noun = plural(count, "connection", "connections")
+        verb = "continues" if count == 1 else "continue"
+        parts.append(
+            f"{count} {noun} {verb} past the retained window end; "
+            f"{human_bytes(facts['trail_bytes'])} not shown after "
+            f"{_format_trim_boundary(render_end)}"
+        )
+    return "; ".join(parts)
+
+
+def _format_straddler_note(count: int) -> str | None:
+    """Render the exact retained pre-window count-relocation fact."""
+    if count <= 0:
+        return None
+    noun = plural(count, "connection", "connections")
+    verb = "is" if count == 1 else "are"
+    return (
+        f"{count} {noun} that began before the retained window {verb} drawn "
+        "within it and counted at its edge"
+    )
 
 
 def _format_degrade_note(meta: dict[str, Any]) -> str | None:
@@ -564,6 +1006,8 @@ def build_payload(
         coerced = df["metric"].map(_coerce_metric_with_flag)
         df["metric"] = coerced.map(lambda item: item[0])
         df["_metric_altered"] = coerced.map(lambda item: item[1])
+    if "dur" in df.columns:
+        df["dur"] = df["dur"].map(_coerce_duration)
     for column in ("src", "dst"):
         df[column] = df[column].map(_clean_identity)
     df["svc"] = df["svc"].map(_clean_label)
@@ -592,44 +1036,64 @@ def build_payload(
             t1=t1,
             bin_seconds=requested_bin_seconds,
         )
-        if trim_result.trimmed_leading or trim_result.trimmed_trailing:
+        if trim_result.retained_start_epoch is not None:
             df = trim_result.frame
-            t0 = float(df["ts"].min())
+            t0 = float(
+                np.maximum(
+                    df["ts"].to_numpy(dtype=float),
+                    trim_result.retained_start_epoch,
+                ).min()
+            )
             t1 = float(df["ts"].max())
             span_seconds = t1 - t0
             requested_bin_seconds = pick_bin_seconds(
                 span_seconds, config["target_bins"],
             )
+    bin_seconds = requested_bin_seconds
+    if "dur" in df.columns:
+        while (
+            _spread_fragment_count(
+                df,
+                t0=t0,
+                t1=t1,
+                bin_seconds=bin_seconds,
+            )
+            > GRAPH_MAX_SPREAD_FRAGMENTS
+        ):
+            next_width = _next_bin_seconds(bin_seconds, span_seconds)
+            if next_width is None:
+                break
+            bin_seconds = next_width
+
     rankings = {
         column: _rank_values(df, column)
         for column in ("src", "dst", "svc")
     }
-    states: dict[tuple[int, int, int], _GroupState] = {}
+    coded, codebook = _factor_identities(df, rankings=rankings)
+    basis = _build_raw_basis(
+        coded,
+        t0=t0,
+        t1=t1,
+        bin_seconds=bin_seconds,
+        count_by=count_by,
+    )
 
-    def state_for(host_limit: int, service_limit: int, width: int) -> _GroupState:
-        key = (host_limit, service_limit, width)
-        if key not in states:
-            states[key] = _group_shape(
-                df,
-                rankings=rankings,
-                host_limit=host_limit,
-                service_limit=service_limit,
-                bin_seconds=width,
-                t0=t0,
-                t1=t1,
-                count_by=count_by,
-            )
-        return states[key]
+    def measure_for(host_limit: int, service_limit: int) -> _ShapeMeasure:
+        return _measure_basis(
+            basis,
+            codebook=codebook,
+            host_limit=host_limit,
+            service_limit=service_limit,
+        )
 
     host_limit = int(config["top_hosts"])
     service_limit = int(config["top_services"])
-    bin_seconds = requested_bin_seconds
-    state = state_for(host_limit, service_limit, bin_seconds)
+    state = measure_for(host_limit, service_limit)
 
     if state.flow_count > GRAPH_MAX_FLOWS:
         service_fit = _largest_fitting_limit(
             service_limit,
-            lambda limit: state_for(host_limit, limit, bin_seconds).flow_count
+            lambda limit: measure_for(host_limit, limit).flow_count
             <= GRAPH_MAX_FLOWS,
         )
         if service_fit is not None:
@@ -638,20 +1102,20 @@ def build_payload(
             service_limit = 1
             host_fit = _largest_fitting_limit(
                 host_limit,
-                lambda limit: state_for(limit, service_limit, bin_seconds).flow_count
+                lambda limit: measure_for(limit, service_limit).flow_count
                 <= GRAPH_MAX_FLOWS,
             )
             # The 1/1 fold has at most eight grouped flows.
             host_limit = 1 if host_fit is None else host_fit
-        state = state_for(host_limit, service_limit, bin_seconds)
+        state = measure_for(host_limit, service_limit)
 
-    def fold_for_pairs(current: _GroupState) -> _GroupState:
+    def fold_for_pairs(current: _ShapeMeasure) -> _ShapeMeasure:
         """Fold farther only when the terminal bin width cannot fit pairs."""
         nonlocal host_limit, service_limit
         service_fit = _largest_fitting_limit(
             service_limit,
-            lambda limit: state_for(
-                host_limit, limit, current.bin_seconds,
+            lambda limit: measure_for(
+                host_limit, limit,
             ).payload_pairs <= GRAPH_MAX_PAYLOAD_PAIRS,
         )
         if service_fit is not None:
@@ -660,12 +1124,12 @@ def build_payload(
             service_limit = 1
             host_fit = _largest_fitting_limit(
                 host_limit,
-                lambda limit: state_for(
-                    limit, service_limit, current.bin_seconds,
+                lambda limit: measure_for(
+                    limit, service_limit,
                 ).payload_pairs <= GRAPH_MAX_PAYLOAD_PAIRS,
             )
             host_limit = 1 if host_fit is None else host_fit
-        return state_for(host_limit, service_limit, current.bin_seconds)
+        return measure_for(host_limit, service_limit)
 
     while True:
         while state.payload_pairs > GRAPH_MAX_PAYLOAD_PAIRS:
@@ -674,7 +1138,15 @@ def build_payload(
                 state = fold_for_pairs(state)
                 break
             bin_seconds = next_width
-            state = state_for(host_limit, service_limit, bin_seconds)
+            del basis
+            basis = _build_raw_basis(
+                coded,
+                t0=t0,
+                t1=t1,
+                bin_seconds=bin_seconds,
+                count_by=count_by,
+            )
+            state = measure_for(host_limit, service_limit)
 
         flow_count = state.flow_count
         denominator = 2 * flow_count * state.bins
@@ -692,16 +1164,38 @@ def build_payload(
             max_radius = natural_radius
             break
         bin_seconds = next_width
-        state = state_for(host_limit, service_limit, bin_seconds)
+        del basis
+        basis = _build_raw_basis(
+            coded,
+            t0=t0,
+            t1=t1,
+            bin_seconds=bin_seconds,
+            count_by=count_by,
+        )
+        state = measure_for(host_limit, service_limit)
 
-    df = state.frame
-    keep_src = state.keep_src
-    keep_dst = state.keep_dst
-    keep_svc = state.keep_svc
     bins = state.bins
     bin_seconds = state.bin_seconds
+    grouped_codes = _fold_basis(
+        basis,
+        codebook=codebook,
+        host_limit=host_limit,
+        service_limit=service_limit,
+    )
+    del basis
+    df, keep_src, keep_dst, keep_svc = _shape_rows(
+        coded,
+        codebook=codebook,
+        host_limit=host_limit,
+        service_limit=service_limit,
+        bin_seconds=bin_seconds,
+        t0=t0,
+        bins=bins,
+    )
+    grouped_labeled = _label_grouped(grouped_codes, codebook)
+    del grouped_codes
     grouped, altered_metric_cells = _saturate_grouped_metrics(
-        state.grouped, count_by=count_by,
+        grouped_labeled, count_by=count_by,
     )
     totals_b = grouped.groupby("bin", sort=False)["b"].sum().reindex(
         range(bins), fill_value=0,
@@ -780,6 +1274,24 @@ def build_payload(
 
     payload_meta_extra = dict(meta)
     payload_meta_extra.pop("hunt_hint", None)
+    straddler_metric_note = payload_meta_extra.pop(
+        "metric_note_with_straddlers", None,
+    )
+    retained_straddlers = trim_result.retained_straddlers
+    if retained_straddlers and straddler_metric_note:
+        payload_meta_extra["metric_note"] = straddler_metric_note
+    straddler_note = _format_straddler_note(retained_straddlers)
+    if straddler_note is not None:
+        payload_meta_extra["retained_straddlers"] = retained_straddlers
+        payload_meta_extra["straddler_note"] = straddler_note
+    if payload_meta_extra.get("bands_active") is True and "dur" in coded.columns:
+        render_end = t0 + bins * bin_seconds
+        loss = _band_loss(coded, t0=t0, render_end=render_end)
+        if loss is not None:
+            payload_meta_extra["band_loss"] = loss
+            payload_meta_extra["band_loss_note"] = _format_band_loss_note(
+                loss, t0=t0, render_end=render_end,
+            )
     payload_meta = {
         "source": _clean_label(source_label),
         "rows": int(len(df) if row_count is None else row_count),

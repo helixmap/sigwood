@@ -122,6 +122,20 @@ leaves any sparse edge inside that retained window alone. Shell-expanded bounded
 files can receive the density trim when no timeframe or `--all` is supplied. This
 one-window rule avoids silently stacking two automatic window selections.
 
+**A windowed connection graph cannot recover connections that began before the load
+window.** The loader selects conn rows by their recorded start time, so a connection
+whose duration overlaps `--since`, a default window, or a date-named directory is absent
+when its start falls before that boundary. The graph can retain overlapping duration
+bands during its later sparse-edge trim, but it cannot draw rows the loader never
+returned. Date-named conn directories call this out in their stored window note; use a
+wider window or `--all` when the leading edge matters.
+
+**The end of a connection graph is a lower bound on activity still in progress.** Zeek
+writes a conn record when the connection ends. A connection still open at capture or
+export time therefore has no row yet and cannot appear in the replay. Duration bands
+can show and disclose clipping for recorded rows, but they cannot estimate unseen open
+connections.
+
 **RFC 3164 syslog and Pi-hole timestamps carry no year and no timezone, so sigwood
 infers both.** The RFC 3164 / dnsmasq wall-clock format simply doesn't record them. sigwood
 stamps each line with the analysis machine's current year (rolling back one year only

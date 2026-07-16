@@ -79,6 +79,12 @@ Sankey - clients, the domains or services they reached, and, for Pi-hole, what h
 query. Think of the three as orient, see, analyze: `digest` tells you what's in a file, `graph`
 lets you watch it move, and the hunt tells you what stands out.
 
+For Zeek connection logs, byte ribbons use the recorded total and duration to draw a
+constant-rate band across each connection; connection counts remain anchored at starts.
+Zeek does not record the timing of bytes inside a connection, so this is an explicit model,
+not a claim that a bursty transfer was uniform. The artifact names the assumption and notes
+any recorded byte mass clipped outside its shown window.
+
 It is deliberately a **replay, not a monitor** - it plays back a saved record and never tails a
 live one, so it keeps sigwood daemon-free and dashboard-free. Like `digest` it reads *before*
 the allowlist and renders facts rather than verdicts: it shows you a flow, never a label like

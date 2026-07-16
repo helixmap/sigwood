@@ -109,10 +109,16 @@ def test_player_labeled_readout_display_and_window_metadata_contracts() -> None:
     assert 'entityNoun.toLowerCase() === "entities"' in template
     assert '? fmtN(M.distinct_hosts)' in template
     assert ': `${fmtN(M.distinct_hosts)} ${entityNoun}`;' in template
-    assert '$("meta-derivation-cell").hidden = !hasDerivation && !hasDegrade;' in template
+    assert (
+        '$("meta-derivation-cell").hidden = !hasDerivation && !hasDegrade && '
+        '!hasBandLoss && !hasStraddler && !hasClipLoss;'
+    ) in template
     assert '$("meta-derivation-label").textContent = hasDerivation ? "derivation" : "note";' in template
     assert 'if (hasDerivation) $("meta-derivation").textContent = M.metric_note;' in template
     assert 'if (hasDegrade) $("meta-degrade").textContent = M.degrade_note;' in template
+    assert 'if (hasBandLoss) $("meta-band-loss").textContent = M.band_loss_note;' in template
+    assert 'if (hasStraddler) $("meta-straddler").textContent = M.straddler_note;' in template
+    assert 'if (hasClipLoss) $("meta-clip-loss").textContent = M.clip_loss_note;' in template
     assert ".readout-value[hidden], .readout-sub[hidden] { display: none; }" in template
     assert '$("meta-window-label").textContent = `window (${fmtDur(Math.round(M.t1 - M.t0))})`;' in template
     assert '$("meta-window-start").textContent = fmtStamp(M.t0);' in template
@@ -236,6 +242,32 @@ def test_clip_export_reuses_the_data_script_escape_before_reembedding() -> None:
     assert "<" not in blob
     assert rebuilt.count("</script>") == 1
     assert json.loads(blob) == payload
+
+
+def test_conn_band_labels_and_clip_loss_use_structured_semantics() -> None:
+    template = _player_template()
+
+    assert "if (M.single_metric || M.bands_active === true)" in template
+    assert '$("k-conns").textContent = M.rows_label || "events";' in template
+    assert '$("k-cps").textContent = (M.rows_label || "events") + " / s";' in template
+    assert 'M.rows_label === "conn starts"' not in template
+    assert "if (M.bands_active === true)" in template
+    assert "ownBefore += db[x]" in template
+    assert "ownAfter += db[x]" in template
+    assert "prior_bytes: inherited" in template
+    assert 'typeof value === "number" && Number.isFinite(value) && value >= 0' in template
+    assert "validLoss(validLoss(M.clip_loss.prior_bytes)" in template
+    assert "Number(value)" not in template
+    assert "own_before: Math.max(0, Math.round(ownBefore))" in template
+    assert "own_after: Math.max(0, Math.round(ownAfter))" in template
+    assert "M.band_loss_scoped === true" in template
+    assert 'startsWith("source window:")' not in template
+    assert "band_loss_scoped: true" in template
+    assert "clip_loss_note: clipLossNote" in template
+    assert "global totB" not in template
+    assert 'typeof M.band_loss_note === "string"' in template
+    assert 'typeof M.straddler_note === "string"' in template
+    assert 'typeof M.clip_loss_note === "string"' in template
 
 
 def test_player_preserves_fractional_counts_in_every_weighted_surface() -> None:

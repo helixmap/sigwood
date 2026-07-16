@@ -10,6 +10,17 @@ import pandas as pd
 from sigwood.graph._core import _clean_label, build_payload, require_columns
 
 
+def _clean_nonnegative(value: object) -> float:
+    """Return one finite non-negative optional conn magnitude or zero."""
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return 0.0
+    if not math.isfinite(number) or number < 0:
+        return 0.0
+    return number
+
+
 def _service_series(frame: pd.DataFrame) -> pd.Series:
     def _port_label(value: object) -> str:
         try:
@@ -41,7 +52,20 @@ def build(
     """Build a conn graph from canonical spine and optional enrichment."""
     require_columns(frame, {"ts", "src", "dst"}, "conn")
     missing_service = not {"port", "proto"}.issubset(frame.columns)
-    missing_bytes = "bytes" not in frame.columns
+    clean_bytes = (
+        pd.Series(0.0, index=frame.index, dtype=float)
+        if "bytes" not in frame.columns
+        else frame["bytes"].map(_clean_nonnegative)
+    )
+    missing_bytes = not bool((clean_bytes > 0).any())
+    clean_duration = (
+        pd.Series(0.0, index=frame.index, dtype=float)
+        if "duration" not in frame.columns
+        else frame["duration"].map(_clean_nonnegative)
+    )
+    bands_active = bool(
+        ((clean_bytes > 0) & (clean_duration > 0)).any()
+    )
     service = (
         pd.Series("unknown", index=frame.index)
         if missing_service
@@ -50,17 +74,18 @@ def build(
     metric = (
         pd.Series(1, index=frame.index)
         if missing_bytes
-        else frame["bytes"]
+        else clean_bytes
     )
-    prepared = pd.DataFrame(
-        {
-            "ts": frame["ts"],
-            "src": frame["src"],
-            "dst": frame["dst"],
-            "svc": service,
-            "metric": metric,
-        }
-    )
+    prepared_data = {
+        "ts": frame["ts"],
+        "src": frame["src"],
+        "dst": frame["dst"],
+        "svc": service,
+        "metric": metric,
+    }
+    if bands_active:
+        prepared_data["dur"] = clean_duration
+    prepared = pd.DataFrame(prepared_data)
     return build_payload(
         prepared,
         kind="conn",
@@ -71,11 +96,22 @@ def build(
         meta={
             "kind": "conn",
             "single_metric": missing_bytes,
-            "rows_label": "conns",
+            "rows_label": "conn starts" if bands_active else "conns",
             "hosts_label": "hosts seen",
             "mid_label": "services",
             "mid_singular": "service",
-            "metric_note": None,
+            "metric_note": (
+                "bytes drawn at a constant rate across each connection's recorded "
+                "duration; connection counts stay at connection start"
+                if bands_active else None
+            ),
+            "metric_note_with_straddlers": (
+                "bytes drawn at a constant rate across each connection's recorded "
+                "duration; connection counts stay at recorded starts; retained "
+                "pre-window connections count at the window edge"
+                if bands_active else None
+            ),
+            **({"bands_active": True} if bands_active else {}),
             "missing_bytes": missing_bytes,
             "trim_noun_singular": "connection",
             "trim_noun_plural": "connections",

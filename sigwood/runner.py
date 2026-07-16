@@ -2580,6 +2580,10 @@ def run_graph(
                 f"windowed to {source_inputs[0].name} "
                 "(date-named directory) - pass --all or --since/--until to change"
             )
+            if kind == "conn":
+                date_dir_note += (
+                    "; connections that began before that day are not shown"
+                )
     load_windows = []
     if spec.source_key == "zeek_dir":
         load_windows = loader.resolve_load_windows(
@@ -2681,6 +2685,11 @@ def run_graph(
     payload["meta"]["degrade_note"] = degrade_note
     if degrade_note is not None and not quiet:
         _estderr(degrade_note)
+    if not quiet:
+        for note_key in ("band_loss_note", "straddler_note"):
+            note = payload["meta"].get(note_key)
+            if note:
+                _estderr(str(note))
     payload["meta"].update(
         _graph_discovered_file_meta(
             spec, source_inputs, trusted_files=trusted_files,

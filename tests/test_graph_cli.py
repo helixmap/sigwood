@@ -120,6 +120,26 @@ def test_graph_arbitrary_named_sniffed_conn_file_writes_exact_html(
     assert "__SIGWOOD_GRAPH_DATA__" not in html
 
 
+def test_graph_cli_contains_an_oversized_optional_duration(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    conn = tmp_path / "conn.log"
+    conn.write_text(
+        _CONN_LINE.replace('"duration":1.0', f'"duration":{10 ** 400}'),
+        encoding="utf-8",
+    )
+    target = tmp_path / "graph.html"
+    _stub_config(monkeypatch, _config())
+
+    rc = cli._main(["graph", "--all", "-q", f"--out={target}", str(conn)])
+
+    assert rc == 0
+    assert target.exists()
+    assert "traceback" not in capsys.readouterr().err.lower()
+
+
 def test_graph_directory_fans_out_conn_and_dns_to_report_dir(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1106,10 +1126,13 @@ def test_run_graph_date_directory_filters_real_zeek_rows_for_every_graph_kind(
     blob = stream.getvalue().split("const DATA = ", 1)[1].split(";</script>", 1)[0]
     meta = json.loads(blob)["meta"]
     assert meta["rows"] == 1
-    assert meta["default_window_note"] == (
+    expected_note = (
         "windowed to 2026-05-25 (date-named directory) - "
         "pass --all or --since/--until to change"
     )
+    if kind == "conn":
+        expected_note += "; connections that began before that day are not shown"
+    assert meta["default_window_note"] == expected_note
 
 
 @pytest.mark.parametrize(
@@ -1265,6 +1288,58 @@ def test_run_graph_degrade_note_matches_quiet_gated_stderr(
     note = payload["meta"]["degrade_note"]
     assert note == "scaled 1 metric cells to the render ceiling"
     assert capsys.readouterr().err.strip() == note
+
+
+def test_run_graph_emits_stored_band_and_straddler_facts_on_separate_lines(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    restore_display_utc,
+) -> None:
+    source = tmp_path / "conn.log"
+    source.write_text("placeholder\n", encoding="utf-8")
+    dense_timestamps = [
+        float(bin_index)
+        for bin_index in range(6, 14)
+        for _ in range(2_000)
+    ]
+    frame = pd.DataFrame({
+        "ts": [0.0, *dense_timestamps],
+        "src": ["192.0.2.250", *(["192.0.2.10"] * 16_000)],
+        "dst": ["198.51.100.250", *(["198.51.100.10"] * 16_000)],
+        "port": [443] * 16_001,
+        "proto": ["tcp"] * 16_001,
+        "bytes": [100, *([1] * 16_000)],
+        "duration": [100, *([1] * 16_000)],
+    })
+    result = LoadResult(
+        logs={"conn*.log*": frame}, record_counts={"conn*.log*": len(frame)},
+    )
+    monkeypatch.setattr(loader, "resolve_load_windows", lambda *args, **kwargs: [])
+    monkeypatch.setattr(loader, "load_required_logs", lambda *args, **kwargs: result)
+    config = _config()
+    config["sigwood"]["default_window"] = "7d"
+    stream = io.StringIO()
+
+    runner.run_graph(
+        config,
+        kind="conn",
+        inputs=source,
+        stream=stream,
+        quiet=False,
+        show_progress=False,
+        use_utc=True,
+    )
+
+    payload = json.loads(
+        stream.getvalue().split("const DATA = ", 1)[1].split(";</script>", 1)[0]
+    )
+    lines = capsys.readouterr().err.strip().splitlines()
+    assert payload["meta"]["degrade_note"] is None
+    assert lines == [
+        payload["meta"]["band_loss_note"],
+        payload["meta"]["straddler_note"],
+    ]
 
 
 def test_run_graph_bounded_files_trim_sparse_edge_and_share_one_note(

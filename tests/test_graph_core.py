@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import math
+import weakref
 
 import numpy as np
 import pandas as pd
@@ -208,6 +210,369 @@ def test_conn_payload_keeps_null_metrics_as_zero_and_collapses_icmp() -> None:
     assert payload["totC"] == [1, 1]
     assert payload["flows"][1]["b"] == [1, 0]
     assert payload["flows"][1]["c"] == [1, 1]
+
+
+def test_nice_bin_ladder_preserves_nested_successors_and_one_bin_terminal() -> None:
+    """Spread-fragment descent relies on divisible nonterminal grid widths."""
+    assert all(
+        successor % current == 0
+        for current, successor in zip(
+            _core._NICE_BIN_SECONDS, _core._NICE_BIN_SECONDS[1:],
+        )
+    )
+    terminal = pick_bin_seconds(8 * 86_400, 1)
+    assert _core._next_bin_seconds(_core._NICE_BIN_SECONDS[-1], 8 * 86_400) == terminal
+    assert _core._next_bin_seconds(terminal, 8 * 86_400) is None
+
+
+@pytest.mark.parametrize(
+    "duration",
+    [None, [None, None], [0, 0], [-1, -2], [math.nan, math.inf]],
+)
+def test_conn_duration_activation_false_keeps_the_point_contract(
+    duration: object,
+) -> None:
+    frame = _conn_frame()
+    if duration is not None:
+        frame["duration"] = duration
+
+    payload = build_conn(frame, config=_config(), source_label="conn.log")
+
+    assert "bands_active" not in payload["meta"]
+    assert payload["meta"]["rows_label"] == "conns"
+    assert payload["meta"]["metric_note"] is None
+    assert payload["totB"] == [10, 20]
+
+
+def test_conn_duration_activation_is_same_row_and_contains_oversized_values() -> None:
+    crossed = build_conn(
+        _conn_frame(bytes=[100, 0], duration=[0, 3_600]),
+        config=_config(),
+        source_label="conn.log",
+    )
+    oversized = build_conn(
+        _conn_frame(duration=pd.Series([10 ** 5_000, 0], dtype=object)),
+        config=_config(),
+        source_label="conn.log",
+    )
+
+    for payload in (crossed, oversized):
+        assert "bands_active" not in payload["meta"]
+        assert payload["meta"]["rows_label"] == "conns"
+        assert payload["meta"]["metric_note"] is None
+
+
+def test_mixed_oversized_byte_value_zeros_silently_but_preserves_counts() -> None:
+    """Accepted trade: one unrenderable byte value is not a lost conn row."""
+    payload = build_conn(
+        _conn_frame(
+            bytes=pd.Series([10 ** 400, 1_000], dtype=object),
+            duration=[60, 0],
+        ),
+        config=_config(),
+        source_label="conn.log",
+    )
+
+    assert payload["meta"]["missing_bytes"] is False
+    assert payload["meta"]["single_metric"] is False
+    assert payload["meta"]["altered_metric_cells"] == 0
+    assert "bands_active" not in payload["meta"]
+    assert sum(payload["totB"]) == 1_000
+    assert sum(payload["totC"]) == 2
+
+
+@pytest.mark.parametrize("values", [[None, None], [0, 0], [-1, -2]])
+def test_conn_nonpositive_byte_mass_uses_the_count_only_fallback(
+    values: list[object],
+) -> None:
+    payload = build_conn(
+        _conn_frame(bytes=values, duration=[60, 60]),
+        config=_config(),
+        source_label="conn.log",
+    )
+
+    assert payload["meta"]["single_metric"] is True
+    assert payload["meta"]["missing_bytes"] is True
+    assert "bands_active" not in payload["meta"]
+    assert payload["totB"] == [1, 1]
+    assert payload["totC"] == [1, 1]
+
+
+def test_duration_bands_spread_bytes_but_keep_counts_at_starts() -> None:
+    payload = build_conn(
+        _conn_frame(
+            ts=[0.0, 120.0],
+            src=["192.0.2.10", "192.0.2.10"],
+            dst=["198.51.100.10", "198.51.100.10"],
+            port=[443, 443],
+            proto=["tcp", "tcp"],
+            bytes=[120, 0],
+            duration=[120, 0],
+        ),
+        config=_config(target_bins=4),
+        source_label="conn.log",
+    )
+
+    assert payload["meta"]["bands_active"] is True
+    assert payload["meta"]["rows_label"] == "conn starts"
+    assert payload["meta"]["bin_seconds"] == 60
+    assert payload["totB"] == [60, 60, 0]
+    assert payload["totC"] == [1, 0, 1]
+    assert sum(payload["totB"]) == 120
+    assert sum(payload["totC"]) == payload["meta"]["rows"]
+    assert "band_loss" not in payload["meta"]
+
+
+def test_duration_band_one_bin_partial_uses_overlap_and_discloses_loss(
+    restore_display_utc,
+) -> None:
+    set_display_utc(True)
+    payload = build_conn(
+        _conn_frame(
+            ts=[0.0, 50.0],
+            src=["192.0.2.10", "192.0.2.10"],
+            dst=["198.51.100.10", "198.51.100.10"],
+            port=[443, 443],
+            proto=["tcp", "tcp"],
+            bytes=[0, 100],
+            duration=[0, 20],
+        ),
+        config=_config(target_bins=2),
+        source_label="conn.log",
+    )
+
+    assert payload["meta"]["bins"] == 1
+    assert payload["totB"] == [50]
+    assert payload["totC"] == [2]
+    assert payload["meta"]["band_loss"] == {
+        "lead_conns": 0,
+        "lead_bytes": 0,
+        "trail_conns": 1,
+        "trail_bytes": 50,
+    }
+    assert payload["meta"]["band_loss_note"] == (
+        "1 connection continues past the retained window end; "
+        "50 B not shown after 1970-01-01 00:01 UTC"
+    )
+
+
+def test_duration_fraction_is_computed_before_extreme_metric_multiplication() -> None:
+    payload = build_conn(
+        _conn_frame(
+            ts=[0.0, 50.0],
+            bytes=[0, _core._FLOAT32_MAX],
+            duration=[0, 1e308],
+        ),
+        config=_config(target_bins=2),
+        source_label="conn.log",
+    )
+
+    assert payload["meta"]["bands_active"] is True
+    assert payload["meta"]["band_loss"]["trail_bytes"] > 0
+    assert sum(payload["totC"]) == 2
+    json.dumps(payload, allow_nan=False)
+
+
+def test_fragment_budget_coarsens_only_positive_multi_bin_mass(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assert _core.GRAPH_MAX_SPREAD_FRAGMENTS == 3_000_000
+    monkeypatch.setattr(_core, "GRAPH_MAX_SPREAD_FRAGMENTS", 2)
+    payload = build_conn(
+        _conn_frame(
+            ts=[0.0, 9.0],
+            src=["192.0.2.10", "192.0.2.10"],
+            dst=["198.51.100.10", "198.51.100.10"],
+            port=[443, 443],
+            proto=["tcp", "tcp"],
+            bytes=[9, 0],
+            duration=[9, 0],
+        ),
+        config=_config(target_bins=20),
+        source_label="conn.log",
+    )
+
+    assert payload["meta"]["requested_bin_seconds"] == 1
+    assert payload["meta"]["bin_seconds"] == 5
+    assert payload["totB"] == [5, 4]
+    assert payload["totC"] == [1, 1]
+    assert "binned to 5s" in (_format_degrade_note(payload["meta"]) or "")
+
+    zero_mass = _conn_frame(
+        ts=[0.0, 9.0, 9.0],
+        src=["192.0.2.10"] * 3,
+        dst=["198.51.100.10"] * 3,
+        port=[443] * 3,
+        proto=["tcp"] * 3,
+        bytes=[0, 0, 1],
+        duration=[10_000, 10_000, 0.5],
+    )
+    unchanged = build_conn(
+        zero_mass,
+        config=_config(target_bins=20),
+        source_label="conn.log",
+    )
+    assert unchanged["meta"]["requested_bin_seconds"] == 1
+    assert unchanged["meta"]["bin_seconds"] == 1
+    assert sum(unchanged["totC"]) == 3
+
+    monkeypatch.setattr(_core, "GRAPH_MAX_SPREAD_FRAGMENTS", 4)
+    just_inside = build_conn(
+        _conn_frame(
+            ts=[0.0, 5.0],
+            bytes=[4, 0],
+            duration=[4, 0],
+        ),
+        config=_config(target_bins=20),
+        source_label="conn.log",
+    )
+    just_outside = build_conn(
+        _conn_frame(
+            ts=[0.0, 5.0],
+            bytes=[5, 0],
+            duration=[5, 0],
+        ),
+        config=_config(target_bins=20),
+        source_label="conn.log",
+    )
+    assert just_inside["meta"]["bin_seconds"] == 1
+    assert just_outside["meta"]["bin_seconds"] == 5
+
+
+def test_duration_trim_keeps_straddler_clamps_count_and_scopes_model_note(
+    restore_display_utc,
+) -> None:
+    dense_ts = [
+        float(bin_index)
+        for bin_index in range(6, 14)
+        for _ in range(2_000)
+    ]
+    frame = pd.DataFrame({
+        "ts": [0.0, *dense_ts],
+        "src": ["192.0.2.250", *(["192.0.2.10"] * 16_000)],
+        "dst": ["198.51.100.250", *(["198.51.100.10"] * 16_000)],
+        "port": [443] * 16_001,
+        "proto": ["tcp"] * 16_001,
+        "bytes": [100, *([1] * 16_000)],
+        "duration": [100, *([1] * 16_000)],
+    })
+    frame.index = [index // 2 for index in range(len(frame))]
+    set_display_utc(True)
+
+    payload = build_conn(
+        frame,
+        config=_config(target_bins=20_000),
+        source_label="conn.log",
+        trim_sparse_edges=True,
+    )
+
+    assert payload["meta"]["t0"] == 6.0
+    assert payload["meta"]["trimmed_leading"] == 0
+    assert payload["meta"]["retained_straddlers"] == 1
+    assert payload["meta"]["straddler_note"] == (
+        "1 connection that began before the retained window is drawn within it "
+        "and counted at its edge"
+    )
+    assert payload["meta"]["band_loss"] == {
+        "lead_conns": 1,
+        "lead_bytes": 6,
+        "trail_conns": 1,
+        "trail_bytes": 86,
+    }
+    assert payload["meta"]["metric_note"] == (
+        "bytes drawn at a constant rate across each connection's recorded duration; "
+        "connection counts stay at recorded starts; retained pre-window connections "
+        "count at the window edge"
+    )
+    assert sum(payload["totC"]) == payload["meta"]["rows"] == 16_001
+    assert all(
+        bin_index >= 0
+        for flow in payload["flows"]
+        for bin_index in flow["c"][::2]
+    )
+
+
+def test_duration_trim_drops_zero_overlap_boundary_without_a_false_start() -> None:
+    dense_ts = [
+        float(bin_index)
+        for bin_index in range(6, 14)
+        for _ in range(2_000)
+    ]
+    frame = pd.DataFrame({
+        "ts": [0.0, *dense_ts],
+        "src": ["192.0.2.250", *(["192.0.2.10"] * 16_000)],
+        "dst": ["198.51.100.250", *(["198.51.100.10"] * 16_000)],
+        "port": [443] * 16_001,
+        "proto": ["tcp"] * 16_001,
+        "bytes": [6, *([1] * 16_000)],
+        "duration": [6, *([1] * 16_000)],
+    })
+
+    payload = build_conn(
+        frame,
+        config=_config(target_bins=20_000),
+        source_label="conn.log",
+        trim_sparse_edges=True,
+    )
+
+    assert payload["meta"]["trimmed_leading"] == 1
+    assert "retained_straddlers" not in payload["meta"]
+    assert payload["meta"]["rows"] == 16_000
+    assert sum(payload["totC"]) == 16_000
+
+
+def test_descent_releases_prior_basis_and_keeps_measurements_scalar(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(_core, "GRAPH_MAX_PAYLOAD_PAIRS", 4)
+    monkeypatch.setattr(_core, "GRAPH_MAX_SMOOTH_OPS", 10**12)
+    actual_build_basis = _core._build_raw_basis
+    actual_measure = _core._measure_basis
+    prior_basis: weakref.ReferenceType[object] | None = None
+    builds = 0
+    measurements = 0
+
+    def tracked_build(*args, **kwargs):
+        nonlocal prior_basis, builds
+        if prior_basis is not None:
+            assert prior_basis() is None
+        basis = actual_build_basis(*args, **kwargs)
+        prior_basis = weakref.ref(basis)
+        builds += 1
+        return basis
+
+    def tracked_measure(*args, **kwargs):
+        nonlocal measurements
+        measure = actual_measure(*args, **kwargs)
+        assert all(
+            not isinstance(value, (pd.DataFrame, np.ndarray))
+            for value in vars(measure).values()
+        )
+        measurements += 1
+        return measure
+
+    monkeypatch.setattr(_core, "_build_raw_basis", tracked_build)
+    monkeypatch.setattr(_core, "_measure_basis", tracked_measure)
+    frame = pd.DataFrame({
+        "ts": [float(index) for index in range(10)],
+        "src": ["192.0.2.10"] * 10,
+        "dst": ["198.51.100.10"] * 10,
+        "svc": ["dns"] * 10,
+        "metric": [0] * 10,
+    })
+
+    payload = build_payload(
+        frame,
+        kind="test",
+        source_label="test.log",
+        config=_config(target_bins=20),
+        meta={"kind": "test"},
+        default_window_note=None,
+    )
+
+    assert builds >= 2
+    assert measurements >= builds
+    assert payload["meta"]["bin_seconds"] == 5
 
 
 def test_core_discards_nonfinite_timestamps_but_keeps_zero_metric_rows() -> None:
@@ -752,6 +1117,27 @@ def test_metric_scaling_stays_finite_after_many_float32_rounding_steps() -> None
         )
     assert np.isfinite(absolute_total)
     assert payload["meta"]["altered_metric_cells"] == count
+
+
+def test_metric_scaling_counts_only_cells_whose_metric_changed() -> None:
+    """A count-only zero cell in a scaled bin is not a scaled metric cell."""
+    payload = build_payload(
+        pd.DataFrame({
+            "ts": [0.0, 0.0, 0.0],
+            "src": ["192.0.2.10", "192.0.2.11", "192.0.2.12"],
+            "dst": ["198.51.100.10"] * 3,
+            "svc": ["dns"] * 3,
+            "metric": [3e38, 3e38, 0.0],
+        }),
+        kind="test",
+        source_label="test.log",
+        config=_config(),
+        meta={"kind": "test"},
+        default_window_note=None,
+    )
+
+    assert payload["meta"]["altered_metric_cells"] == 2
+    assert sum(flow["c"][1] for flow in payload["flows"]) == 3
 
 
 def test_build_payload_does_not_mutate_caller_metadata() -> None:

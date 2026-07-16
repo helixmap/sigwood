@@ -432,7 +432,7 @@ def test_stderr_is_sanitized_deduplicated_and_bounded(
         tmp_path,
         f"""
 import sys
-print({ _record(1)!r })
+print({_record(1)!r})
 print("warn\\x1b[31m", file=sys.stderr)
 print("warn\\x1b[31m", file=sys.stderr)
 print("x" * 800, file=sys.stderr)

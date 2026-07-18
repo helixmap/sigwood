@@ -194,7 +194,8 @@ def _detect_vertical(df: pd.DataFrame, cfg: dict) -> list[dict]:
 
         port_counts         = {}
         max_ports_in_window = 0
-        best_window_start   = ts_arr[0]
+        best_left           = 0
+        best_right          = 0
         left                = 0
 
         for right in range(len(ts_arr)):
@@ -211,17 +212,22 @@ def _detect_vertical(df: pd.DataFrame, cfg: dict) -> list[dict]:
             n = len(port_counts)
             if n > max_ports_in_window:
                 max_ports_in_window = n
-                best_window_start   = ts_arr[left]
+                # The winning window includes both endpoints: right was just
+                # added, and left was advanced until the span fit.
+                best_left  = left
+                best_right = right
 
         if max_ports_in_window < threshold:
             continue
 
-        state_counts     = pd.Series(state_arr).value_counts()
-        total_conns      = len(state_arr)
+        window_states    = state_arr[best_left:best_right + 1]
+        window_ports     = port_arr[best_left:best_right + 1]
+        state_counts     = pd.Series(window_states).value_counts()
+        total_conns      = len(window_states)
         scan_state_count = sum(state_counts.get(s, 0) for s in SCAN_STATES)
         scan_state_ratio = scan_state_count / total_conns
 
-        port_series  = pd.Series(port_arr).dropna()
+        port_series  = pd.Series(window_ports).dropna()
         port_buckets = pd.cut(port_series, bins=[0, 1023, 49151, 65535],
                               labels=['well-known', 'registered', 'ephemeral'])
         counts_arr   = (port_buckets.value_counts().values + 1).astype(float)
@@ -241,7 +247,7 @@ def _detect_vertical(df: pd.DataFrame, cfg: dict) -> list[dict]:
             'top_states'         : ', '.join(state_counts.head(3).index.tolist()),
             'port_range_entropy' : port_range_entropy,
             'window_start'       : datetime.fromtimestamp(
-                                       best_window_start, tz=timezone.utc
+                                       ts_arr[best_left], tz=timezone.utc
                                    ).strftime('%Y-%m-%d %H:%M:%S'),
             'window_secs'        : window_secs,
             'direction'          : grp['direction'].iloc[0],
@@ -279,7 +285,8 @@ def _detect_horizontal(df: pd.DataFrame, cfg: dict) -> list[dict]:
 
         host_counts         = {}
         max_hosts_in_window = 0
-        best_window_start   = ts_arr[0]
+        best_left           = 0
+        best_right          = 0
         left                = 0
 
         for right in range(len(ts_arr)):
@@ -296,15 +303,20 @@ def _detect_horizontal(df: pd.DataFrame, cfg: dict) -> list[dict]:
             n = len(host_counts)
             if n > max_hosts_in_window:
                 max_hosts_in_window = n
-                best_window_start   = ts_arr[left]
+                # The winning window includes both endpoints: right was just
+                # added, and left was advanced until the span fit.
+                best_left  = left
+                best_right = right
 
         if max_hosts_in_window < threshold:
             continue
 
-        state_counts     = pd.Series(state_arr).value_counts()
-        total_conns      = len(state_arr)
+        window_ts        = ts_arr[best_left:best_right + 1]
+        window_states    = state_arr[best_left:best_right + 1]
+        state_counts     = pd.Series(window_states).value_counts()
+        total_conns      = len(window_states)
         scan_state_ratio = sum(state_counts.get(s, 0) for s in SCAN_STATES) / total_conns
-        velocity         = max_hosts_in_window / max(ts_arr[-1] - ts_arr[0], 1)
+        velocity         = max_hosts_in_window / max(window_ts[-1] - window_ts[0], 1)
 
         port_int = int(port)
         if port_int <= 1023:
@@ -327,7 +339,7 @@ def _detect_horizontal(df: pd.DataFrame, cfg: dict) -> list[dict]:
             'top_states'             : ', '.join(state_counts.head(3).index.tolist()),
             'velocity_hosts_per_sec' : round(velocity, 4),
             'window_start'           : datetime.fromtimestamp(
-                                           best_window_start, tz=timezone.utc
+                                           ts_arr[best_left], tz=timezone.utc
                                        ).strftime('%Y-%m-%d %H:%M:%S'),
             'window_secs'            : window_secs,
             'direction'              : grp['direction'].iloc[0],

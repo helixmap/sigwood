@@ -6,7 +6,18 @@ All notable changes to sigwood are recorded here. The format follows
 
 ## [Unreleased]
 
-## [0.2.3] - 2026-07-16
+### Fixed
+
+- **`scan` vertical and horizontal findings now describe the time window that actually
+  triggered them**, not the whole loaded span. These scans fire when enough distinct ports
+  or hosts appear inside a sliding window, but the reported evidence - connection count,
+  scan-state ratio, top states, port-range entropy, and host velocity - was previously
+  computed over every connection the pair exchanged across the entire log. A short scan
+  burst buried in a long benign baseline between the same two hosts was therefore diluted:
+  because severity and ranking are driven by the scan-state ratio, a real burst could be
+  under-severitied and pushed down the report by the surrounding benign traffic. Evidence,
+  severity, and rank now all reflect the triggering window. Block and slow scans are
+  unchanged (their evidence was already window- and span-correct by design).
 
 ### Added
 

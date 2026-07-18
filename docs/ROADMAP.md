@@ -31,18 +31,18 @@ What sigwood does today:
 
 Actively being worked on or thought through:
 
-- **dnsblock** - a detector for behavioral patterns in blocked Pi-hole queries: who is
-  reaching for known-bad domains, how persistently, and across how many clients.
-- **Beacon and aws, sharper on real data.** Short analysis spans surface mostly
-  benign monitoring traffic (the default directory window is beacon's 7-day
-  reliability bar, but a short archive still under-fills it, and the run says so);
-  the refinement is per-detector windowing plus seeding common monitoring ports
-  into the allowlist. The aws detector similarly over-weights an admin's own
-  console sessions on a single account. Both are precision refinements worked out
-  against real logs, not guessed at.
-- **Scan and duration** - flagging scans of internal space at higher severity, and
-  collapsing a load-balanced service (many IPs, one logical destination) into a single
-  finding.
+- **Quieter, more honest defaults.** On an ordinary day the default hunt can produce
+  more findings than anyone will review - that is a detection failure, not a
+  formatting problem. The work in progress: measure the current behavior first, then
+  ship a curated default detector set with severity that has to be earned (HIGH should
+  mean corroborated and worth looking at now). Every detector stays runnable by name
+  even when it leaves the default set, and the release notes will say plainly which
+  changes made the tool quieter versus actually smarter.
+- **One detector at a time, starting with duration.** Each noisy detector gets its own
+  measured pass - collapsing a load-balanced service (many IPs, one logical
+  destination) into a single reviewable finding, abstaining when there is no useful
+  comparison population, and checking the result against data held back from tuning.
+  Duration first, then DNS, then syslog.
 
 ## Later
 
@@ -50,12 +50,21 @@ Bigger pieces that need real experimentation first - sigwood's detectors are
 prototyped in the open, as scripts and notebooks under `notebooks/` run against
 real logs, before they ship (see [CONTRIBUTING.md](../CONTRIBUTING.md)):
 
-- **More detectors** - authentication analysis from `auth.log`/`secure` (brute force,
-  odd login times), TLS and certificate anomalies from Zeek `ssl.log`, and Zeek's own
+- **More detectors** - **dnsblock** (behavioral patterns in blocked Pi-hole queries:
+  who reaches for known-bad domains, how persistently, across how many clients),
+  authentication analysis from `auth.log`/`secure` (brute force, odd login times), TLS
+  and certificate anomalies from Zeek `ssl.log`, and Zeek's own
   `weird.log`/`notice.log`. A future CloudTrail identity and privilege-escalation
-  detector is its own thing, separate from the behavioral `aws` detector.
-- **Exploratory ideas** - a protocol and application classifier over conn.log, a
-  per-protocol anomaly model, and an emailed-report output.
+  detector is its own thing, separate from the behavioral `aws` detector. New
+  detectors join the default hunt only after the current defaults are reviewable.
+- **Beacon and aws, deeper on real evidence** - beacon recalibration is a full
+  research branch (public C2 captures, a plain periodicity baseline to beat, the
+  aliasing edges), not a quick tune; aws stays scored on the evidence actually
+  available to it. Ideas like per-detector windowing and seeding common monitoring
+  ports into the allowlist wait for that measured pass.
+- **Exploratory ideas** - flagging scans of internal space at higher severity, a
+  protocol and application classifier over conn.log, a per-protocol anomaly model,
+  and an emailed-report output.
 
 ## By design, not on the roadmap
 

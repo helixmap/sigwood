@@ -207,6 +207,16 @@ def test_resolve_detect_all_appends_failed_names() -> None:
     ) == ["beacon", "pulse", "dns"]
 
 
+def test_resolve_detect_default_appends_failed_names() -> None:
+    """Unreadable membership is disclosed under the default keyword."""
+    assert resolve_detect(
+        "default",
+        ["beacon", "pulse"],
+        import_failed=["dns"],
+        default_members=["beacon"],
+    ) == ["beacon", "dns"]
+
+
 def test_resolve_detect_failed_inclusion_legal() -> None:
     """An explicit inclusion of a broken detector selects it for disclosure."""
     assert resolve_detect("dns", ["pulse"], import_failed=["dns"]) == ["dns"]
@@ -252,6 +262,17 @@ def test_build_run_plan_skips_import_failed_before_required_logs(
     assert plan.will_run == ["pulse"]
     assert plan.selected == ["pulse", "dns"]
     assert plan.needed_logs == {}
+
+
+def test_build_run_plan_default_discloses_import_failed_membership(
+    broken_pkg: ModuleType,
+) -> None:
+    """A failed module cannot reveal membership, so default selects its skip."""
+    plan = build_run_plan("default")
+
+    assert plan.selected == ["dns"]
+    assert plan.skipped == {"dns": _SKIP_REASON}
+    assert plan.will_run == []
 
 
 # ── CLI surfaces (real cli.main, real runner.run) ────────────────────────────

@@ -40,6 +40,7 @@ from sigwood.parsers.syslog import REBOOT_SIGNALS_RE
 
 DETECTOR_NAME = "syslog"
 STATUS = "available"
+IN_DEFAULT_HUNT: bool = True
 
 # syslog is fidelity-aware: flat rsyslog, the live system journal, or Zeek's
 # own syslog.log. At least one must be present; satisfiable feeds

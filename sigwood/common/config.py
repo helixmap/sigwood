@@ -85,13 +85,16 @@ def validate_table_sections(
             raise ConfigError(f"[{section}] must be a table")
 
 
+DEFAULT_DETECT_SPEC = "default"
+
+
 _DEFAULTS: dict[str, Any] = {
     "sigwood": {
         # The root - base for RELATIVE paths in config-file values. Empty = use
         # CWD for relative paths. Absolute and ~-anchored paths ignore it.
         # Env override: SIGWOOD_ROOT (env wins over config).
         "root": "~/.sigwood",
-        "detect": "all",
+        "detect": DEFAULT_DETECT_SPEC,
         # Conventional source locations; tried out-of-box. pihole/cloudtrail
         # stay None (opt-in - no missing-file warning when absent).
         "zeek_dir": "/var/log/zeek",

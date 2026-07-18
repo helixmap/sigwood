@@ -8,8 +8,9 @@
 # write export_dir = "exports". Env override: SIGWOOD_ROOT.
 root = "~/.sigwood"
 
-# Detectors to run: "all" | "dns, beacon" | "all, !syslog". --detect overrides.
-detect = "all"
+# Detectors to run: "default" (the curated hunt) | "all" | "dns, beacon" |
+# "all, !syslog". --detect overrides.
+detect = "default"
 
 # ── Log sources (read) ──────────────────────────────────────────────
 # Directories holding your logs. Conventional locations shown; uncomment the

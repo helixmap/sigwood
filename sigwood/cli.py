@@ -3,7 +3,7 @@
 Entry point: sigwood.cli:main (registered in pyproject.toml).
 
 Dispatch table:
-  sigwood hunt [options] [PATH ...]  run all enabled detectors (the default hunt)
+  sigwood hunt [options] [PATH ...]  run the default hunt
   sigwood PATH ...                   shorthand - point it at one or more log files
   sigwood beacon|dns|syslog|...      run a single detector
   sigwood digest [PATH ...]          orient-before-the-hunt card (sniff-driven)
@@ -92,7 +92,7 @@ _FLAG_LIST: tuple[FlagSpec, ...] = (
     FlagSpec("since",            "--since",            "s",  True,  "DURATION|DATE",
              "window start (7d, 24h, or ISO date)"),
     FlagSpec("detect",           "--detect",           "d",  True,  "LIST",
-             "detector selection (all, comma list, or 'all,!x,!y')"),
+             "detector selection (default, all, comma list, or 'all,!x,!y')"),
     FlagSpec("dry_run",          "--dry-run",          None, False, "",
              "show the plan without running detectors / writing output"),
     FlagSpec("no_allowlist",     "--no-allowlist",     None, False, "",
@@ -166,7 +166,7 @@ _ALLOWLIST_ALLOWED: frozenset[str] = frozenset({"help", "config"})
 
 
 _VERBS: dict[str, VerbSpec] = {
-    "hunt":     VerbSpec("hunt",     "run all enabled detectors",
+    "hunt":     VerbSpec("hunt",     "run the default hunt",
                          "[PATH ...]", _ANALYZE_ALLOWED),
     "beacon":   VerbSpec("beacon",   "beacon detection (conn.log)",
                          "[PATH]", _SINGLE_DET_ALLOWED),
@@ -374,7 +374,7 @@ def _global_usage_text(no_config: bool = False) -> str:
         ]
     lines += [
         "Usage:",
-        "  sigwood hunt [options] [PATH ...]   run all enabled detectors (the default hunt)",
+        "  sigwood hunt [options] [PATH ...]   run the default hunt",
         "  sigwood PATH ...                    shorthand - point it at one or more log files",
         "",
         "  sigwood beacon [options] PATH    beacon detection (conn.log)",
@@ -979,8 +979,8 @@ def _runner_kwargs(
 def _named_detector_module(detect: Any) -> Any:
     """Return the imported detector module for an exactly-one-detector selector.
 
-    Returns ``None`` for ``all``, comma lists, exclusion syntax, missing
-    selectors, and unimportable names. Imports ONLY the explicitly named
+    Returns ``None`` for selection keywords, comma lists, exclusion syntax,
+    missing selectors, and unimportable names. Imports ONLY the explicitly named
     module via ``importlib`` - never iterates ``detectors/``. Used by the
     two analyze entry points to feed ``route_positional_source`` with the
     detector's REQUIRED_LOGS / OPTIONAL_LOGS metadata.
@@ -988,7 +988,7 @@ def _named_detector_module(detect: Any) -> Any:
     if not isinstance(detect, str):
         return None
     name = detect.strip()
-    if not name or name.lower() == "all" or "," in name or "!" in name:
+    if not name or name.lower() in {"all", "default"} or "," in name or "!" in name:
         return None
     try:
         import importlib
@@ -1062,7 +1062,7 @@ def _load_config(parsed: dict[str, Any]) -> dict[str, Any]:
 
 def _run_hunt(args: list[str], *, require_target: bool = False,
               leading_flag: bool = False) -> int:
-    """Parse args and invoke runner with all enabled detectors (the hunt).
+    """Parse args and invoke the runner for the default hunt.
 
     ``require_target`` rides only the IMPLICIT routes (a leading path or flag):
     a clean parse that carries no positional then fails as a no-intent
@@ -1105,8 +1105,15 @@ def _run_hunt(args: list[str], *, require_target: bool = False,
 
     selection = None
     if syslog_mode is not None:
+        selection_spec = (
+            parsed["detect"]
+            if "detect" in parsed
+            else config.get("sigwood", {}).get(
+                "detect", cfg.DEFAULT_DETECT_SPEC
+            )
+        )
         selection = runner.select_detectors(
-            parsed.get("detect") or config.get("sigwood", {}).get("detect", "all")
+            selection_spec
         )
         if syslog_mode is not SyslogMode.OFF and "syslog" not in selection.selected:
             raise UsageError(

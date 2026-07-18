@@ -32,6 +32,7 @@ from sigwood.common.finding import DetectorContext, Finding, MethodTag, Severity
 
 DETECTOR_NAME = "beacon"
 STATUS = "available"
+IN_DEFAULT_HUNT: bool = True
 
 REQUIRED_LOGS = [
     {"source": "zeek_dir", "pattern": "conn*.log*"},

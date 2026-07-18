@@ -2,7 +2,7 @@
 
 Responsibilities:
 - Auto-discover detectors by scanning sigwood/detectors/ for modules with DETECTOR_NAME
-- Resolve the detect= selection (all, explicit list, exclusion syntax)
+- Resolve the detect= selection (default, all, explicit list, exclusion syntax)
 - Check REQUIRED_LOGS availability; skip with warning if missing
 - Load logs and assemble DetectorContext for each detector
 - Collect list[Finding] from each detector's run()
@@ -27,6 +27,7 @@ import pandas as pd
 
 import sigwood.detectors as _detectors_pkg
 from sigwood.common.config import (
+    DEFAULT_DETECT_SPEC,
     get_detector_config,
     parse_window_span,
     validate_table_sections,
@@ -107,6 +108,7 @@ class DetectorSelection:
     detectors: dict[str, Any]
     selected: list[str]
     import_failures: dict[str, str]
+    used_default: bool = False
 
 
 @dataclass(frozen=True)
@@ -187,7 +189,9 @@ def run(
     # all later render work inherit it - programmatic callers included.
     set_display_utc(use_utc)
 
-    detect_spec = detect if detect is not None else cfg_sigwood.get("detect", "all")
+    detect_spec = detect if detect is not None else cfg_sigwood.get(
+        "detect", DEFAULT_DETECT_SPEC
+    )
     with liveness("loading detectors", enabled=not quiet):
         selection = _detector_selection or select_detectors(detect_spec)
 
@@ -236,6 +240,7 @@ def run(
             selection=selection,
             virtual_sources=probe_decision.virtual_sources,
         )
+        opt_in = _default_opt_in_remainder(plan, selection, detect_spec)
         _print_dry_run(
             zeek_dir=zeek_dirs,
             syslog_dir=syslog_dirs,
@@ -246,6 +251,7 @@ def run(
             load_all=load_all,
             will_run=plan.will_run,
             skipped=plan.skipped,
+            opt_in=opt_in,
             syslog_intent=syslog_intent,
             syslog_probe=probe_decision,
         )
@@ -458,6 +464,9 @@ def run(
     home_net_note = _home_net_note(plan, config)
     if home_net_note:
         notes.append(home_net_note)
+    default_opt_in_note = _default_opt_in_note(plan, selection, detect_spec)
+    if default_opt_in_note:
+        notes.append(default_opt_in_note)
     syslog_provider_note = _syslog_provider_note(decision, syslog_intent, plan)
     if syslog_provider_note:
         notes.append(syslog_provider_note)
@@ -892,12 +901,25 @@ def select_detectors(
         if detectors is not None
         else discover_detectors(_failures=import_failures)
     )
+    effective_spec = str(detect_spec or DEFAULT_DETECT_SPEC)
+    default_members = sorted(
+        name
+        for name, mod in all_detectors.items()
+        if getattr(mod, "IN_DEFAULT_HUNT", False)
+    )
+    tokens = _spec_tokens(effective_spec)
     selected = resolve_detect(
-        str(detect_spec or "all"),
+        effective_spec,
         sorted(all_detectors),
         import_failed=sorted(import_failures),
+        default_members=default_members,
     )
-    return DetectorSelection(all_detectors, selected, import_failures)
+    return DetectorSelection(
+        all_detectors,
+        selected,
+        import_failures,
+        used_default="default" in tokens,
+    )
 
 
 def _as_path_list(value: Path | list[Path] | None) -> list[Path]:
@@ -1118,38 +1140,48 @@ def _report_basename(output_format: str, detectors_run: list[str] = ()) -> str:
     return f"{stem}.{ext}"
 
 
+def _spec_tokens(spec: str) -> list[str]:
+    """Tokenize a detector selection spec with forgiving comma/space syntax."""
+    return [t.strip() for t in spec.replace(",", " ").split() if t.strip()]
+
+
 def resolve_detect(
-    spec: str, available: list[str], *, import_failed: Collection[str] = (),
+    spec: str,
+    available: list[str],
+    *,
+    import_failed: Collection[str] = (),
+    default_members: Collection[str] = (),
 ) -> list[str]:
-    """Resolve a detect= spec (all, list, exclusions) against available detector names.
+    """Resolve a detect= spec (default, all, list, exclusions) against detectors.
 
     Examples:
+      "default"           → curated default members
       "all"               → all available names (sorted)
       "dns, beacon"       → ["dns", "beacon"]
-      "all, !syslog"      → all except "syslog"
+      "default,!beacon"   → curated members except beacon
       "all,!dns,!syslog"  → all except dns and syslog
 
-    Every token other than "all" - inclusion or "!"-exclusion alike - must name
-    an available detector; unknown names raise ValueError listing every unknown
-    token (a typo'd exclusion silently running a detector would be a coverage
-    loss, so exclusions validate too). A spec that tokenises to nothing (e.g.
-    whitespace-only) resolves to an empty selection, not an error.
+    Every token other than the reserved "default" and "all" keywords - inclusion
+    or "!"-exclusion alike - must name an available detector; unknown names raise
+    ValueError listing every unknown token (a typo'd exclusion silently running a
+    detector would be a coverage loss, so exclusions validate too). A spec that
+    tokenises to nothing (e.g. whitespace-only) resolves to an empty selection,
+    not an error.
 
     ``import_failed`` names detectors whose module import failed at discovery
     (see ``discover_detectors``). A failed name is a KNOWN token - includable
     (so the run plan can disclose the skip), excludable (the natural workaround
-    for a broken detector), and appended after the available names under "all"
-    - never reported as an unknown detector. The unknown-name error still lists
-    only available names.
+    for a broken detector), and appended after the available names under "all" or
+    "default" - never reported as an unknown detector. The unknown-name error
+    still lists only available names.
     """
-    # Tokenise: split on commas and whitespace, handle "all, !syslog" etc.
-    tokens = [t.strip() for t in spec.replace(",", " ").split() if t.strip()]
+    tokens = _spec_tokens(spec)
 
     unknown: list[str] = []
     for token in tokens:
         name = token[1:] if token.startswith("!") else token
         if (
-            name != "all"
+            name not in {"all", "default"}
             and name not in available
             and name not in import_failed
             and name not in unknown
@@ -1168,6 +1200,11 @@ def resolve_detect(
     for token in tokens:
         if token.startswith("!"):
             exclusions.add(token[1:])
+        elif token == "default":
+            inclusions.extend(default_members)
+            inclusions.extend(
+                name for name in import_failed if name not in inclusions
+            )
         elif token == "all":
             # Replace with all available, plus the import-failed names so the
             # plan can disclose their skips (appended after, order-stable).
@@ -1434,6 +1471,7 @@ def _print_dry_run(
     load_all: bool,
     will_run: list[str],
     skipped: dict[str, str],
+    opt_in: Sequence[str] = (),
     syslog_intent: SyslogIntent | None = None,
     syslog_probe: SyslogProbeDecision | None = None,
 ) -> None:
@@ -1495,6 +1533,13 @@ def _print_dry_run(
 
     for reason, names in by_reason.items():
         print(f"{'skipped:':<{_BANNER_LABEL_WIDTH}}  {', '.join(names)} - {strip_control(reason)}")
+
+    if opt_in:
+        names = strip_control(", ".join(opt_in))
+        print(
+            f"{'opt-in:':<{_BANNER_LABEL_WIDTH}}  {names} - not in the default hunt "
+            "(--detect=all runs everything)"
+        )
 
     print(_SEP_DOUBLE)
     print("dry run - remove --dry-run to analyze")
@@ -1870,6 +1915,55 @@ def _dns_nudge(data_sources: list[str]) -> str | None:
             "unavailable. Add Zeek for richer DNS analysis and conn.log correlation."
         )
     return None
+
+
+def _default_opt_in_remainder(
+    plan: RunPlan,
+    selection: DetectorSelection,
+    detect_spec: object | None,
+) -> list[str]:
+    """Return opt-in detectors omitted by a default-participating selection.
+
+    Explicit exclusions are operator intent and never read as curation. This
+    pre-loop disclosure helper is defensive: optional module metadata cannot
+    abort an otherwise valid hunt.
+    """
+    if not selection.used_default:
+        return []
+    try:
+        tokens = _spec_tokens(str(detect_spec or DEFAULT_DETECT_SPEC))
+        exclusions = {
+            token[1:] for token in tokens if token.startswith("!")
+        }
+        return sorted(
+            name
+            for name, mod in plan.detectors.items()
+            if not getattr(mod, "IN_DEFAULT_HUNT", False)
+            and name not in plan.selected
+            and name not in exclusions
+        )
+    except Exception:
+        return []
+
+
+def _default_opt_in_note(
+    plan: RunPlan,
+    selection: DetectorSelection,
+    detect_spec: object | None,
+) -> str | None:
+    """Build the default-hunt opt-in disclosure for RunSummary.notes."""
+    try:
+        remainder = _default_opt_in_remainder(plan, selection, detect_spec)
+        if not remainder:
+            return None
+        action = "run it" if len(remainder) == 1 else "run them"
+        names = ", ".join(remainder)
+    except Exception:
+        return None
+    return (
+        f"default hunt - not run: {names} "
+        f"(opt-in; {action} by name or with --detect=all)"
+    )
 
 
 def _aws_below_floor_note(

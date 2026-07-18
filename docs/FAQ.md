@@ -60,9 +60,10 @@ reach for to go hunting through a few days of logs, not the tool that watches th
 
 ### What's the difference between the hunt and `digest`?
 
-The **hunt** (the default - `sigwood <path>`, or `sigwood hunt`) runs the detectors and
-produces findings: things worth a second look, with a severity and the evidence behind
-them.
+The **hunt** (the default - `sigwood <path>`, or `sigwood hunt`) runs the curated default
+detector set and produces findings: things worth a second look, with a severity and the
+evidence behind them. Detectors outside that set stay runnable by name; use
+`--detect=all` to run every available detector.
 
 `digest` (`sigwood digest <file>`) is orientation *before* the hunt. It reads a log and
 tells you what's in it - time span, top talkers, the shape of the mix, a histogram - and

@@ -47,6 +47,7 @@ from sigwood.common.finding import DetectorContext, Finding, MethodTag, Severity
 
 DETECTOR_NAME = "aws"
 STATUS = "available"
+IN_DEFAULT_HUNT: bool = True
 
 REQUIRED_LOGS = [
     {"source": "cloudtrail_dir", "pattern": "*.json*"},

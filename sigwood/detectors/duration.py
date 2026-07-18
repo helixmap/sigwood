@@ -15,6 +15,9 @@ from sigwood.common.finding import DetectorContext, Finding, MethodTag, Severity
 
 DETECTOR_NAME = "duration"
 STATUS = "available"
+# Wall-clock duration alone is not corroborated evidence; keep this detector
+# opt-in until its severity model earns default membership.
+IN_DEFAULT_HUNT: bool = False
 
 REQUIRED_LOGS = [
     {"source": "zeek_dir", "pattern": "conn*.log*"},

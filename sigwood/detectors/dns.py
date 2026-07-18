@@ -40,6 +40,7 @@ from sigwood.common.tld import TLD_EXTRACT as _TLD_EXTRACT
 
 DETECTOR_NAME = "dns"
 STATUS = "available"
+IN_DEFAULT_HUNT: bool = True
 
 # dns can be satisfied by either Zeek dns logs or Pi-hole/dnsmasq logs.
 # Neither is hard-required; at least one must be present and satisfiable to run.

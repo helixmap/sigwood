@@ -35,6 +35,12 @@ and a four-hour beacon as about eighty minutes (a third). The beacon is still de
 flagged - it is the reported period that is wrong, not a silent miss - so treat a reported
 period as approximate and confirm the real cadence against the raw connection timestamps.
 
+**Duration overstates severity for ordinary long-lived connections.** The duration detector
+assigns HIGH from elapsed wall-clock time alone, so CDN, streaming, and keepalive flows can
+score HIGH without corroborating evidence. It is opt-in while that severity model is rebuilt:
+run `sigwood duration` or `sigwood hunt --detect=all`. It returns to the default hunt when its
+severity earns that place.
+
 **High-volume DNS tunneling spread across many domains can slip the scan.** sigwood
 surfaces sustained tunneling that concentrates under a single registered domain, but a
 tunnel spread thin across many domains - or one below the conservative volume floor -

@@ -1310,19 +1310,53 @@ def test_exclude_everything_dry_run_banner_selected_none(
     assert "skipped:" not in out
 
 
-def test_detect_empty_string_is_absent_falls_back_to_all(
+def test_detect_empty_string_is_absent_falls_back_to_default(
     capsys: pytest.CaptureFixture[str], tmp_path: Path,
 ) -> None:
     """Compatibility pin: `--detect=` (EMPTY string) means absent - the
-    two-step fallback (`detect or parsed.get("detect")`, then
-    `detect_spec or "all"`) lands on the default `all`. With every source dir
-    empty that is the all-skipped arm, WITH skipped: lines."""
+    two-step fallback lands on the curated default. With every source dir
+    empty that is the all-skipped arm, WITH skipped: lines, but the opt-in
+    duration detector is not selected."""
     probe = _write_probe_config(tmp_path)
     cli.main(["hunt", "--detect=", "--dry-run", f"--config={probe}"])
 
     out = capsys.readouterr().out
     assert "(none - required logs unavailable)" in out
     assert "skipped:" in out
+    skipped_lines = [line for line in out.splitlines() if line.startswith("skipped:")]
+    assert all("duration" not in line for line in skipped_lines)
+    assert "opt-in:          duration" in out
+
+
+def test_explicit_all_config_matches_explicit_all_cli(
+    capsys: pytest.CaptureFixture[str], tmp_path: Path,
+) -> None:
+    """Existing detect=all configs retain the explicit-all dry-run exactly."""
+    probe = _write_probe_config(tmp_path, detect="all")
+
+    cli.main(["hunt", "--dry-run", f"--config={probe}"])
+    from_config = capsys.readouterr()
+    cli.main(["hunt", "--detect=all", "--dry-run", f"--config={probe}"])
+    from_flag = capsys.readouterr()
+
+    assert from_config == from_flag
+    assert "duration" in from_config.out
+    assert "opt-in:" not in from_config.out
+
+
+def test_explicit_default_flag_discloses_opt_in_remainder(
+    capsys: pytest.CaptureFixture[str], tmp_path: Path,
+) -> None:
+    probe = _write_probe_config(tmp_path, detect="all")
+
+    cli.main([
+        "hunt", "--detect=default", "--dry-run", f"--config={probe}",
+    ])
+
+    out = capsys.readouterr().out
+    assert "opt-in:          duration" in out
+    skipped_lines = [line for line in out.splitlines() if line.startswith("skipped:")]
+    assert all("duration" not in line for line in skipped_lines)
 
 
 def test_detect_whitespace_only_selects_none(

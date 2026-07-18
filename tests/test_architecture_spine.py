@@ -15,7 +15,12 @@ import pandas as pd
 from sigwood.common.allowlist import AllowlistMatcher, build_matcher
 from sigwood.common.finding import Finding, RunSummary, Severity
 from sigwood.common.output import Reporter, get_handler
-from sigwood.runner import build_run_plan, discover_detectors, resolve_detect
+from sigwood.runner import (
+    build_run_plan,
+    discover_detectors,
+    resolve_detect,
+    select_detectors,
+)
 
 
 def _summary() -> RunSummary:
@@ -60,6 +65,58 @@ class ArchitectureSpineTests(unittest.TestCase):
 
         self.assertEqual(resolve_detect("all", available), available)
         self.assertIn("duration", resolve_detect("all", available))
+
+    def test_default_selection_uses_explicit_curated_membership(self) -> None:
+        selection = select_detectors(None)
+
+        self.assertEqual(
+            selection.selected,
+            ["aws", "beacon", "dns", "scan", "syslog"],
+        )
+        self.assertTrue(selection.used_default)
+        self.assertNotIn("duration", selection.selected)
+
+    def test_default_keyword_is_additive_and_exclusions_apply_last(self) -> None:
+        available = ["aws", "beacon", "dns", "duration", "scan", "syslog"]
+        curated = ["aws", "beacon", "dns", "scan", "syslog"]
+
+        self.assertEqual(
+            resolve_detect("default", available, default_members=curated),
+            curated,
+        )
+        self.assertEqual(
+            resolve_detect(
+                "default,duration", available, default_members=curated,
+            ),
+            curated + ["duration"],
+        )
+        self.assertEqual(
+            resolve_detect(
+                "default,!beacon", available, default_members=curated,
+            ),
+            ["aws", "dns", "scan", "syslog"],
+        )
+
+    def test_detector_without_membership_does_not_join_default(self) -> None:
+        detectors = {
+            "included": SimpleNamespace(IN_DEFAULT_HUNT=True),
+            "future": SimpleNamespace(),
+        }
+
+        selection = select_detectors(None, detectors)
+
+        self.assertEqual(selection.selected, ["included"])
+        self.assertTrue(selection.used_default)
+
+    def test_used_default_tracks_effective_spec_tokens(self) -> None:
+        detectors = {"alpha": SimpleNamespace(IN_DEFAULT_HUNT=True)}
+
+        self.assertTrue(select_detectors(None, detectors).used_default)
+        self.assertTrue(select_detectors("", detectors).used_default)
+        self.assertTrue(select_detectors("default", detectors).used_default)
+        self.assertFalse(select_detectors("all", detectors).used_default)
+        self.assertFalse(select_detectors("alpha", detectors).used_default)
+        self.assertFalse(select_detectors(" ", detectors).used_default)
 
     def test_resolve_detect_unknown_inclusion_raises(self) -> None:
         available = ["aws", "beacon", "dns", "duration", "scan", "syslog"]
@@ -111,7 +168,7 @@ class ArchitectureSpineTests(unittest.TestCase):
 
     def test_resolve_detect_whitespace_only_spec_empty_no_raise(self) -> None:
         """A spec that tokenises to nothing is a legal empty selection, not an
-        error - the caller-side `detect_spec or "all"` fallback catches the
+        error - the caller-side default-spec fallback catches the
         EMPTY string before this function ever sees it, so whitespace-only is
         the one nothing-shaped spec that reaches resolution."""
         available = ["aws", "beacon", "dns", "duration", "scan", "syslog"]

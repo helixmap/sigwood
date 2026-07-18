@@ -42,6 +42,12 @@ All notable changes to sigwood are recorded here. The format follows
 
 ### Changed
 
+- **The default hunt is now a curated set rather than every available detector.** Fresh
+  installs, omitted selection, `--detect=`, and `--detect=default` select aws, beacon, dns,
+  scan, and syslog; duration remains runnable by name while its severity evidence is rebuilt.
+  Reports and dry runs disclose that opt-in remainder. Explicit `--detect=all` and existing
+  configs with `detect = "all"` are unchanged and continue to run everything. This is a
+  quieter default, not a claim that detector logic became smarter.
 - **A connection graph now replays bytes across each connection's lifetime.** `sigwood graph` on a
   Zeek conn log previously drew a connection's entire byte total in the single bin where it started,
   so one long transfer landed as a spike at its start and the rest of its life looked idle. Byte

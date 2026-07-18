@@ -21,12 +21,12 @@ _ZEEK_CONN = (
 )
 
 
-def _config(tmp_path: Path, syslog_dir: Path) -> Path:
+def _config(tmp_path: Path, syslog_dir: Path, *, detect: str = "all") -> Path:
     path = tmp_path / "config.toml"
     path.write_text(
         "[sigwood]\n"
         'root = ""\n'
-        'detect = "all"\n'
+        f'detect = "{detect}"\n'
         f'syslog_dir = "{syslog_dir}"\n'
         'syslog_source = "auto"\n'
         'zeek_dir = ""\n',
@@ -96,6 +96,24 @@ def test_explicit_active_mode_with_final_selection_excluding_syslog_is_usage_err
     err = capsys.readouterr().err
     assert "requires the syslog detector in the final selection" in err
     assert "run 'sigwood --help' for usage" in err
+
+
+def test_empty_detect_override_uses_default_before_syslog_intent_guard(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """An explicit empty spec overrides a named config with the curated default."""
+    config = _config(tmp_path, tmp_path, detect="duration")
+
+    assert cli._main([
+        "hunt",
+        "--detect=",
+        "--syslog-source=files",
+        "--dry-run",
+        f"--config={config}",
+    ]) == 0
+
+    assert "opt-in:          duration" in capsys.readouterr().out
 
 
 def test_explicit_off_is_legal_with_syslog_excluded_and_never_probes(

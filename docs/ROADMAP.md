@@ -12,6 +12,9 @@ What sigwood does today:
   dns.log or Pi-hole/dnsmasq), syslog (drain3 templating with per-host burst collapse,
   over the live systemd journal, flat rsyslog, or Zeek syslog.log), scan, duration, and
   aws (per-principal behavior over CloudTrail).
+- **A curated default hunt** that narrows the routine review surface while every
+  detector remains runnable by name; `--detect=all` still runs everything available.
+  The run discloses detectors held opt-in while their evidence is rebuilt.
 - **A `digest` verb** to orient before you hunt - a fast, honest profile of conn, DNS,
   syslog, or CloudTrail data, with a bytes-only fallback for anything it doesn't
   recognize.
@@ -31,13 +34,6 @@ What sigwood does today:
 
 Actively being worked on or thought through:
 
-- **Quieter, more honest defaults.** On an ordinary day the default hunt can produce
-  more findings than anyone will review - that is a detection failure, not a
-  formatting problem. The work in progress: measure the current behavior first, then
-  ship a curated default detector set with severity that has to be earned (HIGH should
-  mean corroborated and worth looking at now). Every detector stays runnable by name
-  even when it leaves the default set, and the release notes will say plainly which
-  changes made the tool quieter versus actually smarter.
 - **One detector at a time, starting with duration.** Each noisy detector gets its own
   measured pass - collapsing a load-balanced service (many IPs, one logical
   destination) into a single reviewable finding, abstaining when there is no useful

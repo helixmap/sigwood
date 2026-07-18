@@ -2461,16 +2461,146 @@ def test_rendering_report_liveness_wraps_write_end_and_dry_run_skips_render(
     assert ("rendering report", False) in calls
 
 
-def _fake_detector(name: str, run_impl):
+def _fake_detector(name: str, run_impl, *, in_default: bool = True):
     """Build a minimal fake detector module suitable for the runner loop."""
     return SimpleNamespace(
         DETECTOR_NAME=name,
         STATUS="available",
+        IN_DEFAULT_HUNT=in_default,
         REQUIRED_LOGS=[],
         OPTIONAL_LOGS=[],
         DEFAULT_CONFIG={},
         run=run_impl,
     )
+
+
+@pytest.mark.parametrize("detect_spec", [None, "default"])
+def test_default_hunt_note_reaches_summary_and_text_renderer(
+    detect_spec, capture_summary, monkeypatch, capsys,
+) -> None:
+    """Omitted and explicit default selections disclose the opt-in remainder."""
+    from sigwood.outputs.text import TextHandler
+
+    fakes = {
+        "alpha": _fake_detector("alpha", lambda _ctx: []),
+        "duration": _fake_detector(
+            "duration", lambda _ctx: [], in_default=False,
+        ),
+    }
+    monkeypatch.setattr(runner, "discover_detectors", lambda **_: fakes)
+    config = {"sigwood": {}}
+    if detect_spec is not None:
+        config["sigwood"]["detect"] = "all"
+
+    runner.run(config=config, detect=detect_spec)
+
+    summary = capture_summary["summary"]
+    note = (
+        "default hunt - not run: duration "
+        "(opt-in; run it by name or with --detect=all)"
+    )
+    assert note in summary.notes
+    rendered = TextHandler(stream=io.StringIO())._render_run_summary(summary)
+    compact_rendered = " ".join(line.strip() for line in rendered.splitlines())
+    assert note in compact_rendered
+
+
+@pytest.mark.parametrize(
+    "detect_spec",
+    ["all", "alpha", "default,duration", "default,!duration"],
+)
+def test_default_hunt_note_respects_operator_selection(
+    detect_spec, capture_summary, monkeypatch, capsys,
+) -> None:
+    """Explicit all/names/additions/exclusions never get called curated omissions."""
+    fakes = {
+        "alpha": _fake_detector("alpha", lambda _ctx: []),
+        "duration": _fake_detector(
+            "duration", lambda _ctx: [], in_default=False,
+        ),
+    }
+    monkeypatch.setattr(runner, "discover_detectors", lambda **_: fakes)
+
+    runner.run(config={"sigwood": {"detect": detect_spec}})
+
+    assert not any(
+        note.startswith("default hunt - not run:")
+        for note in capture_summary["summary"].notes
+    )
+
+
+def test_default_hunt_remainder_omits_excluded_curated_member() -> None:
+    """A curated exclusion stays operator intent; only real opt-ins remain."""
+    fakes = {
+        "alpha": _fake_detector("alpha", lambda _ctx: []),
+        "duration": _fake_detector(
+            "duration", lambda _ctx: [], in_default=False,
+        ),
+    }
+    selection = runner.select_detectors("default,!alpha", fakes)
+    plan = build_run_plan("default,!alpha", detectors=fakes, selection=selection)
+
+    assert runner._default_opt_in_remainder(
+        plan, selection, "default,!alpha"
+    ) == ["duration"]
+
+
+def test_default_hunt_note_is_defensive_on_optional_module_metadata() -> None:
+    class _ExplodingMetadata:
+        def __getattr__(self, _name):
+            raise RuntimeError("metadata unavailable")
+
+    plan = RunPlan(
+        detectors={"odd": _ExplodingMetadata()},
+        selected=[],
+        will_run=[],
+        skipped={},
+        needed_logs={},
+    )
+    selection = runner.DetectorSelection(
+        plan.detectors, [], {}, used_default=True,
+    )
+
+    assert runner._default_opt_in_note(plan, selection, "default") is None
+
+
+def test_default_hunt_dry_run_lists_opt_in_remainder(
+    monkeypatch, capsys,
+) -> None:
+    fakes = {
+        "alpha": _fake_detector("alpha", lambda _ctx: []),
+        "duration": _fake_detector(
+            "duration", lambda _ctx: [], in_default=False,
+        ),
+    }
+    monkeypatch.setattr(runner, "discover_detectors", lambda **_: fakes)
+
+    runner.run(config={"sigwood": {"detect": "default"}}, dry_run=True)
+
+    out = capsys.readouterr().out
+    assert (
+        "opt-in:          duration - not in the default hunt "
+        "(--detect=all runs everything)"
+    ) in out
+
+
+def test_default_hunt_dry_run_honors_explicit_opt_in_exclusion(
+    monkeypatch, capsys,
+) -> None:
+    fakes = {
+        "alpha": _fake_detector("alpha", lambda _ctx: []),
+        "duration": _fake_detector(
+            "duration", lambda _ctx: [], in_default=False,
+        ),
+    }
+    monkeypatch.setattr(runner, "discover_detectors", lambda **_: fakes)
+
+    runner.run(
+        config={"sigwood": {"detect": "default,!duration"}},
+        dry_run=True,
+    )
+
+    assert "opt-in:" not in capsys.readouterr().out
 
 
 def test_liveness_seals_one_record_per_non_syslog_detector(

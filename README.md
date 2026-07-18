@@ -71,7 +71,7 @@ sigwood digest /var/log/messages     # orient first - a fast, factual profile of
 sigwood graph /opt/zeek              # replay the flows as a self-contained HTML artifact
 sigwood syslog /var/log              # run a single detector
 sigwood init                         # detection-driven setup, writes a config
-sigwood hunt                         # hunt across everything enabled in your config
+sigwood hunt                         # run the curated default hunt
 ```
 
 **No logs handy?** sigwood ships a small synthetic corpus - one compromised host, no real
@@ -136,7 +136,8 @@ Pi-hole for DNS; the live systemd journal, flat rsyslog, and Zeek's own `syslog.
 and adapt to whichever fidelity they're handed. On a systemd host `syslog` prefers the live
 journal by default (`--syslog-source=auto`); `--syslog-source=files` keeps the flat-file behavior.
 
-Run them all (`sigwood hunt`), select some (`sigwood hunt --detect=beacon,dns`), or exclude
+Run the curated default hunt (`sigwood hunt`), run everything available
+(`sigwood hunt --detect=all`), select some (`sigwood hunt --detect=beacon,dns`), or exclude
 (`sigwood hunt --detect='all,!syslog'`). Each detector is also its own subcommand:
 `sigwood beacon ~/zeek`.
 
@@ -299,7 +300,7 @@ config, allowlists, exports, reports. A trimmed example:
 
 ```toml
 [sigwood]
-detect     = "all"                 # "all" | "dns,beacon" | "all,!syslog"
+detect     = "default"             # "default" | "all" | "dns,beacon" | "all,!syslog"
 zeek_dir   = "/var/log/zeek"
 syslog_dir = "/var/log"
 # pihole_dir     = "/var/log/pihole"

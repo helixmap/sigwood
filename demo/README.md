@@ -50,8 +50,9 @@ sigwood hunt --config=demo/sigwood.toml
 
 The first orients you with a one-card summary of the Pi-hole log; the second runs
 only the DNS detector on that slice and should surface the modest DGA burst. The
-third runs the full hunt. Add `-vv` to the hunt to see the scoring evidence behind
-each finding (FFT beacon scores, DGA label scores, drain3 templates).
+third runs the detector list configured for the demo. Add `-vv` to the hunt to see
+the scoring evidence behind each finding (FFT beacon scores, DGA label scores,
+drain3 templates).
 
 > The demo config sets `root = ""` so the log paths resolve relative to the
 > repository root. If you have `SIGWOOD_ROOT` set in your environment it

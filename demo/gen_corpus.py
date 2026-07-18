@@ -16,6 +16,7 @@ local time), so it is safe to run offline or in CI.
 
 Usage:
     python3 demo/gen_corpus.py [OUT_DIR] [--seed N] [--anchor ISO8601]
+        [--scenario demo|bench]
 
 Defaults regenerate the exact corpus the demo config and README expect.
 """
@@ -55,10 +56,21 @@ FLOW = {
     "pihole_blocks": 0x10,
     "pihole_clients": 0x11,
     "pihole_timing": 0x12,
+    "bench_duration": 0x13,
+    "bench_background": 0x14,
+    "bench_bytes": 0x15,
 }
 
 WINDOW_SECONDS = 86_400  # a 24h corpus
 PIHOLE_DGA_COUNT = 20    # below pihole min_cluster_size so the burst stays noise
+
+# Measurement-bench selectors and calibration pins. Tests import these values from
+# the live generator so the synthetic recipe has one owner.
+BENCH_BEACON = (WEBHOST, C2_PRIMARY, 443, "tcp")
+BENCH_BEACON_PERIOD_SECONDS = 180
+BENCH_BEACON_COUNT = 480
+BENCH_DURATION = (WEBHOST, C2_SECONDARY, 22, "tcp")
+BENCH_DURATION_SECONDS = 18_000.0
 
 # DGA alphabet: digits + consonants (no vowels) - consonant-heavy random labels
 # are a realistic DGA shape and clear the detector's entropy gates cleanly.
@@ -80,6 +92,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--anchor", default="2026-06-01T00:00:00",
         help="ISO-8601 UTC start of the 24h window (default: 2026-06-01T00:00:00)",
     )
+    p.add_argument(
+        "--scenario", choices=("demo", "bench"), default="demo",
+        help="corpus scenario to generate (default: demo)",
+    )
     return p
 
 
@@ -95,6 +111,16 @@ def main() -> None:
 
     def rng_for(channel: str) -> random.Random:
         return random.Random(args.seed ^ FLOW[channel])
+
+    if args.scenario == "bench":
+        conn_rows: list[dict] = []
+        _gen_bench_conn(conn_rows, rng_for, epoch0)
+        zeek = Path(args.out_dir) / "zeek"
+        zeek.mkdir(parents=True, exist_ok=True)
+        _write_ndjson(zeek / "conn.log", conn_rows)
+        print(f"wrote {len(conn_rows)} bench conn lines")
+        print(f"  {zeek/'conn.log'}")
+        return
 
     conn_rows: list[dict] = []
     dns_rows: list[dict] = []
@@ -197,6 +223,62 @@ def _gen_conn(rows: list[dict], rng_for, epoch0: float) -> None:
                   rb.choice(["SF", "SF", "S1"]), rb.uniform(0.02, 5.0))
 
     rows.sort(key=lambda r: r["ts"])
+
+
+def _gen_bench_conn(rows: list[dict], rng_for, epoch0: float) -> None:
+    """Generate the small conn-only detector measurement corpus."""
+    timing_rng = rng_for("primary_beacon")
+    bytes_rng = rng_for("bench_bytes")
+    for i in range(BENCH_BEACON_COUNT):
+        ts = epoch0 + i * BENCH_BEACON_PERIOD_SECONDS + timing_rng.uniform(-3.5, 3.5)
+        orig_bytes = timing_rng.randint(200, 500)
+        _conn_row(
+            rows,
+            ts,
+            *BENCH_BEACON,
+            orig_bytes,
+            int(orig_bytes * bytes_rng.uniform(2.4, 3.6)),
+            "SF",
+            timing_rng.uniform(0.05, 0.4),
+        )
+
+    duration_rng = rng_for("bench_duration")
+    duration_ts = epoch0 + 12 * 3600 + duration_rng.uniform(-30.0, 30.0)
+    _conn_row(
+        rows,
+        duration_ts,
+        *BENCH_DURATION,
+        bytes_rng.randint(1_000, 4_000),
+        bytes_rng.randint(4_000, 20_000),
+        "SF",
+        BENCH_DURATION_SECONDS,
+    )
+
+    background_rng = rng_for("bench_background")
+    destinations = [
+        "192.0.2.40",
+        "192.0.2.41",
+        "198.51.100.40",
+        "198.51.100.41",
+        "203.0.113.40",
+        "203.0.113.41",
+    ]
+    ports = [22, 53, 80, 443, 8443]
+    for _ in range(50):
+        _conn_row(
+            rows,
+            epoch0 + background_rng.uniform(0, WINDOW_SECONDS),
+            WEBHOST,
+            background_rng.choice(destinations),
+            background_rng.choice(ports),
+            "tcp",
+            bytes_rng.randint(120, 8_000),
+            bytes_rng.randint(120, 40_000),
+            "SF",
+            background_rng.uniform(0.02, 299.0),
+        )
+
+    rows.sort(key=lambda row: row["ts"])
 
 
 # ---------------------------------------------------------------------------

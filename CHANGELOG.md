@@ -42,6 +42,9 @@ All notable changes to sigwood are recorded here. The format follows
 
 ### Changed
 
+- **The DNS detector's default surface threshold now matches its 1.8 high-entropy bar.**
+  On the measurement corpus, 87 of 105 DNS findings scored from 1.5 up to but not
+  including 1.8; the 18 findings at or above 1.8 remain under the new default.
 - **The default hunt is now a curated set rather than every available detector.** Fresh
   installs, omitted selection, `--detect=`, and `--detect=default` select aws, beacon, dns,
   scan, and syslog; duration remains runnable by name while its severity evidence is rebuilt.

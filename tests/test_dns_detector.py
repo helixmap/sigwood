@@ -77,6 +77,11 @@ def _fake_extract(query: str) -> SimpleNamespace:
     )
 
 
+def test_shipped_threshold_matches_high_entropy_bar() -> None:
+    """The shipped surface gate stays pinned to the high-entropy bar."""
+    assert DEFAULT_CONFIG["threshold"] == DEFAULT_CONFIG["thresh_high_entropy"] == 1.8
+
+
 # ── Test 1 - minimal-schema run() doesn't raise ───────────────────────────────
 
 def test_run_minimal_schema_does_not_raise(monkeypatch) -> None:

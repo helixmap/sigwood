@@ -165,7 +165,7 @@ allowlist_dir    = "allowlist.d/"
 # [detectors.dns]
 # min_cluster_size               = 2000
 # min_samples                    = 100
-# threshold                      = 1.5    # keep ≤ thresh_high_entropy
+# threshold                      = 1.8    # keep ≤ thresh_high_entropy
 # thresh_high_entropy            = 1.8    # min per-label suspicion score to flag (weighted lexical heuristic, not Shannon; raise to quiet noise)
 # scan_dense_clusters            = true   # scan dense clusters for the tunnel shape
 # scan_min_high_entropy_fraction = 0.8    # frac of members ≥ thresh_high_entropy

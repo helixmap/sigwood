@@ -62,7 +62,7 @@ REQUIRES_ONE_OF_OPTIONAL_REASON = (
 DEFAULT_CONFIG = {
     "min_cluster_size": 2000,
     "min_samples": 100,
-    "threshold": 1.5,
+    "threshold": 1.8,
     # thresh_high_entropy / scan_min_high_entropy_fraction gate the per-label
     # suspicion score (dns.entropy() - a weighted lexical heuristic, NOT Shannon
     # entropy), not an information-theoretic measure.

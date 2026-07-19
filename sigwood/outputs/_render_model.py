@@ -16,7 +16,8 @@ Cell-projection contract:
     column id + html header (None = a bare entity/flow/domain/principal cell).
     ``align`` mirrors text's justify (right for numeric counts). ``optional`` is
     True ONLY for a column text conditionally DROPS today (dns ``blocked``).
-    ``full_width`` marks a single spanning prose row (aws ``ranked_summary``).
+    ``full_width`` marks a single spanning row (aws ``ranked_summary`` prose,
+    or a syslog row that must not reserve an absent timestamp column).
   - ``section_columns(section)`` → the per-section POSITIONAL column template
     with ``all_empty`` computed ACROSS the section (never inferred from one row).
     ``text_columns`` / ``html_columns`` apply the two per-surface drop rules.
@@ -25,9 +26,9 @@ Cell-projection contract:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 
-from sigwood.common.display import fmt_compact_span, plural
+from sigwood.common.display import fmt_compact_span, fmt_timestamp, plural
 from sigwood.common.finding import Finding, Severity
 from sigwood.outputs._evidence import level_visible
 
@@ -114,13 +115,22 @@ def _partition_aws(findings: list[Finding]) -> list[Section]:
 
 
 def _partition_syslog(findings: list[Finding]) -> list[Section]:
-    """Syslog: rare-event needles/families (MEDIUM) lead; then the collapsed
-    bursts + standalone reboots (tier in {burst, reboot}, all INFO).
-    Mirrors aws's two-tier shape, with the more-interesting tier (needles/families) first
-    so the section-walking cap spends its budget on them before bursts."""
-    rare   = [f for f in findings if f.evidence.get("tier") in (None, "family")]
+    """Syslog: privileged MEDIUM, sieve LOW, then burst/reboot INFO.
+
+    Membership keys on evidence, never severity. Declared order makes the cap spend
+    its budget on the strongest channel first while preserving timestamp order inside
+    each single-severity section.
+    """
+    privileged = [f for f in findings if f.evidence.get("privileged")]
+    rare = [
+        f for f in findings
+        if not f.evidence.get("privileged")
+        and f.evidence.get("tier") in (None, "family")
+    ]
     bursts = [f for f in findings if f.evidence.get("tier") in ("burst", "reboot")]
     out: list[Section] = []
+    if privileged:
+        out.append(Section("privileged", privileged, len(privileged)))
     if rare:
         out.append(Section("rare events", rare, len(rare)))
     if bursts:
@@ -142,8 +152,8 @@ _PARTITIONERS = {
 # Per-detector severity-sort opt-out. Severity sort is the
 # right DEFAULT - within a flat or per-section list, H → M → L → I reads as
 # urgency-first. But syslog's row order CARRIES meaning: the detector emits
-# chronologically, and its two sections ("rare events" = MEDIUM needles/families,
-# "bursts" = INFO collapsed-bursts + standalone reboots) are each single-severity
+# chronologically, and its three sections ("privileged" = MEDIUM, "rare events"
+# = LOW, "bursts" = INFO collapsed-bursts + standalone reboots) are each single-severity
 # - so severity-sort is a no-op anyway, and what matters is preserving ts-order
 # WITHIN a section (a burst sits next to the reboot near it in time). Listing
 # syslog here keeps that incoming order explicit.
@@ -373,9 +383,11 @@ def _project_scan(f: Finding) -> list[Cell]:
 
 def _project_syslog(f: Finding) -> list[Cell]:
     # Variant by TIER (matches _partition_syslog + curated_evidence). Each kind
-    # renders as ONE composed bare cell - text prints it, html spans it (the
-    # single-bare-cell branch). burst / reboot assemble their line from evidence;
-    # an isolated rare row (tier absent, MEDIUM) shows the raw line as before.
+    # with a determinate timestamp starts with the keyed ``first`` cell; text joins
+    # its bare value while HTML exposes the key as the first data-column header.
+    # Rows without a timestamp span the grid so they start directly at their
+    # content instead of reserving an empty timestamp column. An isolated rare row
+    # (tier absent) shows its self-stamped raw line as before.
     ev = f.evidence
     tier = ev.get("tier")
     if tier == "burst":
@@ -383,10 +395,25 @@ def _project_syslog(f: Finding) -> list[Cell]:
         line_count = int(ev.get("line_count", 0))
         span = float(ev.get("span_seconds", 0.0))
         progs = ", ".join(str(name) for name, _count in ev.get("program_mix", []))
-        line = f"{host} · {line_count} rare lines · {span:.0f}s · mostly {progs}"
+        parts = [host]
         if ev.get("label") == "rebooted":
-            line += " · rebooted"
-        return [Cell(None, line)]
+            parts.append("rebooted")
+        parts.extend([
+            f"{line_count} rare lines",
+            f"{span:.0f}s",
+            f"mostly {progs}",
+        ])
+        line = " · ".join(parts)
+        start_ts = ev.get("start_ts")
+        if start_ts is None:
+            return [Cell(None, line, full_width=True)]
+        return [
+            Cell(
+                "first",
+                fmt_timestamp(datetime.fromtimestamp(float(start_ts), tz=timezone.utc)),
+            ),
+            Cell(None, line),
+        ]
     if tier == "family":
         line_count = int(ev.get("line_count", 0))
         parts = [
@@ -397,12 +424,28 @@ def _project_syslog(f: Finding) -> list[Cell]:
         span = ev.get("span_seconds")
         if span is not None:
             parts.append(fmt_compact_span(timedelta(seconds=float(span))))
-        return [Cell(None, " · ".join(parts))]
+        line = " · ".join(parts)
+        start_ts = ev.get("start_ts")
+        if start_ts is None:
+            return [Cell(None, line, full_width=True)]
+        return [
+            Cell(
+                "first",
+                fmt_timestamp(datetime.fromtimestamp(float(start_ts), tz=timezone.utc)),
+            ),
+            Cell(None, line),
+        ]
     if tier == "reboot":
         host = f.title  # reboot title IS the host
-        reboot_ts = ev.get("reboot_ts") or "unknown"
-        return [Cell(None, f"{host} · rebooted @ {reboot_ts}")]
-    return [Cell(None, f.title)]  # isolated rare row - bare raw message
+        line = f"{host} · rebooted"
+        reboot_ts = ev.get("reboot_ts")
+        if reboot_ts is None:
+            return [Cell(None, line, full_width=True)]
+        return [
+            Cell("first", fmt_timestamp(datetime.fromisoformat(str(reboot_ts)))),
+            Cell(None, line),
+        ]
+    return [Cell(None, f.title, full_width=True)]  # self-stamped raw needle
 
 
 def _project_duration(f: Finding) -> list[Cell]:
@@ -509,8 +552,9 @@ def section_columns(section: Section) -> list[ColumnSpec]:
 
     Positional, never key-indexed: repeated bare (``key=None``) columns do NOT
     collapse. The template is the positional UNION over the section's GRID rows
-    (``full_width`` rows - aws ranked_summary - carry no grid cells and are
-    skipped here; they render as a spanning row). A row shorter than the union
+    (``full_width`` rows - aws ranked_summary and no-timestamp syslog rows -
+    carry no grid cells and are skipped here; they render as a spanning row).
+    A row shorter than the union
     contributes ``""`` at the missing positions, so ``all_empty`` stays honest
     for heterogeneous sections (syslog event vs reboot).
     """
@@ -589,10 +633,10 @@ _PDF_SEV_PILL_PX = 40.0  # leftmost severity-pill column allowance
 def _section_table_px(section: Section) -> float:
     """Estimated natural (unwrapped) width, in px, of one section rendered as a
     HTML findings table. Returns 0.0 for a wrap-by-design section that never forces
-    table width: a section with no grid rows (aws ``ranked_summary``-only, or a
-    projector-less detector) OR a single-bare-cell prose section (the syslog raw
-    line - it spans and wraps). ``full_width`` rows (aws ``ranked_summary``) are
-    skipped from BOTH the column derivation (``section_columns``) AND this
+    table width: a section with no grid rows (aws ``ranked_summary``-only,
+    no-timestamp syslog rows, or a projector-less detector) OR a single-bare-cell
+    prose section. ``full_width`` rows are skipped from BOTH the column derivation
+    (``section_columns``) AND this
     measurement loop, so a section that mixes grid rows with a ``full_width`` row
     can't over-measure (a structural guard, not a lean on the aws summary-xor-grid
     detector invariant). Measures over the section's OWN grid rows so the positional

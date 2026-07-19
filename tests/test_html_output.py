@@ -255,21 +255,87 @@ def test_html_section_vanishes_when_emptied_by_cap() -> None:
     assert "showing 2 of 3" in out
 
 
-def test_html_syslog_two_section_order_rare_events_then_bursts() -> None:
-    """syslog renders two sections - rare-event needles (MEDIUM) lead, then the
-    collapsed bursts + standalone reboots (INFO). The reboot row's host appears
-    in the 'bursts' section, after the rare-event row. (syslog is severity-sort
-    exempt; rare events lead by section order, not by severity regrouping.)"""
+def test_html_syslog_three_section_order_privileged_rare_events_bursts() -> None:
+    """syslog cap order is privileged MEDIUM, sieve LOW, then burst INFO."""
     findings = [
-        _finding(detector="syslog", severity=Severity.MEDIUM, title="evt-sentinel-A",
+        _finding(detector="syslog", severity=Severity.LOW, title="evt-sentinel-A",
                  evidence={"host": "h", "template_str": "k", "count": 2, "threshold": 9}),
+        _finding(detector="syslog", severity=Severity.MEDIUM, title="member-sentinel-P",
+                 evidence={"host": "h", "template_str": "m", "count": 1,
+                           "threshold": 1, "privileged": True}),
         _finding(detector="syslog", severity=Severity.INFO, title="host-sentinel-B",
                  evidence={"tier": "reboot", "host": "host-sentinel-B",
                            "reboot_ts": "2026-06-01T03:04:05+00:00", "label": "rebooted"}),
     ]
     out = _render(findings)
-    assert out.index("rare events") < out.index("bursts")
+    assert out.index("privileged") < out.index("rare events") < out.index("bursts")
+    assert out.index("member-sentinel-P") < out.index("evt-sentinel-A")
     assert out.index("evt-sentinel-A") < out.index("host-sentinel-B")
+    assert '>1</div><div class="sev-label">Low<' in out
+
+
+def test_html_syslog_cap_spends_privileged_first_and_empty_labels_vanish() -> None:
+    findings = [
+        _finding(detector="syslog", severity=Severity.LOW, title="sieve",
+                 evidence={"host": "h", "template_str": "s", "count": 1, "threshold": 1}),
+        _finding(detector="syslog", severity=Severity.MEDIUM, title="member",
+                 evidence={"host": "h", "template_str": "m", "count": 1,
+                           "threshold": 1, "privileged": True}),
+        _finding(detector="syslog", severity=Severity.INFO, title="reboot-host",
+                 evidence={"tier": "reboot", "host": "reboot-host",
+                           "reboot_ts": "2026-06-01T03:04:05+00:00", "label": "rebooted"}),
+    ]
+    out = _render(findings, cap=1)
+    assert "privileged (1)" in out
+    assert "member" in out
+    assert "rare events (" not in out
+    assert "bursts (" not in out
+    assert "sieve" not in out
+    assert "reboot-host" not in out
+
+
+def test_html_syslog_sample_details_real_path_is_closed_escaped_and_print_hidden() -> None:
+    hostile = 'raw\x1b<script>x</script>"</details><img src=x>'
+    finding = _finding(
+        detector="syslog", severity=Severity.LOW, title="host-family",
+        evidence={
+            "tier": "family", "host": "host-family", "program": "kernel",
+            "line_count": 2, "start_ts": 1.0, "end_ts": 2.0,
+            "span_seconds": 1.0, "sample_raw": [hostile, "safe-second"],
+            "label": None,
+        },
+    )
+    for level in (0, 1, 2):
+        out = _render([finding], verbose_level=level)
+        _assert_no_data_controls(out)
+        assert '<details><summary>sampled log lines</summary>' in out
+        assert "<th>first</th>" in out
+        assert out.index("<th>first</th>") < out.index("host-family")
+        assert "<details open" not in out
+        assert "sample-detail-body" in out
+        assert ".sample-detail-body { display: none; }" in out
+        assert '&lt;script&gt;x&lt;/script&gt;&quot;&lt;/details&gt;&lt;img src=x&gt;' in out
+        assert "<script>x</script>" not in out
+        assert "<img src=x>" not in out
+
+
+def test_html_syslog_level_one_sample_is_three_while_details_keeps_full_sample() -> None:
+    samples = [f"sample-{i}" for i in range(5)]
+    finding = _finding(
+        detector="syslog", severity=Severity.INFO, title="host-burst",
+        evidence={
+            "tier": "burst", "line_count": 5, "span_seconds": 4.0,
+            "start_ts": 1.0, "end_ts": 5.0, "first_seen": "1970-01-01T00:00:01+00:00",
+            "program_mix": [["kernel", 5]], "sample_raw": samples, "label": None,
+        },
+    )
+    out = _render([finding], verbose_level=1)
+    # sample-0..2 appear once in the -v grid and once in the full details body;
+    # sample-3..4 appear only in the full details body.
+    assert out.count("sample-0") == 2
+    assert out.count("sample-2") == 2
+    assert out.count("sample-3") == 1
+    assert out.count("sample-4") == 1
 
 
 def test_html_aws_ranked_summary_survives_as_full_width_row() -> None:

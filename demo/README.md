@@ -78,17 +78,19 @@ At the default seed, these commands show:
 - **dns - 1 finding (HIGH):** one grouped finding for ~13 high-entropy subdomains
   sharing a single random `.xyz` apex, all from `192.168.1.37`, most returning
   NXDOMAIN. Max label score ~1.96.
-- **syslog - 8 findings (7 MEDIUM + 1 INFO):** the intrusion on `webhost` across two
+- **syslog - 8 findings (3 MEDIUM + 4 LOW + 1 INFO):** the intrusion on `webhost` across two
   tight clusters - initial access + escalation (root SSH login from the C2 IP, a
   `sudo … USER=root` shell, a `useradd … UID=0` account) then, ~an hour later,
   persistence (a root `crontab REPLACE` and an sshd listener on port 8443). Rare
   lines sharing one host and program fold into a single per-program review unit,
-  so the two `sshd` lines render as `webhost · sshd · 2 rare lines · 1h` (the
-  sampled lines sit one verbosity level down); `db01`'s two kernel one-offs fold
-  the same way, alongside its smartd SMART pre-fail and `named` lookup failure,
-  and one INFO burst collapses a `gateway` reboot. The rare events are shown
-  chronologically, so the analyst still picks the `webhost` cluster out of the
-  surrounding noise.
+  so the two `sshd` lines render as one MEDIUM privileged family, with the seeded
+  `sudo` and `useradd` lines as MEDIUM privileged needles. The `useradd` remains one
+  standalone G3 seed; it is not duplicated by the generator. `db01`'s two kernel
+  one-offs fold into one LOW rare-events family, alongside LOW smartd, crontab, and
+  named needles, while one INFO burst collapses a `gateway` reboot. Family and burst
+  rows carry a first-seen timestamp; `-v` shows up to three sampled lines, and HTML
+  reports offer a closed full-sample expansion. Rows stay chronological within each
+  section, so the analyst still picks the `webhost` cluster out of the surrounding noise.
 
 The banner also shows a non-zero `allowlist:` line: a minority of the DNS queries
 are reverse-PTR / mDNS / DNS-SD lookups that the shipped allowlist suppresses

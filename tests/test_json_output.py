@@ -93,11 +93,14 @@ def test_syslog_family_evidence_is_lossless_and_nullable() -> None:
         "host": "host-family",
         "program": "sshd",
         "line_count": 2,
+        "program_total": 4412,
         "start_ts": None,
         "end_ts": None,
+        "first_seen": None,
         "span_seconds": None,
         "sample_raw": ["raw-a", "raw-b"],
         "label": None,
+        "privileged": True,
     }
     family = Finding(
         detector="syslog",

@@ -68,13 +68,17 @@ def curated_evidence(finding: Finding) -> dict[str, Any]:
     elif det == "syslog":
         tier = ev.get("tier")
         if tier == "burst":
-            keys = ("line_count", "span_seconds", "program_mix", "label")
+            keys = (
+                "line_count", "span_seconds", "first_seen", "program_mix", "label",
+            )
         elif tier == "family":
-            keys = ("program", "line_count", "span_seconds")
+            keys = (
+                "program", "line_count", "program_total", "span_seconds", "first_seen",
+            )
         elif tier == "reboot":
             keys = ("label", "signal_count")
         else:  # isolated rare row
-            keys = ("template_str", "host", "count", "threshold")
+            keys = ("template_str", "host", "program_total", "count", "threshold")
     elif det == "scan":
         keys = ("scan_state_ratio", "top_states", "direction", "pattern_tag")
     elif det == "duration":
@@ -139,7 +143,16 @@ def evidence_at_level(finding: Finding, level: int) -> dict[str, Any]:
         return {}
     if level >= 2:
         return finding.evidence
-    return curated_evidence(finding)
+    out = curated_evidence(finding)
+    if (
+        finding.detector == "syslog"
+        and finding.evidence.get("tier") in ("family", "burst")
+        and isinstance(finding.evidence.get("sample_raw"), (list, tuple))
+    ):
+        # Reading-level sample: enough to skim at -v. CSV deliberately calls
+        # curated_evidence() directly and therefore never inherits raw members.
+        out["sample_raw"] = list(finding.evidence["sample_raw"][:3])
+    return out
 
 
 def level_visible(finding: Finding, level: int) -> bool:

@@ -1250,14 +1250,19 @@ def test_cr1_curated_evidence_includes_zero_numpy_value() -> None:
 
 
 def test_cr2_syslog_preserves_chronological_order_within_sections() -> None:
-    """syslog is ``_SEVERITY_SORT_EXEMPT``. The two-section partition is
-    each single-severity (rare events = MEDIUM, bursts = INFO), so what matters
+    """syslog is ``_SEVERITY_SORT_EXEMPT``. The three-section partition is
+    single-severity (privileged = MEDIUM, rare events = LOW, bursts = INFO), so what matters
     is that rows are NOT reordered WITHIN a section - the detector emits
     chronologically and the renderer must preserve that incoming order. Rare
     events lead; bursts follow."""
-    def _medium(title: str) -> Finding:
-        f = _bare_finding("syslog", Severity.MEDIUM, title)
+    def _rare(title: str) -> Finding:
+        f = _bare_finding("syslog", Severity.LOW, title)
         f.evidence = {"host": "router", "template_str": "t", "count": 1, "threshold": 1}
+        return f
+    def _member(title: str) -> Finding:
+        f = _bare_finding("syslog", Severity.MEDIUM, title)
+        f.evidence = {"host": "router", "template_str": "t", "count": 1,
+                      "threshold": 1, "privileged": True}
         return f
     def _reboot(host: str) -> Finding:
         f = _bare_finding("syslog", Severity.INFO, host)
@@ -1269,15 +1274,19 @@ def test_cr2_syslog_preserves_chronological_order_within_sections() -> None:
         }
         return f
     fs = [
-        _medium("rare-event-1"),
-        _medium("rare-event-2"),
+        _rare("rare-event-1"),
+        _rare("rare-event-2"),
+        _member("member-event-1"),
+        _member("member-event-2"),
         _reboot("reboot-host-A"),
         _reboot("reboot-host-B"),
     ]
     out = _capture_write(TextHandler(verbose_level=0), fs)
-    # Incoming order preserved within each section; rare events before bursts.
+    # Incoming order preserved within each section; declared section order wins.
+    assert out.index("member-event-1") < out.index("member-event-2")
     assert out.index("rare-event-1") < out.index("rare-event-2")
     assert out.index("reboot-host-A") < out.index("reboot-host-B")
+    assert out.index("member-event-2") < out.index("rare-event-1")
     assert out.index("rare-event-2") < out.index("reboot-host-A")
 
 

@@ -370,19 +370,35 @@ One wrinkle dominates real logs: when a host does a lot at once - a reboot, a pa
 upgrade, a service restart - it spits out a burst of one-off lines (init chatter, services
 starting in a fresh order, kernel ring-buffer dumps) that would *all* read as rare. A single
 boot can be hundreds of "rare" lines. So rather than flood you, sigwood folds each per-host
-burst of rare lines into a single summary - `webhost · 187 rare lines · 12s · mostly kernel,
-systemd` - and tags it `rebooted` when a boot signal lands in the same window. Reboots
+burst of rare lines into a single summary - `2026-07-01 03:12 UTC · webhost · 187 rare
+lines · 12s · mostly kernel, systemd` - and tags it `rebooted` directly after the host
+when a boot signal lands in the same window. Reboots
 themselves are detected on a separate full-frame pass, independent of rarity, so a machine
 that reboots over and over is flagged **every** time - not just on its first, still-unique
-boot. What's left once the storms are folded are the *isolated* rare lines - the one-off
-command, the singular error - which are exactly the needles worth your attention. Isolated
-lines that share one host and one program fold once more into a single per-program review
-unit - `webhost · sshd · 2 rare lines · 1h` - because "this program produced N one-offs" is
-one decision, not N; the sampled lines are one verbosity level down, and a lone rare line
-still stands on its own. Long identifier-like hexadecimal runs (queue ids, session tokens)
-are normalized during template mining, so a message that differs only by such an identifier
-counts as repetition rather than a parade of one-offs. A restart shouldn't bury the day's
-real signal.
+boot.
+
+The remaining rare lines use two deliberately modest tiers. The everyday **rare events**
+sieve is LOW and remains visible in the default report: rarity concentrates things worth
+skimming, but does not by itself claim danger. An exact, case-sensitive match on the parsed
+program name against a small shipped class of authentication, privilege, account, audit,
+and crash programs moves the finding into the MEDIUM **privileged** section. Membership is
+never inferred from message text. Privileged rows also stay out of INFO burst collapse, so
+a lone `useradd` cannot vanish into nearby routine chatter.
+
+Within either rarity channel, isolated lines that share one host and one program fold into
+a single review unit - `2026-07-01 03:12 UTC · webhost · sshd · 2 rare lines · 1h` -
+because "this program produced
+N one-offs" is one decision, not N; a lone rare line still stands on its own. Family and
+burst rows show their first timestamp, `-v` includes up to three sampled lines, and an HTML
+report has a closed expansion for the full bounded sample. Long identifier-like hexadecimal
+runs (queue ids, session tokens) are normalized during template mining, so a message that
+differs only by such an identifier counts as repetition rather than a parade of one-offs.
+
+The shipped class is configuration, not a hidden rule. Copy the commented
+`privileged_programs = [...]` block under `[detectors.syslog]` from
+`config_example.toml` into your config, then add or remove exact program tokens; an operator
+list replaces the shipped roster. A restart should not bury the day's real signal, and
+rarity alone should not overstate it.
 
 ### `aws` - why a plain z-score instead of a fancy model?
 

@@ -26,14 +26,18 @@ import pandas as pd
 
 from sigwood.common.finding import DetectorContext, Finding, Severity
 from sigwood.detectors.syslog import (
+    DEFAULT_CONFIG,
     DETECTOR_NAME,
+    PRIVILEGED_PROGRAMS,
     STATUS,
     REBOOT_CLUSTER_SECONDS,
     _BootEvent,
     _collapse_bursts,
     _collapse_families,
+    _decorate_burst_first_seen,
     _detect_boot_events,
     _gap_cluster,
+    _normalize_identity_columns,
     _reboot_finding,
     _reconcile,
     _run_drain3,
@@ -128,15 +132,35 @@ def _collapse(rows, *, gap=60, size=3):
     return _collapse_parts(rows, gap=gap, size=size)[0]
 
 
-def _family_fold(df: pd.DataFrame, *, min_size=2, threshold=1):
+def _family_fold(
+    df: pd.DataFrame,
+    *,
+    min_size=2,
+    threshold=1,
+    severity: Severity = Severity.LOW,
+    privileged: bool = False,
+    program_totals: dict | None = None,
+):
     """Run the family seam over a hand-built isolated remainder."""
     freq = {
         int(template_id): int(count)
         for template_id, count in df["template_id"].value_counts().items()
     }
+    if program_totals is None:
+        identities = df.copy()
+        for column in ("host", "program"):
+            if column not in identities:
+                identities[column] = "unknown"
+            else:
+                identities[column] = identities[column].fillna("unknown")
+        program_totals = {
+            key: int(len(group))
+            for key, group in identities.groupby(["host", "program"], sort=False)
+        }
     return _collapse_families(
         df, freq, threshold, min_size=min_size,
         now=_NOW, data_window=_WINDOW,
+        severity=severity, privileged=privileged, program_totals=program_totals,
     )
 
 
@@ -177,6 +201,19 @@ class SyslogDetectorTests(unittest.TestCase):
         self.assertEqual(STATUS, "available")
         self.assertEqual(DETECTOR_NAME, "syslog")
 
+    def test_privileged_roster_exact_and_default_is_fresh_copy(self) -> None:
+        self.assertEqual(len(PRIVILEGED_PROGRAMS), 31)
+        self.assertEqual(PRIVILEGED_PROGRAMS, (
+            "sshd", "sshd-session", "sshd-auth", "login", "sulogin",
+            "sudo", "su", "runuser", "doas", "pkexec", "polkitd",
+            "useradd", "userdel", "usermod", "groupadd", "groupdel", "groupmod",
+            "passwd", "chpasswd", "chage", "gpasswd", "newusers", "chgpasswd",
+            "groupmems", "chsh", "newgrp", "sg", "auditd", "audisp-syslog",
+            "audispd", "systemd-coredump",
+        ))
+        self.assertEqual(DEFAULT_CONFIG["privileged_programs"], list(PRIVILEGED_PROGRAMS))
+        self.assertIsNot(DEFAULT_CONFIG["privileged_programs"], PRIVILEGED_PROGRAMS)
+
     # ── Empty input ───────────────────────────────────────────────────────────
 
     def test_run_returns_empty_on_empty_dataframe(self) -> None:
@@ -194,8 +231,8 @@ class SyslogDetectorTests(unittest.TestCase):
 
     # ── Anomalous findings ────────────────────────────────────────────────────
 
-    def test_run_returns_medium_findings_for_anomalous_rows(self) -> None:
-        """One rare template (count=1) among 50 common rows → one MEDIUM finding."""
+    def test_run_returns_low_sieve_finding_for_anomalous_row(self) -> None:
+        """One unprivileged rare template among common rows → one LOW finding."""
         rows = [_common_row(i) for i in range(50)]
         rows.append({
             "ts":      _BASE_TS + 3600.0,
@@ -215,7 +252,8 @@ class SyslogDetectorTests(unittest.TestCase):
         assert_report_voice(findings)
         self.assertEqual(len(findings), 1)
         self.assertEqual(findings[0].detector, "syslog")
-        self.assertEqual(findings[0].severity, Severity.MEDIUM)
+        self.assertEqual(findings[0].severity, Severity.LOW)
+        self.assertNotIn("privileged", findings[0].evidence)
 
     def test_rarity_pct_is_inert_at_max_count_1(self) -> None:
         """Characterization: rarity_pct is a decoy at the shipped max_count=1.
@@ -542,15 +580,17 @@ class SyslogDetectorTests(unittest.TestCase):
         self.assertEqual(len(families), 1)
         self.assertEqual(len(needles), 2)
         family = families[0]
-        self.assertEqual(family.severity, Severity.MEDIUM)
+        self.assertEqual(family.severity, Severity.LOW)
         self.assertEqual(family.title, "host-a")
         self.assertEqual(family.evidence, {
             "tier": "family",
             "host": "host-a",
             "program": "sshd",
             "line_count": 2,
+            "program_total": 2,
             "start_ts": _BASE_TS,
             "end_ts": _BASE_TS + 120,
+            "first_seen": datetime.fromtimestamp(_BASE_TS, timezone.utc).isoformat(),
             "span_seconds": 120.0,
             "sample_raw": ["a0", "a1"],
             "label": None,
@@ -595,6 +635,7 @@ class SyslogDetectorTests(unittest.TestCase):
         self.assertIsNone(family.evidence["start_ts"])
         self.assertIsNone(family.evidence["end_ts"])
         self.assertIsNone(family.evidence["span_seconds"])
+        self.assertIsNone(family.evidence["first_seen"])
         self.assertEqual(family.evidence["sample_raw"], ["first", "second"])
 
     def test_family_mixed_timestamps_sample_nan_last(self) -> None:
@@ -618,38 +659,21 @@ class SyslogDetectorTests(unittest.TestCase):
         self.assertEqual(finding.evidence["tier"], "family")
         self.assertEqual(finding.evidence["line_count"], 1)
 
-    def test_family_of_one_preserves_level_zero_and_verbose_one(self) -> None:
-        from sigwood.outputs._render_model import _partition_syslog
-        from sigwood.outputs.text import TextHandler
+    def test_family_zero_epoch_first_seen_is_not_none(self) -> None:
+        rows = [
+            _rare_row(0.0, "h", "zero", program="p", template_id=1),
+            _rare_row(1.0, "h", "one", program="p", template_id=2),
+        ]
+        _, family = _family_fold(_rare_df(rows))[0]
+        self.assertEqual(family.evidence["first_seen"], "1970-01-01T00:00:00+00:00")
 
+    def test_family_of_one_is_low_needle_with_program_total(self) -> None:
         row = _rare_row(_BASE_TS, "h", "raw-one", program="sshd", template_id=1)
         finding = _family_fold(_rare_df([row]))[0][1]
-        legacy = Finding(
-            detector=finding.detector,
-            severity=finding.severity,
-            title=finding.title,
-            description=finding.description,
-            evidence={k: v for k, v in finding.evidence.items() if k != "program"},
-            next_steps=finding.next_steps,
-            ts_generated=finding.ts_generated,
-            data_window=finding.data_window,
-        )
-
-        for level in (0, 1):
-            current = TextHandler(verbose_level=level)._render_syslog_group(
-                _partition_syslog([finding])
-            )
-            before = TextHandler(verbose_level=level)._render_syslog_group(
-                _partition_syslog([legacy])
-            )
-            self.assertEqual(current, before)
-
-        debug = "\n".join(
-            TextHandler(verbose_level=2)._render_syslog_group(
-                _partition_syslog([finding])
-            )
-        )
-        self.assertIn("program: sshd", debug)
+        self.assertEqual(finding.severity, Severity.LOW)
+        self.assertEqual(finding.evidence["program"], "sshd")
+        self.assertEqual(finding.evidence["program_total"], 1)
+        self.assertNotIn("privileged", finding.evidence)
 
     def test_family_pipeline_represents_every_row_exactly_once_with_program_defenses(self) -> None:
         base_rows = (
@@ -687,6 +711,59 @@ class SyslogDetectorTests(unittest.TestCase):
                 Counter(represented),
                 Counter(str(raw) for raw in frame["raw"]),
             )
+
+    def test_two_channel_pipeline_conserves_every_unique_member_once(self) -> None:
+        rows = (
+            [_rare_row(_BASE_TS + i, "burst", f"sieve-burst-{i}",
+                       program="cron", template_id=10 + i) for i in range(3)]
+            + [_rare_row(_BASE_TS + i * 120, "sfam", f"sieve-family-{i}",
+                         program="kernel", template_id=20 + i) for i in range(2)]
+            + [_rare_row(_BASE_TS + 500, "sneedle", "sieve-needle",
+                         program="cron", template_id=30)]
+            + [_rare_row(_BASE_TS + i * 120, "mfam", f"member-family-{i}",
+                         program="useradd", template_id=40 + i) for i in range(2)]
+            + [_rare_row(_BASE_TS + 500, "mneedle", "member-needle",
+                         program="sshd", template_id=50)]
+            + [_rare_row(float("nan"), "mnan", "member-nan",
+                         program="sudo", template_id=60)]
+        )
+        frame = _rare_df(rows)
+        frame.index = [7] * len(frame)  # duplicate source indexes cannot expand complements
+        work = frame.copy()
+        mask = work["program"].isin(set(PRIVILEGED_PROGRAMS) - {"unknown"})
+        members, sieve = work.loc[mask].copy(), work.loc[~mask].copy()
+        identities = _normalize_identity_columns(work)
+        totals = {
+            key: int(len(group))
+            for key, group in identities.groupby(["host", "program"], sort=False)
+        }
+        freq = {int(t): 1 for t in work["template_id"]}
+        bursts, sieve_remainder = _collapse_bursts(
+            sieve, gap_seconds=60, min_size=3, now=_NOW, data_window=_WINDOW,
+        )
+        sieve_pairs = _collapse_families(
+            sieve_remainder, freq, 1, min_size=2, now=_NOW, data_window=_WINDOW,
+            severity=Severity.LOW, privileged=False, program_totals=totals,
+        )
+        member_pairs = _collapse_families(
+            members, freq, 1, min_size=2, now=_NOW, data_window=_WINDOW,
+            severity=Severity.MEDIUM, privileged=True, program_totals=totals,
+        )
+
+        represented: list[str] = []
+        findings = [f for _, f in [*bursts, *sieve_pairs, *member_pairs]]
+        for finding in findings:
+            if finding.evidence.get("tier") in ("burst", "family"):
+                represented.extend(finding.evidence["sample_raw"])
+            else:
+                represented.append(finding.title)
+        self.assertEqual(Counter(represented), Counter(str(raw) for raw in frame["raw"]))
+        self.assertFalse(any(f.severity == Severity.HIGH for f in findings))
+        self.assertTrue(all(
+            f.evidence.get("privileged") is True
+            for _, f in member_pairs
+        ))
+        self.assertTrue(all("privileged" not in f.evidence for _, f in sieve_pairs))
 
     def test_reconcile_never_labels_family_and_emits_standalone_reboot(self) -> None:
         rows = [
@@ -759,12 +836,129 @@ class SyslogDetectorTests(unittest.TestCase):
         result = _run_with(common + seeded, ids, strs)
         families = [f for f in result if f.evidence.get("tier") == "family"]
         self.assertEqual(len(families), 1)
+        self.assertEqual(families[0].severity, Severity.MEDIUM)
+        self.assertIs(families[0].evidence["privileged"], True)
         self.assertEqual(families[0].evidence["line_count"], 2)
         self.assertEqual(
             families[0].evidence["sample_raw"],
             ["sshd: privileged login sentinel", "sshd: persistence sentinel"],
         )
         self.assertFalse([f for f in result if f.evidence.get("tier") is None])
+
+    def test_roster_membership_is_exact_case_sensitive_and_never_unknown(self) -> None:
+        common = [_common_row(i) for i in range(20)]
+        programs = ["sshd", "SSHD", "sshd/session", "unknown", None]
+        rare = [
+            {
+                "ts": _BASE_TS + 100_000 + i * 120,
+                "host": f"host-{i}",
+                "program": program,
+                "raw": f"sentinel-{i}",
+                "message": f"sentinel-{i}",
+            }
+            for i, program in enumerate(programs)
+        ]
+        ids = [1] * len(common) + list(range(2, 2 + len(rare)))
+        strs = ["common"] * len(common) + [f"rare-{i}" for i in range(len(rare))]
+        findings = _run_with(
+            common + rare, ids, strs,
+            {"max_count": 1, "rarity_pct": 10,
+             "privileged_programs": ["sshd", "unknown"]},
+        )
+        by_title = {finding.title: finding for finding in findings}
+        self.assertEqual(by_title["sentinel-0"].severity, Severity.MEDIUM)
+        self.assertIs(by_title["sentinel-0"].evidence["privileged"], True)
+        for i in range(1, 5):
+            self.assertEqual(by_title[f"sentinel-{i}"].severity, Severity.LOW)
+            self.assertNotIn("privileged", by_title[f"sentinel-{i}"].evidence)
+
+    def test_run_hands_raw_sieve_frame_to_unchanged_burst_pass(self) -> None:
+        common = [_common_row(i) for i in range(20)]
+        rare = [{"ts": _BASE_TS + 100_000, "host": None, "program": None,
+                 "raw": "raw-sieve", "message": "raw-sieve"}]
+        captured: dict[str, pd.DataFrame] = {}
+
+        def _capture(frame: pd.DataFrame, **kwargs):
+            captured["frame"] = frame.copy()
+            return _collapse_bursts(frame, **kwargs)
+
+        with (
+            patch(
+                "sigwood.detectors.syslog._run_drain3",
+                _patched_drain3([1] * 20 + [2], ["common"] * 20 + ["rare"]),
+            ),
+            patch("sigwood.detectors.syslog._collapse_bursts", side_effect=_capture),
+        ):
+            run(_ctx(pd.DataFrame(common + rare), {"max_count": 1, "rarity_pct": 10}))
+
+        sieve = captured["frame"]
+        self.assertEqual(list(sieve.index), [20])
+        self.assertTrue(pd.isna(sieve.iloc[0]["host"]))
+        self.assertTrue(pd.isna(sieve.iloc[0]["program"]))
+
+    def test_member_never_bursts_while_sieve_siblings_do(self) -> None:
+        common = [_common_row(i) for i in range(20)]
+        rare = [
+            {"ts": _BASE_TS + 100_000, "host": "h", "program": "useradd",
+             "raw": "member", "message": "member"},
+            *[
+                {"ts": _BASE_TS + 100_001 + i, "host": "h", "program": "cron",
+                 "raw": f"sieve-{i}", "message": f"sieve-{i}"}
+                for i in range(3)
+            ],
+        ]
+        ids = [1] * len(common) + [2, 3, 4, 5]
+        strs = ["common"] * len(common) + ["member", "s0", "s1", "s2"]
+        findings = _run_with(common + rare, ids, strs)
+        member = next(f for f in findings if f.title == "member")
+        burst = next(f for f in findings if f.evidence.get("tier") == "burst")
+        self.assertEqual(member.severity, Severity.MEDIUM)
+        self.assertIs(member.evidence["privileged"], True)
+        self.assertEqual(burst.severity, Severity.INFO)
+        self.assertEqual(burst.evidence["sample_raw"], ["sieve-0", "sieve-1", "sieve-2"])
+
+    def test_member_nan_timestamp_survives_as_medium(self) -> None:
+        common = [_common_row(i) for i in range(20)]
+        rare = [{"ts": float("nan"), "host": "h", "program": "sudo",
+                 "raw": "nan-member", "message": "nan-member"}]
+        finding = _run_with(common + rare, [1] * 20 + [2], ["common"] * 20 + ["rare"])[0]
+        self.assertEqual(finding.title, "nan-member")
+        self.assertEqual(finding.severity, Severity.MEDIUM)
+        self.assertIs(finding.evidence["privileged"], True)
+
+    def test_program_total_counts_full_loaded_host_program_population(self) -> None:
+        rows = [
+            {"ts": _BASE_TS + i, "host": "h", "program": "useradd",
+             "raw": f"common-{i}", "message": "common"}
+            for i in range(20)
+        ]
+        rows.append({"ts": _BASE_TS + 100, "host": "h", "program": "useradd",
+                     "raw": "rare", "message": "rare"})
+        finding = _run_with(rows, [1] * 20 + [2], ["common"] * 20 + ["rare"])[0]
+        self.assertEqual(finding.evidence["program_total"], 21)
+        self.assertEqual(finding.evidence["count"], 1)
+
+    def test_burst_first_seen_decorator_preserves_identity_and_reconcile_claim(self) -> None:
+        rows = [_rare_row(_BASE_TS + i, "h", f"r{i}", program="cron", template_id=i)
+                for i in range(3)]
+        burst_pairs, remainder = _collapse_bursts(
+            _rare_df(rows), gap_seconds=60, min_size=3, now=_NOW, data_window=_WINDOW,
+        )
+        self.assertTrue(remainder.empty)
+        stored = burst_pairs[0][1]
+        stored_id = id(stored)
+        _decorate_burst_first_seen(burst_pairs)
+        self.assertEqual(id(burst_pairs[0][1]), stored_id)
+        self.assertEqual(
+            stored.evidence["first_seen"],
+            datetime.fromtimestamp(_BASE_TS, timezone.utc).isoformat(),
+        )
+        out = _reconcile(
+            [_BootEvent("h", _BASE_TS, _BASE_TS, 1)], burst_pairs,
+            gap_seconds=60, now=_NOW, data_window=_WINDOW,
+        )
+        self.assertIs(out[0][1], stored)
+        self.assertEqual(stored.evidence["label"], "rebooted")
 
     def test_run_clean_reboot_no_storm_is_standalone_reboot(self) -> None:
         common = [_common_row(i) for i in range(50)]
@@ -924,7 +1118,7 @@ class SyslogDetectorTests(unittest.TestCase):
         # The detector output is verbosity-blind; the reading pipeline must not
         # DROP any syslog finding at any level (no level_visible rule for syslog).
         from sigwood.outputs._render_model import _build_renderable
-        medium = Finding(detector="syslog", severity=Severity.MEDIUM, title="rare",
+        rare = Finding(detector="syslog", severity=Severity.LOW, title="rare",
                          description="", evidence={"host": "h", "template_str": "t",
                          "count": 1, "threshold": 1}, next_steps=[],
                          ts_generated=_NOW, data_window=_WINDOW)
@@ -933,13 +1127,13 @@ class SyslogDetectorTests(unittest.TestCase):
                         "span_seconds": 1.0, "start_ts": 1.0, "end_ts": 2.0,
                         "program_mix": [["p", 4]], "sample_raw": ["a"], "label": None},
                         next_steps=[], ts_generated=_NOW, data_window=_WINDOW)
-        family = Finding(detector="syslog", severity=Severity.MEDIUM, title="h",
+        family = Finding(detector="syslog", severity=Severity.LOW, title="h",
                          description="", evidence={"tier": "family", "host": "h",
                          "program": "p", "line_count": 2, "start_ts": 3.0,
                          "end_ts": 4.0, "span_seconds": 1.0,
                          "sample_raw": ["b", "c"], "label": None},
                          next_steps=[], ts_generated=_NOW, data_window=_WINDOW)
-        fs = [medium, family, burst]
+        fs = [rare, family, burst]
         for lvl in (0, 1, 2):
             r = _build_renderable("syslog", fs, lvl, 100)
             self.assertEqual(sum(len(s.findings) for s in r.sections), len(fs))
@@ -947,12 +1141,11 @@ class SyslogDetectorTests(unittest.TestCase):
     # ── Text renderer ─────────────────────────────────────────────────────────
 
     def test_text_renderer_syslog_group(self) -> None:
-        """Two-section render: rare-event needles lead, then bursts; the reboot
-        line is assembled from evidence, template/count details stay behind -v."""
+        """Needles lead bursts; aggregate rows use the shared display timestamp."""
         from sigwood.outputs.text import TextHandler
         from sigwood.outputs._render_model import _partition_syslog
 
-        medium_f = Finding(
+        privileged_f = Finding(
             detector="syslog",
             severity=Severity.MEDIUM,
             title="May 30 14:23:01 router sshd[100]: Failed password for root",
@@ -960,7 +1153,7 @@ class SyslogDetectorTests(unittest.TestCase):
             evidence={
                 "host": "router", "template_id": 47,
                 "template_str": "sshd[*]: Failed password for <*>",
-                "count": 1, "threshold": 3,
+                "count": 1, "threshold": 3, "privileged": True,
             },
             next_steps=[],
             ts_generated=_NOW,
@@ -982,19 +1175,19 @@ class SyslogDetectorTests(unittest.TestCase):
 
         handler = TextHandler(verbose_level=0)
         joined = "\n".join(
-            handler._render_syslog_group(_partition_syslog([medium_f, reboot_f]))
+            handler._render_syslog_group(_partition_syslog([privileged_f, reboot_f]))
         )
 
-        # Section labels with pre-cap counts, rare events leading.
-        self.assertIn("rare events (1)", joined)
+        # Section labels with pre-cap counts, privileged events leading.
+        self.assertIn("privileged (1)", joined)
         self.assertIn("bursts (1)", joined)
-        self.assertLess(joined.index("rare events"), joined.index("bursts"))
+        self.assertLess(joined.index("privileged"), joined.index("bursts"))
         # MEDIUM needle: raw line, template/count internals stay behind -v.
         self.assertIn("May 30 14:23:01 router sshd[100]", joined)
         self.assertNotIn("count=", joined)
         self.assertNotIn("template_id", joined)
-        # Reboot line assembled from evidence.
-        self.assertIn("host1 · rebooted @ 2026-05-30T02:14:00+00:00", joined)
+        # Reboot line leads with the display-timezone timestamp from evidence.
+        self.assertIn("2026-05-30 02:14 local · host1 · rebooted", joined)
 
     def test_text_renderer_syslog_verbose_shows_template_details(self) -> None:
         """Verbose syslog output includes rarity and drain3 template internals."""
@@ -1008,7 +1201,7 @@ class SyslogDetectorTests(unittest.TestCase):
             evidence={
                 "host": "router", "template_id": 47,
                 "template_str": "sshd[*]: Failed password for <*>",
-                "count": 1, "threshold": 3,
+                "count": 1, "threshold": 3, "privileged": True,
             },
             next_steps=["Review surrounding log context for this host"],
             ts_generated=_NOW,
@@ -1027,6 +1220,50 @@ class SyslogDetectorTests(unittest.TestCase):
         self.assertIn("threshold: 3", rendered)
         self.assertIn("Rare template", rendered)
         self.assertIn("next steps:", rendered)
+
+    def test_text_syslog_low_is_visible_at_level_zero(self) -> None:
+        from sigwood.outputs.text import TextHandler
+        from sigwood.outputs._render_model import _partition_syslog
+
+        low = Finding(
+            detector="syslog", severity=Severity.LOW, title="low-sentinel",
+            description="", evidence={"host": "h", "program_total": 1,
+                                       "template_str": "t", "count": 1, "threshold": 1},
+            next_steps=[], ts_generated=_NOW, data_window=_WINDOW,
+        )
+        rendered = "\n".join(
+            TextHandler(verbose_level=0)._render_syslog_group(_partition_syslog([low]))
+        )
+        self.assertIn("rare events (1)", rendered)
+        self.assertIn("[L]", rendered)
+        self.assertIn("low-sentinel", rendered)
+
+    def test_text_level_one_samples_three_and_level_two_keeps_full(self) -> None:
+        from sigwood.outputs.text import TextHandler
+        from sigwood.outputs._render_model import _partition_syslog
+
+        samples = [f"raw-sample-{i}" for i in range(5)]
+        family = Finding(
+            detector="syslog", severity=Severity.LOW, title="h",
+            description="Family detail.", evidence={
+                "tier": "family", "host": "h", "program": "kernel",
+                "line_count": 5, "program_total": 500, "start_ts": _BASE_TS,
+                "end_ts": _BASE_TS + 4, "first_seen": "2025-05-30T00:00:00+00:00",
+                "span_seconds": 4.0, "sample_raw": samples, "label": None,
+            }, next_steps=[], ts_generated=_NOW, data_window=_WINDOW,
+        )
+        at1 = "\n".join(
+            TextHandler(verbose_level=1)._render_syslog_group(_partition_syslog([family]))
+        )
+        at2 = "\n".join(
+            TextHandler(verbose_level=2)._render_syslog_group(_partition_syslog([family]))
+        )
+        self.assertIn("raw-sample-0", at1)
+        self.assertIn("raw-sample-2", at1)
+        self.assertNotIn("raw-sample-3", at1)
+        self.assertIn("sample_raw:\n         · raw-sample-0", at1)
+        self.assertNotIn("['raw-sample-0'", at1)
+        self.assertIn("raw-sample-4", at2)
 
     # ── drain3 smoke test ─────────────────────────────────────────────────────
 
@@ -1181,7 +1418,7 @@ def test_run_zeek_only_context_produces_findings_and_is_source_blind() -> None:
         findings = run(_ctx_zeek_only(df))
 
     # One rare → at least one finding (drain3 patched to a known split).
-    assert any(f.severity == Severity.MEDIUM for f in findings)
+    assert any(f.severity == Severity.LOW for f in findings)
 
 
 def test_run_concats_both_frames_in_order(monkeypatch) -> None:

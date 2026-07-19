@@ -255,8 +255,10 @@ def _projection_config() -> dict[str, Any]:
 
 def test_family_review_units_do_not_shift_known_example_ranks() -> None:
     family = _finding(detector="syslog", severity="medium", title="host-family")
-    family["evidence"] = {"tier": "family", "program": "sshd", "line_count": 2}
-    needle = _finding(detector="syslog", severity="medium", title="target raw line")
+    family["evidence"] = {
+        "tier": "family", "program": "sshd", "line_count": 2, "privileged": True,
+    }
+    needle = _finding(detector="syslog", severity="low", title="target raw line")
     selector = [{
         "example_id": "syslog_target",
         "detector": "syslog",

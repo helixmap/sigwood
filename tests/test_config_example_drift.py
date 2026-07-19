@@ -161,16 +161,27 @@ def _uncomment_engine_room(block: str) -> str:
     `key = value`); leave true comments and blank lines as comments.
     A "config" line is either a TOML table header or a key=value form."""
     out_lines: list[str] = []
+    in_multiline_array = False
     for raw in block.splitlines():
         stripped = raw.lstrip()
         if not stripped.startswith("#"):
             out_lines.append(raw)
             continue
         body = stripped[1:].lstrip()      # text after "# "
+        if in_multiline_array:
+            # Array members and their inner grouping comments are valid TOML but
+            # do not look like key=value lines. Keep them until the closing bracket.
+            out_lines.append(body)
+            if "]" in body:
+                in_multiline_array = False
+            continue
         # Inline trailing `# comment` after the value: keep the body, drop
         # everything from the first un-quoted '#' onward.
         if body.startswith("[") or _looks_like_kv(body):
-            out_lines.append(_strip_inline_trailing_comment(body))
+            config_line = _strip_inline_trailing_comment(body)
+            out_lines.append(config_line)
+            if _looks_like_kv(body) and "[" in config_line and "]" not in config_line:
+                in_multiline_array = True
         # else: a true narrative comment - drop it entirely (tomllib would
         # see it as a normal `#`-prefixed comment after un-commenting once,
         # but uncommenting body that doesn't look like config would inject

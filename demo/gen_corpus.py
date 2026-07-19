@@ -604,7 +604,9 @@ def _gen_syslog(lines: list[tuple[float, str]], rng_for, anchor: datetime) -> No
 
     # The intrusion narrative on webhost, in TWO tight clusters (each a ~2-3 min
     # span) with ~an hour between them: break-in + privilege escalation, then
-    # persistence. Each line is a structurally unique count-1 template -> MEDIUM.
+    # persistence. Each line is a structurally unique count-1 template. Exact
+    # privileged-program members (sshd/sudo/useradd) surface MEDIUM; crontab is
+    # the LOW sieve example. The single useradd row is the G3 member seed.
     # Within-cluster gaps stay > burst_gap_seconds (60s) so the lines stay ISOLATED
     # rare events and never collapse into a burst (the burst split is >= 60s).
     rn = rng_for("syslog_needles")

@@ -13,7 +13,7 @@ from pathlib import Path
 from sigwood import cli
 from sigwood.cli import _runner_kwargs
 from sigwood.common import config as cfg
-from sigwood.detectors import dns
+from sigwood.detectors import dns, syslog
 
 
 def test_detector_defaults_are_owned_by_detector_modules(
@@ -33,6 +33,19 @@ def test_detector_config_overrides_detector_defaults() -> None:
 
     assert merged["min_cluster_size"] == 42
     assert merged["min_samples"] == dns.DEFAULT_CONFIG["min_samples"]
+
+
+def test_syslog_privileged_roster_overlay_replaces_and_cannot_mutate_default() -> None:
+    operator_roster = ["custom-auth"]
+    config = {"detectors": {"syslog": {"privileged_programs": operator_roster}}}
+
+    merged = cfg.get_detector_config(config, "syslog", syslog.DEFAULT_CONFIG)
+
+    assert merged["privileged_programs"] == ["custom-auth"]
+    assert merged["privileged_programs"] is not operator_roster
+    assert merged["privileged_programs"] is not syslog.DEFAULT_CONFIG["privileged_programs"]
+    merged["privileged_programs"].append("mutated")
+    assert syslog.DEFAULT_CONFIG["privileged_programs"] == list(syslog.PRIVILEGED_PROGRAMS)
 
 
 def test_cli_formats_missing_config_file_as_actionable_error(

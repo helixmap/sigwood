@@ -13,12 +13,15 @@ Pipeline:
    template repeats across boots is still caught. Reboot rows are removed from the
    rare set (rare_df = is_anomaly & ~reboot_mask), so a reboot row is never a rare
    needle and never inflates a burst's line_count.
-4. Per-host temporal burst collapse over the rare set: rare NON-reboot rows on one
+4. Privileged membership partition over the rare set: exact canonical ``program``
+   tokens in the shipped/operator roster enter the MEDIUM channel; all other rare
+   rows enter the LOW sieve channel.
+5. Per-host temporal burst collapse over the sieve only: rare NON-reboot rows on one
    host that cluster within burst_gap_seconds fold into a single INFO burst.
-5. Family fold over the isolated remainder: rows sharing (host, program) fold into
-   one MEDIUM review unit; a family of one remains the existing MEDIUM needle.
-   Every rare NON-reboot row is represented exactly once across those three shapes.
-6. Reconciliation: reboot rows are clustered per host into boot events
+6. Family fold per membership branch: rows sharing (host, program) fold into one
+   review unit; a family of one remains a needle. Every rare NON-reboot row is
+   represented exactly once across member family/needle, sieve burst/family/needle.
+7. Reconciliation: reboot rows are clustered per host into boot events
    (reboot_cluster_seconds); each event either labels the nearest contemporaneous
    burst "rebooted" (within burst_gap_seconds) or emits one standalone INFO reboot
    finding - exactly one representation per boot event. run() owns the final
@@ -80,6 +83,25 @@ REBOOT_CLUSTER_SECONDS    = 600  # reboot signals on a host closer than this = o
 LONG_HEX_MASK_PATTERN = r"(?<![0-9A-Fa-f])[0-9A-Fa-f]{8,}(?![0-9A-Fa-f])"
 LONG_HEX_MASK_NAME = "LONG_HEX"
 
+# Security-critical program identities. Membership is exact, case-sensitive
+# equality against the canonical ``program`` column - never message matching.
+PRIVILEGED_PROGRAMS: tuple[str, ...] = (
+    # auth/session
+    "sshd", "sshd-session", "sshd-auth", "login", "sulogin",
+    # privilege/authorization
+    "sudo", "su", "runuser", "doas", "pkexec", "polkitd",
+    # accounts
+    "useradd", "userdel", "usermod", "groupadd", "groupdel", "groupmod",
+    "passwd", "chpasswd", "chage", "gpasswd", "newusers", "chgpasswd",
+    "groupmems", "chsh",
+    # group switching
+    "newgrp", "sg",
+    # audit/logging
+    "auditd", "audisp-syslog", "audispd",
+    # crashes
+    "systemd-coredump",
+)
+
 DEFAULT_CONFIG = {
     "rarity_pct":         10,
     "max_count":           1,
@@ -89,6 +111,8 @@ DEFAULT_CONFIG = {
     "burst_gap_seconds":   BURST_GAP_SECONDS,
     "burst_min_size":      BURST_MIN_SIZE,
     "family_min_size":     FAMILY_MIN_SIZE,
+    # Fresh copy: operator/config mutation must never alter the module constant.
+    "privileged_programs": list(PRIVILEGED_PROGRAMS),
     "reboot_cluster_seconds": REBOOT_CLUSTER_SECONDS,
     "line_trim_limit":     LINE_TRIM_LIMIT,
 }
@@ -135,6 +159,9 @@ def run(context: DetectorContext) -> list[Finding]:
     gap_seconds = cfg.get("burst_gap_seconds",   DEFAULT_CONFIG["burst_gap_seconds"])
     min_size    = cfg.get("burst_min_size",      DEFAULT_CONFIG["burst_min_size"])
     family_min_size = cfg.get("family_min_size", DEFAULT_CONFIG["family_min_size"])
+    privileged_programs = cfg.get(
+        "privileged_programs", DEFAULT_CONFIG["privileged_programs"]
+    )
     cluster_seconds = cfg.get("reboot_cluster_seconds", DEFAULT_CONFIG["reboot_cluster_seconds"])
 
     df = _run_drain3(df, sim_thresh, depth, parametrize)
@@ -152,25 +179,72 @@ def run(context: DetectorContext) -> list[Finding]:
     # returned on an empty frame, so the combined mask is always a real boolean.
     reboot_mask = df["message"].astype(str).str.contains(REBOOT_SIGNALS_RE, na=False)
     boot_events = _detect_boot_events(df[reboot_mask], cluster_seconds=cluster_seconds)
-    rare_df     = df[df["is_anomaly"] & ~reboot_mask].copy()
+    rare_df = df[df["is_anomaly"] & ~reboot_mask].copy()
+
+    # The magnitude anchor is the FULL loaded population for each canonical
+    # (host, program) identity, not the rare subset, family size, or sample cap.
+    identity_df = _normalize_identity_columns(df)
+    program_totals = {
+        (host, program): int(len(group))
+        for (host, program), group in identity_df.groupby(
+            ["host", "program"], sort=False
+        )
+    }
+
+    # One mask and its boolean complement over the RAW rare frame are the
+    # exactly-once seam. Keep identity normalization local to its consumers so
+    # the sieve reaches the unchanged burst pass with unit-A input semantics.
+    # NaN never matches ``isin``; removing the literal also keeps ``unknown``
+    # non-privileged if an operator accidentally lists it.
+    eligible_programs = set(privileged_programs) - {"unknown"}
+    programs = (
+        rare_df["program"]
+        if "program" in rare_df.columns
+        else pd.Series(None, index=rare_df.index, dtype=object)
+    )
+    member_mask = programs.isin(eligible_programs)
+    member_df = rare_df.loc[member_mask].copy()
+    sieve_df = rare_df.loc[~member_mask].copy()
 
     burst_pairs, isolated_remainder = _collapse_bursts(
-        rare_df,
+        sieve_df,
         gap_seconds=gap_seconds, min_size=min_size,
         now=now, data_window=context.data_window,
     )
-    family_pairs = _collapse_families(
+    _decorate_burst_first_seen(burst_pairs)
+    sieve_pairs = _collapse_families(
         isolated_remainder, freq, threshold,
         min_size=family_min_size, now=now, data_window=context.data_window,
+        severity=Severity.LOW, privileged=False, program_totals=program_totals,
+    )
+    member_pairs = _collapse_families(
+        member_df, freq, threshold,
+        min_size=family_min_size, now=now, data_window=context.data_window,
+        severity=Severity.MEDIUM, privileged=True, program_totals=program_totals,
     )
     pairs = _reconcile(
-        boot_events, [*burst_pairs, *family_pairs],
+        boot_events, [*burst_pairs, *sieve_pairs, *member_pairs],
         gap_seconds=gap_seconds, now=now, data_window=context.data_window,
     )
     # run() owns the SINGLE final cross-channel output sort; the helpers keep their
     # own internal stable ts sorts but return unsorted pairs.
     pairs.sort(key=lambda pair: pair[0])
     return [f for _, f in pairs]
+
+
+def _normalize_identity_columns(frame: pd.DataFrame) -> pd.DataFrame:
+    """Copy ``frame`` and normalize missing host/program identities to ``unknown``.
+
+    Values are otherwise byte/type-preserved: privileged membership remains exact
+    canonical-token equality with no case folding, basename parsing, or coercion.
+    """
+    work = frame.copy()
+    for column in ("host", "program"):
+        if column not in work.columns:
+            work[column] = "unknown"
+        else:
+            work[column] = work[column].fillna("unknown")
+    return work
 
 
 def _run_drain3(
@@ -394,8 +468,11 @@ def _collapse_families(
     min_size: int,
     now: datetime,
     data_window: tuple[datetime, datetime],
+    severity: Severity,
+    privileged: bool,
+    program_totals: dict[tuple[object, object], int],
 ) -> list[tuple[float, Finding]]:
-    """Fold isolated rare rows into per-(host, program) MEDIUM review units.
+    """Fold isolated rare rows into one explicit membership/severity channel.
 
     Pure: no I/O, no suppression. Groups below ``min_size`` route through the
     existing isolated-needle builder. Returns unsorted pairs; run() owns the
@@ -416,7 +493,10 @@ def _collapse_families(
             for row in family_df.itertuples():
                 pairs.append(
                     _isolated_finding(
-                        str(host), row, freq, threshold, now, data_window
+                        str(host), row, freq, threshold, now, data_window,
+                        severity=severity,
+                        privileged=privileged,
+                        program_total=program_totals.get((host, program), 0),
                     )
                 )
             continue
@@ -435,25 +515,33 @@ def _collapse_families(
             sort_ts = start_ts
 
         line_count = int(len(family_df))
+        description = (
+            "A set of rare log lines from a single program on this host, each "
+            "at or below the rarity threshold."
+        )
+        if privileged:
+            description += " This program is in sigwood's privileged class."
+        evidence = {
+            "tier": "family",
+            "host": str(host),
+            "program": str(program),
+            "line_count": line_count,
+            "program_total": program_totals.get((host, program), 0),
+            "start_ts": start_ts,
+            "end_ts": end_ts,
+            "first_seen": _iso_utc(start_ts),
+            "span_seconds": span_seconds,
+            "sample_raw": [str(raw) for raw in ordered["raw"].iloc[:20]],
+            "label": None,
+        }
+        if privileged:
+            evidence["privileged"] = True
         finding = Finding(
             detector=DETECTOR_NAME,
-            severity=Severity.MEDIUM,
+            severity=severity,
             title=str(host),
-            description=(
-                "A set of rare log lines from a single program on this host, each "
-                "at or below the rarity threshold."
-            ),
-            evidence={
-                "tier": "family",
-                "host": str(host),
-                "program": str(program),
-                "line_count": line_count,
-                "start_ts": start_ts,
-                "end_ts": end_ts,
-                "span_seconds": span_seconds,
-                "sample_raw": [str(raw) for raw in ordered["raw"].iloc[:20]],
-                "label": None,
-            },
+            description=description,
+            evidence=evidence,
             next_steps=["Skim the sampled lines to confirm the cluster's cause"],
             ts_generated=now,
             data_window=data_window,
@@ -461,6 +549,28 @@ def _collapse_families(
         pairs.append((sort_ts, finding))
 
     return pairs
+
+
+def _iso_utc(value: float | None) -> str | None:
+    """Render a nullable float epoch as ISO-8601 UTC; preserve valid ``0.0``."""
+    if value is None:
+        return None
+    return datetime.fromtimestamp(value, tz=timezone.utc).isoformat()
+
+
+def _decorate_burst_first_seen(
+    burst_pairs: list[tuple[float, Finding]],
+) -> None:
+    """Add ``first_seen`` to stored burst evidence dictionaries IN PLACE.
+
+    ``_reconcile`` claims the stored Finding by ``id()`` and mutates its reboot
+    label. Rebuilding or copying a Finding here would break that association.
+    """
+    for _sort_ts, finding in burst_pairs:
+        if finding.evidence.get("tier") == "burst":
+            finding.evidence["first_seen"] = _iso_utc(
+                finding.evidence.get("start_ts")
+            )
 
 
 def _burst_finding(
@@ -526,28 +636,41 @@ def _isolated_finding(
     threshold: int,
     now: datetime,
     data_window: tuple[datetime, datetime],
+    *,
+    severity: Severity,
+    privileged: bool,
+    program_total: int,
 ) -> tuple[float, Finding]:
-    """Classify a single rare NON-reboot row that did not join a burst as a MEDIUM
-    needle. Returns (sort_ts, finding). Reboot rows are handled on the separate
+    """Classify a single rare NON-reboot row in one explicit membership channel.
+
+    Returns (sort_ts, finding). Reboot rows are handled on the separate
     full-frame channel (run() excludes them via ~reboot_mask), so a reboot row
     never reaches here through the detector and is never a MEDIUM needle."""
     ts_sort = float("inf") if pd.isna(row.ts) else float(row.ts)
     program = getattr(row, "program", None)
     program = "unknown" if program is None or pd.isna(program) else str(program)
 
+    description = "Rare log template observed at or below the rarity threshold."
+    if privileged:
+        description += " This program is in sigwood's privileged class."
+    evidence = {
+        "host":         host,
+        "program":      program,
+        "program_total": int(program_total),
+        "template_id":  int(row.template_id),
+        "template_str": row.template_str,
+        "count":        int(freq[int(row.template_id)]),
+        "threshold":    int(threshold),
+    }
+    if privileged:
+        evidence["privileged"] = True
+
     finding = Finding(
         detector=DETECTOR_NAME,
-        severity=Severity.MEDIUM,
+        severity=severity,
         title=str(row.raw)[:LINE_TRIM_LIMIT],
-        description="Rare log template observed at or below the rarity threshold.",
-        evidence={
-            "host":         host,
-            "program":      program,
-            "template_id":  int(row.template_id),
-            "template_str": row.template_str,
-            "count":        int(freq[int(row.template_id)]),
-            "threshold":    int(threshold),
-        },
+        description=description,
+        evidence=evidence,
         next_steps=[
             "Review surrounding log context for this host",
             "Check if template appears in recent incidents",

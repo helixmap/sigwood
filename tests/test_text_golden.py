@@ -147,13 +147,13 @@ def test_golden_scan_all_slow_empty_middle_kept_by_text():
     )
 
 
-# ── syslog: two-section render (rare events → bursts), ts-order within each ──
-def test_golden_syslog_rare_events_and_bursts():
+# ── syslog: privileged → rare events → bursts; ts-order within each ──
+def test_golden_syslog_privileged_rare_events_and_bursts():
     out = _render([
-        _f("syslog", Severity.MEDIUM, "kernel: sentinel rare event 717171",
-           {"host": "host-a", "template_id": 5, "template_str": "kernel: <*>",
-            "count": 2, "threshold": 9}),
-        _f("syslog", Severity.MEDIUM, "host-family",
+        _f("syslog", Severity.MEDIUM, "useradd: sentinel privileged event 717171",
+           {"host": "host-a", "template_id": 5, "template_str": "useradd: <*>",
+            "count": 2, "threshold": 9, "privileged": True}),
+        _f("syslog", Severity.LOW, "host-family",
            {"tier": "family", "host": "host-family", "program": "postfix/qmgr",
             "line_count": 2, "start_ts": 10.0, "end_ts": 7210.0,
             "span_seconds": 7200.0, "sample_raw": ["a", "b"], "label": None}),
@@ -167,13 +167,16 @@ def test_golden_syslog_rare_events_and_bursts():
             "reboot_ts": "2026-06-01T03:04:05+00:00", "label": "rebooted"}),
     ])
     assert out == (
-        f"\nsyslog - 4 findings · 2 M  2 I\n{RULE}\n"
-        "rare events (2)\n"
-        "  [M]   kernel: sentinel rare event 717171\n"
-        "  [M]   host-family · postfix/qmgr · 2 rare lines · 2h\n\n"
+        f"\nsyslog - 4 findings · 1 M  1 L  2 I\n{RULE}\n"
+        "privileged (1)\n"
+        "  [M]   useradd: sentinel privileged event 717171\n\n"
+        "rare events (1)\n"
+        "  [L]   1970-01-01 00:00 local · host-family · postfix/qmgr · "
+        "2 rare lines · 2h\n\n"
         "bursts (2)\n"
-        "  [I]   host-b · 13 rare lines · 47s · mostly kernel, systemd · rebooted\n"
-        "  [I]   host-a · rebooted @ 2026-06-01T03:04:05+00:00\n\n"
+        "  [I]   1970-01-01 00:00 local · host-b · rebooted · 13 rare lines · "
+        "47s · mostly kernel, systemd\n"
+        "  [I]   2026-06-01 03:04 local · host-a · rebooted\n\n"
     )
 
 

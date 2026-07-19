@@ -23,8 +23,14 @@ from datetime import datetime, timezone
 
 import pytest
 
+from sigwood.common.display import set_display_utc
 from sigwood.common.finding import Finding, Severity
-from sigwood.outputs._render_model import html_cell_value, project_row, section_columns
+from sigwood.outputs._render_model import (
+    Section,
+    html_cell_value,
+    project_row,
+    section_columns,
+)
 from sigwood.outputs.html import render_report_html
 from sigwood.outputs.text import TextHandler
 
@@ -78,9 +84,9 @@ _VARIANTS: dict[str, Finding] = {
     "scan_slow": _f("scan", Severity.LOW, "x", {
         "scan_type": "slow", "src": "192.0.2.234", "scan_state_ratio": 0.6447,
         "distinct_ports": 317, "active_buckets": 177}),
-    "syslog_event": _f("syslog", Severity.MEDIUM, "kernel: sentinel-evt-717117", {
+    "syslog_event": _f("syslog", Severity.LOW, "kernel: sentinel-evt-717117", {
         "host": "host-sentinel-9", "template_str": "kernel: <*>", "count": 2, "threshold": 9}),
-    "syslog_family": _f("syslog", Severity.MEDIUM, "host-sentinel-family-9", {
+    "syslog_family": _f("syslog", Severity.LOW, "host-sentinel-family-9", {
         "tier": "family", "host": "host-sentinel-family-9",
         "program": "progsentinel", "line_count": 137, "span_seconds": 7320.0,
         "start_ts": 1.0, "end_ts": 7321.0,
@@ -182,7 +188,7 @@ def test_dns_blocked_cell_skipped_when_absent() -> None:
 
 
 def test_syslog_family_without_timestamps_omits_span() -> None:
-    finding = _f("syslog", Severity.MEDIUM, "host-no-time", {
+    finding = _f("syslog", Severity.LOW, "host-no-time", {
         "tier": "family", "host": "host-no-time", "program": "unknown",
         "line_count": 2, "start_ts": None, "end_ts": None,
         "span_seconds": None, "sample_raw": ["a", "b"], "label": None,
@@ -191,15 +197,86 @@ def test_syslog_family_without_timestamps_omits_span() -> None:
     assert [cell.value for cell in cells] == [
         "host-no-time · unknown · 2 rare lines"
     ]
+    assert cells[0].full_width is True
+    assert section_columns(Section(None, [finding], 1)) == []
     assert "None" not in _text([finding])
     assert "None" not in _html_text([finding])
+
+
+def test_syslog_first_cell_is_keyed_for_html_but_bare_in_text() -> None:
+    finding = _f("syslog", Severity.LOW, "host-first", {
+        "tier": "family", "host": "host-first", "program": "kernel",
+        "line_count": 2, "start_ts": 0.0, "end_ts": 60.0,
+        "span_seconds": 60.0, "sample_raw": ["a", "b"], "label": None,
+    })
+    cells = project_row(finding)
+    assert cells[0].key == "first"
+    assert cells[0].value == "1970-01-01 00:00 local"
+    assert cells[1].value == "host-first · kernel · 2 rare lines · 1m"
+    text_out = _text([finding])
+    html_out = _html_text([finding])
+    assert "1970-01-01 00:00 local · host-first" in text_out
+    assert "first=" not in text_out
+    assert "first" in html_out
+    assert html_out.index("first") < html_out.index("host-first")
+
+
+def test_syslog_burst_reboot_label_follows_host_and_timestamp_leads() -> None:
+    finding = _f("syslog", Severity.INFO, "host-burst", {
+        "tier": "burst", "line_count": 3, "span_seconds": 2.0,
+        "start_ts": 0.0, "end_ts": 2.0,
+        "program_mix": [["kernel", 3]], "sample_raw": ["a", "b", "c"],
+        "label": "rebooted",
+    })
+    cells = project_row(finding)
+    assert [(cell.key, cell.value) for cell in cells] == [
+        ("first", "1970-01-01 00:00 local"),
+        (None, "host-burst · rebooted · 3 rare lines · 2s · mostly kernel"),
+    ]
+
+    indeterminate = _f("syslog", Severity.INFO, "host-no-burst-time", {
+        "tier": "burst", "line_count": 3, "span_seconds": 2.0,
+        "start_ts": None, "end_ts": None,
+        "program_mix": [["kernel", 3]], "sample_raw": ["a", "b", "c"],
+        "label": "rebooted",
+    })
+    cells = project_row(indeterminate)
+    assert [(cell.key, cell.value) for cell in cells] == [
+        (None, "host-no-burst-time · rebooted · 3 rare lines · 2s · mostly kernel"),
+    ]
+    assert cells[0].full_width is True
+
+
+def test_syslog_reboot_timestamp_uses_display_formatter_and_null_vanishes(
+    restore_display_utc,
+) -> None:
+    set_display_utc(True)
+    stamped = _f("syslog", Severity.INFO, "host-reboot", {
+        "tier": "reboot", "host": "host-reboot",
+        "reboot_ts": "2026-06-01T07:08:09+00:00", "label": "rebooted",
+    })
+    assert [(cell.key, cell.value) for cell in project_row(stamped)] == [
+        ("first", "2026-06-01 07:08 UTC"),
+        (None, "host-reboot · rebooted"),
+    ]
+
+    indeterminate = _f("syslog", Severity.INFO, "host-unknown", {
+        "tier": "reboot", "host": "host-unknown",
+        "reboot_ts": None, "label": "rebooted",
+    })
+    cells = project_row(indeterminate)
+    assert [(cell.key, cell.value) for cell in cells] == [
+        (None, "host-unknown · rebooted"),
+    ]
+    assert cells[0].full_width is True
+    rendered = _text([indeterminate])
+    assert "host-unknown · rebooted" in rendered
+    assert "rebooted @" not in rendered
 
 
 def test_projection_covers_every_detector_variant() -> None:
     """project_row + section_columns handle every detector/variant without error,
     and produce a stable positional column template (no KeyError / empty grid)."""
-    from sigwood.outputs._render_model import Section
-
     for variant, finding in _VARIANTS.items():
         cells = project_row(finding)
         assert cells, f"{variant}: empty projection"

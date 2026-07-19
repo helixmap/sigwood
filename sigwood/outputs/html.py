@@ -217,6 +217,30 @@ def _render_detail_row(finding: Finding, *, verbose_level: int, colspan: int) ->
     )
 
 
+def _render_sample_details(finding: Finding, *, colspan: int) -> str:
+    """Always-available, default-closed full syslog member sample.
+
+    Every member reaches markup only through ``_esc``. Data never enters an
+    attribute, URL, or CSS value. Print keeps the summary but hides the body so a
+    level-0 PDF cannot disclose verbose evidence.
+    """
+    if finding.detector != "syslog" or finding.evidence.get("tier") not in (
+        "family", "burst",
+    ):
+        return ""
+    samples = finding.evidence.get("sample_raw")
+    if not isinstance(samples, (list, tuple)) or not samples:
+        return ""
+    lines = "".join(
+        f'<div class="sample-line">{_esc(line)}</div>' for line in samples[:20]
+    )
+    return (
+        '<tr class="sample-detail"><td class="sev-cell"></td>'
+        f'<td colspan="{colspan}"><details><summary>sampled log lines</summary>'
+        f'<div class="sample-detail-body">{lines}</div></details></td></tr>'
+    )
+
+
 def _render_finding_row(
     finding: Finding,
     keep: list[tuple[int, "ColumnSpec"]],
@@ -224,8 +248,9 @@ def _render_finding_row(
     verbose_level: int,
 ) -> str:
     """One ``<tr>`` from project_row cells (severity is a leftmost pill cell, NOT
-    a data cell). A full_width finding (aws ranked_summary) spans the data columns
-    as a single prose cell. A projector-less detector (project_row → []) falls back
+    a data cell). A full_width finding spans the data columns (aws ranked-summary
+    prose or a syslog row with no timestamp column). A projector-less detector
+    (project_row → []) falls back
     to the title as a spanning cell - mirrors text's generic ``_render_finding`` so
     a future detector's content is never lost. SECURITY: every value routes through
     ``_esc``."""
@@ -241,14 +266,16 @@ def _render_finding_row(
         # matching text's `{tag}  {finding.title}`), never a bare pill.
         data = f'<td colspan="{colspan}">{_esc(finding.title)}</td>'
     elif cells[0].full_width:
-        data = f'<td class="full-width" colspan="{colspan}">{_esc(cells[0].value)}</td>'
+        # Syslog uses full_width structurally for self-stamped needles and
+        # null-timestamp aggregates; keep those in the default monospace cell.
+        # Other full-width rows are prose and retain the sans-serif class.
+        cls = "" if finding.detector == "syslog" else ' class="full-width"'
+        data = f'<td{cls} colspan="{colspan}">{_esc(cells[0].value)}</td>'
     elif len(cells) == 1 and cells[0].key is None:
-        # A lone bare cell (the syslog MEDIUM raw line) is a whole line of text,
-        # not column 0 of a table - span it so a long raw message wraps across
-        # the full width instead of defining a narrow column 0 that squeezes the
-        # structured sibling rows (the reboot annotation, whose timestamp was
-        # mid-breaking because the raw lines hogged the column width). Kept on
-        # the default monospace td - NOT the sans `full-width` prose class.
+        # A lone bare cell is a whole line of text, not column 0 of a table. Span
+        # it so a long value wraps across the full width instead of defining a
+        # narrow first column that squeezes structured sibling rows. Kept on the
+        # default monospace td - NOT the sans `full-width` prose class.
         data = f'<td colspan="{colspan}">{_esc(cells[0].value)}</td>'
     else:
         tds = []
@@ -271,7 +298,11 @@ def _render_finding_row(
             tds.append(f"<td{cls}>{_esc(value)}</td>")
         data = "".join(tds)
     row = f'<tr class="finding-row {sev_class}">{pill}{data}</tr>'
-    return row + _render_detail_row(finding, verbose_level=verbose_level, colspan=colspan)
+    return (
+        row
+        + _render_sample_details(finding, colspan=colspan)
+        + _render_detail_row(finding, verbose_level=verbose_level, colspan=colspan)
+    )
 
 
 def _render_section(section: Section, *, verbose_level: int) -> str:
@@ -430,6 +461,10 @@ header { border-bottom: 2px solid var(--border); padding-bottom: 18px; margin-bo
 .findings-table tr.detail td { padding: 2px 0 10px 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
 .findings-table tr.detail .desc { margin: 6px 0 4px; }
 .findings-table tr.detail .next-steps { margin: 4px 0; }
+.findings-table tr.sample-detail td { padding: 2px 0 8px 0; }
+.sample-detail summary { color: var(--muted); cursor: pointer; }
+.sample-detail-body { margin: 5px 0 2px; }
+.sample-line { white-space: pre-wrap; overflow-wrap: anywhere; }
 @media screen {
   /* Screen-only: short data tokens (dur/bps/counts/states) never mid-break on
      screen. In PRINT this is ABSENT, so td.data falls back to the base
@@ -443,6 +478,7 @@ header { border-bottom: 2px solid var(--border); padding-bottom: 18px; margin-bo
   .sev-card { break-inside: avoid; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
   .findings-table tr { break-inside: avoid; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
   .group-head, .section-label { break-after: avoid; }
+  .sample-detail-body { display: none; }
 }
 """.strip().replace("__SIGWOOD_PAGE_SIZE__", page_size))
 

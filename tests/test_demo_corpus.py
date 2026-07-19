@@ -12,7 +12,7 @@ import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from sigwood.common.loader import load_pihole
+from sigwood.common.loader import load_pihole, load_syslog
 from sigwood.detectors.dns import DEFAULT_CONFIG as DNS_DEFAULT_CONFIG
 from sigwood.parsers.dnsmasq import parse_line as parse_dnsmasq_line
 from sigwood.parsers.syslog import parse_timestamp
@@ -148,3 +148,20 @@ def test_generated_pihole_story_shape(
     lengths = frame["query"].dropna().astype(str).str.len()
     assert lengths.max() / lengths.median() > 3.0
     assert query_rows["qtype"].nunique() >= 4
+
+
+def test_generated_syslog_has_one_canonical_useradd_member_seed(
+    tmp_path: Path,
+    monkeypatch,
+    pin_tz,
+    capsys,
+) -> None:
+    pin_tz("Etc/GMT+6")
+    out_dir = tmp_path / "corpus"
+    _run_generator(monkeypatch, out_dir)
+    capsys.readouterr()
+
+    frame = load_syslog(out_dir / "syslog", show_progress=False)
+    useradd = frame[frame["program"] == "useradd"]
+    assert len(useradd) == 1
+    assert "UID=0" in useradd.iloc[0]["raw"]

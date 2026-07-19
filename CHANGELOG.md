@@ -8,6 +8,17 @@ All notable changes to sigwood are recorded here. The format follows
 
 ### Changed
 
+- **Rare syslog findings now separate a privileged program channel from the routine
+  rarity sieve.** Exact program membership in a shipped, operator-replaceable roster keeps
+  security-critical families and singletons at MEDIUM; other rare families and singletons
+  render as default-visible LOW, while bursts and reboots remain INFO. Family and burst rows
+  now lead with their first timestamp, `-v` shows a three-line member sample, and HTML
+  reports provide a closed full-sample expansion without leaking that body into printed
+  reports. On the same 7-day measurement corpus, the report reads 12 privileged + 16
+  routine + 10 info findings (38 total, under a minute to scan) — the increase over the
+  prior 29 is privileged rows formerly buried inside info bursts, now independently
+  reviewable.
+
 - **Syslog rare-event output now groups isolated lines into per-host, per-program review
   units and normalizes long identifier-like hexadecimal-character runs during template
   mining.** Temporal bursts and reboot handling remain separate, while raw log text stays

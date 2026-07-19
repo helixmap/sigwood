@@ -54,7 +54,7 @@ beacon - 2 findings · 2 M
 
 syslog - 1 finding · 1 M
 ────────────────────────────────────────────────────────────────────────────────
-rare events (1)
+privileged (1)
   [M]   Accepted password for root from 198.51.100.20 port 51900 ssh2
 ```
 

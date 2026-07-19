@@ -183,6 +183,22 @@ allowlist_dir    = "allowlist.d/"
 # burst_gap_seconds = 60     # rare lines on a host closer than this = one burst
 # burst_min_size    = 3      # min rare lines in a window to collapse to a burst
 # family_min_size   = 2      # min isolated lines from one host/program to group for review
+# privileged_programs = [
+#   # auth/session
+#   "sshd", "sshd-session", "sshd-auth", "login", "sulogin",
+#   # privilege/authorization
+#   "sudo", "su", "runuser", "doas", "pkexec", "polkitd",
+#   # accounts
+#   "useradd", "userdel", "usermod", "groupadd", "groupdel", "groupmod",
+#   "passwd", "chpasswd", "chage", "gpasswd", "newusers", "chgpasswd",
+#   "groupmems", "chsh",
+#   # group switching
+#   "newgrp", "sg",
+#   # audit/logging
+#   "auditd", "audisp-syslog", "audispd",
+#   # crashes
+#   "systemd-coredump",
+# ]
 # reboot_cluster_seconds = 600     # reboot signals on a host closer than this = one boot event
 
 # aws - per-principal CloudTrail surfacing (rarity + weirdness + bursts).

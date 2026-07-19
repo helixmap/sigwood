@@ -36,7 +36,7 @@ from sigwood.common.finding import (
     SuppressionSummary,
 )
 from sigwood.common.output import OutputHandler, register_handler
-from sigwood.outputs._evidence import curated_evidence
+from sigwood.outputs._evidence import evidence_at_level
 from sigwood.outputs._render_model import (
     DetectorRenderable,
     Section,
@@ -323,7 +323,12 @@ def _verbose_tail(finding: Finding, indent: str, extras: dict[str, Any] | None =
     if extras:
         body.append(f"{indent}evidence:")
         for k, v in extras.items():
-            body.append(f"{indent}  {_sanitize(k)}: {_sanitize(v)}")
+            if k == "sample_raw" and isinstance(v, (list, tuple)):
+                body.append(f"{indent}  sample_raw:")
+                for line in v:
+                    body.append(f"{indent}    · {_sanitize(line)}")
+            else:
+                body.append(f"{indent}  {_sanitize(k)}: {_sanitize(v)}")
     if finding.next_steps:
         body.append(f"{indent}next steps:")
         for step in finding.next_steps:
@@ -362,7 +367,7 @@ def _level_tail(finding: Finding, indent: str, verbose_level: int) -> list[str]:
         return []
     if verbose_level >= 2:
         return _debug_tail(finding, indent)
-    return _verbose_tail(finding, indent, curated_evidence(finding))
+    return _verbose_tail(finding, indent, evidence_at_level(finding, 1))
 
 
 def _render_group_header(detector: str, renderable: DetectorRenderable) -> list[str]:
@@ -809,10 +814,11 @@ class TextHandler(OutputHandler):
         return out
 
     def _render_syslog_group(self, sections: list[Section]) -> list[str]:
-        """Render syslog as two subsections (rare events, then bursts) - mirrors
-        the aws two-tier shape. Every finding projects to ONE composed bare cell
-        (the project_row owner builds the line from evidence), so text just prints
-        it - no per-column width. Section labels carry pre-cap counts; ts-order
+        """Render syslog's privileged / rare-events / bursts subsections.
+
+        Projected cells render in order as one ``·``-joined reading line; keyed
+        labels belong only to HTML headers, so text keeps the bare cell values.
+        Section labels carry pre-cap counts; ts-order
         within a section is preserved (syslog is severity-sort exempt). Verbose
         tails are shared via ``_level_tail``."""
         indent = "     "
@@ -825,9 +831,9 @@ class TextHandler(OutputHandler):
                 out.append(f"{section.label} ({section.pre_cap_count})")
 
             for f in section.findings:
-                _keyed, bare = _cells(f)
                 tag = f"{str(f.severity):<4}"
-                line = f"  {tag}  {bare[0]}"
+                values = [_sanitize(cell.value) for cell in project_row(f)]
+                line = f"  {tag}  {' · '.join(values)}"
                 tail = _level_tail(f, indent, self._verbose_level)
                 if tail:
                     out.append(line + "\n" + "\n".join(tail))

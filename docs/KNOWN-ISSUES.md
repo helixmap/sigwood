@@ -82,9 +82,10 @@ findings come entirely from the per-label suspicion score, not from cluster shap
 `dns (fast-HDBSCAN)` method label names the clustering backend that ran even when it formed no
 clusters, so on a small capture the lexical score is doing the work.
 
-**A fast sequence of rare events folds into one low-severity burst.** Three or more
-rare log lines within about a minute on one host collapse into a single INFO "burst"
-finding rather than individual MEDIUM findings - that grouping catches boot storms and
+**A fast sequence of unprivileged rare events folds into one informational burst.** Three or
+more rare log lines outside the privileged program class within about a minute on one host
+collapse into a single INFO "burst" finding rather than individual LOW findings - that
+grouping catches boot storms and
 batch jobs, but it also catches an attacker working quickly. Nothing is dropped: the
 burst carries the line count, time span, program mix, and sampled lines. Treat burst
 findings as worth a skim rather than reading INFO as ignorable; the collapse is tunable
@@ -208,7 +209,7 @@ virtualenv at roughly 450 MB on disk - light to operate, not light to install.
 ## Digest and output
 
 **Not every finding carries a machine-readable event timestamp.** `duration`, `scan`,
-aws burst, and syslog burst/reboot findings carry event timestamps in their JSON
+aws burst, and syslog family/burst/reboot findings carry event timestamps in their JSON
 evidence; beacon, dns, and isolated syslog rare-event findings currently do not, so a
 `jq` timeline can place some findings but not others. Every finding does carry the run's data window.
 Converging on a representative event timestamp for every finding is planned.

@@ -181,14 +181,19 @@ def test_syslog_family_signals_are_curated_without_raw_samples() -> None:
         title="host-family",
         evidence={
             "tier": "family", "host": "host-family", "program": "sshd",
-            "line_count": 2, "start_ts": 1.0, "end_ts": 121.0,
+            "line_count": 2, "program_total": 4412,
+            "start_ts": 1.0, "end_ts": 121.0,
+            "first_seen": "1970-01-01T00:00:01+00:00",
             "span_seconds": 120.0, "sample_raw": ["raw-a", "raw-b"],
             "label": None,
         },
     )
     row = _rows(_emit([f]))[0]
     assert row["finding"] == "host-family"
-    assert row["signals"] == "program=sshd; line_count=2; span_seconds=120.0"
+    assert row["signals"] == (
+        "program=sshd; line_count=2; program_total=4412; span_seconds=120.0; "
+        "first_seen=1970-01-01T00:00:01+00:00"
+    )
     assert "sample_raw" not in row["signals"]
     assert "start_ts" not in row["signals"]
     assert "end_ts" not in row["signals"]

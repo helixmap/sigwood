@@ -163,12 +163,7 @@ BUILD=$(mktemp -d "${TMPDIR:-/tmp}/sigwood-build.XXXXXX")
   .venv-rel/bin/python -m twine check dist/*
   .venv-rel/bin/python tools/validate_distribution.py dist
 
-  README_URLS=$(grep -oE 'https://[^\") ]+' README.md | sort -u)
-  test -n "$README_URLS"
-  while IFS= read -r url; do
-    printf 'checking %s\n' "$url"
-    curl --fail --silent --show-error --location --output /dev/null "$url"
-  done <<< "$README_URLS"
+  # The suite checks commit-local doc links; the periodic link-check workflow watches external liveness.
 
   shopt -s nullglob
   WHEELS=(dist/*.whl)

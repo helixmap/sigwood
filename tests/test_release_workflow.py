@@ -8,6 +8,7 @@ from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parents[1]
 _WORKFLOW = _ROOT / ".github" / "workflows" / "release.yml"
+_LINK_CHECK_WORKFLOW = _ROOT / ".github" / "workflows" / "link-check.yml"
 _JOB_HEADER = re.compile(r"^  (?P<name>[A-Za-z0-9_-]+):\s*$")
 _USES = re.compile(
     r"^\s*(?:-\s+)?uses:\s+(?P<target>[^\s#]+)", re.MULTILINE
@@ -42,13 +43,19 @@ def _action_targets(block: str) -> list[str]:
 def _assert_actions_sha_pinned(workflow: str) -> None:
     """Require every action reference in a workflow fragment to use a full SHA."""
     targets = _action_targets(workflow)
-    assert targets, "release workflow must invoke actions"
+    assert targets, "workflow must invoke actions"
     unpinned = [target for target in targets if not _PINNED_ACTION.fullmatch(target)]
-    assert unpinned == [], f"release actions must use full SHA pins: {unpinned}"
+    assert unpinned == [], f"workflow actions must use full SHA pins: {unpinned}"
 
 
 def test_release_actions_are_sha_pinned() -> None:
     _assert_actions_sha_pinned(_WORKFLOW.read_text(encoding="utf-8"))
+
+
+def test_link_check_actions_are_sha_pinned() -> None:
+    # CI's existing tag pins remain a separate accepted policy; this guard owns
+    # the privileged release and the informational external-link workflows.
+    _assert_actions_sha_pinned(_LINK_CHECK_WORKFLOW.read_text(encoding="utf-8"))
 
 
 def test_sha_pin_guard_covers_uses_after_step_metadata() -> None:

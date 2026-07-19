@@ -1,0 +1,81 @@
+name: external link check
+
+on:
+  schedule:
+    - cron: "17 6 * * 1"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  external-links:
+    name: external doc links
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Check external liveness
+        run: |
+          python3 - <<'PY'
+          from __future__ import annotations
+
+          import time
+          from pathlib import Path
+          from urllib.error import HTTPError
+          from urllib.request import Request, urlopen
+
+          from tools.validate_doc_links import external_doc_links
+
+
+          ATTEMPTS = 3
+          BROKEN = {404, 410}
+
+
+          def check(url: str) -> bool:
+              for attempt in range(1, ATTEMPTS + 1):
+                  try:
+                      request = Request(
+                          url,
+                          headers={"User-Agent": "sigwood-doc-link-check/1.0"},
+                      )
+                      with urlopen(request, timeout=15) as response:
+                          status = response.status
+                  except HTTPError as exc:
+                      status = exc.code
+                  except (OSError, ValueError) as exc:
+                      if attempt < ATTEMPTS:
+                          print(f"retry {url}: request failure ({attempt}/{ATTEMPTS})")
+                          time.sleep(attempt * 2)
+                          continue
+                      print(
+                          f"skip {url}: request failure after "
+                          f"{ATTEMPTS} attempts: {exc}"
+                      )
+                      return False
+
+                  if status in BROKEN:
+                      print(f"broken {url}: HTTP {status}")
+                      return True
+                  if status == 429 or 500 <= status <= 599:
+                      if attempt < ATTEMPTS:
+                          print(f"retry {url}: HTTP {status} ({attempt}/{ATTEMPTS})")
+                          time.sleep(attempt * 2)
+                          continue
+                      print(f"skip {url}: HTTP {status} after {ATTEMPTS} attempts")
+                      return False
+                  if 200 <= status <= 399:
+                      print(f"ok {url}: HTTP {status}")
+                      return False
+
+                  print(f"skip {url}: HTTP {status}")
+                  return False
+              return False
+
+
+          targets = external_doc_links(Path("."))
+          broken = [url for url in targets if check(url)]
+          print(f"checked {len(targets)} external doc links; {len(broken)} broken")
+          if broken:
+              raise SystemExit(1)
+          PY

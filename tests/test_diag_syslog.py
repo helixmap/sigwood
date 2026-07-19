@@ -5,12 +5,14 @@ from __future__ import annotations
 import copy
 import csv
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pandas as pd
 import pytest
 
 from drain3.masking import MaskingInstruction
+from sigwood.common.finding import DetectorContext
 from tools import diag_syslog as diag
 
 
@@ -95,6 +97,61 @@ def test_wrapper_owns_string_coercion() -> None:
     )
 
     assert result["template_str"].tolist() == ["svc: coerced message"]
+
+
+def test_shipped_long_hex_mask_matches_diagnostic_spec() -> None:
+    long_hex = next(spec for spec in diag.MASK_SPECS if spec.name == "long_hex")
+    assert diag.detector.LONG_HEX_MASK_PATTERN == long_hex.pattern
+    assert diag.detector.LONG_HEX_MASK_NAME == "LONG_HEX"
+
+
+def test_shipped_long_hex_mask_token_and_message_bytes() -> None:
+    messages = [
+        "svc: transaction ABCDEF123456 completed",
+        "svc: transaction 123456789012 completed",
+    ]
+    frame = _frame(messages)
+    result = diag.detector._run_drain3(
+        frame, sim_thresh=0.5, depth=4, parametrize_numeric=True
+    )
+
+    assert result["message"].tolist() == messages
+    assert result["template_str"].tolist() == [
+        "svc: transaction <LONG_HEX> completed",
+        "svc: transaction <LONG_HEX> completed",
+    ]
+
+
+def test_unique_security_shape_with_long_hex_remains_rare() -> None:
+    messages = ["daemon: routine health check"] * 20 + [
+        "useradd: privileged account created with token DEADBEEFCAFEBABE"
+    ]
+    frame = _frame(messages)
+    window = (
+        datetime.fromtimestamp(0, timezone.utc),
+        datetime.fromtimestamp(float(len(messages) - 1), timezone.utc),
+    )
+    findings = diag.detector.run(DetectorContext(
+        logs={"*.log*": frame},
+        config={"max_count": 1, "rarity_pct": 10},
+        allowlist=None,
+        data_window=window,
+    ))
+
+    assert len(findings) == 1
+    assert findings[0].title == messages[-1]
+    assert findings[0].evidence.get("tier") is None
+    assert findings[0].evidence["template_str"].endswith("token <LONG_HEX>")
+
+
+def test_needle_equivalent_stays_pre_family_fold() -> None:
+    frame = _frame(["svc: alpha", "svc: beta"])
+    frame["ts"] = [0.0, 120.0]  # not one temporal burst
+    frame["program"] = ["svc", "svc"]  # shipped detector would fold one family
+    frame["template_id"] = [1, 2]
+    frame["template_str"] = ["svc: alpha", "svc: beta"]
+
+    assert diag._needle_equivalent(frame) == 2
 
 
 def test_mine_progress_requires_both_call_and_narration_gates(

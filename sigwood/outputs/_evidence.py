@@ -36,8 +36,7 @@ def cap_evidence_list(values: "list | tuple") -> str:
 
 # Per-detector curated-evidence subsets for level 1 - tolerant: omit absent
 # keys rather than printing ``None``. Per-variant lookup uses existing
-# evidence keys (scan's scan_type, dns's source, aws's tier, syslog by
-# template-vs-reboot shape).
+# evidence keys (scan's scan_type, dns's source, aws's tier, syslog's tier).
 def curated_evidence(finding: Finding) -> dict[str, Any]:
     """Return ONLY the keys present on this Finding from the curated set for
     its detector (and variant where applicable)."""
@@ -70,6 +69,8 @@ def curated_evidence(finding: Finding) -> dict[str, Any]:
         tier = ev.get("tier")
         if tier == "burst":
             keys = ("line_count", "span_seconds", "program_mix", "label")
+        elif tier == "family":
+            keys = ("program", "line_count", "span_seconds")
         elif tier == "reboot":
             keys = ("label", "signal_count")
         else:  # isolated rare row

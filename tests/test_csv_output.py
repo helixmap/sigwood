@@ -174,6 +174,26 @@ def test_signals_dict_and_bool_render_human_no_brackets() -> None:
     assert "True" not in signals
 
 
+def test_syslog_family_signals_are_curated_without_raw_samples() -> None:
+    f = _finding(
+        detector="syslog",
+        severity=Severity.MEDIUM,
+        title="host-family",
+        evidence={
+            "tier": "family", "host": "host-family", "program": "sshd",
+            "line_count": 2, "start_ts": 1.0, "end_ts": 121.0,
+            "span_seconds": 120.0, "sample_raw": ["raw-a", "raw-b"],
+            "label": None,
+        },
+    )
+    row = _rows(_emit([f]))[0]
+    assert row["finding"] == "host-family"
+    assert row["signals"] == "program=sshd; line_count=2; span_seconds=120.0"
+    assert "sample_raw" not in row["signals"]
+    assert "start_ts" not in row["signals"]
+    assert "end_ts" not in row["signals"]
+
+
 def test_verbosity_invariant() -> None:
     f = [_finding()]
     assert _emit(f, verbose_level=0) == _emit(f, verbose_level=2)

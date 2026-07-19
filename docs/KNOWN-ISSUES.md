@@ -91,6 +91,12 @@ findings as worth a skim rather than reading INFO as ignorable; the collapse is 
 (`burst_min_size`, `burst_gap_seconds` under `[detectors.syslog]`) if you'd rather see
 tight clusters as individual findings.
 
+**Rare syslog lines with no usable host and no program can share one review unit.** The
+family grouping uses `unknown` when either field cannot be derived, so lines from different
+physical hosts can be grouped together when both identifiers are absent. The sampled raw
+lines and exact line count remain available in that family finding; review the samples as
+potentially unrelated events rather than assuming they came from one machine.
+
 **With both Zeek DNS and Pi-hole configured, Pi-hole is enrichment only.** In
 both-source mode Zeek is the clustering source and Pi-hole data enriches those
 findings with the block disposition; queries that appear only in the Pi-hole log

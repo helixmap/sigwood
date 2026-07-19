@@ -153,6 +153,10 @@ def test_golden_syslog_rare_events_and_bursts():
         _f("syslog", Severity.MEDIUM, "kernel: sentinel rare event 717171",
            {"host": "host-a", "template_id": 5, "template_str": "kernel: <*>",
             "count": 2, "threshold": 9}),
+        _f("syslog", Severity.MEDIUM, "host-family",
+           {"tier": "family", "host": "host-family", "program": "postfix/qmgr",
+            "line_count": 2, "start_ts": 10.0, "end_ts": 7210.0,
+            "span_seconds": 7200.0, "sample_raw": ["a", "b"], "label": None}),
         _f("syslog", Severity.INFO, "host-b",
            {"tier": "burst", "line_count": 13, "span_seconds": 47.0,
             "start_ts": 1.0, "end_ts": 48.0,
@@ -163,9 +167,10 @@ def test_golden_syslog_rare_events_and_bursts():
             "reboot_ts": "2026-06-01T03:04:05+00:00", "label": "rebooted"}),
     ])
     assert out == (
-        f"\nsyslog - 3 findings · 1 M  2 I\n{RULE}\n"
-        "rare events (1)\n"
-        "  [M]   kernel: sentinel rare event 717171\n\n"
+        f"\nsyslog - 4 findings · 2 M  2 I\n{RULE}\n"
+        "rare events (2)\n"
+        "  [M]   kernel: sentinel rare event 717171\n"
+        "  [M]   host-family · postfix/qmgr · 2 rare lines · 2h\n\n"
         "bursts (2)\n"
         "  [I]   host-b · 13 rare lines · 47s · mostly kernel, systemd · rebooted\n"
         "  [I]   host-a · rebooted @ 2026-06-01T03:04:05+00:00\n\n"

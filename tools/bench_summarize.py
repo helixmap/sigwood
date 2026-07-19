@@ -55,7 +55,9 @@ SUPPRESSION_KEYS = frozenset({
 })
 METHOD_KEYS = frozenset({"label", "named"})
 SEVERITIES = ("high", "medium", "low", "info")
-SYNTHETIC_TIERS = frozenset({"ranked_summary", "scan_summary", "burst", "reboot"})
+SYNTHETIC_TIERS = frozenset({
+    "ranked_summary", "scan_summary", "burst", "family", "reboot",
+})
 
 LEDGER_FIELDS = frozenset({
     "path",

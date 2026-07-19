@@ -78,14 +78,17 @@ At the default seed, these commands show:
 - **dns - 1 finding (HIGH):** one grouped finding for ~13 high-entropy subdomains
   sharing a single random `.xyz` apex, all from `192.168.1.37`, most returning
   NXDOMAIN. Max label score ~1.96.
-- **syslog - 10 findings (9 MEDIUM + 1 INFO):** the intrusion on `webhost` in two
+- **syslog - 8 findings (7 MEDIUM + 1 INFO):** the intrusion on `webhost` across two
   tight clusters - initial access + escalation (root SSH login from the C2 IP, a
   `sudo … USER=root` shell, a `useradd … UID=0` account) then, ~an hour later,
-  persistence (a root `crontab REPLACE` and an sshd listener on port 8443) - plus
-  four benign-but-rare events on `db01` (an EXT4 mount, a smartd SMART pre-fail, a
-  `named` lookup failure, a USB attach) interleaved as realistic noise, and one INFO
-  burst collapsing a `gateway` reboot. The rare events are shown chronologically, so
-  the analyst has to pick the `webhost` cluster out of the surrounding noise.
+  persistence (a root `crontab REPLACE` and an sshd listener on port 8443). Rare
+  lines sharing one host and program fold into a single per-program review unit,
+  so the two `sshd` lines render as `webhost · sshd · 2 rare lines · 1h` (the
+  sampled lines sit one verbosity level down); `db01`'s two kernel one-offs fold
+  the same way, alongside its smartd SMART pre-fail and `named` lookup failure,
+  and one INFO burst collapses a `gateway` reboot. The rare events are shown
+  chronologically, so the analyst still picks the `webhost` cluster out of the
+  surrounding noise.
 
 The banner also shows a non-zero `allowlist:` line: a minority of the DNS queries
 are reverse-PTR / mDNS / DNS-SD lookups that the shipped allowlist suppresses

@@ -25,8 +25,9 @@ Cell-projection contract:
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import timedelta
 
-from sigwood.common.display import plural
+from sigwood.common.display import fmt_compact_span, plural
 from sigwood.common.finding import Finding, Severity
 from sigwood.outputs._evidence import level_visible
 
@@ -113,11 +114,11 @@ def _partition_aws(findings: list[Finding]) -> list[Section]:
 
 
 def _partition_syslog(findings: list[Finding]) -> list[Section]:
-    """Syslog: the rare-event needles (tier absent, MEDIUM) lead; then the
-    collapsed bursts + standalone reboots (tier in {burst, reboot}, all INFO).
-    Mirrors aws's two-tier shape, with the more-interesting tier (needles) first
+    """Syslog: rare-event needles/families (MEDIUM) lead; then the collapsed
+    bursts + standalone reboots (tier in {burst, reboot}, all INFO).
+    Mirrors aws's two-tier shape, with the more-interesting tier (needles/families) first
     so the section-walking cap spends its budget on them before bursts."""
-    rare   = [f for f in findings if f.evidence.get("tier") is None]
+    rare   = [f for f in findings if f.evidence.get("tier") in (None, "family")]
     bursts = [f for f in findings if f.evidence.get("tier") in ("burst", "reboot")]
     out: list[Section] = []
     if rare:
@@ -141,7 +142,7 @@ _PARTITIONERS = {
 # Per-detector severity-sort opt-out. Severity sort is the
 # right DEFAULT - within a flat or per-section list, H → M → L → I reads as
 # urgency-first. But syslog's row order CARRIES meaning: the detector emits
-# chronologically, and its two sections ("rare events" = MEDIUM needles,
+# chronologically, and its two sections ("rare events" = MEDIUM needles/families,
 # "bursts" = INFO collapsed-bursts + standalone reboots) are each single-severity
 # - so severity-sort is a no-op anyway, and what matters is preserving ts-order
 # WITHIN a section (a burst sits next to the reboot near it in time). Listing
@@ -386,6 +387,17 @@ def _project_syslog(f: Finding) -> list[Cell]:
         if ev.get("label") == "rebooted":
             line += " · rebooted"
         return [Cell(None, line)]
+    if tier == "family":
+        line_count = int(ev.get("line_count", 0))
+        parts = [
+            f.title,
+            str(ev.get("program", "unknown")),
+            f"{line_count} {plural(line_count, 'rare line')}",
+        ]
+        span = ev.get("span_seconds")
+        if span is not None:
+            parts.append(fmt_compact_span(timedelta(seconds=float(span))))
+        return [Cell(None, " · ".join(parts))]
     if tier == "reboot":
         host = f.title  # reboot title IS the host
         reboot_ts = ev.get("reboot_ts") or "unknown"

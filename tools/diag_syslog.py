@@ -22,7 +22,6 @@ from typing import Any, Iterable, NoReturn
 
 import pandas as pd
 
-from sigwood.common.finding import Severity
 from sigwood.common.loader import load_logs, load_syslog
 from sigwood.detectors import syslog as detector
 from sigwood.parsers.syslog import REBOOT_SIGNALS_RE
@@ -316,7 +315,7 @@ def _usable_window(frame: pd.DataFrame) -> tuple[datetime, datetime] | None:
 
 
 def _needle_equivalent(frame: pd.DataFrame) -> int:
-    scored, threshold, freq = detector._score_rarity(
+    scored, _threshold, _freq = detector._score_rarity(
         frame,
         int(detector.DEFAULT_CONFIG["rarity_pct"]),
         int(detector.DEFAULT_CONFIG["max_count"]),
@@ -328,16 +327,17 @@ def _needle_equivalent(frame: pd.DataFrame) -> int:
         epoch = datetime.fromtimestamp(0, timezone.utc)
         window = (epoch, epoch)
     now = window[1]
-    pairs = detector._collapse_bursts(
+    _burst_pairs, isolated_remainder = detector._collapse_bursts(
         rare,
-        freq,
-        threshold,
         gap_seconds=int(detector.DEFAULT_CONFIG["burst_gap_seconds"]),
         min_size=int(detector.DEFAULT_CONFIG["burst_min_size"]),
         now=now,
         data_window=window,
     )
-    return sum(finding.severity is Severity.MEDIUM for _, finding in pairs)
+    # Frozen diagnosis metric: the count of post-burst isolated rows BEFORE the
+    # shipped detector's family fold. Each such row was exactly one MEDIUM needle
+    # under the diagnosed implementation, so this stays byte-comparable to it.
+    return len(isolated_remainder)
 
 
 def _count_histogram(counts: Iterable[int]) -> dict[str, int]:

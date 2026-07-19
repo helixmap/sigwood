@@ -16,7 +16,7 @@ import json
 import sys
 import unittest
 import warnings
-from collections import namedtuple
+from collections import Counter, namedtuple
 from datetime import datetime, timezone
 
 from tests.test_voice_consistency import assert_report_voice
@@ -31,6 +31,7 @@ from sigwood.detectors.syslog import (
     REBOOT_CLUSTER_SECONDS,
     _BootEvent,
     _collapse_bursts,
+    _collapse_families,
     _detect_boot_events,
     _gap_cluster,
     _reboot_finding,
@@ -112,16 +113,31 @@ def _rare_df(rows: list[dict]) -> pd.DataFrame:
     )
 
 
-def _collapse(rows, *, gap=60, size=3, freq=None, threshold=1):
-    """Run _collapse_bursts over a hand-built rare set and unwrap its
-    (sort_ts, Finding) pairs into a plain list of findings."""
+def _collapse_parts(rows, *, gap=60, size=3):
+    """Run the burst-only seam and expose both committed return members."""
     df = _rare_df(rows)
-    if freq is None:
-        freq = {int(t): 1 for t in df["template_id"]}
-    return [f for _, f in _collapse_bursts(
-        df, freq, threshold, gap_seconds=gap, min_size=size,
+    pairs, remainder = _collapse_bursts(
+        df, gap_seconds=gap, min_size=size,
         now=_NOW, data_window=_WINDOW,
-    )]
+    )
+    return [f for _, f in pairs], remainder
+
+
+def _collapse(rows, *, gap=60, size=3):
+    """Unwrap only burst Findings for burst-evidence characterization tests."""
+    return _collapse_parts(rows, gap=gap, size=size)[0]
+
+
+def _family_fold(df: pd.DataFrame, *, min_size=2, threshold=1):
+    """Run the family seam over a hand-built isolated remainder."""
+    freq = {
+        int(template_id): int(count)
+        for template_id, count in df["template_id"].value_counts().items()
+    }
+    return _collapse_families(
+        df, freq, threshold, min_size=min_size,
+        now=_NOW, data_window=_WINDOW,
+    )
 
 
 def _run_with(rows: list[dict], ids: list[int], strs: list[str], cfg: dict | None = None):
@@ -214,7 +230,8 @@ class SyslogDetectorTests(unittest.TestCase):
         """
         # Four templates with distinct GLOBAL counts: t1=50 (common), t2=3, t3=2,
         # t4=1 (singleton). Rare rows are spaced an hour apart so burst-collapse
-        # never folds them - each stays an isolated needle carrying template_id.
+        # never folds them, and every row gets a distinct program so the new family
+        # fold cannot erase this test's subject: the rarity gate and template ids.
         rows: list[dict] = []
         ids: list[int] = []
         strs: list[str] = []
@@ -222,6 +239,7 @@ class SyslogDetectorTests(unittest.TestCase):
         def _add(tid: int, ts: float, tag: str) -> None:
             rows.append({
                 "ts": ts, "host": "192.0.2.1",
+                "program": f"fixture-program-{len(rows)}",
                 "raw": f"<30>May 30 12:00:00 192.0.2.1 {tag}",
                 "message": f"{tag} <*>",
             })
@@ -285,40 +303,42 @@ class SyslogDetectorTests(unittest.TestCase):
             [_rare_row(_BASE_TS + i, "host-a", f"a{i}", template_id=i) for i in range(3)]
             + [_rare_row(_BASE_TS + i, "host-b", f"b{i}", template_id=10 + i) for i in range(3)]
         )
-        bursts = [f for f in _collapse(rows) if f.evidence.get("tier") == "burst"]
+        bursts, remainder = _collapse_parts(rows)
         self.assertEqual(len(bursts), 2)
+        self.assertTrue(remainder.empty)
         self.assertEqual({f.title for f in bursts}, {"host-a", "host-b"})
         self.assertTrue(all(f.evidence["line_count"] == 3 for f in bursts))
 
     def test_collapse_gap_exactly_equal_splits(self) -> None:
         # Neighbour gaps of EXACTLY gap_seconds split → three singletons, no burst.
         rows = [_rare_row(_BASE_TS + i * 60, "h", f"r{i}", template_id=i) for i in range(3)]
-        findings = _collapse(rows, gap=60, size=3, freq={i: 1 for i in range(3)})
-        self.assertFalse([f for f in findings if f.evidence.get("tier") == "burst"])
-        self.assertEqual(len([f for f in findings if f.severity == Severity.MEDIUM]), 3)
+        bursts, remainder = _collapse_parts(rows, gap=60, size=3)
+        self.assertEqual(bursts, [])
+        self.assertEqual(remainder["raw"].tolist(), ["r0", "r1", "r2"])
 
     def test_collapse_gap_below_threshold_merges(self) -> None:
         rows = [_rare_row(_BASE_TS + i * 59, "h", f"r{i}", template_id=i) for i in range(3)]
-        bursts = [f for f in _collapse(rows, gap=60, size=3, freq={i: 1 for i in range(3)})
-                  if f.evidence.get("tier") == "burst"]
+        bursts, remainder = _collapse_parts(rows, gap=60, size=3)
         self.assertEqual(len(bursts), 1)
+        self.assertTrue(remainder.empty)
         self.assertEqual(bursts[0].evidence["line_count"], 3)
 
     def test_collapse_size_boundary_two_isolated_three_burst(self) -> None:
         two = [_rare_row(_BASE_TS + i, "h", f"r{i}", template_id=i) for i in range(2)]
-        f2 = _collapse(two, gap=60, size=3, freq={i: 1 for i in range(2)})
-        self.assertFalse([f for f in f2 if f.evidence.get("tier") == "burst"])
-        self.assertEqual(len([f for f in f2 if f.severity == Severity.MEDIUM]), 2)
+        f2, r2 = _collapse_parts(two, gap=60, size=3)
+        self.assertEqual(f2, [])
+        self.assertEqual(r2["raw"].tolist(), ["r0", "r1"])
         three = [_rare_row(_BASE_TS + i, "h", f"r{i}", template_id=i) for i in range(3)]
-        f3 = _collapse(three, gap=60, size=3, freq={i: 1 for i in range(3)})
-        self.assertEqual(len([f for f in f3 if f.evidence.get("tier") == "burst"]), 1)
+        f3, r3 = _collapse_parts(three, gap=60, size=3)
+        self.assertEqual(len(f3), 1)
+        self.assertTrue(r3.empty)
 
     def test_collapse_nan_ts_never_bursts(self) -> None:
         rows = [_rare_row(float("nan"), "h", f"n{i}", template_id=i) for i in range(5)]
-        findings = _collapse(rows, gap=60, size=3, freq={i: 1 for i in range(5)})
-        self.assertFalse([f for f in findings if f.evidence.get("tier") == "burst"])
-        self.assertEqual(len(findings), 5)
-        self.assertTrue(all(f.severity == Severity.MEDIUM for f in findings))
+        bursts, remainder = _collapse_parts(rows, gap=60, size=3)
+        self.assertEqual(bursts, [])
+        self.assertEqual(remainder["raw"].tolist(), [f"n{i}" for i in range(5)])
+        self.assertTrue(remainder["ts"].isna().all())
 
     # ── Burst collapse - reboot handling ──────────────────────────────────────
 
@@ -329,11 +349,12 @@ class SyslogDetectorTests(unittest.TestCase):
         # standalone for the labeled event.
         rows = [_rare_row(_BASE_TS + i, "h", f"r{i}", program="cron", template_id=i)
                 for i in range(3)]
-        burst_pairs = _collapse_bursts(
-            _rare_df(rows), {i: 1 for i in range(3)}, 1,
+        burst_pairs, remainder = _collapse_bursts(
+            _rare_df(rows),
             gap_seconds=60, min_size=3, now=_NOW, data_window=_WINDOW,
         )
         self.assertEqual(len(burst_pairs), 1)
+        self.assertTrue(remainder.empty)
         self.assertIsNone(burst_pairs[0][1].evidence["label"])  # unlabeled from the pass
 
         evt = _BootEvent("h", _BASE_TS + 1, _BASE_TS + 1, 1)   # inside the burst span
@@ -346,7 +367,7 @@ class SyslogDetectorTests(unittest.TestCase):
     def test_collapse_burst_without_reboot_label_none_key_present(self) -> None:
         rows = [_rare_row(_BASE_TS + i, "h", f"r{i}", program="cron", template_id=i)
                 for i in range(3)]
-        b = [f for f in _collapse(rows, freq={i: 1 for i in range(3)})
+        b = [f for f in _collapse(rows)
              if f.evidence.get("tier") == "burst"][0]
         self.assertIsNone(b.evidence["label"])
         self.assertIn("label", b.evidence)  # key ALWAYS present
@@ -376,25 +397,37 @@ class SyslogDetectorTests(unittest.TestCase):
 
     def test_collapse_conserves_every_rare_non_reboot_row(self) -> None:
         # _collapse_bursts runs on the rare set AFTER reboot rows are excluded
-        # (run() drops them via ~reboot_mask), so it conserves every rare
-        # NON-reboot row exactly once - folded into a burst or emitted isolated.
+        # (run() drops them via ~reboot_mask), so burst members plus the literal
+        # remainder conserve every rare NON-reboot row exactly once.
         rows = (
             [_rare_row(_BASE_TS + i, "host-a", f"a{i}", program="kernel", template_id=2)
              for i in range(5)]
             + [_rare_row(_BASE_TS, "host-b", "lone", template_id=99)]
         )
-        findings = _collapse(rows, freq={2: 10, 99: 1})
-        burst_lines = sum(f.evidence["line_count"]
-                          for f in findings if f.evidence.get("tier") == "burst")
-        nonburst = sum(1 for f in findings if f.evidence.get("tier") != "burst")
-        self.assertEqual(burst_lines + nonburst, len(rows))  # exactly once, no drops
+        bursts, remainder = _collapse_parts(rows)
+        burst_lines = sum(f.evidence["line_count"] for f in bursts)
+        self.assertEqual(burst_lines + len(remainder), len(rows))
 
     def test_collapse_empty_returns_empty(self) -> None:
-        self.assertEqual(
-            [f for _, f in _collapse_bursts(_rare_df([]), {}, 1, gap_seconds=60, min_size=3,
-                                            now=_NOW, data_window=_WINDOW)],
-            [],
+        pairs, remainder = _collapse_bursts(
+            _rare_df([]), gap_seconds=60, min_size=3,
+            now=_NOW, data_window=_WINDOW,
         )
+        self.assertEqual(pairs, [])
+        self.assertTrue(remainder.empty)
+        self.assertEqual(list(remainder.columns), list(_rare_df([]).columns))
+
+    def test_collapse_remainder_does_not_expand_duplicate_source_indexes(self) -> None:
+        df = _rare_df([
+            _rare_row(_BASE_TS, "h", "first", template_id=1),
+            _rare_row(_BASE_TS + 120, "h", "second", template_id=2),
+        ])
+        df.index = [7, 7]
+        pairs, remainder = _collapse_bursts(
+            df, gap_seconds=60, min_size=3, now=_NOW, data_window=_WINDOW,
+        )
+        self.assertEqual(pairs, [])
+        self.assertEqual(remainder["raw"].tolist(), ["first", "second"])
 
     def test_collapse_program_mix_top3_deterministic(self) -> None:
         rows = (
@@ -403,7 +436,7 @@ class SyslogDetectorTests(unittest.TestCase):
             + [_rare_row(_BASE_TS + 4, "h", "y", program="ccc", template_id=11)]
             + [_rare_row(_BASE_TS + 5, "h", "z", program="ddd", template_id=12)]
         )
-        b = [f for f in _collapse(rows, freq={**{i: 1 for i in range(3)}, 10: 1, 11: 1, 12: 1})
+        b = [f for f in _collapse(rows)
              if f.evidence.get("tier") == "burst"][0]
         pm = b.evidence["program_mix"]
         self.assertEqual(len(pm), 3)          # top-3 cap
@@ -412,7 +445,7 @@ class SyslogDetectorTests(unittest.TestCase):
     def test_collapse_sample_raw_capped_line_count_exact(self) -> None:
         rows = [_rare_row(_BASE_TS + i, "h", f"r{i}", program="p", template_id=i)
                 for i in range(25)]
-        b = [f for f in _collapse(rows, freq={i: 1 for i in range(25)})
+        b = [f for f in _collapse(rows)
              if f.evidence.get("tier") == "burst"][0]
         self.assertEqual(b.evidence["line_count"], 25)        # exact
         self.assertEqual(len(b.evidence["sample_raw"]), 20)   # capped sample
@@ -423,7 +456,7 @@ class SyslogDetectorTests(unittest.TestCase):
         # version-independent - not at the mercy of quicksort tie handling.
         rows = [_rare_row(_BASE_TS, "h", f"line-{i:02d}", program="p", template_id=i)
                 for i in range(25)]
-        b = [f for f in _collapse(rows, freq={i: 1 for i in range(25)})
+        b = [f for f in _collapse(rows)
              if f.evidence.get("tier") == "burst"][0]
         self.assertEqual(b.evidence["sample_raw"], [f"line-{i:02d}" for i in range(20)])
 
@@ -434,11 +467,12 @@ class SyslogDetectorTests(unittest.TestCase):
             [{"ts": _BASE_TS + i, "host": "h", "raw": f"r{i}", "message": "m",
               "template_id": i, "template_str": "t"} for i in range(3)]
         )
-        bursts = [f for _, f in _collapse_bursts(df, {i: 1 for i in range(3)}, 1,
-                                                 gap_seconds=60, min_size=3,
-                                                 now=_NOW, data_window=_WINDOW)
-                  if f.evidence.get("tier") == "burst"]
+        pairs, remainder = _collapse_bursts(
+            df, gap_seconds=60, min_size=3, now=_NOW, data_window=_WINDOW,
+        )
+        bursts = [f for _, f in pairs if f.evidence.get("tier") == "burst"]
         self.assertEqual(len(bursts), 1)
+        self.assertTrue(remainder.empty)
         self.assertEqual(bursts[0].evidence["program_mix"], [["unknown", 3]])
 
     def test_collapse_keeps_nan_host_rows(self) -> None:
@@ -448,9 +482,12 @@ class SyslogDetectorTests(unittest.TestCase):
             [{"ts": _BASE_TS, "host": float("nan"), "program": "p", "raw": "r",
               "message": "m", "template_id": 1, "template_str": "t"}]
         )
-        findings = [f for _, f in _collapse_bursts(df, {1: 1}, 1, gap_seconds=60, min_size=3,
-                                                   now=_NOW, data_window=_WINDOW)]
-        self.assertEqual(len(findings), 1)
+        pairs, remainder = _collapse_bursts(
+            df, gap_seconds=60, min_size=3, now=_NOW, data_window=_WINDOW,
+        )
+        self.assertEqual(pairs, [])
+        self.assertEqual(len(remainder), 1)
+        self.assertEqual(remainder.iloc[0]["host"], "unknown")
 
     def test_curated_reboot_is_label_and_signal_count_and_burst_excludes_bulk(self) -> None:
         from sigwood.outputs._evidence import curated_evidence
@@ -462,10 +499,11 @@ class SyslogDetectorTests(unittest.TestCase):
             _rare_row(_BASE_TS + i, "h", f"s{i}", program="systemd", template_id=2 + i)
             for i in range(3)
         ]
-        burst_pairs = _collapse_bursts(
-            _rare_df(storm), {2: 1, 3: 1, 4: 1}, 1,
+        burst_pairs, remainder = _collapse_bursts(
+            _rare_df(storm),
             gap_seconds=60, min_size=3, now=_NOW, data_window=_WINDOW,
         )
+        self.assertTrue(remainder.empty)
         out = _reconcile([_BootEvent("h", _BASE_TS, _BASE_TS, 1)], burst_pairs,
                          gap_seconds=60, now=_NOW, data_window=_WINDOW)
         b = [f for _, f in out if f.evidence.get("tier") == "burst"][0]
@@ -481,12 +519,189 @@ class SyslogDetectorTests(unittest.TestCase):
         rows = [_rare_row(_BASE_TS + i, "h", f"r{i}",
                           program="prog-a" if i < 2 else "prog-b", template_id=i)
                 for i in range(3)]
-        b = [f for f in _collapse(rows, freq={i: 1 for i in range(3)})
+        b = [f for f in _collapse(rows)
              if f.evidence.get("tier") == "burst"][0]
         pm = to_jsonable(b.evidence["program_mix"])
         self.assertIsInstance(pm, list)
         self.assertTrue(all(isinstance(x, list) and len(x) == 2
                             and isinstance(x[0], str) and isinstance(x[1], int) for x in pm))
+
+    # ── Family fold ───────────────────────────────────────────────────────────
+
+    def test_family_groups_by_host_and_program_with_prescribed_shape(self) -> None:
+        rows = [
+            _rare_row(_BASE_TS, "host-a", "a0", program="sshd", template_id=1),
+            _rare_row(_BASE_TS + 120, "host-a", "a1", program="sshd", template_id=2),
+            _rare_row(_BASE_TS + 240, "host-a", "a2", program="kernel", template_id=3),
+            _rare_row(_BASE_TS + 360, "host-b", "b0", program="sshd", template_id=4),
+        ]
+        pairs = _family_fold(_rare_df(rows))
+        families = [f for _, f in pairs if f.evidence.get("tier") == "family"]
+        needles = [f for _, f in pairs if f.evidence.get("tier") is None]
+
+        self.assertEqual(len(families), 1)
+        self.assertEqual(len(needles), 2)
+        family = families[0]
+        self.assertEqual(family.severity, Severity.MEDIUM)
+        self.assertEqual(family.title, "host-a")
+        self.assertEqual(family.evidence, {
+            "tier": "family",
+            "host": "host-a",
+            "program": "sshd",
+            "line_count": 2,
+            "start_ts": _BASE_TS,
+            "end_ts": _BASE_TS + 120,
+            "span_seconds": 120.0,
+            "sample_raw": ["a0", "a1"],
+            "label": None,
+        })
+        self.assertEqual(
+            family.description,
+            "A set of rare log lines from a single program on this host, each at or "
+            "below the rarity threshold.",
+        )
+        self.assertEqual(
+            family.next_steps,
+            ["Skim the sampled lines to confirm the cluster's cause"],
+        )
+        assert_report_voice([family])
+
+    def test_family_samples_chronological_nan_last_and_caps_at_twenty(self) -> None:
+        rows = [
+            _rare_row(
+                float("nan") if i in (0, 23) else _BASE_TS + (24 - i),
+                "h", f"line-{i:02d}", program="p", template_id=i,
+            )
+            for i in range(25)
+        ]
+        pair = _family_fold(_rare_df(rows))[0]
+        family = pair[1]
+        self.assertEqual(pair[0], _BASE_TS)
+        self.assertEqual(family.evidence["line_count"], 25)
+        self.assertEqual(family.evidence["start_ts"], _BASE_TS)
+        self.assertEqual(family.evidence["end_ts"], _BASE_TS + 23)
+        self.assertEqual(family.evidence["span_seconds"], 23.0)
+        self.assertEqual(len(family.evidence["sample_raw"]), 20)
+        self.assertEqual(family.evidence["sample_raw"][0], "line-24")
+        self.assertNotIn("line-00", family.evidence["sample_raw"])  # NaN rows sort last
+
+    def test_family_all_nan_timestamps_use_none_and_infinite_sort(self) -> None:
+        rows = [
+            _rare_row(float("nan"), "h", "first", program="p", template_id=1),
+            _rare_row(float("nan"), "h", "second", program="p", template_id=2),
+        ]
+        sort_ts, family = _family_fold(_rare_df(rows))[0]
+        self.assertEqual(sort_ts, float("inf"))
+        self.assertIsNone(family.evidence["start_ts"])
+        self.assertIsNone(family.evidence["end_ts"])
+        self.assertIsNone(family.evidence["span_seconds"])
+        self.assertEqual(family.evidence["sample_raw"], ["first", "second"])
+
+    def test_family_mixed_timestamps_sample_nan_last(self) -> None:
+        rows = [
+            _rare_row(float("nan"), "h", "undated", program="p", template_id=1),
+            _rare_row(_BASE_TS + 20, "h", "later", program="p", template_id=2),
+            _rare_row(_BASE_TS + 10, "h", "earlier", program="p", template_id=3),
+        ]
+        _, family = _family_fold(_rare_df(rows))[0]
+        self.assertEqual(
+            family.evidence["sample_raw"], ["earlier", "later", "undated"]
+        )
+        self.assertEqual(family.evidence["start_ts"], _BASE_TS + 10)
+        self.assertEqual(family.evidence["end_ts"], _BASE_TS + 20)
+        self.assertEqual(family.evidence["span_seconds"], 10.0)
+
+    def test_family_min_size_one_characterized(self) -> None:
+        row = _rare_row(_BASE_TS, "h", "one", program="p", template_id=1)
+        sort_ts, finding = _family_fold(_rare_df([row]), min_size=1)[0]
+        self.assertEqual(sort_ts, _BASE_TS)
+        self.assertEqual(finding.evidence["tier"], "family")
+        self.assertEqual(finding.evidence["line_count"], 1)
+
+    def test_family_of_one_preserves_level_zero_and_verbose_one(self) -> None:
+        from sigwood.outputs._render_model import _partition_syslog
+        from sigwood.outputs.text import TextHandler
+
+        row = _rare_row(_BASE_TS, "h", "raw-one", program="sshd", template_id=1)
+        finding = _family_fold(_rare_df([row]))[0][1]
+        legacy = Finding(
+            detector=finding.detector,
+            severity=finding.severity,
+            title=finding.title,
+            description=finding.description,
+            evidence={k: v for k, v in finding.evidence.items() if k != "program"},
+            next_steps=finding.next_steps,
+            ts_generated=finding.ts_generated,
+            data_window=finding.data_window,
+        )
+
+        for level in (0, 1):
+            current = TextHandler(verbose_level=level)._render_syslog_group(
+                _partition_syslog([finding])
+            )
+            before = TextHandler(verbose_level=level)._render_syslog_group(
+                _partition_syslog([legacy])
+            )
+            self.assertEqual(current, before)
+
+        debug = "\n".join(
+            TextHandler(verbose_level=2)._render_syslog_group(
+                _partition_syslog([finding])
+            )
+        )
+        self.assertIn("program: sshd", debug)
+
+    def test_family_pipeline_represents_every_row_exactly_once_with_program_defenses(self) -> None:
+        base_rows = (
+            [_rare_row(_BASE_TS + i, "burst-host", f"burst-{i}", template_id=i)
+             for i in range(3)]
+            + [_rare_row(_BASE_TS + i * 120, "family-host", f"family-{i}", template_id=10 + i)
+               for i in range(2)]
+            + [_rare_row(_BASE_TS + 500, "needle-host", "needle", template_id=20)]
+            + [_rare_row(float("nan"), "nan-host", f"nan-{i}", template_id=30 + i)
+               for i in range(2)]
+        )
+        frames = [
+            _rare_df(base_rows).drop(columns=["program"]),
+            _rare_df([
+                {**row, "program": None if row["host"] in ("family-host", "nan-host")
+                 else row["program"]}
+                for row in base_rows
+            ]),
+        ]
+
+        for frame in frames:
+            burst_pairs, remainder = _collapse_bursts(
+                frame, gap_seconds=60, min_size=3,
+                now=_NOW, data_window=_WINDOW,
+            )
+            family_pairs = _family_fold(remainder)
+            findings = [f for _, f in [*burst_pairs, *family_pairs]]
+            represented: list[str] = []
+            for finding in findings:
+                if finding.evidence.get("tier") in ("burst", "family"):
+                    represented.extend(finding.evidence["sample_raw"])
+                else:
+                    represented.append(finding.title)
+            self.assertEqual(
+                Counter(represented),
+                Counter(str(raw) for raw in frame["raw"]),
+            )
+
+    def test_reconcile_never_labels_family_and_emits_standalone_reboot(self) -> None:
+        rows = [
+            _rare_row(_BASE_TS, "h", "f0", program="p", template_id=1),
+            _rare_row(_BASE_TS + 120, "h", "f1", program="p", template_id=2),
+        ]
+        family_pair = _family_fold(_rare_df(rows))[0]
+        out = _reconcile(
+            [_BootEvent("h", _BASE_TS + 1, _BASE_TS + 1, 1)],
+            [family_pair], gap_seconds=60, now=_NOW, data_window=_WINDOW,
+        )
+        family = [f for _, f in out if f.evidence.get("tier") == "family"][0]
+        reboots = [f for _, f in out if f.evidence.get("tier") == "reboot"]
+        self.assertIsNone(family.evidence["label"])
+        self.assertEqual(len(reboots), 1)
 
     # ── End-to-end fixtures (a)-(d) via run() with drain3 patched ─────────────
 
@@ -529,6 +744,27 @@ class SyslogDetectorTests(unittest.TestCase):
         self.assertEqual(len(bursts), 1)
         self.assertEqual(bursts[0].evidence["line_count"], 6)
         self.assertIsNone(bursts[0].evidence["label"])
+
+    def test_run_far_apart_same_program_folds_seeded_needles_into_family(self) -> None:
+        common = [_common_row(i) for i in range(50)]
+        seeded = [
+            {"ts": _BASE_TS + 100_000, "host": "192.0.2.7", "program": "sshd",
+             "raw": "sshd: privileged login sentinel", "message": "privileged login sentinel"},
+            {"ts": _BASE_TS + 101_000, "host": "192.0.2.7", "program": "sshd",
+             "raw": "sshd: persistence sentinel", "message": "persistence sentinel"},
+        ]
+        ids = [1] * 50 + [2, 3]
+        strs = ["common"] * 50 + ["privileged login sentinel", "persistence sentinel"]
+
+        result = _run_with(common + seeded, ids, strs)
+        families = [f for f in result if f.evidence.get("tier") == "family"]
+        self.assertEqual(len(families), 1)
+        self.assertEqual(families[0].evidence["line_count"], 2)
+        self.assertEqual(
+            families[0].evidence["sample_raw"],
+            ["sshd: privileged login sentinel", "sshd: persistence sentinel"],
+        )
+        self.assertFalse([f for f in result if f.evidence.get("tier") is None])
 
     def test_run_clean_reboot_no_storm_is_standalone_reboot(self) -> None:
         common = [_common_row(i) for i in range(50)]
@@ -598,8 +834,11 @@ class SyslogDetectorTests(unittest.TestCase):
         # the far event stands alone. A burst is claimed at most once.
         burst_rows = [_rare_row(_BASE_TS + i, "h", f"r{i}", program="p", template_id=i)
                       for i in range(3)]
-        burst_pairs = _collapse_bursts(_rare_df(burst_rows), {i: 1 for i in range(3)}, 1,
-                                       gap_seconds=60, min_size=3, now=_NOW, data_window=_WINDOW)
+        burst_pairs, remainder = _collapse_bursts(
+            _rare_df(burst_rows), gap_seconds=60, min_size=3,
+            now=_NOW, data_window=_WINDOW,
+        )
+        self.assertTrue(remainder.empty)
         near = _BootEvent("h", _BASE_TS + 1, _BASE_TS + 1, 1)         # inside the burst span
         far  = _BootEvent("h", _BASE_TS + 5000, _BASE_TS + 5000, 1)   # far away
         out = _reconcile([near, far], burst_pairs, gap_seconds=60, now=_NOW, data_window=_WINDOW)
@@ -694,7 +933,13 @@ class SyslogDetectorTests(unittest.TestCase):
                         "span_seconds": 1.0, "start_ts": 1.0, "end_ts": 2.0,
                         "program_mix": [["p", 4]], "sample_raw": ["a"], "label": None},
                         next_steps=[], ts_generated=_NOW, data_window=_WINDOW)
-        fs = [medium, burst]
+        family = Finding(detector="syslog", severity=Severity.MEDIUM, title="h",
+                         description="", evidence={"tier": "family", "host": "h",
+                         "program": "p", "line_count": 2, "start_ts": 3.0,
+                         "end_ts": 4.0, "span_seconds": 1.0,
+                         "sample_raw": ["b", "c"], "label": None},
+                         next_steps=[], ts_generated=_NOW, data_window=_WINDOW)
+        fs = [medium, family, burst]
         for lvl in (0, 1, 2):
             r = _build_renderable("syslog", fs, lvl, 100)
             self.assertEqual(sum(len(s.findings) for s in r.sections), len(fs))
@@ -1054,10 +1299,11 @@ def test_unlabeled_burst_description_never_claims_boot() -> None:
     observed; the reboot wording appears only after _reconcile labels it."""
     rows = [_rare_row(_BASE_TS + i, "h", f"r{i}", program="cron", template_id=i)
             for i in range(3)]
-    burst_pairs = _collapse_bursts(
-        _rare_df(rows), {i: 1 for i in range(3)}, 1,
+    burst_pairs, remainder = _collapse_bursts(
+        _rare_df(rows),
         gap_seconds=60, min_size=3, now=_NOW, data_window=_WINDOW,
     )
+    assert remainder.empty
     assert len(burst_pairs) == 1
     burst = burst_pairs[0][1]
     assert "boot" not in burst.description.lower()

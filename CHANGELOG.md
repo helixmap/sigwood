@@ -6,6 +6,17 @@ All notable changes to sigwood are recorded here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- **Syslog rare-event output now groups isolated lines into per-host, per-program review
+  units and normalizes long identifier-like hexadecimal-character runs during template
+  mining.** Temporal bursts and reboot handling remain separate, while raw log text stays
+  intact in evidence. On the measurement corpus, a 7-day multi-host run that previously
+  reported 44 isolated rare-line findings now reports 19 review units (29 findings in
+  total, from 56); a single quiet day reports about a dozen. Grouping changes how the
+  findings are presented and counted, not what the detector observes - every rare line is
+  still present in exactly one burst, family, or standalone finding.
+
 ## [0.2.4] - 2026-07-18
 
 ### Fixed

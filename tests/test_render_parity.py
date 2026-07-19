@@ -80,6 +80,11 @@ _VARIANTS: dict[str, Finding] = {
         "distinct_ports": 317, "active_buckets": 177}),
     "syslog_event": _f("syslog", Severity.MEDIUM, "kernel: sentinel-evt-717117", {
         "host": "host-sentinel-9", "template_str": "kernel: <*>", "count": 2, "threshold": 9}),
+    "syslog_family": _f("syslog", Severity.MEDIUM, "host-sentinel-family-9", {
+        "tier": "family", "host": "host-sentinel-family-9",
+        "program": "progsentinel", "line_count": 137, "span_seconds": 7320.0,
+        "start_ts": 1.0, "end_ts": 7321.0,
+        "sample_raw": ["family-raw-sentinel-a"], "label": None}),
     "syslog_reboot": _f("syslog", Severity.INFO, "host-sentinel-reboot-9", {
         "tier": "reboot", "host": "host-sentinel-reboot-9",
         "reboot_ts": "2026-06-01T07:08:09+00:00", "label": "rebooted"}),
@@ -174,6 +179,20 @@ def test_dns_blocked_cell_skipped_when_absent() -> None:
     assert any(c.key == "blocked" and c.value == "" for c in project_row(finding))
     assert "BLOCKED" not in _text([finding])
     assert "BLOCKED" not in _html_text([finding])
+
+
+def test_syslog_family_without_timestamps_omits_span() -> None:
+    finding = _f("syslog", Severity.MEDIUM, "host-no-time", {
+        "tier": "family", "host": "host-no-time", "program": "unknown",
+        "line_count": 2, "start_ts": None, "end_ts": None,
+        "span_seconds": None, "sample_raw": ["a", "b"], "label": None,
+    })
+    cells = project_row(finding)
+    assert [cell.value for cell in cells] == [
+        "host-no-time · unknown · 2 rare lines"
+    ]
+    assert "None" not in _text([finding])
+    assert "None" not in _html_text([finding])
 
 
 def test_projection_covers_every_detector_variant() -> None:

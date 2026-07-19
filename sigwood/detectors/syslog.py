@@ -14,10 +14,11 @@ Pipeline:
    rare set (rare_df = is_anomaly & ~reboot_mask), so a reboot row is never a rare
    needle and never inflates a burst's line_count.
 4. Per-host temporal burst collapse over the rare set: rare NON-reboot rows on one
-   host that cluster within burst_gap_seconds fold into a single INFO burst
-   finding; the rest stay isolated MEDIUM needles. Every rare NON-reboot row is
-   represented exactly once.
-5. Reconciliation: reboot rows are clustered per host into boot events
+   host that cluster within burst_gap_seconds fold into a single INFO burst.
+5. Family fold over the isolated remainder: rows sharing (host, program) fold into
+   one MEDIUM review unit; a family of one remains the existing MEDIUM needle.
+   Every rare NON-reboot row is represented exactly once across those three shapes.
+6. Reconciliation: reboot rows are clustered per host into boot events
    (reboot_cluster_seconds); each event either labels the nearest contemporaneous
    burst "rebooted" (within burst_gap_seconds) or emits one standalone INFO reboot
    finding - exactly one representation per boot event. run() owns the final
@@ -70,8 +71,14 @@ DRAIN_DEPTH               = 4
 DRAIN_PARAMETRIZE_NUMERIC = True
 BURST_GAP_SECONDS         = 60   # rare rows on a host closer than this = one burst
 BURST_MIN_SIZE            = 3    # min rare rows in a window to collapse to a burst
+FAMILY_MIN_SIZE           = 2    # min isolated rows for one host/program review unit
 LINE_TRIM_LIMIT           = 200  # max finding trim length
 REBOOT_CLUSTER_SECONDS    = 600  # reboot signals on a host closer than this = one boot event
+
+# Tool-shipped Drain3 calibration. Keep the specification as strings so importing
+# this detector never imports optional runtime objects or compiles their regexes.
+LONG_HEX_MASK_PATTERN = r"(?<![0-9A-Fa-f])[0-9A-Fa-f]{8,}(?![0-9A-Fa-f])"
+LONG_HEX_MASK_NAME = "LONG_HEX"
 
 DEFAULT_CONFIG = {
     "rarity_pct":         10,
@@ -81,6 +88,7 @@ DEFAULT_CONFIG = {
     "parametrize_numeric": DRAIN_PARAMETRIZE_NUMERIC,
     "burst_gap_seconds":   BURST_GAP_SECONDS,
     "burst_min_size":      BURST_MIN_SIZE,
+    "family_min_size":     FAMILY_MIN_SIZE,
     "reboot_cluster_seconds": REBOOT_CLUSTER_SECONDS,
     "line_trim_limit":     LINE_TRIM_LIMIT,
 }
@@ -109,7 +117,7 @@ class _BootEvent(NamedTuple):
 
 def run(context: DetectorContext) -> list[Finding]:
     """Detect anomalous syslog lines using drain3 templating, rarity scoring,
-    and per-host temporal burst collapse."""
+    temporal burst collapse, and per-program family review units."""
     flat_df = context.logs.get("*.log*")
     zeek_df = context.logs.get("syslog*.log*")
 
@@ -126,6 +134,7 @@ def run(context: DetectorContext) -> list[Finding]:
     max_count   = cfg.get("max_count",           DEFAULT_CONFIG["max_count"])
     gap_seconds = cfg.get("burst_gap_seconds",   DEFAULT_CONFIG["burst_gap_seconds"])
     min_size    = cfg.get("burst_min_size",      DEFAULT_CONFIG["burst_min_size"])
+    family_min_size = cfg.get("family_min_size", DEFAULT_CONFIG["family_min_size"])
     cluster_seconds = cfg.get("reboot_cluster_seconds", DEFAULT_CONFIG["reboot_cluster_seconds"])
 
     df = _run_drain3(df, sim_thresh, depth, parametrize)
@@ -145,13 +154,17 @@ def run(context: DetectorContext) -> list[Finding]:
     boot_events = _detect_boot_events(df[reboot_mask], cluster_seconds=cluster_seconds)
     rare_df     = df[df["is_anomaly"] & ~reboot_mask].copy()
 
-    burst_pairs = _collapse_bursts(
-        rare_df, freq, threshold,
+    burst_pairs, isolated_remainder = _collapse_bursts(
+        rare_df,
         gap_seconds=gap_seconds, min_size=min_size,
         now=now, data_window=context.data_window,
     )
+    family_pairs = _collapse_families(
+        isolated_remainder, freq, threshold,
+        min_size=family_min_size, now=now, data_window=context.data_window,
+    )
     pairs = _reconcile(
-        boot_events, burst_pairs,
+        boot_events, [*burst_pairs, *family_pairs],
         gap_seconds=gap_seconds, now=now, data_window=context.data_window,
     )
     # run() owns the SINGLE final cross-channel output sort; the helpers keep their
@@ -167,11 +180,21 @@ def _run_drain3(
     parametrize_numeric: bool,
 ) -> pd.DataFrame:
     """Add template_id and template_str columns via drain3 log templating."""
+    try:
+        from drain3.masking import MaskingInstruction
+    except ImportError:
+        raise ImportError(
+            "drain3 is required for syslog detection. Run: pip install drain3"
+        )
+
     result = mine_templates(
         (str(msg) for msg in df["message"]),
         sim_thresh=sim_thresh,
         depth=depth,
         parametrize_numeric=parametrize_numeric,
+        masking_instructions=[
+            MaskingInstruction(LONG_HEX_MASK_PATTERN, LONG_HEX_MASK_NAME)
+        ],
     )
 
     df = df.copy()
@@ -320,57 +343,124 @@ def _detect_boot_events(
 
 def _collapse_bursts(
     rare_df: pd.DataFrame,
-    freq: dict[int, int],
-    threshold: int,
     *,
     gap_seconds: int,
     min_size: int,
     now: datetime,
     data_window: tuple[datetime, datetime],
-) -> list[tuple[float, Finding]]:
+) -> tuple[list[tuple[float, Finding]], pd.DataFrame]:
     """Per-host temporal burst collapse over the rare set.
 
     Pure: no I/O, no suppression. Reboot rows are excluded upstream (via
-    ~reboot_mask in run()), so every rare NON-reboot row is represented EXACTLY
-    once - folded into a burst summary (its line_count / program_mix / sample_raw)
-    or emitted as an isolated MEDIUM needle; a 'rebooted' burst's line_count
-    therefore counts non-reboot rare rows only. Returns the UNSORTED
-    (sort_ts, Finding) pairs - run() owns the final cross-channel sort. [] on an
-    empty rare set.
+    ~reboot_mask in run()). Returns burst (sort_ts, Finding) pairs plus the exact
+    row complement for the family pass. NaN-ts rows are always in that remainder;
+    a 'rebooted' burst's line_count therefore counts non-reboot rare rows only.
+    run() owns the final cross-channel sort.
     """
     if rare_df.empty:
-        return []
+        return [], rare_df.copy()
 
     # Defensive: pandas groupby drops NaN keys by default, which would silently
     # lose rows whose host failed to parse. Normalize to the "unknown" sentinel
     # (parse_host's own fallback) so every rare row survives the grouping.
-    rare_df = rare_df.copy()
-    rare_df["host"] = rare_df["host"].fillna("unknown")
+    work = rare_df.copy().reset_index(drop=True)
+    work["host"] = work["host"].fillna("unknown")
 
     timestamped: list[tuple[float, Finding]] = []
+    burst_member = pd.Series(False, index=work.index, dtype=bool)
 
-    for host, host_df in rare_df.groupby("host", sort=False):
+    for host, host_df in work.groupby("host", sort=False):
         # STABLE sort: rows sharing a ts (a ring-buffer flush at one second) must
         # keep input order so the chronological sample_raw cap is deterministic
         # and version-independent (default quicksort is unstable on ties).
         parseable = host_df[host_df["ts"].notna()].sort_values("ts", kind="stable")
-        nan_rows  = host_df[host_df["ts"].isna()]
 
         for group in _gap_cluster(parseable.itertuples(), gap_seconds):
             if len(group) >= min_size:
+                burst_member.loc[[int(row.Index) for row in group]] = True
                 timestamped.append(_burst_finding(str(host), group, now, data_window))
-            else:
-                for row in group:
-                    timestamped.append(
-                        _isolated_finding(str(host), row, freq, threshold, now, data_window)
+
+    # Boolean-complement construction makes the accounting seam explicit: rows
+    # are never rebuilt from namedtuples, duplicate source indexes cannot expand
+    # the result, and every unmarked timestamped/NaN-ts row survives once.
+    return timestamped, work.loc[~burst_member].copy()
+
+
+def _collapse_families(
+    isolated_df: pd.DataFrame,
+    freq: dict[int, int],
+    threshold: int,
+    *,
+    min_size: int,
+    now: datetime,
+    data_window: tuple[datetime, datetime],
+) -> list[tuple[float, Finding]]:
+    """Fold isolated rare rows into per-(host, program) MEDIUM review units.
+
+    Pure: no I/O, no suppression. Groups below ``min_size`` route through the
+    existing isolated-needle builder. Returns unsorted pairs; run() owns the
+    final cross-channel sort.
+    """
+    if isolated_df.empty:
+        return []
+
+    work = isolated_df.copy()
+    if "program" not in work.columns:
+        work["program"] = "unknown"
+    else:
+        work["program"] = work["program"].fillna("unknown")
+
+    pairs: list[tuple[float, Finding]] = []
+    for (host, program), family_df in work.groupby(["host", "program"], sort=False):
+        if len(family_df) < min_size:
+            for row in family_df.itertuples():
+                pairs.append(
+                    _isolated_finding(
+                        str(host), row, freq, threshold, now, data_window
                     )
+                )
+            continue
 
-        for row in nan_rows.itertuples():
-            timestamped.append(
-                _isolated_finding(str(host), row, freq, threshold, now, data_window)
-            )
+        ordered = family_df.sort_values(
+            "ts", kind="stable", na_position="last"
+        )
+        parseable = ordered[ordered["ts"].notna()]
+        if parseable.empty:
+            start_ts = end_ts = span_seconds = None
+            sort_ts = float("inf")
+        else:
+            start_ts = float(parseable.iloc[0]["ts"])
+            end_ts = float(parseable.iloc[-1]["ts"])
+            span_seconds = end_ts - start_ts
+            sort_ts = start_ts
 
-    return timestamped
+        line_count = int(len(family_df))
+        finding = Finding(
+            detector=DETECTOR_NAME,
+            severity=Severity.MEDIUM,
+            title=str(host),
+            description=(
+                "A set of rare log lines from a single program on this host, each "
+                "at or below the rarity threshold."
+            ),
+            evidence={
+                "tier": "family",
+                "host": str(host),
+                "program": str(program),
+                "line_count": line_count,
+                "start_ts": start_ts,
+                "end_ts": end_ts,
+                "span_seconds": span_seconds,
+                "sample_raw": [str(raw) for raw in ordered["raw"].iloc[:20]],
+                "label": None,
+            },
+            next_steps=["Skim the sampled lines to confirm the cluster's cause"],
+            ts_generated=now,
+            data_window=data_window,
+        )
+        pairs.append((sort_ts, finding))
+
+    return pairs
 
 
 def _burst_finding(
@@ -387,8 +477,8 @@ def _burst_finding(
 
     # program_mix from the canonical `program` column (govern-don't-grep -
     # `program` is part of the syslog minimal-5). A missing column / NaN coerces
-    # to the "unknown" sentinel so a minimal frame never raises; this is the only
-    # path that reads `program`. Pinned shape: list[[str, int]], top-3 by count
+    # to the "unknown" sentinel so a minimal frame never raises. Pinned shape:
+    # list[[str, int]], top-3 by count
     # desc with name-asc tie-break (deterministic for goldens).
     counts: Counter = Counter()
     for r in group:
@@ -442,6 +532,8 @@ def _isolated_finding(
     full-frame channel (run() excludes them via ~reboot_mask), so a reboot row
     never reaches here through the detector and is never a MEDIUM needle."""
     ts_sort = float("inf") if pd.isna(row.ts) else float(row.ts)
+    program = getattr(row, "program", None)
+    program = "unknown" if program is None or pd.isna(program) else str(program)
 
     finding = Finding(
         detector=DETECTOR_NAME,
@@ -450,6 +542,7 @@ def _isolated_finding(
         description="Rare log template observed at or below the rarity threshold.",
         evidence={
             "host":         host,
+            "program":      program,
             "template_id":  int(row.template_id),
             "template_str": row.template_str,
             "count":        int(freq[int(row.template_id)]),
@@ -500,7 +593,7 @@ def _reboot_finding(
 
 def _reconcile(
     boot_events: list[_BootEvent],
-    burst_pairs: list[tuple[float, Finding]],
+    collapsed_pairs: list[tuple[float, Finding]],
     *,
     gap_seconds: int,
     now: datetime,
@@ -516,7 +609,7 @@ def _reconcile(
     refuses to absorb an unrelated rare-line burst minutes later. Returns the
     combined UNSORTED pairs; run() owns the final sort.
     """
-    out: list[tuple[float, Finding]] = list(burst_pairs)
+    out: list[tuple[float, Finding]] = list(collapsed_pairs)
 
     # Index the STORED burst Findings by host (a burst's title IS its host;
     # evidence carries no host key). Claiming the stored object - never a rebuilt

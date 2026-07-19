@@ -375,8 +375,14 @@ systemd` - and tags it `rebooted` when a boot signal lands in the same window. R
 themselves are detected on a separate full-frame pass, independent of rarity, so a machine
 that reboots over and over is flagged **every** time - not just on its first, still-unique
 boot. What's left once the storms are folded are the *isolated* rare lines - the one-off
-command, the singular error - which are exactly the needles worth your attention. A restart
-shouldn't bury the day's real signal.
+command, the singular error - which are exactly the needles worth your attention. Isolated
+lines that share one host and one program fold once more into a single per-program review
+unit - `webhost · sshd · 2 rare lines · 1h` - because "this program produced N one-offs" is
+one decision, not N; the sampled lines are one verbosity level down, and a lone rare line
+still stands on its own. Long identifier-like hexadecimal runs (queue ids, session tokens)
+are normalized during template mining, so a message that differs only by such an identifier
+counts as repetition rather than a parade of one-offs. A restart shouldn't bury the day's
+real signal.
 
 ### `aws` - why a plain z-score instead of a fancy model?
 

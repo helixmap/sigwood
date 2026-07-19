@@ -87,6 +87,34 @@ def test_envelope_has_version_and_schema() -> None:
     assert payload["schema_version"] == 1
 
 
+def test_syslog_family_evidence_is_lossless_and_nullable() -> None:
+    evidence = {
+        "tier": "family",
+        "host": "host-family",
+        "program": "sshd",
+        "line_count": 2,
+        "start_ts": None,
+        "end_ts": None,
+        "span_seconds": None,
+        "sample_raw": ["raw-a", "raw-b"],
+        "label": None,
+    }
+    family = Finding(
+        detector="syslog",
+        severity=Severity.MEDIUM,
+        title="host-family",
+        description="A set of rare log lines.",
+        evidence=evidence,
+        next_steps=["Skim the sampled lines"],
+        ts_generated=datetime(2026, 6, 1, 18, 0, tzinfo=timezone.utc),
+        data_window=_W,
+    )
+    payload = _emit([family])
+
+    assert payload["schema_version"] == 1
+    assert payload["findings"][0]["evidence"] == evidence
+
+
 def test_dns_label_score_evidence_keys_reach_json(monkeypatch: pytest.MonkeyPatch) -> None:
     """A dns finding's JSON evidence carries only the label-score keys, never the
     legacy entropy keys: group findings expose max_label_score / min_label_score,

@@ -253,6 +253,24 @@ def _projection_config() -> dict[str, Any]:
     }
 
 
+def test_family_review_units_do_not_shift_known_example_ranks() -> None:
+    family = _finding(detector="syslog", severity="medium", title="host-family")
+    family["evidence"] = {"tier": "family", "program": "sshd", "line_count": 2}
+    needle = _finding(detector="syslog", severity="medium", title="target raw line")
+    selector = [{
+        "example_id": "syslog_target",
+        "detector": "syslog",
+        "field": "title",
+        "op": "eq",
+        "value": "target raw line",
+    }]
+
+    ranks = bench_summarize._known_example_ranks(
+        [family, needle], selector, {"syslog"}
+    )
+    assert ranks["syslog_target"]["rank"] == 1
+
+
 def test_demo_default_and_explicit_scenario_are_byte_identical(tmp_path: Path) -> None:
     default_dir = tmp_path / "default"
     explicit_dir = tmp_path / "explicit"

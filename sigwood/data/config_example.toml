@@ -176,12 +176,13 @@ allowlist_dir    = "allowlist.d/"
 # min_cluster_size = 25         # rows, so its sizes run much smaller
 # min_samples      = 10
 
-# syslog - rare-event / reboot surfacing (drain3 templating + rarity + bursts).
+# syslog - rare-event / reboot surfacing (drain3 templating + rarity + review units).
 # [detectors.syslog]
 # rarity_pct        = 10     # bottom-N percentile of GLOBAL template count; inert at max_count=1
 # max_count         = 1      # rare iff count ≤ min(percentile, max_count); at 1 ⇒ singletons only
 # burst_gap_seconds = 60     # rare lines on a host closer than this = one burst
 # burst_min_size    = 3      # min rare lines in a window to collapse to a burst
+# family_min_size   = 2      # min isolated lines from one host/program to group for review
 # reboot_cluster_seconds = 600     # reboot signals on a host closer than this = one boot event
 
 # aws - per-principal CloudTrail surfacing (rarity + weirdness + bursts).

@@ -66,14 +66,14 @@ version does not exactly match `__version__`.
 
 ### 0 - Preflight the current branch
 
-Start from an up-to-date, clean `main` and run the complete local suite:
+Do this *before* kicking off the release process. Start from an up-to-date, clean `main` and run the complete local suite:
 
 ```bash
 git switch main &&
   test -z "$(git status --short)" &&
   git pull --ff-only &&
   test "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)" &&
-  .venv/bin/python -m pytest -q
+  .venv/bin/python -m pytest
 ```
 
 Anything pushed to the public repository may be cached permanently. Confirm that no private

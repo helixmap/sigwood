@@ -6,6 +6,8 @@ All notable changes to sigwood are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.2.4] - 2026-07-18
+
 ### Fixed
 
 - **`scan` vertical and horizontal findings now describe the time window that actually
@@ -18,6 +20,20 @@ All notable changes to sigwood are recorded here. The format follows
   under-severitied and pushed down the report by the surrounding benign traffic. Evidence,
   severity, and rank now all reflect the triggering window. Block and slow scans are
   unchanged (their evidence was already window- and span-correct by design).
+
+### Changed
+
+- **The DNS detector's default surface threshold now matches its 1.8 high-entropy bar.**
+  On the measurement corpus, 87 of 105 DNS findings scored from 1.5 up to but not
+  including 1.8; the 18 findings at or above 1.8 remain under the new default.
+- **The default hunt is now a curated set rather than every available detector.** Fresh
+  installs, omitted selection, `--detect=`, and `--detect=default` select aws, beacon, dns,
+  scan, and syslog; duration remains runnable by name while its severity evidence is rebuilt.
+  Reports and dry runs disclose that opt-in remainder. Explicit `--detect=all` and existing
+  configs with `detect = "all"` are unchanged and continue to run everything. This is a
+  quieter default, not a claim that detector logic became smarter.
+
+## [0.2.3] - 2026-07-16
 
 ### Added
 
@@ -42,15 +58,6 @@ All notable changes to sigwood are recorded here. The format follows
 
 ### Changed
 
-- **The DNS detector's default surface threshold now matches its 1.8 high-entropy bar.**
-  On the measurement corpus, 87 of 105 DNS findings scored from 1.5 up to but not
-  including 1.8; the 18 findings at or above 1.8 remain under the new default.
-- **The default hunt is now a curated set rather than every available detector.** Fresh
-  installs, omitted selection, `--detect=`, and `--detect=default` select aws, beacon, dns,
-  scan, and syslog; duration remains runnable by name while its severity evidence is rebuilt.
-  Reports and dry runs disclose that opt-in remainder. Explicit `--detect=all` and existing
-  configs with `detect = "all"` are unchanged and continue to run everything. This is a
-  quieter default, not a claim that detector logic became smarter.
 - **A connection graph now replays bytes across each connection's lifetime.** `sigwood graph` on a
   Zeek conn log previously drew a connection's entire byte total in the single bin where it started,
   so one long transfer landed as a spike at its start and the rest of its life looked idle. Byte
@@ -233,7 +240,8 @@ agent, no account.
 - Analysis-window controls (`--since`/`--until`/`--days`/`--all`), a per-source default
   lookback window, and local-or-UTC time rendering.
 
-[Unreleased]: https://github.com/helixmap/sigwood/compare/v0.2.3...HEAD
+[Unreleased]: https://github.com/helixmap/sigwood/compare/v0.2.4...HEAD
+[0.2.4]: https://github.com/helixmap/sigwood/compare/v0.2.3...v0.2.4
 [0.2.3]: https://github.com/helixmap/sigwood/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/helixmap/sigwood/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/helixmap/sigwood/compare/v0.1.1...v0.2.1

@@ -29,7 +29,7 @@ from __future__ import annotations
 import sys
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
-from typing import NamedTuple
+from typing import Iterable, NamedTuple
 
 import pandas as pd
 from tqdm import tqdm
@@ -86,6 +86,15 @@ DEFAULT_CONFIG = {
 }
 
 DETECTOR_METHOD = MethodTag("drain3", named=True)
+
+
+class MinedResult(NamedTuple):
+    """Online assignments plus the final miner and mutation diagnostics."""
+    template_ids: list[int]
+    template_strs: list[str]
+    miner: "TemplateMiner"
+    template_changed_total: int
+    clusters_changed: int
 
 
 class _BootEvent(NamedTuple):
@@ -158,6 +167,29 @@ def _run_drain3(
     parametrize_numeric: bool,
 ) -> pd.DataFrame:
     """Add template_id and template_str columns via drain3 log templating."""
+    result = mine_templates(
+        (str(msg) for msg in df["message"]),
+        sim_thresh=sim_thresh,
+        depth=depth,
+        parametrize_numeric=parametrize_numeric,
+    )
+
+    df = df.copy()
+    df["template_id"]  = result.template_ids
+    df["template_str"] = result.template_strs
+    return df
+
+
+def mine_templates(
+    messages: Iterable[str],
+    *,
+    sim_thresh: float,
+    depth: int,
+    parametrize_numeric: bool,
+    masking_instructions: list | None = None,
+    show_progress: bool = True,
+) -> MinedResult:
+    """Mine string messages and return online assignments plus mutation counts."""
     try:
         from drain3 import TemplateMiner
         from drain3.template_miner_config import TemplateMinerConfig
@@ -170,10 +202,14 @@ def _run_drain3(
     cfg.drain_sim_th               = sim_thresh
     cfg.drain_depth                = depth
     cfg.parametrize_numeric_tokens = parametrize_numeric
+    if masking_instructions is not None:
+        cfg.masking_instructions = masking_instructions
 
     miner = TemplateMiner(config=cfg)
     template_ids: list[int] = []
     template_strs: list[str] = []
+    template_changed_total = 0
+    changed_cluster_ids: set[int] = set()
 
     # leave=True + clean bar_format makes this the liveness narration for the
     # syslog detector phase (the runner deliberately skips its outer spinner
@@ -182,22 +218,28 @@ def _run_drain3(
     # check: -q or a piped run disables the bar WITHOUT this detector reading a
     # quiet field, so the detectors-are-render-blind rail stays intact.
     for msg in tqdm(
-        df["message"],
+        messages,
         desc="syslog: mining templates",
         unit=" lines",
         unit_scale=True,
         leave=True,
         bar_format="{desc}: {n_fmt} lines [{elapsed}]",
-        disable=not narration_active(sys.stderr),
+        disable=not (show_progress and narration_active(sys.stderr)),
     ):
-        result = miner.add_log_message(str(msg))
+        result = miner.add_log_message(msg)
         template_ids.append(result["cluster_id"])
         template_strs.append(result["template_mined"])
+        if result["change_type"] == "cluster_template_changed":
+            template_changed_total += 1
+            changed_cluster_ids.add(result["cluster_id"])
 
-    df = df.copy()
-    df["template_id"]  = template_ids
-    df["template_str"] = template_strs
-    return df
+    return MinedResult(
+        template_ids=template_ids,
+        template_strs=template_strs,
+        miner=miner,
+        template_changed_total=template_changed_total,
+        clusters_changed=len(changed_cluster_ids),
+    )
 
 
 def _score_rarity(

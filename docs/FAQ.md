@@ -215,7 +215,7 @@ single file, or run where there's headroom.
 
 ### What timezone are the times in?
 
-Your machine's local timezone, labeled `local` on every human-readable timestamp. Pass
+Your machine's local timezone, labeled `local` on human-readable timestamps. Pass
 `--utc` (or set `use_utc = true` in config) to render everything in UTC with a `UTC` label
 instead - handy when you correlate across hosts or pivot into raw logs that carry UTC
 stamps. The setting is consistent end to end: an offset-less `--since`/`--until` date and
@@ -224,6 +224,18 @@ explicit offset is always honored as written), export's no-timeframe default win
 anchors on the same midnights, and the date in an auto-named report or digest filename
 follows it too. `json` output is the exception by design - it is always ISO-8601 UTC, so
 feeds into other tooling never shift with a display preference.
+
+One display exception, on syslog's grouped rows: the leading stamp on a review unit, a burst
+or a reboot is written in syslog's own wall-clock shape - `Jul 12 21:57:33` - rather than the
+labeled form, so it reads like the log itself. It carries no `local` word, and it is the same
+converted time as every other timestamp. Under `--utc` it picks up a ` UTC` suffix, because
+there it no longer matches the clock the log was written in.
+
+Two things to know when reading those rows. Syslog lines carry no year, so neither does this
+stamp; the report header names the window, and `-v` shows each row's first timestamp in full.
+And a raw log line's own stamp is the clock of the host that wrote it, which need not be
+yours - a log shipped in from another timezone, or one carrying its own offset, can show
+different digits from the grouped row above it even in local mode.
 
 ### Can I run it on a schedule?
 
@@ -370,7 +382,7 @@ One wrinkle dominates real logs: when a host does a lot at once - a reboot, a pa
 upgrade, a service restart - it spits out a burst of one-off lines (init chatter, services
 starting in a fresh order, kernel ring-buffer dumps) that would *all* read as rare. A single
 boot can be hundreds of "rare" lines. So rather than flood you, sigwood folds each per-host
-burst of rare lines into a single summary - `2026-07-01 03:12 UTC · webhost · 187 rare
+burst of rare lines into a single summary - `Jul  1 03:12:47 · webhost · 187 rare
 lines · 12s · mostly kernel, systemd` - and tags it `rebooted` directly after the host
 when a boot signal lands in the same window. Reboots
 themselves are detected on a separate full-frame pass, independent of rarity, so a machine
@@ -386,7 +398,7 @@ never inferred from message text. Privileged rows also stay out of INFO burst co
 a lone `useradd` cannot vanish into nearby routine chatter.
 
 Within either rarity channel, isolated lines that share one host and one program fold into
-a single review unit - `2026-07-01 03:12 UTC · webhost · sshd · 2 rare lines · 1h` -
+a single review unit - `Jul  1 03:12:47 · webhost · sshd · 2 rare lines · 1h` -
 because "this program produced
 N one-offs" is one decision, not N; a lone rare line still stands on its own. Family and
 burst rows show their first timestamp, `-v` includes up to three sampled lines, and an HTML

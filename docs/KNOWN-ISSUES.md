@@ -105,6 +105,15 @@ findings with the block disposition; queries that appear only in the Pi-hole log
 clustered on that run. Point sigwood at the Pi-hole log alone to cluster it in its
 own right.
 
+**A single rare line read from the systemd journal shows no timestamp of its own.** Grouped
+syslog rows - review units, bursts, reboots - always lead with their first timestamp. A lone
+rare line instead shows the log line itself, which for file-based syslog begins with its own
+wall clock. Journal entries carry their timestamp as a separate field rather than inside the
+message text, so a lone rare line read from the journal renders as message text with no time
+on the row. The event's time is still recorded, and `-v` shows it; only the row itself is
+missing it. Since sigwood prefers the journal where one is available, this is the common case
+on a modern Linux install. A fix is in progress.
+
 **Repeated reboots are caught every time, with a few grouping edges.** sigwood detects
 reboot signals across the whole log regardless of how rare they are, so a machine that
 reboots repeatedly is flagged on every boot, not just its first. Three grouping edges are

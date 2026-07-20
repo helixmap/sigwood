@@ -226,8 +226,10 @@ sigwood --all ~/zeek                 # the entire archive
 ```
 
 CloudTrail opts out of the default window - novelty detection needs full history, so it always
-loads in full unless you narrow it explicitly. Times render in your local timezone (labeled as
-such); pass `--utc` or set `use_utc = true` for UTC. `json` output is always UTC.
+loads in full unless you narrow it explicitly. Times render in your local timezone, labeled as
+such; pass `--utc` or set `use_utc = true` for UTC. `json` output is always UTC. (Grouped
+syslog rows are the one exception - they lead with a syslog-shaped stamp instead. See the
+FAQ.)
 
 ## Installation
 

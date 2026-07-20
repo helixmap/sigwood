@@ -143,10 +143,18 @@ diff yourself before running anything below: from here on, the work is visible t
 the tagged commit *is* the released state - do not plan to add documentation or packaging
 fixes after the tag.
 
-Read the prepared diff, then commit exactly those files and push `main`:
+Read the prepared diff:
 
 ```bash
 git status --short && git diff
+```
+
+then commit exactly those files and push `main`:
+
+```bash
+git add CHANGELOG.md sigwood/__init__.py
+git commit -m "sigwood release"
+git push origin main
 ```
 
 The identity block below re-checks that the commit exists and that `main` matches the remote,

@@ -88,25 +88,71 @@ else
 fi
 ```
 
-### 1 - Prepare and land the release state
+### 1 - Prepare the release state
 
-Before tagging:
+This section only edits files. Nothing in it commits, pushes, or tags, so its work stays
+reversible: the result is an uncommitted diff that can be corrected or discarded before any
+of it becomes public. That is the seam. Every step from section 2 onward is authoritative -
+commits, tags, and uploads other people can see - so finish this section, and read its diff,
+before running anything in the next one.
 
 1. Set `__version__` in `sigwood/__init__.py` to the stable version being released.
 2. Update the README status line to the same version.
 3. Move every `[Unreleased]` changelog entry into a new dated `## [X.Y.Z]` section, leave
    `[Unreleased]` empty, and update the comparison links at the bottom of `CHANGELOG.md`.
-4. Land every other file that belongs in the release, including new documentation.
-5. Review the diff, commit only the intended release state, and push `main`.
+4. Refresh the development venv's package metadata, which step 1 has just made stale:
 
-The tagged commit is the released state. Do not plan to add documentation or packaging fixes
-after the tag.
+   ```bash
+   .venv/bin/pip install -e . -q
+   ```
 
-### 2 - Capture the release identity once
+   An editable install records the version at install time, so until this runs
+   `importlib.metadata.version("sigwood")` still reports the previous release and
+   `tests/test_version.py::test_version_single_sourced` fails. It is a local environment
+   refresh: no tracked file changes, and nothing about it belongs in the release commit.
 
-Run this block after the release-state commit is on `main`. Every version-specific command
-below uses these variables without editing. If the shell closes or `__version__` changes, run
-the block again.
+5. Land every other file that belongs in the release, including new documentation.
+6. Re-run the complete suite. It must be green before the state is offered for commit.
+
+Two checks belong here as well, because no test covers either:
+
+- **Prior release sections are intact.** Diff the changelog's released portion against the
+  previous tag and confirm the only differences are the new section and the two expected link
+  lines. A changelog rewritten from a stale base has silently erased a whole released section
+  before, and no runbook gate reads a prior version's heading:
+
+  ```bash
+  PREV="$(git describe --tags --abbrev=0)" &&
+    git show "$PREV:CHANGELOG.md" | sed -n "/^## \[${PREV#v}\]/,\$p" > /tmp/cl-prev.txt &&
+    sed -n "/^## \[${PREV#v}\]/,\$p" CHANGELOG.md > /tmp/cl-now.txt &&
+    diff /tmp/cl-prev.txt /tmp/cl-now.txt
+  ```
+
+- **Shipped images still match shipped output.** The README screenshots and terminal
+  recording under `docs/img/` render on the project page *and* on PyPI. Any release that
+  changed what a report looks like needs them recaptured, or the front page advertises older
+  output than the release produces.
+
+The section is done when the working tree holds the intended release state, the suite is
+green, and both checks above have been made. It stays uncommitted.
+
+### 2 - Commit the release state and capture the release identity
+
+This is the first authoritative step, and the first one that is awkward to undo. Review the
+diff yourself before running anything below: from here on, the work is visible to others and
+the tagged commit *is* the released state - do not plan to add documentation or packaging
+fixes after the tag.
+
+Read the prepared diff, then commit exactly those files and push `main`:
+
+```bash
+git status --short && git diff
+```
+
+The identity block below re-checks that the commit exists and that `main` matches the remote,
+so a forgotten push fails here rather than at the tag. Every version-specific command after
+this point uses these variables without editing. If the shell closes or `__version__` changes,
+run the block again.
 
 ```bash
 REPO=helixmap/sigwood
@@ -146,17 +192,28 @@ working-tree build can accidentally include untracked files.
 The block runs fail-fast inside a subshell, leaves the caller in the repository root, removes
 its temporary export on success, and retains it for inspection on failure.
 
+It guards the working tree first. Everything here builds from `HEAD`, while `$VERSION` was
+read from the working tree in step 2, so an uncommitted release state produces artifacts one
+version behind and fails on the very last line - the smoke test - after a full test run, with
+a version mismatch that looks like a packaging fault rather than a missing commit. The guard
+turns that into an immediate, accurate message.
+
 ```bash
 BUILD=$(mktemp -d "${TMPDIR:-/tmp}/sigwood-build.XXXXXX")
 (
   set -euo pipefail
+
+  if [[ -n "$(git status --short)" ]]; then
+    printf 'uncommitted changes: this builds from HEAD, so land the release state first (step 1)\n' >&2
+    exit 1
+  fi
 
   git archive HEAD | tar -x -C "$BUILD"
   cd "$BUILD"
 
   python3 -m venv .venv-rel
   .venv-rel/bin/python -m pip install -q --upgrade pip
-  .venv-rel/bin/python -m pip install -q -e ".[dev]" build twine
+  .venv-rel/bin/python -m pip install -e ".[dev]" build twine
   .venv-rel/bin/python -m pytest -q
 
   .venv-rel/bin/python -m build

@@ -6,6 +6,8 @@ All notable changes to sigwood are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.2.5] - 2026-07-20
+
 ### Fixed
 
 - **A lone rare line read from the systemd journal now leads with its timestamp.** Journal
@@ -36,7 +38,7 @@ All notable changes to sigwood are recorded here. The format follows
   now lead with their first timestamp, `-v` shows a three-line member sample, and HTML
   reports provide a closed full-sample expansion without leaking that body into printed
   reports. On the same 7-day measurement corpus, the report reads 12 privileged + 16
-  routine + 10 info findings (38 total, under a minute to scan) — the increase over the
+  routine + 10 info findings (38 total, under a minute to scan) - the increase over the
   prior 29 is privileged rows formerly buried inside info bursts, now independently
   reviewable.
 
@@ -283,7 +285,8 @@ agent, no account.
 - Analysis-window controls (`--since`/`--until`/`--days`/`--all`), a per-source default
   lookback window, and local-or-UTC time rendering.
 
-[Unreleased]: https://github.com/helixmap/sigwood/compare/v0.2.4...HEAD
+[Unreleased]: https://github.com/helixmap/sigwood/compare/v0.2.5...HEAD
+[0.2.5]: https://github.com/helixmap/sigwood/compare/v0.2.4...v0.2.5
 [0.2.4]: https://github.com/helixmap/sigwood/compare/v0.2.3...v0.2.4
 [0.2.3]: https://github.com/helixmap/sigwood/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/helixmap/sigwood/compare/v0.2.1...v0.2.2

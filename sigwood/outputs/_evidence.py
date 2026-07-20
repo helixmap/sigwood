@@ -78,7 +78,10 @@ def curated_evidence(finding: Finding) -> dict[str, Any]:
         elif tier == "reboot":
             keys = ("label", "signal_count")
         else:  # isolated rare row
-            keys = ("template_str", "host", "program_total", "count", "threshold")
+            keys = (
+                "template_str", "host", "program_total", "count", "threshold",
+                "first_seen",
+            )
     elif det == "scan":
         keys = ("scan_state_ratio", "top_states", "direction", "pattern_tag")
     elif det == "duration":

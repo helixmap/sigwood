@@ -821,6 +821,59 @@ class SyslogDetectorTests(unittest.TestCase):
         self.assertEqual(finding.evidence["program_total"], 1)
         self.assertNotIn("privileged", finding.evidence)
 
+    def test_needles_pin_stamp_evidence_on_both_membership_channels(self) -> None:
+        flat = _rare_row(
+            _BASE_TS, "flat-host",
+            "May 30 12:00:00 flat-host cron: flat payload",
+            program="cron", template_id=7, template_str="cron: flat payload",
+        )
+        _, sieve = _family_fold(_rare_df([flat]))[0]
+        self.assertEqual(sieve.severity, Severity.LOW)
+        self.assertEqual(sieve.evidence, {
+            "host": "flat-host",
+            "program": "cron",
+            "program_total": 1,
+            "template_id": 7,
+            "template_str": "cron: flat payload",
+            "count": 1,
+            "threshold": 1,
+            "first_seen": datetime.fromtimestamp(_BASE_TS, timezone.utc).isoformat(),
+            "self_stamped": True,
+        })
+
+        journal = _rare_row(
+            _BASE_TS + 1, "journal-host", "bare journal payload",
+            program="sudo", template_id=8, template_str="sudo: bare journal payload",
+        )
+        _, member = _family_fold(
+            _rare_df([journal]), severity=Severity.MEDIUM, privileged=True,
+        )[0]
+        self.assertEqual(member.severity, Severity.MEDIUM)
+        self.assertEqual(member.evidence, {
+            "host": "journal-host",
+            "program": "sudo",
+            "program_total": 1,
+            "template_id": 8,
+            "template_str": "sudo: bare journal payload",
+            "count": 1,
+            "threshold": 1,
+            "first_seen": datetime.fromtimestamp(
+                _BASE_TS + 1, timezone.utc
+            ).isoformat(),
+            "self_stamped": False,
+            "privileged": True,
+        })
+
+    def test_nan_timestamp_needle_keeps_content_stamp_fact(self) -> None:
+        row = _rare_row(
+            float("nan"), "h", "bare journal payload",
+            template_id=9, template_str="bare journal payload",
+        )
+        sort_ts, finding = _family_fold(_rare_df([row]))[0]
+        self.assertEqual(sort_ts, float("inf"))
+        self.assertIsNone(finding.evidence["first_seen"])
+        self.assertIs(finding.evidence["self_stamped"], False)
+
     def test_family_pipeline_represents_every_row_exactly_once_with_program_defenses(self) -> None:
         base_rows = (
             [_rare_row(_BASE_TS + i, "burst-host", f"burst-{i}", template_id=i)
@@ -1412,6 +1465,35 @@ class SyslogDetectorTests(unittest.TestCase):
         self.assertIn("[L]", rendered)
         self.assertIn("low-sentinel", rendered)
 
+    def test_needle_stamp_facts_split_curated_and_debug_text_levels(self) -> None:
+        from sigwood.outputs._render_model import _partition_syslog
+        from sigwood.outputs.text import TextHandler
+
+        needle = Finding(
+            detector="syslog", severity=Severity.LOW, title="bare journal payload",
+            description="Rare template", evidence={
+                "host": "h", "program": "cron", "program_total": 1,
+                "template_id": 7, "template_str": "cron: bare journal payload",
+                "count": 1, "threshold": 1,
+                "first_seen": "2026-07-12T21:57:33+00:00",
+                "self_stamped": False,
+            }, next_steps=[], ts_generated=_NOW, data_window=_WINDOW,
+        )
+        at1 = "\n".join(
+            TextHandler(verbose_level=1)._render_syslog_group(
+                _partition_syslog([needle])
+            )
+        )
+        at2 = "\n".join(
+            TextHandler(verbose_level=2)._render_syslog_group(
+                _partition_syslog([needle])
+            )
+        )
+        self.assertIn("first_seen: 2026-07-12T21:57:33+00:00", at1)
+        self.assertNotIn("self_stamped:", at1)
+        self.assertIn("first_seen: 2026-07-12T21:57:33+00:00", at2)
+        self.assertIn("self_stamped: False", at2)
+
     def test_text_level_one_samples_three_and_level_two_keeps_full(self) -> None:
         from sigwood.outputs.text import TextHandler
         from sigwood.outputs._render_model import _partition_syslog
@@ -1699,6 +1781,35 @@ def test_journal_program_identity_reaches_drain3_when_raw_messages_match(
     )
     run(_ctx(pd.DataFrame(rows)))
     assert observed == ["sshd: same payload", "kernel: same payload"]
+
+
+def test_journal_needle_runs_to_time_anchored_text() -> None:
+    from sigwood.outputs._render_model import _partition_syslog
+    from sigwood.outputs.text import TextHandler
+
+    parsed = parse_journal_record(json.dumps({
+        "__REALTIME_TIMESTAMP": "1760000000000000",
+        "MESSAGE": "journal needle sentinel",
+        "_HOSTNAME": "host.example",
+        "SYSLOG_IDENTIFIER": "cron",
+    }))
+    assert isinstance(parsed, dict)
+
+    findings = _run_with(
+        [parsed], [1], ["cron: journal needle sentinel"],
+    )
+    assert len(findings) == 1
+    needle = findings[0]
+    assert needle.title == "journal needle sentinel"
+    assert needle.evidence["first_seen"] == "2025-10-09T08:53:20+00:00"
+    assert needle.evidence["self_stamped"] is False
+
+    rendered = "\n".join(
+        TextHandler(verbose_level=0)._render_syslog_group(
+            _partition_syslog(findings)
+        )
+    )
+    assert "[L]   Oct  9 08:53:20 · journal needle sentinel" in rendered
 
 
 if __name__ == "__main__":

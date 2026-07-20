@@ -157,6 +157,10 @@ def test_golden_syslog_privileged_rare_events_and_bursts():
            {"tier": "family", "host": "host-family", "program": "postfix/qmgr",
             "line_count": 2, "start_ts": 10.0, "end_ts": 7210.0,
             "span_seconds": 7200.0, "sample_raw": ["a", "b"], "label": None}),
+        _f("syslog", Severity.LOW, "journal needle sentinel",
+           {"host": "host-journal", "template_str": "cron: <*>",
+            "count": 1, "threshold": 9,
+            "first_seen": "2026-07-12T21:57:33+00:00", "self_stamped": False}),
         _f("syslog", Severity.INFO, "host-b",
            {"tier": "burst", "line_count": 13, "span_seconds": 47.0,
             "start_ts": 1.0, "end_ts": 48.0,
@@ -167,12 +171,13 @@ def test_golden_syslog_privileged_rare_events_and_bursts():
             "reboot_ts": "2026-06-01T03:04:05+00:00", "label": "rebooted"}),
     ])
     assert out == (
-        f"\nsyslog - 4 findings · 1 M  1 L  2 I\n{RULE}\n"
+        f"\nsyslog - 5 findings · 1 M  2 L  2 I\n{RULE}\n"
         "privileged (1)\n"
         "  [M]   useradd: sentinel privileged event 717171\n\n"
-        "rare events (1)\n"
+        "rare events (2)\n"
         "  [L]   Jan  1 00:00:10 · host-family · postfix/qmgr · "
-        "2 rare lines · 2h\n\n"
+        "2 rare lines · 2h\n"
+        "  [L]   Jul 12 21:57:33 · journal needle sentinel\n\n"
         "bursts (2)\n"
         "  [I]   Jan  1 00:00:01 · host-b · rebooted · 13 rare lines · "
         "47s · mostly kernel, systemd\n"

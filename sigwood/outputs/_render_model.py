@@ -457,7 +457,16 @@ def _project_syslog(f: Finding) -> list[Cell]:
             ),
             Cell(None, line),
         ]
-    return [Cell(None, f.title, full_width=True)]  # self-stamped raw needle
+    first_seen = ev.get("first_seen")
+    if ev.get("self_stamped") is False and first_seen is not None:
+        return [
+            Cell(
+                "first",
+                fmt_syslog_timestamp(datetime.fromisoformat(str(first_seen))),
+            ),
+            Cell(None, f.title),
+        ]
+    return [Cell(None, f.title, full_width=True)]
 
 
 def _project_duration(f: Finding) -> list[Cell]:

@@ -6,6 +6,16 @@ All notable changes to sigwood are recorded here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **A lone rare line read from the systemd journal now leads with its timestamp.** Journal
+  entries carry their time as a separate field rather than inside the message text, so these
+  rows previously rendered as bare message text in an otherwise time-ordered section - the
+  common case on a modern Linux install, where sigwood prefers the journal. The row now
+  starts with the same syslog-shaped stamp the grouped rows use. Lines from syslog files are
+  unchanged: they already begin with their own wall clock, and sigwood never adds a second
+  stamp to a line that has one.
+
 ### Changed
 
 - **Grouped syslog rows now show a few distilled lines from what they group, and stay on one

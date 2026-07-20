@@ -614,6 +614,41 @@ def test_syslog_stamp_orientation_estimate_local_and_utc(
     assert needs_landscape([("syslog", utc)]) is False
 
 
+def test_stamped_long_journal_needle_deliberately_flips_to_landscape(
+    restore_display_utc,
+) -> None:
+    from sigwood.common.display import set_display_utc
+    from sigwood.outputs._render_model import (
+        _build_renderable,
+        _section_table_px,
+        needs_landscape,
+    )
+
+    set_display_utc(False)
+    title = "journal " + ("x" * 192)
+    assert len(title) == 200
+    base_evidence = {
+        "host": "host-journal",
+        "first_seen": "2026-07-12T21:57:33+00:00",
+    }
+    legacy = _finding(
+        detector="syslog", severity=Severity.LOW, title=title,
+        description="", next_steps=[], evidence=base_evidence,
+    )
+    stamped = _finding(
+        detector="syslog", severity=Severity.LOW, title=title,
+        description="", next_steps=[],
+        evidence={**base_evidence, "self_stamped": False},
+    )
+
+    before = _build_renderable("syslog", [legacy], 0, 100)
+    after = _build_renderable("syslog", [stamped], 0, 100)
+    assert _section_table_px(before.sections[0]) == 0.0
+    assert needs_landscape([("syslog", before)]) is False
+    assert _section_table_px(after.sections[0]) == 1784.0
+    assert needs_landscape([("syslog", after)]) is True
+
+
 def test_render_emits_landscape_for_wide_portrait_for_narrow() -> None:
     """Render-level: render_report_html flips ONLY the print @page
     size from the content estimate; screen html is inert (paged media only)."""

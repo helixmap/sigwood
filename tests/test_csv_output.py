@@ -201,6 +201,30 @@ def test_syslog_family_signals_are_curated_without_raw_samples() -> None:
     assert "end_ts" not in row["signals"]
 
 
+def test_syslog_needle_signals_add_first_seen_only() -> None:
+    f = _finding(
+        detector="syslog",
+        severity=Severity.LOW,
+        title="journal needle sentinel",
+        evidence={
+            "host": "host-journal", "program": "cron", "program_total": 1,
+            "template_id": 7, "template_str": "cron: journal needle sentinel",
+            "count": 1, "threshold": 9,
+            "first_seen": "2026-07-12T21:57:33+00:00",
+            "self_stamped": False,
+            "member_fragments": ["must-not-reach-csv"],
+        },
+    )
+    row = _rows(_emit([f]))[0]
+    assert row["signals"] == (
+        "template_str=cron: journal needle sentinel; host=host-journal; "
+        "program_total=1; count=1; threshold=9; "
+        "first_seen=2026-07-12T21:57:33+00:00"
+    )
+    assert "self_stamped" not in row["signals"]
+    assert "member_fragments" not in row["signals"]
+
+
 def test_verbosity_invariant() -> None:
     f = [_finding()]
     assert _emit(f, verbose_level=0) == _emit(f, verbose_level=2)

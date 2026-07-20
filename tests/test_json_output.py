@@ -119,6 +119,34 @@ def test_syslog_family_evidence_is_lossless_and_nullable() -> None:
     assert payload["findings"][0]["evidence"] == evidence
 
 
+def test_syslog_needle_stamp_evidence_is_lossless_without_schema_bump() -> None:
+    evidence = {
+        "host": "host-journal",
+        "program": "cron",
+        "template_str": "cron: journal needle sentinel",
+        "count": 1,
+        "threshold": 9,
+        "first_seen": None,
+        "self_stamped": False,
+    }
+    needle = Finding(
+        detector="syslog",
+        severity=Severity.LOW,
+        title="journal needle sentinel",
+        description="Rare template.",
+        evidence=evidence,
+        next_steps=["Review surrounding log context"],
+        ts_generated=datetime(2026, 6, 1, 18, 0, tzinfo=timezone.utc),
+        data_window=_W,
+    )
+    payload = _emit([needle])
+
+    assert payload["schema_version"] == 1
+    assert payload["findings"][0]["evidence"] == evidence
+    assert payload["findings"][0]["evidence"]["self_stamped"] is False
+    assert payload["findings"][0]["evidence"]["first_seen"] is None
+
+
 def test_dns_label_score_evidence_keys_reach_json(monkeypatch: pytest.MonkeyPatch) -> None:
     """A dns finding's JSON evidence carries only the label-score keys, never the
     legacy entropy keys: group findings expose max_label_score / min_label_score,

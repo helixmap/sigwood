@@ -42,7 +42,7 @@ from tqdm import tqdm
 
 from sigwood.common.display import narration_active
 from sigwood.common.finding import DetectorContext, Finding, MethodTag, Severity
-from sigwood.parsers.syslog import REBOOT_SIGNALS_RE, strip_program
+from sigwood.parsers.syslog import REBOOT_SIGNALS_RE, parse_timestamp, strip_program
 
 DETECTOR_NAME = "syslog"
 STATUS = "available"
@@ -770,6 +770,8 @@ def _isolated_finding(
         "template_str": row.template_str,
         "count":        int(freq[int(row.template_id)]),
         "threshold":    int(threshold),
+        "first_seen":   _iso_utc(None if pd.isna(row.ts) else float(row.ts)),
+        "self_stamped": parse_timestamp(str(row.raw)) is not None,
     }
     if privileged:
         evidence["privileged"] = True

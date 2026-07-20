@@ -86,6 +86,13 @@ _VARIANTS: dict[str, Finding] = {
         "distinct_ports": 317, "active_buckets": 177}),
     "syslog_event": _f("syslog", Severity.LOW, "kernel: sentinel-evt-717117", {
         "host": "host-sentinel-9", "template_str": "kernel: <*>", "count": 2, "threshold": 9}),
+    "syslog_stamped_event": _f(
+        "syslog", Severity.LOW, "journal-stamped-sentinel-727117", {
+            "host": "host-journal-9", "template_str": "cron: <*>",
+            "count": 1, "threshold": 9,
+            "first_seen": "2026-07-12T21:57:33+00:00",
+            "self_stamped": False,
+        }),
     "syslog_family": _f("syslog", Severity.LOW, "host-sentinel-family-9", {
         "tier": "family", "host": "host-sentinel-family-9",
         "program": "progsentinel", "line_count": 137, "span_seconds": 7320.0,
@@ -221,6 +228,59 @@ def test_syslog_first_cell_is_keyed_for_html_but_bare_in_text() -> None:
     assert "first=" not in text_out
     assert "first" in html_out
     assert html_out.index("first") < html_out.index("host-first")
+
+
+def test_syslog_needle_stamp_projection_uses_strict_four_arm_gate(
+    restore_display_utc,
+) -> None:
+    set_display_utc(False)
+    first_seen = "2026-07-12T21:57:33+00:00"
+
+    def needle(title: str, evidence: dict) -> Finding:
+        return _f("syslog", Severity.LOW, title, evidence)
+
+    self_stamped = needle(
+        "Jul 12 21:57:33 host-a cron: flat payload",
+        {"first_seen": first_seen, "self_stamped": True},
+    )
+    cells = project_row(self_stamped)
+    assert [(cell.key, cell.value, cell.full_width) for cell in cells] == [
+        (None, self_stamped.title, True),
+    ]
+
+    stamped = needle(
+        "bare journal payload",
+        {"first_seen": first_seen, "self_stamped": False},
+    )
+    cells = project_row(stamped)
+    assert [(cell.key, cell.value, cell.full_width) for cell in cells] == [
+        ("first", "Jul 12 21:57:33", False),
+        (None, "bare journal payload", False),
+    ]
+
+    no_timestamp = needle(
+        "undated journal payload",
+        {"first_seen": None, "self_stamped": False},
+    )
+    cells = project_row(no_timestamp)
+    assert [(cell.key, cell.value, cell.full_width) for cell in cells] == [
+        (None, no_timestamp.title, True),
+    ]
+
+    legacy = needle("legacy producer payload", {"first_seen": first_seen})
+    cells = project_row(legacy)
+    assert [(cell.key, cell.value, cell.full_width) for cell in cells] == [
+        (None, legacy.title, True),
+    ]
+
+    text_out = _text([stamped])
+    html_out = render_report_html(
+        [stamped], None, verbose_level=0, max_findings_per_detector=100,
+    )
+    assert "Jul 12 21:57:33 · bare journal payload" in text_out
+    assert '<th class="col-first">first</th>' in html_out
+    assert '<td class="data col-first">Jul 12 21:57:33</td>' in html_out
+    assert '<div class="clip">bare journal payload</div>' in html_out
 
 
 def test_syslog_burst_reboot_label_follows_host_and_timestamp_leads() -> None:

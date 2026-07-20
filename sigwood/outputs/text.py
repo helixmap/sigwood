@@ -348,6 +348,8 @@ def _debug_tail(finding: Finding, indent: str) -> list[str]:
     if finding.evidence:
         body.append(f"{indent}evidence:")
         for k, v in finding.evidence.items():
+            if k == "member_fragments":
+                continue  # already rendered as level-0 syslog row content
             body.append(f"{indent}  {_sanitize(k)}: {_sanitize(v)}")
     if finding.next_steps:
         body.append(f"{indent}next steps:")
@@ -834,11 +836,18 @@ class TextHandler(OutputHandler):
                 tag = f"{str(f.severity):<4}"
                 values = [_sanitize(cell.value) for cell in project_row(f)]
                 line = f"  {tag}  {' · '.join(values)}"
+                row_lines = [line]
+                if f.evidence.get("tier") in ("family", "burst"):
+                    fragments = f.evidence.get("member_fragments")
+                    if isinstance(fragments, (list, tuple)):
+                        row_lines.extend(
+                            f"       {_sanitize(fragment)}"
+                            for fragment in fragments
+                            if str(fragment)
+                        )
                 tail = _level_tail(f, indent, self._verbose_level)
-                if tail:
-                    out.append(line + "\n" + "\n".join(tail))
-                else:
-                    out.append(line)
+                row_lines.extend(tail)
+                out.append("\n".join(row_lines))
 
         return out
 

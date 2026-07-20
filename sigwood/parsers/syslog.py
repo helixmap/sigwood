@@ -86,6 +86,29 @@ def parse_program(body: str) -> str:
     return m.group(0) if m else "unknown"
 
 
+def strip_program(body: str) -> str:
+    """Remove a leading syslog program tag and return its message body.
+
+    The accepted tag uses the same program-token grammar as ``parse_program``
+    and may carry one bracketed process suffix before the required colon.
+    Bodies without that complete prefix are returned unchanged after stripping.
+    """
+    stripped = body.strip()
+    match = PROGRAM_RE.match(stripped)
+    if match is None:
+        return stripped
+
+    remainder = stripped[match.end():]
+    if remainder.startswith("["):
+        bracket_end = remainder.find("]")
+        if bracket_end < 0:
+            return stripped
+        remainder = remainder[bracket_end + 1:]
+    if not remainder.startswith(":"):
+        return stripped
+    return remainder[1:].strip()
+
+
 def parse_timestamp(raw: str) -> datetime | None:
     """Parse an RFC 3164 or aware ISO-8601 timestamp to UTC.
 

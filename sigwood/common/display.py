@@ -232,7 +232,7 @@ def set_display_utc(enabled: bool) -> None:
 
 def _tz_label() -> str:
     """The label rendered after human timestamps: ``UTC`` under the display
-    switch, else ``local``. Read only by ``fmt_timestamp``/``fmt_window``."""
+    switch, else ``local``. Read only by the shared human time formatters."""
     return "UTC" if _DISPLAY_UTC else "local"
 
 
@@ -260,6 +260,28 @@ def fmt_timestamp(dt: datetime) -> str:
     ``_tz_label``; callers never write it.
     """
     return f"{to_display_timezone(dt):%Y-%m-%d %H:%M} {_tz_label()}"
+
+
+_SYSLOG_MONTHS = (
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+    "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+)
+
+
+def fmt_syslog_timestamp(dt: datetime) -> str:
+    """One syslog wall-clock stamp.
+
+    Local examples are ``Jul 12 21:57:33`` and ``Jul  1 03:12:47``;
+    UTC appends its label, as in ``Jul 12 21:57:33 UTC``.
+    """
+    rendered = to_display_timezone(dt)
+    stamp = (
+        f"{_SYSLOG_MONTHS[rendered.month - 1]} {rendered.day:2d} "
+        f"{rendered.hour:02d}:{rendered.minute:02d}:{rendered.second:02d}"
+    )
+    # Branch on the shared label's returned value; timezone state has no reader here.
+    label = _tz_label()
+    return stamp if label == "local" else f"{stamp} {label}"
 
 
 def fmt_window(window: "tuple[datetime, datetime]") -> str:

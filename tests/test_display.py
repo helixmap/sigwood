@@ -464,6 +464,7 @@ import os  # noqa: E402
 from datetime import datetime, timedelta, timezone  # noqa: E402
 
 from sigwood.common.display import (  # noqa: E402
+    fmt_syslog_timestamp,
     fmt_timestamp,
     fmt_window,
     plural,
@@ -520,6 +521,21 @@ def test_fmt_timestamp_is_labeled_single_bound() -> None:
         )
     finally:
         restore()
+
+
+def test_fmt_syslog_timestamp_local_and_utc_shapes(
+    pin_tz, restore_display_utc,
+) -> None:
+    pin_tz("UTC")
+    single = datetime(2026, 7, 1, 3, 12, 47, tzinfo=timezone.utc)
+    double = datetime(2026, 7, 12, 21, 57, 33, tzinfo=timezone.utc)
+
+    assert fmt_syslog_timestamp(single) == "Jul  1 03:12:47"
+    assert fmt_syslog_timestamp(double) == "Jul 12 21:57:33"
+
+    set_display_utc(True)
+    assert fmt_syslog_timestamp(single) == "Jul  1 03:12:47 UTC"
+    assert fmt_syslog_timestamp(double) == "Jul 12 21:57:33 UTC"
 
 
 def test_fmt_window_converts_to_machine_local_zone() -> None:

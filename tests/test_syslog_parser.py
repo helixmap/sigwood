@@ -24,6 +24,7 @@ from sigwood.parsers.syslog import (
     parse_timestamp,
     sniff,
     strip_header,
+    strip_program,
 )
 
 
@@ -225,6 +226,23 @@ def test_parse_program(body: str, expected: str) -> None:
     """parse_program returns the leading non-whitespace token before '[' or ':',
     falling back to 'unknown' when no such token exists."""
     assert parse_program(body) == expected
+
+
+@pytest.mark.parametrize(
+    ("body", "expected"),
+    [
+        ("sshd[*]: accepted", "accepted"),
+        ("kernel: oops", "oops"),
+        ("postfix/smtpd[*]: connect", "connect"),
+        ("no tag here", "no tag here"),
+        ("", ""),
+        ("[123]: payload", "[123]: payload"),
+        (": payload", ": payload"),
+    ],
+)
+def test_strip_program(body: str, expected: str) -> None:
+    """Only a complete program/bracket/colon prefix is removed."""
+    assert strip_program(body) == expected
 
 
 # ── load_syslog ────────────────────────────────────────────────────────────────

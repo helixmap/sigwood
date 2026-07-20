@@ -99,6 +99,7 @@ def test_syslog_family_evidence_is_lossless_and_nullable() -> None:
         "first_seen": None,
         "span_seconds": None,
         "sample_raw": ["raw-a", "raw-b"],
+        "member_fragments": ["accepted from 192.0.2.9"],
         "label": None,
         "privileged": True,
     }

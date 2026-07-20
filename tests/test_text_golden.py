@@ -171,12 +171,12 @@ def test_golden_syslog_privileged_rare_events_and_bursts():
         "privileged (1)\n"
         "  [M]   useradd: sentinel privileged event 717171\n\n"
         "rare events (1)\n"
-        "  [L]   1970-01-01 00:00 local · host-family · postfix/qmgr · "
+        "  [L]   Jan  1 00:00:10 · host-family · postfix/qmgr · "
         "2 rare lines · 2h\n\n"
         "bursts (2)\n"
-        "  [I]   1970-01-01 00:00 local · host-b · rebooted · 13 rare lines · "
+        "  [I]   Jan  1 00:00:01 · host-b · rebooted · 13 rare lines · "
         "47s · mostly kernel, systemd\n"
-        "  [I]   2026-06-01 03:04 local · host-a · rebooted\n\n"
+        "  [I]   Jun  1 03:04:05 · host-a · rebooted\n\n"
     )
 
 

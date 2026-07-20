@@ -28,7 +28,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
-from sigwood.common.display import fmt_compact_span, fmt_timestamp, plural
+from sigwood.common.display import (
+    fmt_compact_span,
+    fmt_syslog_timestamp,
+    fmt_timestamp,
+    plural,
+)
 from sigwood.common.finding import Finding, Severity
 from sigwood.outputs._evidence import level_visible
 
@@ -410,7 +415,9 @@ def _project_syslog(f: Finding) -> list[Cell]:
         return [
             Cell(
                 "first",
-                fmt_timestamp(datetime.fromtimestamp(float(start_ts), tz=timezone.utc)),
+                fmt_syslog_timestamp(
+                    datetime.fromtimestamp(float(start_ts), tz=timezone.utc)
+                ),
             ),
             Cell(None, line),
         ]
@@ -431,7 +438,9 @@ def _project_syslog(f: Finding) -> list[Cell]:
         return [
             Cell(
                 "first",
-                fmt_timestamp(datetime.fromtimestamp(float(start_ts), tz=timezone.utc)),
+                fmt_syslog_timestamp(
+                    datetime.fromtimestamp(float(start_ts), tz=timezone.utc)
+                ),
             ),
             Cell(None, line),
         ]
@@ -442,7 +451,10 @@ def _project_syslog(f: Finding) -> list[Cell]:
         if reboot_ts is None:
             return [Cell(None, line, full_width=True)]
         return [
-            Cell("first", fmt_timestamp(datetime.fromisoformat(str(reboot_ts)))),
+            Cell(
+                "first",
+                fmt_syslog_timestamp(datetime.fromisoformat(str(reboot_ts))),
+            ),
             Cell(None, line),
         ]
     return [Cell(None, f.title, full_width=True)]  # self-stamped raw needle

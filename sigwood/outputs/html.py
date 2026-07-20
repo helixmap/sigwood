@@ -241,6 +241,28 @@ def _render_sample_details(finding: Finding, *, colspan: int) -> str:
     )
 
 
+def _render_meat_row(finding: Finding, *, colspan: int) -> str:
+    """Always-visible distilled member fragments for a syslog capsule."""
+    if finding.detector != "syslog" or finding.evidence.get("tier") not in (
+        "family", "burst",
+    ):
+        return ""
+    fragments = finding.evidence.get("member_fragments")
+    if not isinstance(fragments, (list, tuple)) or not fragments:
+        return ""
+    lines = "".join(
+        f'<div class="meat-line">{_esc(fragment)}</div>'
+        for fragment in fragments
+        if str(fragment)
+    )
+    if not lines:
+        return ""
+    return (
+        '<tr class="meat-row"><td class="sev-cell"></td>'
+        f'<td colspan="{colspan}">{lines}</td></tr>'
+    )
+
+
 def _render_finding_row(
     finding: Finding,
     keep: list[tuple[int, "ColumnSpec"]],
@@ -270,7 +292,10 @@ def _render_finding_row(
         # null-timestamp aggregates; keep those in the default monospace cell.
         # Other full-width rows are prose and retain the sans-serif class.
         cls = "" if finding.detector == "syslog" else ' class="full-width"'
-        data = f'<td{cls} colspan="{colspan}">{_esc(cells[0].value)}</td>'
+        value = _esc(cells[0].value)
+        if finding.detector == "syslog":
+            value = f'<div class="clip">{value}</div>'
+        data = f'<td{cls} colspan="{colspan}">{value}</td>'
     elif len(cells) == 1 and cells[0].key is None:
         # A lone bare cell is a whole line of text, not column 0 of a table. Span
         # it so a long value wraps across the full width instead of defining a
@@ -294,18 +319,26 @@ def _render_finding_row(
                 classes.append("num")
             if spec.key is not None:
                 classes.append("data")
+                if finding.detector == "syslog":
+                    classes.append(f"col-{spec.key}")
             cls = f' class="{" ".join(classes)}"' if classes else ""
-            tds.append(f"<td{cls}>{_esc(value)}</td>")
+            rendered = _esc(value)
+            if finding.detector == "syslog" and spec.key is None:
+                rendered = f'<div class="clip">{rendered}</div>'
+            tds.append(f"<td{cls}>{rendered}</td>")
         data = "".join(tds)
     row = f'<tr class="finding-row {sev_class}">{pill}{data}</tr>'
     return (
         row
+        + _render_meat_row(finding, colspan=colspan)
         + _render_sample_details(finding, colspan=colspan)
         + _render_detail_row(finding, verbose_level=verbose_level, colspan=colspan)
     )
 
 
-def _render_section(section: Section, *, verbose_level: int) -> str:
+def _render_section(
+    detector: str, section: Section, *, verbose_level: int
+) -> str:
     """One section as a tight ``<table>``: header row of the HTML-surviving
     columns + one ``<tr>`` per finding. A subsectioned detector (dns / aws) shows
     the plain section label; a flat detector has none."""
@@ -319,7 +352,12 @@ def _render_section(section: Section, *, verbose_level: int) -> str:
     if keep:
         header_cells = []
         for _i, spec in keep:
-            cls = ' class="num"' if spec.align == "right" else ""
+            classes = []
+            if spec.align == "right":
+                classes.append("num")
+            if spec.key is not None:
+                classes.append(f"col-{spec.key}")
+            cls = f' class="{" ".join(classes)}"' if classes else ""
             label = _esc(spec.key) if spec.key else ""
             header_cells.append(f"<th{cls}>{label}</th>")
         thead = (
@@ -332,7 +370,8 @@ def _render_section(section: Section, *, verbose_level: int) -> str:
         _render_finding_row(f, keep, verbose_level=verbose_level)
         for f in section.findings
     )
-    parts.append(f'<table class="findings-table">{thead}<tbody>{rows}</tbody></table>')
+    table_class = "findings-table syslog-table" if detector == "syslog" else "findings-table"
+    parts.append(f'<table class="{table_class}">{thead}<tbody>{rows}</tbody></table>')
     return "".join(parts)
 
 
@@ -362,7 +401,9 @@ def _render_detector_block(
     for section in renderable.sections:
         if not section.findings:
             continue  # a section emptied by the cap vanishes
-        parts.append(_render_section(section, verbose_level=verbose_level))
+        parts.append(
+            _render_section(detector, section, verbose_level=verbose_level)
+        )
     return f'<div class="group">{"".join(parts)}</div>'
 
 
@@ -411,7 +452,7 @@ def _styles(landscape: bool) -> str:
 body {
   font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   color: var(--fg); background: var(--bg); margin: 0; padding: 32px;
-  max-width: 1100px; margin-left: auto; margin-right: auto;
+  max-width: 1600px; margin-left: auto; margin-right: auto;
 }
 header { border-bottom: 2px solid var(--border); padding-bottom: 18px; margin-bottom: 24px; }
 .wordmark { font-size: 22px; font-weight: 700; letter-spacing: .2px; margin-bottom: 14px; }
@@ -462,6 +503,8 @@ header { border-bottom: 2px solid var(--border); padding-bottom: 18px; margin-bo
 .findings-table tr.detail .desc { margin: 6px 0 4px; }
 .findings-table tr.detail .next-steps { margin: 4px 0; }
 .findings-table tr.sample-detail td { padding: 2px 0 8px 0; }
+.findings-table tr.meat-row td { padding: 1px 12px 5px 0; }
+.meat-line { padding-left: 8px; color: var(--muted); overflow-wrap: anywhere; }
 .sample-detail summary { color: var(--muted); cursor: pointer; }
 .sample-detail-body { margin: 5px 0 2px; }
 .sample-line { white-space: pre-wrap; overflow-wrap: anywhere; }
@@ -471,7 +514,15 @@ header { border-bottom: 2px solid var(--border); padding-bottom: 18px; margin-bo
      word-break: break-word and WRAPS - the page wraps instead of clipping wide
      tables (the correctness floor; paged media has no horizontal scroll). */
   .findings-table td.data { white-space: nowrap; }
+  .syslog-table { table-layout: fixed; width: 100%; }
+  .syslog-table th.sev-col, .syslog-table td.sev-cell { width: 48px; }
+  .syslog-table th.col-first, .syslog-table td.col-first { width: 184px; }
+  .syslog-table .clip, .syslog-table .meat-line {
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .desc, .next-steps { max-width: 46em; }
 }
+.syslog-table td.col-first { white-space: pre; }
 @media print {
   @page { size: __SIGWOOD_PAGE_SIZE__; margin: 1.5cm; }
   body { padding: 0; max-width: none; }

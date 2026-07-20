@@ -90,7 +90,8 @@ _VARIANTS: dict[str, Finding] = {
         "tier": "family", "host": "host-sentinel-family-9",
         "program": "progsentinel", "line_count": 137, "span_seconds": 7320.0,
         "start_ts": 1.0, "end_ts": 7321.0,
-        "sample_raw": ["family-raw-sentinel-a"], "label": None}),
+        "sample_raw": ["family-raw-sentinel-a"],
+        "member_fragments": ["family-fragment-sentinel-717"], "label": None}),
     "syslog_reboot": _f("syslog", Severity.INFO, "host-sentinel-reboot-9", {
         "tier": "reboot", "host": "host-sentinel-reboot-9",
         "reboot_ts": "2026-06-01T07:08:09+00:00", "label": "rebooted"}),
@@ -98,7 +99,8 @@ _VARIANTS: dict[str, Finding] = {
         "tier": "burst", "line_count": 137, "span_seconds": 4577.0,
         "start_ts": 1.0, "end_ts": 4578.0,
         "program_mix": [["kernsentinel", 91], ["syssentinel", 41]],
-        "sample_raw": ["raw-sentinel-a", "raw-sentinel-b"], "label": "rebooted"}),
+        "sample_raw": ["raw-sentinel-a", "raw-sentinel-b"],
+        "member_fragments": ["burst-fragment-sentinel-727"], "label": "rebooted"}),
     "duration": _f("duration", Severity.HIGH, "x", {
         "src": "192.0.2.241", "dst": "198.51.100.251", "port": 9931, "proto": "tcp",
         "max_duration_str": "4h 17m", "connection_count": 37,
@@ -211,11 +213,11 @@ def test_syslog_first_cell_is_keyed_for_html_but_bare_in_text() -> None:
     })
     cells = project_row(finding)
     assert cells[0].key == "first"
-    assert cells[0].value == "1970-01-01 00:00 local"
+    assert cells[0].value == "Jan  1 00:00:00"
     assert cells[1].value == "host-first · kernel · 2 rare lines · 1m"
     text_out = _text([finding])
     html_out = _html_text([finding])
-    assert "1970-01-01 00:00 local · host-first" in text_out
+    assert "Jan  1 00:00:00 · host-first" in text_out
     assert "first=" not in text_out
     assert "first" in html_out
     assert html_out.index("first") < html_out.index("host-first")
@@ -230,7 +232,7 @@ def test_syslog_burst_reboot_label_follows_host_and_timestamp_leads() -> None:
     })
     cells = project_row(finding)
     assert [(cell.key, cell.value) for cell in cells] == [
-        ("first", "1970-01-01 00:00 local"),
+        ("first", "Jan  1 00:00:00"),
         (None, "host-burst · rebooted · 3 rare lines · 2s · mostly kernel"),
     ]
 
@@ -250,13 +252,18 @@ def test_syslog_burst_reboot_label_follows_host_and_timestamp_leads() -> None:
 def test_syslog_reboot_timestamp_uses_display_formatter_and_null_vanishes(
     restore_display_utc,
 ) -> None:
-    set_display_utc(True)
     stamped = _f("syslog", Severity.INFO, "host-reboot", {
         "tier": "reboot", "host": "host-reboot",
         "reboot_ts": "2026-06-01T07:08:09+00:00", "label": "rebooted",
     })
     assert [(cell.key, cell.value) for cell in project_row(stamped)] == [
-        ("first", "2026-06-01 07:08 UTC"),
+        ("first", "Jun  1 07:08:09"),
+        (None, "host-reboot · rebooted"),
+    ]
+
+    set_display_utc(True)
+    assert [(cell.key, cell.value) for cell in project_row(stamped)] == [
+        ("first", "Jun  1 07:08:09 UTC"),
         (None, "host-reboot · rebooted"),
     ]
 
@@ -272,6 +279,17 @@ def test_syslog_reboot_timestamp_uses_display_formatter_and_null_vanishes(
     rendered = _text([indeterminate])
     assert "host-unknown · rebooted" in rendered
     assert "rebooted @" not in rendered
+
+
+@pytest.mark.parametrize("variant", ["syslog_family", "syslog_burst"])
+def test_syslog_member_fragment_parity_outside_projector(variant: str) -> None:
+    finding = _VARIANTS[variant]
+    fragments = finding.evidence["member_fragments"]
+    text_out = _text([finding])
+    html_out = _html_text([finding])
+    for fragment in fragments:
+        assert fragment in text_out
+        assert fragment in html_out
 
 
 def test_projection_covers_every_detector_variant() -> None:

@@ -8,6 +8,17 @@ All notable changes to sigwood are recorded here. The format follows
 
 ### Changed
 
+- **Grouped syslog rows now show a few distilled lines from what they group, and stay on one
+  line each in HTML reports.** A review unit, burst, or reboot row is followed by up to three
+  short fragments drawn from distinct message shapes inside it, so the row invites a closer
+  look instead of only counting one. Fragments keep addresses, ports, process ids, exit codes
+  and sizes, and drop only long opaque identifiers such as hashes and session tokens. On
+  screen, syslog rows are clipped with a trailing ellipsis rather than wrapped or scrolled -
+  widen the window to see more; printed reports still wrap so nothing is cut from a PDF. The
+  leading stamp on those rows is now written in syslog's own wall-clock shape
+  (`Jul 12 21:57:33`), so it reads in the same grammar as the log lines beside it. On a 7-day
+  measurement corpus every grouped row carried fragments, with none empty.
+
 - **Rare syslog findings now separate a privileged program channel from the routine
   rarity sieve.** Exact program membership in a shipped, operator-replaceable roster keeps
   security-critical families and singletons at MEDIUM; other rare families and singletons

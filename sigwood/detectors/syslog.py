@@ -30,6 +30,8 @@ Pipeline:
 
 from __future__ import annotations
 
+import ipaddress
+import re
 import sys
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
@@ -40,7 +42,7 @@ from tqdm import tqdm
 
 from sigwood.common.display import narration_active
 from sigwood.common.finding import DetectorContext, Finding, MethodTag, Severity
-from sigwood.parsers.syslog import REBOOT_SIGNALS_RE
+from sigwood.parsers.syslog import REBOOT_SIGNALS_RE, strip_program
 
 DETECTOR_NAME = "syslog"
 STATUS = "available"
@@ -82,6 +84,14 @@ REBOOT_CLUSTER_SECONDS    = 600  # reboot signals on a host closer than this = o
 # this detector never imports optional runtime objects or compiles their regexes.
 LONG_HEX_MASK_PATTERN = r"(?<![0-9A-Fa-f])[0-9A-Fa-f]{8,}(?![0-9A-Fa-f])"
 LONG_HEX_MASK_NAME = "LONG_HEX"
+
+_LONG_HEX_MASK_RE = re.compile(LONG_HEX_MASK_PATTERN)
+_HEX_LETTER_RE = re.compile(r"[A-Fa-f]")
+_IP_TOKEN_TRIM = "()[]{}<>.,;:'\""
+_IP_COMPOUND_TRIM = "(){}<>.,;:'\""
+_FRAGMENT_TEMPLATE_SCAN_LIMIT = 6
+_FRAGMENT_LIMIT = 3
+_FRAGMENT_LENGTH = 80
 
 # Security-critical program identities. Membership is exact, case-sensitive
 # equality against the canonical ``program`` column - never message matching.
@@ -127,6 +137,99 @@ class MinedResult(NamedTuple):
     miner: "TemplateMiner"
     template_changed_total: int
     clusters_changed: int
+
+
+def _is_ip_token(token: str) -> bool:
+    """True for a direct IP or the approved IP-and-port token forms."""
+    candidate = token.strip(_IP_TOKEN_TRIM)
+    try:
+        ipaddress.ip_address(candidate)
+    except ValueError:
+        pass
+    else:
+        return True
+
+    if candidate.count(":") == 1:
+        host, port = candidate.split(":", 1)
+        if port.isdecimal():
+            try:
+                address = ipaddress.ip_address(host)
+            except ValueError:
+                pass
+            else:
+                if isinstance(address, ipaddress.IPv4Address):
+                    return True
+
+    compound = token.strip(_IP_COMPOUND_TRIM)
+    if compound.startswith("[") and "]:" in compound:
+        host, port = compound[1:].rsplit("]:", 1)
+        if port.isdecimal():
+            try:
+                address = ipaddress.ip_address(host)
+            except ValueError:
+                pass
+            else:
+                return isinstance(address, ipaddress.IPv6Address)
+    return False
+
+
+def _contains_opaque_hex(token: str) -> bool:
+    """True when a shipped-mask run contains an ASCII hex letter."""
+    return any(_HEX_LETTER_RE.search(match.group(0)) for match in _LONG_HEX_MASK_RE.finditer(token))
+
+
+def _truncate_fragment(fragment: str) -> str:
+    """Fit a fragment to 80 characters, including its ellipsis when cut."""
+    if len(fragment) <= _FRAGMENT_LENGTH:
+        return fragment
+
+    kept: list[str] = []
+    for token in fragment.split():
+        candidate = " ".join([*kept, token])
+        if len(candidate) > _FRAGMENT_LENGTH - 1:
+            break
+        kept.append(token)
+    if kept:
+        return " ".join(kept) + "…"
+    return fragment[:_FRAGMENT_LENGTH - 1] + "…"
+
+
+def _distill_member_fragments(rows: Iterable[object]) -> list[str]:
+    """Return up to three distinct, bounded fragments from ordered members."""
+    seen_templates: set[object] = set()
+    seen_fragments: set[str] = set()
+    fragments: list[str] = []
+
+    for row in rows:
+        template_id = getattr(row, "template_id", None)
+        message = getattr(row, "message", None)
+        if template_id is None or message is None:
+            continue
+        if pd.isna(template_id) or pd.isna(message):
+            continue
+        if template_id in seen_templates:
+            continue
+        if len(seen_templates) >= _FRAGMENT_TEMPLATE_SCAN_LIMIT:
+            break
+        seen_templates.add(template_id)
+
+        body = strip_program(str(message))
+        kept = [
+            token
+            for token in body.split()
+            if _is_ip_token(token) or not _contains_opaque_hex(token)
+        ]
+        distilled = " ".join(kept).strip()
+        if not distilled:
+            continue
+        rendered = _truncate_fragment(distilled)
+        if rendered in seen_fragments:
+            continue
+        seen_fragments.add(rendered)
+        fragments.append(rendered)
+        if len(fragments) >= _FRAGMENT_LIMIT:
+            break
+    return fragments
 
 
 class _BootEvent(NamedTuple):
@@ -515,6 +618,9 @@ def _collapse_families(
             sort_ts = start_ts
 
         line_count = int(len(family_df))
+        member_fragments = _distill_member_fragments(
+            ordered.itertuples(index=False)
+        )
         description = (
             "A set of rare log lines from a single program on this host, each "
             "at or below the rarity threshold."
@@ -532,6 +638,7 @@ def _collapse_families(
             "first_seen": _iso_utc(start_ts),
             "span_seconds": span_seconds,
             "sample_raw": [str(raw) for raw in ordered["raw"].iloc[:20]],
+            "member_fragments": member_fragments,
             "label": None,
         }
         if privileged:
@@ -600,6 +707,7 @@ def _burst_finding(
     ]
 
     sample_raw = [str(r.raw) for r in group][:20]
+    member_fragments = _distill_member_fragments(group)
 
     finding = Finding(
         detector=DETECTOR_NAME,
@@ -620,6 +728,7 @@ def _burst_finding(
             "end_ts":       end_ts,
             "program_mix":  program_mix,
             "sample_raw":   sample_raw,
+            "member_fragments": member_fragments,
             "label":        None,
         },
         next_steps=["Skim the sampled lines to confirm the cluster's cause"],

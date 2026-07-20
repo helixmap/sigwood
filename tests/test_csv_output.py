@@ -185,6 +185,7 @@ def test_syslog_family_signals_are_curated_without_raw_samples() -> None:
             "start_ts": 1.0, "end_ts": 121.0,
             "first_seen": "1970-01-01T00:00:01+00:00",
             "span_seconds": 120.0, "sample_raw": ["raw-a", "raw-b"],
+            "member_fragments": ["accepted from 192.0.2.9"],
             "label": None,
         },
     )
@@ -195,6 +196,7 @@ def test_syslog_family_signals_are_curated_without_raw_samples() -> None:
         "first_seen=1970-01-01T00:00:01+00:00"
     )
     assert "sample_raw" not in row["signals"]
+    assert "member_fragments" not in row["signals"]
     assert "start_ts" not in row["signals"]
     assert "end_ts" not in row["signals"]
 

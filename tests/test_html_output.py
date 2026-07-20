@@ -309,14 +309,120 @@ def test_html_syslog_sample_details_real_path_is_closed_escaped_and_print_hidden
         out = _render([finding], verbose_level=level)
         _assert_no_data_controls(out)
         assert '<details><summary>sampled log lines</summary>' in out
-        assert "<th>first</th>" in out
-        assert out.index("<th>first</th>") < out.index("host-family")
+        assert '<th class="col-first">first</th>' in out
+        assert out.index('<th class="col-first">first</th>') < out.index("host-family")
         assert "<details open" not in out
         assert "sample-detail-body" in out
         assert ".sample-detail-body { display: none; }" in out
         assert '&lt;script&gt;x&lt;/script&gt;&quot;&lt;/details&gt;&lt;img src=x&gt;' in out
         assert "<script>x</script>" not in out
         assert "<img src=x>" not in out
+
+
+def test_html_syslog_meat_row_is_escaped_visible_and_ordered() -> None:
+    hostile = 'safe\x1b\x07\x9b<script>x</script>"</div><img src=x>'
+    finding = _finding(
+        detector="syslog", severity=Severity.LOW, title="host-family",
+        evidence={
+            "tier": "family", "host": "host-family", "program": "kernel",
+            "line_count": 2, "start_ts": 1.0, "end_ts": 61.0,
+            "span_seconds": 60.0, "sample_raw": ["raw-a", "raw-b"],
+            "member_fragments": [hostile, "second-fragment"], "label": None,
+        },
+    )
+    out = _render([finding])
+    _assert_no_data_controls(out)
+    assert out.index('class="finding-row') < out.index('class="meat-row"')
+    assert out.index('class="meat-row"') < out.index('class="sample-detail"')
+    assert (
+        '<div class="meat-line">safe&lt;script&gt;x&lt;/script&gt;&quot;'
+        '&lt;/div&gt;&lt;img src=x&gt;</div>'
+    ) in out
+    assert '<div class="meat-line">second-fragment</div>' in out
+    assert "<script>x</script>" not in out
+    assert "<img src=x>" not in out
+    assert ".sample-detail-body { display: none; }" in out
+    print_block = out[out.index("@media print"):]
+    assert ".meat-line" not in print_block
+
+
+def test_html_syslog_mixed_keyed_and_full_width_rows_clip_in_one_table() -> None:
+    family = _finding(
+        detector="syslog", severity=Severity.LOW, title="host-family",
+        evidence={
+            "tier": "family", "host": "host-family", "program": "kernel",
+            "line_count": 2, "start_ts": 1.0, "end_ts": 61.0,
+            "span_seconds": 60.0, "sample_raw": ["raw-a", "raw-b"],
+            "member_fragments": ["family-fragment"], "label": None,
+        },
+    )
+    needle = _finding(
+        detector="syslog", severity=Severity.LOW,
+        title="Jul 12 21:57:33 host-a kernel: one long self-stamped needle line",
+        evidence={"host": "host-a", "template_str": "kernel: <*>"},
+    )
+    out = _render([family, needle])
+    assert '<table class="findings-table syslog-table">' in out
+    assert '<th class="col-first">first</th>' in out
+    assert '<td class="data col-first">Jan  1 00:00:01</td>' in out
+    assert '<div class="clip">host-family · kernel · 2 rare lines · 1m</div>' in out
+    assert (
+        '<div class="clip">Jul 12 21:57:33 host-a kernel: one long '
+        'self-stamped needle line</div>'
+    ) in out
+
+
+def test_html_syslog_stamp_preserves_both_day_widths_in_effective_css(
+    restore_display_utc,
+) -> None:
+    from sigwood.common.display import set_display_utc
+
+    set_display_utc(True)
+
+    def family(day: int) -> Finding:
+        start = datetime(2026, 7, day, 3, 12, 47, tzinfo=timezone.utc).timestamp()
+        return _finding(
+            detector="syslog", severity=Severity.LOW, title=f"host-{day}",
+            evidence={
+                "tier": "family", "host": f"host-{day}", "program": "kernel",
+                "line_count": 2, "start_ts": start, "end_ts": start + 60.0,
+                "span_seconds": 60.0, "sample_raw": ["raw-a", "raw-b"],
+                "member_fragments": ["fragment"], "label": None,
+            },
+        )
+
+    out = _render([family(1), family(12)])
+    assert '<td class="data col-first">Jul  1 03:12:47 UTC</td>' in out
+    assert '<td class="data col-first">Jul 12 03:12:47 UTC</td>' in out
+
+    # Both matching rules have specificity (0, 2, 1). The unconditional stamp
+    # rule deliberately follows the screen-only generic data-cell rule, so the
+    # effective white-space value is `pre` on screen and remains `pre` in print.
+    rules = [
+        ((0, 2, 1), out.index(".findings-table td.data { white-space: nowrap; }"),
+         "nowrap"),
+        ((0, 2, 1), out.index(".syslog-table td.col-first { white-space: pre; }"),
+         "pre"),
+    ]
+    computed_white_space = max(rules, key=lambda rule: (rule[0], rule[1]))[2]
+    assert computed_white_space == "pre"
+
+
+def test_html_syslog_all_needle_table_has_no_header_but_keeps_clip_structure() -> None:
+    needle = _finding(
+        detector="syslog", severity=Severity.LOW,
+        title="Jul 12 21:57:33 host-a kernel: needle",
+        evidence={"host": "host-a", "template_str": "kernel: <*>"},
+    )
+    out = _render([needle])
+    assert '<table class="findings-table syslog-table"><tbody>' in out
+    assert '<div class="clip">Jul 12 21:57:33 host-a kernel: needle</div>' in out
+
+
+def test_non_syslog_table_does_not_gain_syslog_clip_classes() -> None:
+    out = _render([_narrow_beacon()])
+    assert '<table class="findings-table syslog-table">' not in out
+    assert 'class="clip"' not in out
 
 
 def test_html_syslog_level_one_sample_is_three_while_details_keeps_full_sample() -> None:
@@ -431,13 +537,32 @@ def test_print_css_data_nowrap_is_screen_only() -> None:
     @media screen, so the PRINT page wraps (word-break) instead of clipping wide
     tables. The @media print block carries NO unconditional data-cell nowrap."""
     markup = _render([_narrow_beacon()])
+    assert "max-width: 1600px" in markup
     assert "@media screen {" in markup
     # the only td.data nowrap is inside @media screen
     screen_start = markup.index("@media screen {")
     print_start = markup.index("@media print")
     screen_block = markup[screen_start:print_start]
     assert ".findings-table td.data { white-space: nowrap; }" in screen_block
+    assert ".syslog-table { table-layout: fixed; width: 100%; }" in screen_block
+    assert (
+        ".syslog-table th.sev-col, .syslog-table td.sev-cell { width: 48px; }"
+        in screen_block
+    )
+    assert (
+        ".syslog-table th.col-first, .syslog-table td.col-first { width: 184px; }"
+        in screen_block
+    )
+    assert ".syslog-table .clip, .syslog-table .meat-line" in screen_block
+    assert "overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" in screen_block
+    assert ".desc, .next-steps { max-width: 46em; }" in screen_block
     assert "td.data" not in markup[print_start:]  # print wraps, never nowrap-clips
+    print_block = markup[print_start:]
+    assert ".clip" not in print_block
+    assert ".meat-line" not in print_block
+    assert "text-overflow: ellipsis" not in print_block
+    assert "overflow: hidden" not in print_block
+    assert "max-width: 46em" not in print_block
 
 
 def test_needs_landscape_wide_vs_narrow() -> None:
@@ -450,6 +575,43 @@ def test_needs_landscape_wide_vs_narrow() -> None:
     narrow = _build_renderable("beacon", [_narrow_beacon()], 0, 100)
     assert needs_landscape([("duration", wide)]) is True
     assert needs_landscape([("beacon", narrow)]) is False
+
+
+def test_syslog_stamp_orientation_estimate_local_and_utc(
+    restore_display_utc,
+) -> None:
+    """The shorter syslog stamp moves a realistic near-threshold table to portrait.
+
+    The pre-change measurements were 704px/local and 688px/UTC, both landscape.
+    The new local/UTC forms measure 648px and 680px respectively.
+    """
+    from sigwood.common.display import set_display_utc
+    from sigwood.outputs._render_model import (
+        _build_renderable,
+        _section_table_px,
+        needs_landscape,
+    )
+
+    finding = _finding(
+        detector="syslog", severity=Severity.LOW, title="host-" + ("x" * 26),
+        description="", next_steps=[],
+        evidence={
+            "tier": "family", "host": "h", "program": "sshd",
+            "line_count": 2, "start_ts": 0.0, "end_ts": 60.0,
+            "span_seconds": 60.0, "sample_raw": ["a", "b"],
+            "member_fragments": ["m"], "label": None,
+        },
+    )
+
+    set_display_utc(False)
+    local = _build_renderable("syslog", [finding], 0, 100)
+    assert _section_table_px(local.sections[0]) == 648.0
+    assert needs_landscape([("syslog", local)]) is False
+
+    set_display_utc(True)
+    utc = _build_renderable("syslog", [finding], 0, 100)
+    assert _section_table_px(utc.sections[0]) == 680.0
+    assert needs_landscape([("syslog", utc)]) is False
 
 
 def test_render_emits_landscape_for_wide_portrait_for_narrow() -> None:

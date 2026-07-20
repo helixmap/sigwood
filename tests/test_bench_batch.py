@@ -37,6 +37,7 @@ def _job(name: str = "repeat-job", **overrides: Any) -> dict[str, Any]:
         "config": "bench.toml",
         "dataset": "demo",
         "detect": "dns",
+        "expected_record_counts": {"dns*.log*": 11},
         "compare_to": "baseline.json",
         "expect": "repeat",
     }
@@ -81,6 +82,12 @@ def _write_manifest(
 
 
 def _toml_value(value: Any) -> str:
+    if isinstance(value, dict):
+        parts = [
+            f"{json.dumps(key)} = {_toml_value(item)}"
+            for key, item in value.items()
+        ]
+        return "{ " + ", ".join(parts) + " }"
     if isinstance(value, bool):
         return "true" if value else "false"
     if isinstance(value, (int, float)):
@@ -196,6 +203,36 @@ def test_manifest_rejects_invalid_job_contracts(
     tmp_path: Path, jobs: list[dict[str, Any]], match: str,
 ) -> None:
     manifest = _write_manifest(tmp_path, jobs=jobs)
+    with pytest.raises(bench_batch._ManifestError, match=match):
+        bench_batch._load_manifest(manifest.resolve())
+
+
+def test_manifest_requires_a_per_job_record_count_pin(tmp_path: Path) -> None:
+    job = _job()
+    job.pop("expected_record_counts")
+    manifest = _write_manifest(tmp_path, jobs=[job])
+    with pytest.raises(
+        bench_batch._ManifestError,
+        match=r"job\[0\]\.expected_record_counts: missing key",
+    ):
+        bench_batch._load_manifest(manifest.resolve())
+
+
+@pytest.mark.parametrize(
+    ("pin", "match"),
+    [
+        ("not-a-table", "expected a table"),
+        ({"dns*.log*": -1}, "expected a non-negative integer"),
+        ({"dns*.log*": True}, "expected a non-negative integer"),
+        ({"bad\u001bpattern": 1}, "invalid pattern"),
+    ],
+)
+def test_manifest_rejects_invalid_record_count_pins(
+    tmp_path: Path, pin: object, match: str,
+) -> None:
+    manifest = _write_manifest(
+        tmp_path, jobs=[_job(expected_record_counts=pin)],
+    )
     with pytest.raises(bench_batch._ManifestError, match=match):
         bench_batch._load_manifest(manifest.resolve())
 
@@ -360,6 +397,9 @@ def test_sequential_order_argv_environment_and_report(
     first_summary = calls[0]["argv"]
     assert first_summary[-2:] == [str((tmp_path / "corpus").resolve()), "--all"]
     assert first_summary[first_summary.index("--detect") + 1] == "dns"
+    assert json.loads(
+        first_summary[first_summary.index("--expected-record-counts") + 1]
+    ) == {"dns*.log*": 11}
     assert "--expect-diff" not in calls[1]["argv"]
     assert calls[2]["argv"][calls[2]["argv"].index("--detect") + 1] == "dns,!scan"
     assert calls[3]["argv"][-1] == "--expect-diff"
@@ -408,6 +448,28 @@ def test_summary_failure_continues_and_reports_exact_five_line_tail(
     assert "failure: measurement exited with status 1" in report
     assert "after: PASS" in report
     assert report.splitlines()[-1].startswith("1 of 2 passed · total wall ")
+
+
+def test_record_count_failure_wins_before_invalid_gate_comparison(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manifest = _write_manifest(tmp_path)
+    _ready(monkeypatch)
+    message = (
+        'bench: dataset demo record count mismatch for pattern "dns*.log*": '
+        "expected 11, actual 12\n"
+    )
+    calls, _ = _install_children(monkeypatch, {
+        ("repeat-job", "summary"): {"code": 1, "err": message},
+    })
+
+    assert bench_batch.main([str(manifest)]) == 1
+    assert [(call["name"], call["stage"]) for call in calls] == [
+        ("repeat-job", "summary"),
+    ]
+    report = (tmp_path / "out" / "report.txt").read_text(encoding="utf-8")
+    assert message.rstrip() in report
+    assert "comparison" not in report
 
 
 @pytest.mark.parametrize(

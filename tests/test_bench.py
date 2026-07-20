@@ -6,6 +6,7 @@ import copy
 import importlib.util
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -122,6 +123,7 @@ def _summary_command(
     *,
     selectors: Path | None = None,
     python: Path | None = None,
+    expected_counts: dict[str, int] | None = None,
     extra: list[str] | None = None,
 ) -> list[str]:
     command = [
@@ -137,6 +139,8 @@ def _summary_command(
         str(ledger),
         "--python",
         str(python or Path(sys.executable)),
+        "--expected-record-counts",
+        json.dumps({} if expected_counts is None else expected_counts, sort_keys=True),
         "--all",
     ]
     if selectors is not None:
@@ -153,6 +157,7 @@ def _run_summary(
     *,
     selectors: Path | None = None,
     python: Path | None = None,
+    expected_counts: dict[str, int] | None = None,
     env: dict[str, str] | None = None,
     extra: list[str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
@@ -163,6 +168,7 @@ def _run_summary(
             ledger,
             selectors=selectors,
             python=python,
+            expected_counts=expected_counts,
             extra=extra,
         ),
         capture_output=True,
@@ -196,13 +202,14 @@ def _payload(
     *,
     requested_span: float | None = None,
     detectors_run: list[str] | None = None,
+    record_counts: dict[str, int] | None = None,
 ) -> dict[str, Any]:
     return {
         "sigwood_version": "0.2.3",
         "schema_version": 1,
         "run_summary": {
             "data_window": None,
-            "record_counts": {},
+            "record_counts": record_counts or {},
             "data_size_bytes": 0,
             "detectors_run": detectors_run or [],
             "detectors_skipped": {},
@@ -303,8 +310,21 @@ def test_bench_end_to_end_repeats_ranks_and_detects_threshold_change(tmp_path: P
     _write_ledger(ledger)
     _write_selectors(selectors)
 
-    first = _run_summary(config, tmp_path / "bundle-1", ledger, selectors=selectors)
-    second = _run_summary(config, tmp_path / "bundle-2", ledger, selectors=selectors)
+    expected_counts = {"conn*.log*": 531}
+    first = _run_summary(
+        config,
+        tmp_path / "bundle-1",
+        ledger,
+        selectors=selectors,
+        expected_counts=expected_counts,
+    )
+    second = _run_summary(
+        config,
+        tmp_path / "bundle-2",
+        ledger,
+        selectors=selectors,
+        expected_counts=expected_counts,
+    )
     assert first.returncode == second.returncode == 0, (first.stderr, second.stderr)
     assert "bench: measurement complete" in first.stderr
     summary_a = json.loads(first.stdout)
@@ -334,7 +354,11 @@ def test_bench_end_to_end_repeats_ranks_and_detects_threshold_change(tmp_path: P
     assert {path.name for path in (tmp_path / "bundle-1").iterdir()} == expected_bundle
 
     changed = _run_summary(
-        changed_config, tmp_path / "bundle-changed", ledger, selectors=selectors
+        changed_config,
+        tmp_path / "bundle-changed",
+        ledger,
+        selectors=selectors,
+        expected_counts=expected_counts,
     )
     assert changed.returncode == 0, changed.stderr
     summary_changed = json.loads(changed.stdout)
@@ -412,6 +436,66 @@ def test_payload_refuses_schema_bump_and_structural_key_drift() -> None:
     drifted["run_summary"]["new_field"] = "raw"
     with pytest.raises(bench_summarize.SummaryRefusal):
         bench_summarize._validate_payload(drifted)
+
+    negative = _payload(record_counts={"conn*.log*": -1})
+    with pytest.raises(bench_summarize.SummaryRefusal, match="expected non-negative"):
+        bench_summarize._validate_payload(negative)
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "[]",
+        '{"conn*.log*":-1}',
+        '{"conn*.log*":true}',
+        '{"":1}',
+        '{"bad\\u001bpattern":1}',
+        '{"conn*.log*":1,"conn*.log*":1}',
+    ],
+)
+def test_expected_record_count_argument_rejects_invalid_maps(raw: str) -> None:
+    with pytest.raises(ValueError):
+        bench_summarize._load_expected_record_counts(raw)
+
+
+def test_record_count_pin_exact_match_passes() -> None:
+    counts = {"conn*.log*": 11, "dns*.log*": 7}
+    bench_summarize._assert_record_counts("demo", counts, copy.deepcopy(counts))
+
+
+@pytest.mark.parametrize(
+    ("expected", "actual", "message"),
+    [
+        (
+            {"conn*.log*": 11},
+            {"conn*.log*": 12},
+            'pattern "conn*.log*": expected 11, actual 12',
+        ),
+        (
+            {"conn*.log*": 11},
+            {},
+            'pattern "conn*.log*": expected 11, actual <missing>',
+        ),
+        (
+            {},
+            {"conn*.log*": 12},
+            'pattern "conn*.log*": expected <unpinned>, actual 12',
+        ),
+    ],
+)
+def test_record_count_pin_mismatch_is_actionable(
+    expected: dict[str, int], actual: dict[str, int], message: str,
+) -> None:
+    with pytest.raises(bench_summarize.BenchFailure, match=re.escape(message)) as exc:
+        bench_summarize._assert_record_counts("demo", expected, actual)
+    assert "dataset demo" in exc.value.safe_message
+
+
+def test_record_count_mismatch_neutralizes_actual_pattern_controls() -> None:
+    with pytest.raises(bench_summarize.BenchFailure) as exc:
+        bench_summarize._assert_record_counts("demo", {}, {"bad\u001bpattern": 1})
+    assert "\u001b" not in exc.value.safe_message
+    assert "<unpinned>" in exc.value.safe_message
 
 
 def test_text_count_contract_handles_singular_and_comma_cap() -> None:
@@ -589,6 +673,52 @@ def test_child_stderr_is_quarantined_byte_for_byte(tmp_path: Path) -> None:
     assert secret not in result.stderr
     assert (bundle / "hunt.json.stderr").read_bytes() == (secret + "\n").encode()
     assert (bundle / "hunt.text.stderr").read_bytes() == (secret + "\n").encode()
+
+
+def test_cli_record_count_mismatch_fails_with_actionable_safe_message(
+    tmp_path: Path,
+) -> None:
+    config, ledger = _minimal_inputs(tmp_path)
+    fake = tmp_path / "fake-python"
+    _fake_python(fake, _payload(record_counts={"conn*.log*": 12}))
+    bundle = tmp_path / "bundle"
+
+    result = _run_summary(
+        config,
+        bundle,
+        ledger,
+        python=fake,
+        expected_counts={"conn*.log*": 11},
+    )
+
+    assert result.returncode == 1
+    assert result.stdout == ""
+    assert result.stderr == (
+        'bench: dataset demo record count mismatch for pattern "conn*.log*": '
+        "expected 11, actual 12\n"
+    )
+    assert "BenchFailure" in (bundle / "bench.error.txt").read_text(encoding="utf-8")
+
+
+def test_cli_requires_an_explicit_record_count_pin(tmp_path: Path) -> None:
+    config, ledger = _minimal_inputs(tmp_path)
+    command = _summary_command(config, tmp_path / "bundle", ledger)
+    index = command.index("--expected-record-counts")
+    del command[index:index + 2]
+
+    result = subprocess.run(
+        command,
+        capture_output=True,
+        text=True,
+        env=_clean_env(),
+        cwd=ROOT,
+        check=False,
+    )
+
+    assert result.returncode == 2
+    assert result.stdout == ""
+    assert result.stderr == "bench: invalid arguments\n"
+    assert not (tmp_path / "bundle").exists()
 
 
 def test_selector_match_value_never_crosses_parent_surfaces(tmp_path: Path) -> None:

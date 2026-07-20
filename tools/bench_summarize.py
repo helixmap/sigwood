@@ -144,6 +144,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--config", required=True, type=Path)
     parser.add_argument("--bundle-dir", required=True, type=Path)
     parser.add_argument("--dataset-id", required=True)
+    parser.add_argument("--expected-record-counts", required=True)
     parser.add_argument("--ledger", type=Path, default=DEFAULT_LEDGER)
     parser.add_argument("--detect", default="all")
     parser.add_argument("--all", action="store_true", dest="load_all")
@@ -156,6 +157,56 @@ def _build_parser() -> argparse.ArgumentParser:
 def _safe_error(message: str) -> int:
     print(message, file=sys.stderr)
     return 1
+
+
+def _load_expected_record_counts(raw: str) -> dict[str, int]:
+    """Parse one explicit run-contract pin without accepting duplicate keys."""
+    duplicates: set[str] = set()
+
+    def object_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, value in pairs:
+            if key in result:
+                duplicates.add(key)
+            result[key] = value
+        return result
+
+    value = json.loads(raw, object_pairs_hook=object_pairs)
+    if duplicates or not isinstance(value, dict):
+        raise ValueError("expected a unique-key object")
+    for pattern, count in value.items():
+        if (
+            not isinstance(pattern, str)
+            or not pattern
+            or strip_control(pattern) != pattern
+        ):
+            raise ValueError("invalid record-count pattern")
+        if type(count) is not int or count < 0:
+            raise ValueError("invalid record count")
+    return value
+
+
+def _assert_record_counts(
+    dataset_id: str,
+    expected: dict[str, int],
+    actual: dict[str, int],
+) -> None:
+    """Fail closed when the observed loader map differs from the run pin."""
+    missing = object()
+    for pattern in sorted(set(expected) | set(actual)):
+        expected_value = expected.get(pattern, missing)
+        actual_value = actual.get(pattern, missing)
+        if expected_value == actual_value:
+            continue
+        safe_pattern = strip_control(pattern) or "<control-only>"
+        expected_label = "<unpinned>" if expected_value is missing else str(expected_value)
+        actual_label = "<missing>" if actual_value is missing else str(actual_value)
+        raise BenchFailure(
+            "bench: dataset "
+            f"{dataset_id} record count mismatch for pattern "
+            f"{json.dumps(safe_pattern, ensure_ascii=True)}: "
+            f"expected {expected_label}, actual {actual_label}"
+        )
 
 
 def _require_exact_keys(value: object, expected: frozenset[str], path: str) -> dict[str, Any]:
@@ -206,7 +257,8 @@ def _validate_payload(payload: object) -> dict[str, Any]:
     record_counts = _require_exact_keys_dynamic(run["record_counts"], "run_summary.record_counts")
     for key, value in record_counts.items():
         _require_str(key, "run_summary.record_counts key")
-        _require_int(value, f"run_summary.record_counts.{key}")
+        if _require_int(value, f"run_summary.record_counts.{key}") < 0:
+            raise SummaryRefusal(f"run_summary.record_counts.{key}", "expected non-negative")
     _require_int(run["data_size_bytes"], "run_summary.data_size_bytes")
     for field in ("detectors_run", "data_sources"):
         for index, value in enumerate(_require_list(run[field], f"run_summary.{field}")):
@@ -647,6 +699,7 @@ def _measurement(
     config: dict[str, Any],
     salt: str,
     selectors: list[dict[str, str]],
+    expected_record_counts: dict[str, int],
 ) -> int:
     config_bytes = json.dumps(
         config, indent=2, sort_keys=True, default=_json_default,
@@ -680,6 +733,11 @@ def _measurement(
         raise BenchFailure("bench: sigwood run failed — details in the bundle", exc) from exc
 
     payload = _validate_payload(raw_payload)
+    _assert_record_counts(
+        args.dataset_id,
+        expected_record_counts,
+        payload["run_summary"]["record_counts"],
+    )
     summary = _project_summary(
         payload,
         report,
@@ -711,6 +769,12 @@ def main(argv: list[str] | None = None) -> int:
     except (OSError, ValueError, cfg.ConfigError):
         return _safe_error("bench: could not read --config")
     try:
+        expected_record_counts = _load_expected_record_counts(
+            args.expected_record_counts
+        )
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return _safe_error("bench: could not validate --expected-record-counts")
+    try:
         _, salt = _load_ledger(args.ledger, args.dataset_id)
     except (OSError, ValueError, tomllib.TOMLDecodeError):
         return _safe_error("bench: could not read or validate --ledger")
@@ -724,7 +788,9 @@ def main(argv: list[str] | None = None) -> int:
         return _safe_error("bench: --bundle-dir must be a new empty directory outside the repo")
 
     try:
-        return _measurement(args, bundle, config, salt, selectors)
+        return _measurement(
+            args, bundle, config, salt, selectors, expected_record_counts
+        )
     except SummaryRefusal as exc:
         _write_parent_error(bundle, exc)
         return _safe_error(f"bench: summary refused at {strip_control(exc.path)}")

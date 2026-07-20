@@ -11,6 +11,7 @@ or keep-awake behavior.
 
 from __future__ import annotations
 
+import json
 import os
 import signal
 import subprocess
@@ -28,10 +29,11 @@ TOP_KEYS = frozenset({"out_dir", "ledger", "python", "job"})
 TOP_REQUIRED = frozenset({"out_dir", "ledger", "job"})
 JOB_KEYS = frozenset({
     "name", "config", "dataset", "detect", "corpus", "all_window",
-    "compare_to", "expect",
+    "compare_to", "expect", "expected_record_counts",
 })
 JOB_REQUIRED = frozenset({
     "name", "config", "dataset", "detect", "compare_to", "expect",
+    "expected_record_counts",
 })
 NAME_CHARS = frozenset("abcdefghijklmnopqrstuvwxyz0123456789-")
 EXPECTATIONS = frozenset({"diff", "repeat"})
@@ -90,6 +92,24 @@ def _nonblank_string(value: object, location: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise _ManifestError(location, "expected a non-empty string")
     return value
+
+
+def _expected_record_counts(value: object, location: str) -> dict[str, int]:
+    """Validate the exact loader-count pin owned by one batch job."""
+    if not isinstance(value, dict):
+        raise _ManifestError(location, "expected a table")
+    result: dict[str, int] = {}
+    for pattern, count in value.items():
+        if (
+            not isinstance(pattern, str)
+            or not pattern
+            or any(ord(char) < 32 or 127 <= ord(char) <= 159 for char in pattern)
+        ):
+            raise _ManifestError(location, "invalid pattern")
+        if type(count) is not int or count < 0:
+            raise _ManifestError(location, "expected a non-negative integer")
+        result[pattern] = count
+    return result
 
 
 def _manifest_path(value: object, base: Path, location: str) -> Path:
@@ -190,6 +210,10 @@ def _validate_job(
     all_window = table.get("all_window", False)
     if type(all_window) is not bool:
         raise _ManifestError(f"{location}.all_window", "expected a boolean")
+    expected_record_counts = _expected_record_counts(
+        table["expected_record_counts"],
+        f"{location}.expected_record_counts",
+    )
 
     config = _require_file(
         _manifest_path(table["config"], base, f"{location}.config"),
@@ -215,6 +239,7 @@ def _validate_job(
         "all_window": all_window,
         "compare_to": compare_to,
         "expect": expect,
+        "expected_record_counts": expected_record_counts,
     }
 
 
@@ -404,6 +429,8 @@ def _summary_argv(settings: dict[str, object], job: dict[str, object], bundle: P
         "--dataset-id", str(job["dataset"]),
         "--ledger", str(settings["ledger"]),
         "--detect", str(job["detect"]),
+        "--expected-record-counts",
+        json.dumps(job["expected_record_counts"], sort_keys=True, separators=(",", ":")),
     ]
     if job["corpus"] is not None:
         argv.append(str(job["corpus"]))

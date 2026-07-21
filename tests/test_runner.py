@@ -2461,6 +2461,61 @@ def test_rendering_report_liveness_wraps_write_end_and_dry_run_skips_render(
     assert ("rendering report", False) in calls
 
 
+@pytest.mark.parametrize(
+    ("has_written_path", "stdout_is_tty", "quiet", "expected"),
+    [
+        (False, True, False, False),
+        (True, True, False, True),
+        (False, False, False, True),
+        (False, True, True, False),
+        (True, True, True, False),
+        (False, False, True, False),
+    ],
+)
+def test_rendering_report_liveness_respects_stdout_and_target(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    has_written_path: bool,
+    stdout_is_tty: bool,
+    quiet: bool,
+    expected: bool,
+) -> None:
+    """Render narration never shares a live TTY line with its own report."""
+    calls: list[tuple[str, bool]] = []
+
+    @contextmanager
+    def _fake_liveness(label: str, delay: float = 0.0, *, enabled: bool = True):
+        calls.append((label, enabled))
+        yield SimpleNamespace(seal=lambda _text: None)
+
+    class _CapHandler:
+        def begin(self, _summary): pass
+        def write(self, _findings): pass
+        def end(self): pass
+
+    written_path = tmp_path / "report.pdf" if has_written_path else None
+    fake = _fake_detector("alpha", lambda _ctx: [])
+    monkeypatch.setattr(runner, "liveness", _fake_liveness)
+    monkeypatch.setattr(runner, "discover_detectors", lambda **_: {"alpha": fake})
+    monkeypatch.setattr(
+        runner,
+        "_build_output_handler",
+        lambda *_args, **_kwargs: (_CapHandler(), lambda: None, written_path),
+    )
+
+    def _fake_isatty(stream) -> bool:
+        assert stream is runner.sys.stdout
+        return stdout_is_tty
+
+    monkeypatch.setattr(runner, "_stream_isatty", _fake_isatty)
+
+    runner.run(config={"sigwood": {"detect": "alpha"}}, quiet=quiet)
+
+    assert [enabled for label, enabled in calls if label == "rendering report"] == [
+        expected
+    ]
+
+
 def _fake_detector(name: str, run_impl, *, in_default: bool = True):
     """Build a minimal fake detector module suitable for the runner loop."""
     return SimpleNamespace(

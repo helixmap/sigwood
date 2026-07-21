@@ -156,7 +156,8 @@ def test_golden_syslog_privileged_rare_events_and_bursts():
         _f("syslog", Severity.LOW, "host-family",
            {"tier": "family", "host": "host-family", "program": "postfix/qmgr",
             "line_count": 2, "start_ts": 10.0, "end_ts": 7210.0,
-            "span_seconds": 7200.0, "sample_raw": ["a", "b"], "label": None}),
+            "span_seconds": 7200.0, "sample_raw": ["a", "b"],
+            "member_fragments": ["family meat"], "label": None}),
         _f("syslog", Severity.LOW, "journal needle sentinel",
            {"host": "host-journal", "template_str": "cron: <*>",
             "count": 1, "threshold": 9,
@@ -165,7 +166,8 @@ def test_golden_syslog_privileged_rare_events_and_bursts():
            {"tier": "burst", "line_count": 13, "span_seconds": 47.0,
             "start_ts": 1.0, "end_ts": 48.0,
             "program_mix": [["kernel", 9], ["systemd", 4]],
-            "sample_raw": ["a", "b"], "label": "rebooted"}),
+            "sample_raw": ["a", "b"], "member_fragments": ["burst meat"],
+            "label": "rebooted"}),
         _f("syslog", Severity.INFO, "host-a",
            {"tier": "reboot", "host": "host-a",
             "reboot_ts": "2026-06-01T03:04:05+00:00", "label": "rebooted"}),
@@ -177,10 +179,12 @@ def test_golden_syslog_privileged_rare_events_and_bursts():
         "rare events (2)\n"
         "  [L]   Jan  1 00:00:10 · host-family · postfix/qmgr · "
         "2 rare lines · 2h\n"
+        "        family meat\n"
         "  [L]   Jul 12 21:57:33 · journal needle sentinel\n\n"
         "bursts (2)\n"
         "  [I]   Jan  1 00:00:01 · host-b · rebooted · 13 rare lines · "
         "47s · mostly kernel, systemd\n"
+        "        burst meat\n"
         "  [I]   Jun  1 03:04:05 · host-a · rebooted\n\n"
     )
 

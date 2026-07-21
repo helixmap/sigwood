@@ -91,7 +91,7 @@ _IP_TOKEN_TRIM = "()[]{}<>.,;:'\""
 _IP_COMPOUND_TRIM = "(){}<>.,;:'\""
 _FRAGMENT_TEMPLATE_SCAN_LIMIT = 6
 _FRAGMENT_LIMIT = 3
-_FRAGMENT_LENGTH = 80
+_FRAGMENT_LENGTH = 200
 
 # Security-critical program identities. Membership is exact, case-sensitive
 # equality against the canonical ``program`` column - never message matching.
@@ -178,8 +178,21 @@ def _contains_opaque_hex(token: str) -> bool:
     return any(_HEX_LETTER_RE.search(match.group(0)) for match in _LONG_HEX_MASK_RE.finditer(token))
 
 
+def _is_decimal_composite(token: str) -> bool:
+    """True for a multi-run decimal token carrying one identifier-size run."""
+    runs = re.findall(r"\d+", token)
+    return len(runs) >= 2 and any(len(run) >= 8 for run in runs)
+
+
+def _keep_fragment_token(token: str) -> bool:
+    """Keep readable meat while dropping opaque identifier-shaped tokens."""
+    if _is_ip_token(token):
+        return True
+    return not (_contains_opaque_hex(token) or _is_decimal_composite(token))
+
+
 def _truncate_fragment(fragment: str) -> str:
-    """Fit a fragment to 80 characters, including its ellipsis when cut."""
+    """Fit a fragment to the shared meat-line ceiling, including an ellipsis."""
     if len(fragment) <= _FRAGMENT_LENGTH:
         return fragment
 
@@ -195,10 +208,10 @@ def _truncate_fragment(fragment: str) -> str:
 
 
 def _distill_member_fragments(rows: Iterable[object]) -> list[str]:
-    """Return up to three distinct, bounded fragments from ordered members."""
+    """Return one complete token line or bounded per-template fragments."""
     seen_templates: set[object] = set()
-    seen_fragments: set[str] = set()
-    fragments: list[str] = []
+    collected: list[str] = []
+    overflow = False
 
     for row in rows:
         template_id = getattr(row, "template_id", None)
@@ -210,15 +223,40 @@ def _distill_member_fragments(rows: Iterable[object]) -> list[str]:
         if template_id in seen_templates:
             continue
         if len(seen_templates) >= _FRAGMENT_TEMPLATE_SCAN_LIMIT:
+            overflow = True
             break
         seen_templates.add(template_id)
+        collected.append(str(message))
 
-        body = strip_program(str(message))
-        kept = [
+    token_rows = [
+        [
             token
-            for token in body.split()
-            if _is_ip_token(token) or not _contains_opaque_hex(token)
+            for token in strip_program(message).split()
+            if _keep_fragment_token(token)
         ]
+        for message in collected
+    ]
+
+    seen_tokens: set[str] = set()
+    tokens: list[str] = []
+    for kept in token_rows:
+        for token in kept:
+            key = token.strip(_IP_TOKEN_TRIM)
+            if key in seen_tokens:
+                continue
+            seen_tokens.add(key)
+            tokens.append(token)
+
+    if not tokens:
+        return []
+
+    token_line = "tokens: " + " ".join(tokens)
+    if not overflow and len(token_line) <= _FRAGMENT_LENGTH:
+        return [token_line]
+
+    seen_fragments: set[str] = set()
+    fragments: list[str] = []
+    for kept in token_rows:
         distilled = " ".join(kept).strip()
         if not distilled:
             continue
@@ -262,6 +300,7 @@ def run(context: DetectorContext) -> list[Finding]:
     gap_seconds = cfg.get("burst_gap_seconds",   DEFAULT_CONFIG["burst_gap_seconds"])
     min_size    = cfg.get("burst_min_size",      DEFAULT_CONFIG["burst_min_size"])
     family_min_size = cfg.get("family_min_size", DEFAULT_CONFIG["family_min_size"])
+    line_trim_limit = cfg.get("line_trim_limit", DEFAULT_CONFIG["line_trim_limit"])
     privileged_programs = cfg.get(
         "privileged_programs", DEFAULT_CONFIG["privileged_programs"]
     )
@@ -319,11 +358,13 @@ def run(context: DetectorContext) -> list[Finding]:
         isolated_remainder, freq, threshold,
         min_size=family_min_size, now=now, data_window=context.data_window,
         severity=Severity.LOW, privileged=False, program_totals=program_totals,
+        line_trim_limit=line_trim_limit,
     )
     member_pairs = _collapse_families(
         member_df, freq, threshold,
         min_size=family_min_size, now=now, data_window=context.data_window,
         severity=Severity.MEDIUM, privileged=True, program_totals=program_totals,
+        line_trim_limit=line_trim_limit,
     )
     pairs = _reconcile(
         boot_events, [*burst_pairs, *sieve_pairs, *member_pairs],
@@ -574,6 +615,7 @@ def _collapse_families(
     severity: Severity,
     privileged: bool,
     program_totals: dict[tuple[object, object], int],
+    line_trim_limit: int = LINE_TRIM_LIMIT,
 ) -> list[tuple[float, Finding]]:
     """Fold isolated rare rows into one explicit membership/severity channel.
 
@@ -600,6 +642,7 @@ def _collapse_families(
                         severity=severity,
                         privileged=privileged,
                         program_total=program_totals.get((host, program), 0),
+                        line_trim_limit=line_trim_limit,
                     )
                 )
             continue
@@ -749,6 +792,7 @@ def _isolated_finding(
     severity: Severity,
     privileged: bool,
     program_total: int,
+    line_trim_limit: int = LINE_TRIM_LIMIT,
 ) -> tuple[float, Finding]:
     """Classify a single rare NON-reboot row in one explicit membership channel.
 
@@ -779,7 +823,7 @@ def _isolated_finding(
     finding = Finding(
         detector=DETECTOR_NAME,
         severity=severity,
-        title=str(row.raw)[:LINE_TRIM_LIMIT],
+        title=str(row.raw)[:line_trim_limit],
         description=description,
         evidence=evidence,
         next_steps=[

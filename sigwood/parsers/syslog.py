@@ -62,11 +62,61 @@ def parse_host(raw: str) -> str:
 
 def strip_header(raw: str) -> str:
     """Remove the optional PRI and supported timestamp/hostname header."""
-    raw = PRI_RE.sub("", raw)
-    body = SYSLOG_HDR_RE.sub("", raw)
-    if body == raw:
-        body = ISO_HDR_RE.sub("", raw)
-    return body.strip()
+    _stamp, _host, tag, message = split_header(raw)
+    return f"{tag}{message}".strip()
+
+
+def split_header(raw: str) -> tuple[str, str, str, str]:
+    """Split one raw line into stamp, host, program tag, and message.
+
+    The returned four-tuple always reconstructs the input exactly. RFC 3164 and
+    ISO transport fields use the same compiled parser grammar as normalization;
+    a headerless journal message has empty stamp/host fields. A valid leading
+    PRI is retained with the stamp field even when no timestamp follows, which
+    preserves :func:`strip_header`'s established PRI-only behavior.
+    """
+    pri = PRI_RE.match(raw)
+    prefix_end = pri.end() if pri is not None else 0
+    remainder = raw[prefix_end:]
+    header = SYSLOG_HDR_RE.match(remainder)
+    if header is None:
+        header = ISO_HDR_RE.match(remainder)
+    if header is None:
+        stamp = raw[:prefix_end]
+        host = ""
+        body = remainder
+    else:
+        fields = remainder[:header.end()].split()
+        if ISO_TS_RE.match(remainder):
+            stamp_end = remainder.find(fields[0]) + len(fields[0])
+        else:
+            stamp_end = remainder.find(fields[2]) + len(fields[2])
+        host_start = stamp_end
+        while host_start < len(remainder) and remainder[host_start].isspace():
+            host_start += 1
+        body_start = header.end()
+        stamp = raw[:prefix_end + host_start]
+        host = remainder[host_start:body_start]
+        body = remainder[body_start:]
+
+    leading = len(body) - len(body.lstrip())
+    match = PROGRAM_RE.match(body[leading:])
+    if match is None:
+        return stamp, host, "", body
+    tag_end = leading + match.end()
+    suffix = body[tag_end:]
+    if suffix.startswith("["):
+        bracket_end = suffix.find("]")
+        if bracket_end < 0:
+            return stamp, host, "", body
+        tag_end += bracket_end + 1
+        suffix = body[tag_end:]
+    if not suffix.startswith(":"):
+        return stamp, host, "", body
+    tag_end += 1
+    while tag_end < len(body) and body[tag_end].isspace():
+        tag_end += 1
+    return stamp, host, body[:tag_end], body[tag_end:]
 
 
 def normalize_pids(msg: str) -> str:

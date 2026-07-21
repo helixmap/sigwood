@@ -841,7 +841,7 @@ class TextHandler(OutputHandler):
                     fragments = f.evidence.get("member_fragments")
                     if isinstance(fragments, (list, tuple)):
                         row_lines.extend(
-                            f"       {_sanitize(fragment)}"
+                            f"        {_sanitize(fragment)}"
                             for fragment in fragments
                             if str(fragment)
                         )

@@ -36,6 +36,7 @@ from sigwood.common.display import (
     TEXT_RULE,
     TEXT_RULE_DOUBLE,
     TEXT_RULE_WIDTH,
+    _stream_isatty,
     compact_home,
     default_window_advisory,
     fmt_compact_span,
@@ -647,7 +648,10 @@ def run(
         all_findings.extend(findings)
 
     try:
-        with liveness("rendering report", enabled=not quiet):
+        render_liveness = not quiet and (
+            written_path is not None or not _stream_isatty(sys.stdout)
+        )
+        with liveness("rendering report", enabled=render_liveness):
             reporter.write(all_findings)
             reporter.end()
     finally:

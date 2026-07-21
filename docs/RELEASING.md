@@ -261,12 +261,14 @@ Nothing above this point changes remote release state.
 ### 4 - Rehearse on TestPyPI when required
 
 This step is non-negotiable before the first Trusted Publishing release and after any change
-to `.github/workflows/release.yml`. It is optional for later releases when that workflow is
+to `.github/workflows/release.yml`. It is still recommended for later releases when that workflow is
 unchanged.
 
-The manual dispatch builds and tests `main`, changes the artifact version to the throwaway
-`X.Y.Z.dev<run-number>` form, and publishes through the ungated `testpypi` environment. The
-commands derive that version from the run itself; there is no placeholder to replace.
+The manual dispatch builds and tests `main`, changes the artifact version to the
+throwaway `X.Y.Z.dev<run-number>` form, and publishes through the ungated
+`testpypi` environment. The commands derive that version from the run itself;
+there is no placeholder to replace. Progress can be monitored on the 
+[Actions tab](https://github.com/helixmap/sigwood/actions) of the GitHub Repository.
 
 ```bash
 REHEARSAL_URL=$(gh workflow run release.yml --repo "$REPO" --ref main)
@@ -370,12 +372,10 @@ Then confirm that the upload completes successfully:
 If the matrix is red, the approval gate never opens. If the tag is wrong, do not approve;
 follow the pre-publish recovery steps below.
 
-PyPI permanently reserves a published version. A bad `X.Y.Z` can be yanked, but it cannot be
-deleted and uploaded again under the same version.
-
-For the first production release only: if a `0.0.0` name-reservation release still exists,
-delete that **release** from the PyPI project management page. Never delete the project,
-because that releases the package name.
+Once the GitHub workflow completes, validate the new release appears in the
+[PyPI project release history](https://pypi.org/project/sigwood/#history). PyPI
+permanently reserves a published version. A bad `X.Y.Z` can be yanked, but it
+cannot be deleted and uploaded again under the same version.
 
 ### 7 - Create, inspect, and publish the GitHub Release
 
@@ -426,8 +426,8 @@ Attaching built artifacts is optional; PyPI remains the distribution source of t
 
 ### 8 - Verify the public release
 
-Install the exact version from real PyPI into a clean venv. `--no-cache-dir` prevents a local
-wheel cache from satisfying the check.
+Install the exact version from real PyPI into a clean venv *from the project
+venv*. `--no-cache-dir` prevents a local wheel cache from satisfying the check.
 
 ```bash
 if POST_VENV=$(mktemp -d "${TMPDIR:-/tmp}/sigwood-postpub.XXXXXX") &&

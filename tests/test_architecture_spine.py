@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import io
 import json
 import tempfile
@@ -59,6 +60,34 @@ class ArchitectureSpineTests(unittest.TestCase):
         self.assertIn("duration", detectors)
         for planned in ("auth", "ssl", "protocol", "weird", "dnsblock"):
             self.assertNotIn(planned, detectors)
+
+    def test_html_splitter_is_the_sole_outputs_to_parsers_import(self) -> None:
+        """Pin the one approved presentation dependency on parser grammar."""
+        outputs_root = Path(__file__).resolve().parent.parent / "sigwood" / "outputs"
+        imports = []
+        for source_path in outputs_root.rglob("*.py"):
+            tree = ast.parse(
+                source_path.read_text(encoding="utf-8"), filename=str(source_path)
+            )
+            for node in ast.walk(tree):
+                if isinstance(node, ast.ImportFrom):
+                    if node.module and node.module.startswith("sigwood.parsers"):
+                        imports.append(
+                            (
+                                source_path.name,
+                                node.module,
+                                tuple(alias.name for alias in node.names),
+                            )
+                        )
+                elif isinstance(node, ast.Import):
+                    for alias in node.names:
+                        if alias.name.startswith("sigwood.parsers"):
+                            imports.append((source_path.name, alias.name, ()))
+
+        self.assertEqual(
+            imports,
+            [("html.py", "sigwood.parsers.syslog", ("split_header",))],
+        )
 
     def test_resolve_detect_all_uses_available_detectors_only(self) -> None:
         available = sorted(discover_detectors())

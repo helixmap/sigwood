@@ -28,6 +28,9 @@ from sigwood.common.finding import DetectorContext, Finding, Severity
 from sigwood.detectors.syslog import (
     DEFAULT_CONFIG,
     DETECTOR_NAME,
+    _FRAGMENT_LIMIT,
+    _FRAGMENT_TEMPLATE_SCAN_LIMIT,
+    LINE_TRIM_LIMIT,
     PRIVILEGED_PROGRAMS,
     STATUS,
     REBOOT_CLUSTER_SECONDS,
@@ -40,6 +43,8 @@ from sigwood.detectors.syslog import (
     _distill_member_fragments,
     _gap_cluster,
     _is_ip_token,
+    _is_decimal_composite,
+    _keep_fragment_token,
     _normalize_identity_columns,
     _reboot_finding,
     _reconcile,
@@ -47,7 +52,7 @@ from sigwood.detectors.syslog import (
     _truncate_fragment,
     run,
 )
-from sigwood.parsers.syslog import REBOOT_SIGNALS_RE, is_reboot_signal
+from sigwood.parsers.syslog import REBOOT_SIGNALS_RE, is_reboot_signal, strip_program
 from sigwood.parsers.journal import parse_record as parse_journal_record
 from sigwood.outputs._render_model import Section as _Section
 
@@ -62,6 +67,41 @@ _WINDOW = (_NOW, _NOW)
 # Fixed unix epoch used across fixtures (2026-05-30 00:00:00 UTC)
 _BASE_TS = 1_748_563_200.0
 _Member = namedtuple("_Member", "template_id message")
+
+
+def _case_two_fragment_reference(rows) -> list[str]:
+    """Reference the interleaved scan semantics used by fallback fragments."""
+    seen_templates: set[object] = set()
+    seen_fragments: set[str] = set()
+    fragments: list[str] = []
+    for row in rows:
+        template_id = getattr(row, "template_id", None)
+        message = getattr(row, "message", None)
+        if template_id is None or message is None:
+            continue
+        if pd.isna(template_id) or pd.isna(message):
+            continue
+        if template_id in seen_templates:
+            continue
+        if len(seen_templates) >= _FRAGMENT_TEMPLATE_SCAN_LIMIT:
+            break
+        seen_templates.add(template_id)
+        kept = [
+            token
+            for token in strip_program(str(message)).split()
+            if _keep_fragment_token(token)
+        ]
+        distilled = " ".join(kept).strip()
+        if not distilled:
+            continue
+        rendered = _truncate_fragment(distilled)
+        if rendered in seen_fragments:
+            continue
+        seen_fragments.add(rendered)
+        fragments.append(rendered)
+        if len(fragments) >= _FRAGMENT_LIMIT:
+            break
+    return fragments
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -145,6 +185,7 @@ def _family_fold(
     severity: Severity = Severity.LOW,
     privileged: bool = False,
     program_totals: dict | None = None,
+    line_trim_limit: int = LINE_TRIM_LIMIT,
 ):
     """Run the family seam over a hand-built isolated remainder."""
     freq = {
@@ -166,6 +207,7 @@ def _family_fold(
         df, freq, threshold, min_size=min_size,
         now=_NOW, data_window=_WINDOW,
         severity=severity, privileged=privileged, program_totals=program_totals,
+        line_trim_limit=line_trim_limit,
     )
 
 
@@ -221,8 +263,8 @@ class SyslogDetectorTests(unittest.TestCase):
 
     # ── Capsule member fragments ──────────────────────────────────────────────
 
-    def test_fragment_selection_backfills_after_final_form_collisions(self) -> None:
-        shared = "q" * 79
+    def test_overflow_case_backfills_after_rendered_fragment_collisions(self) -> None:
+        shared = "q" * 199
         rows = [
             _Member(1, f"prog: {shared}AX"),
             _Member(2, f"prog: {shared}BY"),
@@ -230,18 +272,22 @@ class SyslogDetectorTests(unittest.TestCase):
             _Member(4, "sshd[*]: accepted from 192.0.2.9"),
             _Member(5, "kernel: oops"),
             _Member(6, "postfix: connect"),
+            _Member(7, "prog: must-not-enter-fallback"),
         ]
         self.assertEqual(
             _distill_member_fragments(rows),
             [shared + "…", "accepted from 192.0.2.9", "oops"],
         )
+        self.assertNotIn("must-not-enter-fallback", " ".join(_distill_member_fragments(rows)))
 
-    def test_fragment_scan_stops_after_six_distinct_templates(self) -> None:
-        shared = "q" * 79
+    def test_overflow_case_preserves_interleaved_fragment_output(self) -> None:
         rows = [
-            _Member(i, f"prog: {shared}X{i}") for i in range(1, 7)
-        ] + [_Member(7, "prog: must-not-backfill")]
-        self.assertEqual(_distill_member_fragments(rows), [shared + "…"])
+            _Member(i, f"prog: fragment-{i}") for i in range(1, 8)
+        ]
+        expected = _case_two_fragment_reference(rows)
+        self.assertEqual(expected, ["fragment-1", "fragment-2", "fragment-3"])
+        self.assertEqual(_distill_member_fragments(rows), expected)
+        self.assertFalse(_distill_member_fragments(rows)[0].startswith("tokens: "))
 
     def test_fragment_uses_first_usable_row_per_template(self) -> None:
         rows = [
@@ -253,7 +299,17 @@ class SyslogDetectorTests(unittest.TestCase):
         ]
         self.assertEqual(
             _distill_member_fragments(rows),
-            ["first usable", "second template"],
+            ["tokens: first usable second template"],
+        )
+
+    def test_complete_tokens_line_keeps_order_and_first_verbatim_form(self) -> None:
+        rows = [
+            _Member(1, "prog: for /net/backups (/net/backups) From from"),
+            _Member(2, "prog: next from"),
+        ]
+        self.assertEqual(
+            _distill_member_fragments(rows),
+            ["tokens: for /net/backups From from next"],
         )
 
     def test_ip_exemption_accepts_only_approved_compounds(self) -> None:
@@ -274,36 +330,61 @@ class SyslogDetectorTests(unittest.TestCase):
 
     def test_opaque_hex_rule_keeps_magnitudes_and_drops_identifier_runs(self) -> None:
         kept = (
-            "22 1234 137 pid=1234 SRC=192.0.2.9 DST=198.51.100.7 "
-            "104857600 1699999999 192.0.2.9 2001:db8::1 "
-            "00:1a:2b:3c:4d:5e x_12345678"
+            "22", "1234", "pid=1234", "SRC=192.0.2.9", "104857600",
+            "1699999999", "192.0.2.9", "2001:db8::1",
+            "00:1a:2b:3c:4d:5e", "x_12345678",
         )
-        message = (
-            "prog: " + kept
-            + " deadbeefcafe a1b2c3d4e5f6 session=9f8e7d6c5b4a"
-        )
-        self.assertEqual(
-            _distill_member_fragments([_Member(1, message)]),
-            [_truncate_fragment(kept)],
-        )
+        self.assertTrue(all(_keep_fragment_token(token) for token in kept))
         for token in ("deadbeefcafe", "a1b2c3d4e5f6", "session=9f8e7d6c5b4a"):
             self.assertTrue(_contains_opaque_hex(token), token)
+            self.assertFalse(_keep_fragment_token(token), token)
         for token in ("104857600", "x_12345678", "00:1a:2b:3c:4d:5e"):
             self.assertFalse(_contains_opaque_hex(token), token)
 
-    def test_fragment_keeps_zero_alnum_glue_and_excludes_empty_results(self) -> None:
+    def test_decimal_composite_rule_matches_ratified_boundary(self) -> None:
+        dropped = ("audit(1784390923.524:417815):", "1784390923.524")
+        kept = (
+            "104857600", "22", "1234", "0", "192.0.2.9:1007",
+            "SRC=192.0.2.9", "2026-07-18", "03:22:01.564",
+            "1.11.0-1_all", "aa:bb:cc:dd:ee:ff",
+        )
+        self.assertTrue(all(_is_decimal_composite(token) for token in dropped))
+        self.assertTrue(all(not _is_decimal_composite(token) for token in kept))
+        self.assertTrue(all(not _keep_fragment_token(token) for token in dropped))
+        self.assertTrue(all(_keep_fragment_token(token) for token in kept))
+
+    def test_ip_exemption_precedes_decimal_composite_drop(self) -> None:
+        token = "192.0.2.9:1784390923"
+        self.assertTrue(_is_decimal_composite(token))
+        self.assertTrue(_is_ip_token(token))
+        self.assertTrue(_keep_fragment_token(token))
+
+    def test_tokens_line_keeps_zero_alnum_glue_and_excludes_empty_results(self) -> None:
         rows = [
             _Member(1, "prog: deadbeef -> cafebabecafe"),
             _Member(2, "prog: deadbeefcafe"),
         ]
-        self.assertEqual(_distill_member_fragments(rows), ["->"])
+        self.assertEqual(_distill_member_fragments(rows), ["tokens: ->"])
+        self.assertEqual(
+            _distill_member_fragments([_Member(1, "prog: deadbeefcafe")]),
+            [],
+        )
 
     def test_fragment_length_budget_prefers_boundary_then_hard_cuts(self) -> None:
-        boundary = "a " + ("q" * 78) + " tail"
+        boundary = "a " + ("q" * 198) + " tail"
         self.assertEqual(_truncate_fragment(boundary), "a…")
-        overlong = "q" * 100
-        self.assertEqual(_truncate_fragment(overlong), ("q" * 79) + "…")
-        self.assertEqual(len(_truncate_fragment(overlong)), 80)
+        overlong = "q" * 201
+        self.assertEqual(_truncate_fragment(overlong), ("q" * 199) + "…")
+        self.assertEqual(len(_truncate_fragment(overlong)), 200)
+
+    def test_complete_tokens_line_uses_full_prefixed_length_discriminator(self) -> None:
+        fits = _distill_member_fragments([_Member(1, "prog: " + ("q" * 192))])
+        self.assertEqual(fits, ["tokens: " + ("q" * 192)])
+        self.assertEqual(len(fits[0]), 200)
+
+        over = _distill_member_fragments([_Member(1, "prog: " + ("q" * 193))])
+        self.assertEqual(over, [("q" * 193)])
+        self.assertFalse(over[0].startswith("tokens: "))
 
     # ── Empty input ───────────────────────────────────────────────────────────
 
@@ -345,6 +426,83 @@ class SyslogDetectorTests(unittest.TestCase):
         self.assertEqual(findings[0].detector, "syslog")
         self.assertEqual(findings[0].severity, Severity.LOW)
         self.assertNotIn("privileged", findings[0].evidence)
+
+    def test_line_trim_limit_controls_needle_title_only(self) -> None:
+        raw = (
+            "<30>May 30 13:00:00 192.0.2.2 kernel: "
+            + ("needle-content-" * 20)
+        )
+        rows = [_common_row(i) for i in range(50)] + [{
+            "ts": _BASE_TS + 3600.0,
+            "host": "192.0.2.2",
+            "raw": raw,
+            "message": "kernel: " + ("needle-content-" * 20),
+        }]
+        ids = [1] * 50 + [2]
+        templates = ["sshd[*]: Accepted publickey for admin"] * 50 + [
+            "kernel: <*>"
+        ]
+
+        findings = _run_with(
+            rows,
+            ids,
+            templates,
+            {"max_count": 1, "rarity_pct": 10, "line_trim_limit": 50},
+        )
+
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0].title, raw[:50])
+
+    def test_absent_line_trim_limit_keeps_200_character_needle_default(self) -> None:
+        raw = "<30>May 30 13:00:00 192.0.2.2 kernel: " + ("q" * 240)
+        rows = [_common_row(i) for i in range(50)] + [{
+            "ts": _BASE_TS + 3600.0,
+            "host": "192.0.2.2",
+            "raw": raw,
+            "message": "kernel: " + ("q" * 240),
+        }]
+        ids = [1] * 50 + [2]
+        templates = ["sshd[*]: Accepted publickey for admin"] * 50 + [
+            "kernel: <*>"
+        ]
+
+        findings = _run_with(
+            rows,
+            ids,
+            templates,
+            {"max_count": 1, "rarity_pct": 10},
+        )
+
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0].title, raw[:200])
+        self.assertEqual(len(findings[0].title), 200)
+
+    def test_line_trim_limit_does_not_cap_family_meat(self) -> None:
+        rows = _rare_df([
+            _rare_row(
+                _BASE_TS,
+                "192.0.2.2",
+                "raw-a",
+                program="kernel",
+                template_id=1,
+                message="kernel: " + ("q" * 70),
+            ),
+            _rare_row(
+                _BASE_TS + 120.0,
+                "192.0.2.2",
+                "raw-b",
+                program="kernel",
+                template_id=2,
+                message="kernel: " + ("r" * 70),
+            ),
+        ])
+
+        pairs = _family_fold(rows, line_trim_limit=10)
+
+        self.assertEqual(len(pairs), 1)
+        fragments = pairs[0][1].evidence["member_fragments"]
+        self.assertEqual(fragments, ["tokens: " + ("q" * 70) + " " + ("r" * 70)])
+        self.assertTrue(all(len(fragment) > 10 for fragment in fragments))
 
     def test_rarity_pct_is_inert_at_max_count_1(self) -> None:
         """Characterization: rarity_pct is a decoy at the shipped max_count=1.
@@ -626,7 +784,9 @@ class SyslogDetectorTests(unittest.TestCase):
             for i in range(3)
         ]
         burst = _collapse(rows)[0]
-        self.assertEqual(burst.evidence["member_fragments"], ["repeated message"])
+        self.assertEqual(
+            burst.evidence["member_fragments"], ["tokens: repeated message"]
+        )
 
     def test_collapse_keeps_nan_host_rows(self) -> None:
         # pandas groupby drops NaN keys by default; the detector normalizes host
@@ -708,7 +868,7 @@ class SyslogDetectorTests(unittest.TestCase):
             "first_seen": datetime.fromtimestamp(_BASE_TS, timezone.utc).isoformat(),
             "span_seconds": 120.0,
             "sample_raw": ["a0", "a1"],
-            "member_fragments": ["m"],
+            "member_fragments": ["tokens: m"],
             "label": None,
         })
         self.assertEqual(
@@ -739,7 +899,7 @@ class SyslogDetectorTests(unittest.TestCase):
         burst = _collapse(burst_rows)[0]
         self.assertEqual(
             burst.evidence["member_fragments"],
-            ["burst fragment 0", "burst fragment 1", "burst fragment 2"],
+            ["tokens: burst fragment 0 1 2"],
         )
 
         needle = _family_fold(_rare_df([
@@ -1409,8 +1569,8 @@ class SyslogDetectorTests(unittest.TestCase):
                     _flat_section([finding])
                 )
             )
-            self.assertIn("\n       fragment-one", rendered)
-            self.assertIn("\n       safe-fragment", rendered)
+            self.assertIn("\n        fragment-one", rendered)
+            self.assertIn("\n        safe-fragment", rendered)
             self.assertEqual(rendered.count("fragment-one"), 1)
             self.assertNotIn("member_fragments:", rendered)
             for control in ("\x1b", "\x07", "\x9b"):

@@ -18,9 +18,16 @@ import html
 from pathlib import Path
 from typing import Any, TextIO
 
-from sigwood.common.display import fmt_suppression, fmt_window, human_bytes, plural
+from sigwood.common.display import (
+    _tz_label,
+    fmt_suppression,
+    fmt_window,
+    human_bytes,
+    plural,
+)
 from sigwood.common.finding import Finding, MethodTag, RunSummary, Severity
 from sigwood.common.output import OutputHandler, register_handler
+from sigwood.parsers.syslog import split_header
 from sigwood.outputs._evidence import evidence_at_level
 from sigwood.outputs._render_model import (
     ColumnSpec,
@@ -218,26 +225,50 @@ def _render_detail_row(finding: Finding, *, verbose_level: int, colspan: int) ->
 
 
 def _render_sample_details(finding: Finding, *, colspan: int) -> str:
-    """Always-available, default-closed full syslog member sample.
+    """Screen-only full syslog member sample controlled by the severity pill.
 
     Every member reaches markup only through ``_esc``. Data never enters an
-    attribute, URL, or CSS value. Print keeps the summary but hides the body so a
-    level-0 PDF cannot disclose verbose evidence.
+    attribute, URL, or CSS value. The whole row is hidden in print so a level-0
+    PDF cannot disclose verbose evidence or an inert browser control.
     """
+    samples = _syslog_samples(finding)
+    if samples is None:
+        return ""
+    lines = "".join(_render_sample_line(line) for line in samples)
+    return (
+        '<tr class="sample-detail"><td class="sev-cell"></td>'
+        f'<td colspan="{colspan}"><div class="sample-detail-body">{lines}</div>'
+        '</td></tr>'
+    )
+
+
+def _syslog_samples(finding: Finding) -> "list[object] | tuple[object, ...] | None":
+    """Return the bounded capsule sample that earns a severity-pill toggle."""
     if finding.detector != "syslog" or finding.evidence.get("tier") not in (
         "family", "burst",
     ):
-        return ""
+        return None
     samples = finding.evidence.get("sample_raw")
     if not isinstance(samples, (list, tuple)) or not samples:
-        return ""
-    lines = "".join(
-        f'<div class="sample-line">{_esc(line)}</div>' for line in samples[:20]
-    )
+        return None
+    return samples[:20]
+
+
+def _render_sample_line(line: object) -> str:
+    """Render one raw member with distinct stamp, host, and program colors.
+
+    ``split_header`` owns recognition and preserves the input character-for-
+    character. All four pieces independently traverse ``_esc``; no log
+    data reaches an attribute, URL, style, or selector.
+    """
+    stamp, host, tag, message = split_header(str(line))
     return (
-        '<tr class="sample-detail"><td class="sev-cell"></td>'
-        f'<td colspan="{colspan}"><details><summary>sampled log lines</summary>'
-        f'<div class="sample-detail-body">{lines}</div></details></td></tr>'
+        '<div class="sample-line">'
+        f'<span class="hl-ts">{_esc(stamp)}</span>'
+        f'<span class="hl-host">{_esc(host)}</span>'
+        f'<span class="hl-prog">{_esc(tag)}</span>'
+        f'<span class="sample-message">{_esc(message)}</span>'
+        '</div>'
     )
 
 
@@ -278,10 +309,15 @@ def _render_finding_row(
     ``_esc``."""
     sev_class = f"sev-{finding.severity.name.lower()}"
     colspan = max(1, len(keep))  # defensive: a ranked_summary-only section has 0 cols
-    pill = (
-        f'<td class="sev-cell"><span class="pill {sev_class}">'
-        f"{_esc(str(finding.severity))}</span></td>"
+    pill_value = (
+        f'<span class="pill {sev_class}">{_esc(str(finding.severity))}</span>'
     )
+    if _syslog_samples(finding) is not None:
+        pill_value = (
+            '<details class="row-toggle"><summary>'
+            f'{pill_value}</summary></details>'
+        )
+    pill = f'<td class="sev-cell">{pill_value}</td>'
     cells = project_row(finding)
     if not cells:
         # No projector for this detector - show the title (generic fallback,
@@ -370,7 +406,11 @@ def _render_section(
         _render_finding_row(f, keep, verbose_level=verbose_level)
         for f in section.findings
     )
-    table_class = "findings-table syslog-table" if detector == "syslog" else "findings-table"
+    if detector == "syslog":
+        stamp_class = " utc-stamps" if _tz_label() == "UTC" else ""
+        table_class = f"findings-table syslog-table{stamp_class}"
+    else:
+        table_class = "findings-table"
     parts.append(f'<table class="{table_class}">{thead}<tbody>{rows}</tbody></table>')
     return "".join(parts)
 
@@ -437,7 +477,9 @@ def _styles(landscape: bool) -> str:
   --card-bg: #ffffff; --head-bg: #f6f8fa;
   --chip-named-bg: #e3f6fb; --chip-named-border: #18a0bd; --chip-named-fg: #0b6b80;
   --chip-house-border: #c2cbd6; --chip-house-fg: #475160;
-  --sev-high: #c0392b; --sev-medium: #d98910; --sev-low: #2c7fb8; --sev-info: #7a8493;
+  --sev-high: #c0392b; --sev-medium: #d98910; --sev-low: #2c81b8; --sev-info: #7a8493;
+  --sev-high-ink: #ffffff; --sev-medium-ink: #0b0f14; --sev-low-ink: #0b0f14; --sev-info-ink: #0b0f14;
+  --hl-ts: #9a6700; --hl-host: #0969da; --hl-prog: #8250df;
 }
 @media (prefers-color-scheme: dark) {
   :root {
@@ -446,6 +488,8 @@ def _styles(landscape: bool) -> str:
     --chip-named-bg: #0c2f38; --chip-named-border: #2bb6d4; --chip-named-fg: #7fd6e8;
     --chip-house-border: #3a424d; --chip-house-fg: #aab4c0;
     --sev-high: #e06a5c; --sev-medium: #e8a94a; --sev-low: #5aa6d8; --sev-info: #98a2b0;
+    --sev-high-ink: #0b0f14; --sev-medium-ink: #0b0f14; --sev-low-ink: #0b0f14; --sev-info-ink: #0b0f14;
+    --hl-ts: #ffd166; --hl-host: #70d6ff; --hl-prog: #c4a7e7;
   }
 }
 * { box-sizing: border-box; }
@@ -480,11 +524,11 @@ header { border-bottom: 2px solid var(--border); padding-bottom: 18px; margin-bo
 .group-head { font-size: 16px; font-weight: 600; padding-bottom: 8px; border-bottom: 1px solid var(--border); margin-bottom: 10px; }
 .cap-note { color: var(--muted); font-size: 13px; margin-bottom: 10px; }
 .empty { color: var(--muted); }
-.pill { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-weight: 700; font-size: 13px; padding: 0 6px; border-radius: 4px; color: #fff; }
-.pill.sev-high { background: var(--sev-high); }
-.pill.sev-medium { background: var(--sev-medium); }
-.pill.sev-low { background: var(--sev-low); }
-.pill.sev-info { background: var(--sev-info); }
+.pill { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-weight: 700; font-size: 13px; padding: 0 6px; border-radius: 4px; }
+.pill.sev-high { background: var(--sev-high); color: var(--sev-high-ink); }
+.pill.sev-medium { background: var(--sev-medium); color: var(--sev-medium-ink); }
+.pill.sev-low { background: var(--sev-low); color: var(--sev-low-ink); }
+.pill.sev-info { background: var(--sev-info); color: var(--sev-info-ink); }
 .desc { margin: 10px 0 6px; }
 .next-steps { margin: 6px 0; padding-left: 22px; }
 .next-steps li { margin: 2px 0; }
@@ -502,12 +546,19 @@ header { border-bottom: 2px solid var(--border); padding-bottom: 18px; margin-bo
 .findings-table tr.detail td { padding: 2px 0 10px 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
 .findings-table tr.detail .desc { margin: 6px 0 4px; }
 .findings-table tr.detail .next-steps { margin: 4px 0; }
+.findings-table tr.sample-detail { display: none; }
 .findings-table tr.sample-detail td { padding: 2px 0 8px 0; }
 .findings-table tr.meat-row td { padding: 1px 12px 5px 0; }
 .meat-line { padding-left: 8px; color: var(--muted); overflow-wrap: anywhere; }
-.sample-detail summary { color: var(--muted); cursor: pointer; }
-.sample-detail-body { margin: 5px 0 2px; }
+.row-toggle { display: inline-block; }
+.row-toggle summary { list-style: none; }
+.row-toggle summary::-webkit-details-marker { display: none; }
+.row-toggle summary::marker { content: ""; }
+.sample-detail-body { margin: 2px 0; }
 .sample-line { white-space: pre-wrap; overflow-wrap: anywhere; }
+.hl-ts { color: var(--hl-ts); font-weight: 700; }
+.hl-host { color: var(--hl-host); font-weight: 600; }
+.hl-prog { color: var(--hl-prog); font-weight: 600; }
 @media screen {
   /* Screen-only: short data tokens (dur/bps/counts/states) never mid-break on
      screen. In PRINT this is ABSENT, so td.data falls back to the base
@@ -515,10 +566,21 @@ header { border-bottom: 2px solid var(--border); padding-bottom: 18px; margin-bo
      tables (the correctness floor; paged media has no horizontal scroll). */
   .findings-table td.data { white-space: nowrap; }
   .syslog-table { table-layout: fixed; width: 100%; }
-  .syslog-table th.sev-col, .syslog-table td.sev-cell { width: 48px; }
-  .syslog-table th.col-first, .syslog-table td.col-first { width: 184px; }
+  .syslog-table th.sev-col, .syslog-table td.sev-cell { width: 64px; }
+  .syslog-table th.col-first, .syslog-table td.col-first { width: 135px; }
+  .syslog-table.utc-stamps th.col-first, .syslog-table.utc-stamps td.col-first { width: 169px; }
   .syslog-table .clip, .syslog-table .meat-line {
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .row-toggle summary { cursor: pointer; }
+  .row-toggle summary::after { content: "+"; color: var(--muted); margin-left: 3px; }
+  .row-toggle[open] summary::after { content: "−"; }
+  .syslog-table tr.finding-row:has(.row-toggle[open]) + tr.meat-row {
+    display: none;
+  }
+  .syslog-table tr.finding-row:has(.row-toggle[open]) + tr.sample-detail,
+  .syslog-table tr.finding-row:has(.row-toggle[open]) + tr.meat-row + tr.sample-detail {
+    display: table-row;
   }
   .desc, .next-steps { max-width: 46em; }
 }
@@ -529,7 +591,7 @@ header { border-bottom: 2px solid var(--border); padding-bottom: 18px; margin-bo
   .sev-card { break-inside: avoid; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
   .findings-table tr { break-inside: avoid; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
   .group-head, .section-label { break-after: avoid; }
-  .sample-detail-body { display: none; }
+  .findings-table tr.sample-detail { display: none; }
 }
 """.strip().replace("__SIGWOOD_PAGE_SIZE__", page_size))
 

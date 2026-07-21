@@ -6,6 +6,42 @@ All notable changes to sigwood are recorded here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- **Syslog capsule detail lines distill harder and fill the row.** A capsule whose
+  sampled content fits on one line now shows a single `tokens:` line: the members'
+  words in order, duplicates removed, complete. Larger capsules keep up to three
+  per-pattern lines, now allowed 200 characters instead of 80. Opaque identifiers are
+  filtered more precisely: audit record ids such as `msg=audit(...)` and kernel
+  ring-buffer stamps no longer crowd out readable content, while IP addresses, ports,
+  sizes, dates, and version strings are always kept.
+- **The severity pill is the sample expander in HTML reports.** The separate
+  "sampled log lines" control is gone; the `[M]`/`[L]`/`[I]` pill toggles it instead
+  (a muted `+` beside the pill marks expandable rows; the colored pill itself keeps
+  one constant width everywhere), and opening a capsule swaps its distilled lines for
+  the raw sample. Sampled lines are syntax-highlighted: timestamp bright, host and
+  program each in their own color, in both light and dark themes. The report remains
+  JavaScript-free, and printed or PDF output carries no interactive control.
+- **The HTML timestamp column hugs its content.** The leading stamp column is sized
+  to the stamp itself (wider only under `--utc`, whose stamps carry a zone suffix),
+  removing the fixed dead gap that previously sat between a capsule's timestamp and
+  its hostname.
+
+### Fixed
+
+- **No more stray `|` above the report.** The render spinner no longer runs while the
+  report itself streams to the same terminal, which previously stranded an orphaned
+  spinner frame above the findings on every interactive run.
+- **Capsule detail lines align with the timestamp column** in text reports; they
+  previously sat one column to the left.
+- **`[detectors.syslog].line_trim_limit` now works.** The published config key was
+  read by nothing; it now trims lone rare-line titles as documented.
+- **Severity pill text is readable in both themes.** White-on-color pill text
+  measured as low as 2.1:1 contrast in dark mode; each severity now carries a
+  per-theme ink color, every pairing clears the 4.5:1 accessibility bar, and a test
+  pins the bar so future palette changes cannot regress it. One background moved
+  slightly to reach the bar: the light-theme low-severity blue.
+
 ## [0.2.5] - 2026-07-20
 
 ### Fixed

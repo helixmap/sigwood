@@ -23,6 +23,7 @@ from sigwood.parsers.syslog import (
     parse_program,
     parse_timestamp,
     sniff,
+    split_header,
     strip_header,
     strip_program,
 )
@@ -88,6 +89,52 @@ def test_iso_header_parsing() -> None:
     assert body == "systemd[1]: Started x"
     assert parse_program(body) == "systemd"
     assert sniff([raw]) == "syslog"
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected_parts"),
+    [
+        (
+            "<134>Jul  1 12:00:00 router sshd[7]: session opened  ",
+            (
+                "<134>Jul  1 12:00:00 ",
+                "router ",
+                "sshd[7]: ",
+                "session opened  ",
+            ),
+        ),
+        (
+            "2026-06-28T14:34:43.200533-05:00 web01 systemd[1]: Started x",
+            (
+                "2026-06-28T14:34:43.200533-05:00 ",
+                "web01 ",
+                "systemd[1]: ",
+                "Started x",
+            ),
+        ),
+        (
+            "kernel: headerless journal message",
+            ("", "", "kernel: ", "headerless journal message"),
+        ),
+        (
+            "<134>kernel: PRI-only message",
+            ("<134>", "", "kernel: ", "PRI-only message"),
+        ),
+        (
+            "<broken>Jul 1 12:00:00 router sshd: malformed PRI",
+            ("", "", "", "<broken>Jul 1 12:00:00 router sshd: malformed PRI"),
+        ),
+    ],
+)
+def test_split_header_is_exact_and_parser_owned(
+    raw: str, expected_parts: tuple[str, str, str, str]
+) -> None:
+    """Presentation splitting recognizes parser-supported headers without loss."""
+    parts = split_header(raw)
+
+    assert parts == expected_parts
+    assert "".join(parts) == raw
+    assert strip_header(raw) == "".join(expected_parts[2:]).strip()
 
 
 def test_iso_tagless_line_normalizes_but_does_not_anchor_discovery() -> None:

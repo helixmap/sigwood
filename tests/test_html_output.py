@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -308,15 +309,244 @@ def test_html_syslog_sample_details_real_path_is_closed_escaped_and_print_hidden
     for level in (0, 1, 2):
         out = _render([finding], verbose_level=level)
         _assert_no_data_controls(out)
-        assert '<details><summary>sampled log lines</summary>' in out
+        assert (
+            '<details class="row-toggle"><summary><span class="pill sev-low">'
+            '[L]</span></summary></details>'
+        ) in out
+        assert "sampled log lines" not in out
         assert '<th class="col-first">first</th>' in out
         assert out.index('<th class="col-first">first</th>') < out.index("host-family")
         assert "<details open" not in out
         assert "sample-detail-body" in out
-        assert ".sample-detail-body { display: none; }" in out
-        assert '&lt;script&gt;x&lt;/script&gt;&quot;&lt;/details&gt;&lt;img src=x&gt;' in out
+        assert ".findings-table tr.sample-detail { display: none; }" in out
+        sample_start = out.index('<tr class="sample-detail">')
+        sample_end = out.index("</tr>", sample_start)
+        sample_row = out[sample_start:sample_end]
+        assert "<details" not in sample_row
+        assert "<summary" not in sample_row
+        print_block = out[out.index("@media print"):]
+        assert ".findings-table tr.sample-detail { display: none; }" in print_block
+        assert (
+            '<span class="hl-ts"></span><span class="hl-host"></span>'
+            '<span class="hl-prog"></span><span class="sample-message">'
+            'raw&lt;script&gt;x&lt;/script&gt;&quot;&lt;/details&gt;&lt;img src=x&gt;</span>'
+        ) in out
         assert "<script>x</script>" not in out
         assert "<img src=x>" not in out
+
+
+def test_html_syslog_sample_highlight_uses_exact_parser_split_and_safe_fallback() -> None:
+    rfc = '<134>Jul  1 12:00:00 host<script> sshd[7]: accepted <img src=x>'
+    iso = '2026-06-28T14:34:43-05:00 web01 cron[2]: ran "job"'
+    journal = 'kernel: headerless <script>alert(1)</script>'
+    finding = _finding(
+        detector="syslog", severity=Severity.INFO, title="host-burst",
+        evidence={
+            "tier": "burst", "line_count": 3, "span_seconds": 2.0,
+            "start_ts": 1.0, "end_ts": 3.0,
+            "program_mix": [["kernel", 3]],
+            "sample_raw": [rfc, iso, journal], "label": None,
+        },
+    )
+
+    out = _render([finding])
+
+    assert (
+        '<span class="hl-ts">&lt;134&gt;Jul  1 12:00:00 </span>'
+        '<span class="hl-host">host&lt;script&gt; </span>'
+        '<span class="hl-prog">sshd[7]: </span><span class="sample-message">'
+        'accepted &lt;img src=x&gt;</span>'
+    ) in out
+    assert (
+        '<span class="hl-ts">2026-06-28T14:34:43-05:00 </span>'
+        '<span class="hl-host">web01 </span>'
+        '<span class="hl-prog">cron[2]: </span>'
+        '<span class="sample-message">ran &quot;job&quot;</span>'
+    ) in out
+    assert (
+        '<span class="hl-ts"></span><span class="hl-host"></span>'
+        '<span class="hl-prog">kernel: </span><span class="sample-message">'
+        'headerless &lt;script&gt;alert(1)&lt;/script&gt;</span>'
+    ) in out
+    assert "<script>alert(1)</script>" not in out
+    assert "<img src=x>" not in out
+    assert "data-" not in out
+
+
+def test_html_syslog_severity_pill_is_native_css_only_toggle() -> None:
+    finding = _finding(
+        detector="syslog", severity=Severity.INFO, title="host-burst",
+        evidence={
+            "tier": "burst", "line_count": 1, "span_seconds": 0.0,
+            "start_ts": 1.0, "end_ts": 1.0,
+            "program_mix": [["kernel", 1]], "sample_raw": ["kernel: one"],
+            "label": None,
+        },
+    )
+
+    out = _render([finding])
+
+    assert (
+        '<details class="row-toggle"><summary><span class="pill sev-info">'
+        '[I]</span></summary></details>'
+    ) in out
+    screen_block = out[out.index("@media screen {"):out.index("@media print")]
+    assert (
+        '.row-toggle summary::after { content: "+"; color: var(--muted); '
+        'margin-left: 3px; }'
+    ) in screen_block
+    assert '.row-toggle[open] summary::after { content: "−"; }' in screen_block
+    assert ".row-toggle summary::after" not in out[out.index("@media print"):]
+    assert ".row-toggle .pill::after" not in out
+    assert "sampled log lines" not in out
+    assert '<script' not in out
+
+
+def test_html_non_capsule_severity_pills_remain_inert() -> None:
+    needle = _finding(
+        detector="syslog", severity=Severity.LOW,
+        title="Jul 1 12:00:00 host kernel: needle",
+        evidence={
+            "host": "host", "template_str": "kernel: <*> ",
+            "sample_raw": ["kernel: ignored toggle bait"],
+        },
+    )
+    out = _render([needle, _narrow_beacon()])
+
+    assert 'class="row-toggle"' not in out
+    assert out.count('class="pill sev-low"') == 1
+    assert out.count('class="pill sev-high"') == 1
+
+
+def test_html_syslog_utc_stamp_class_follows_display_label(
+    restore_display_utc,
+) -> None:
+    from sigwood.common.display import set_display_utc
+
+    finding = _finding(
+        detector="syslog", severity=Severity.INFO, title="host-burst",
+        evidence={
+            "tier": "burst", "line_count": 1, "span_seconds": 0.0,
+            "start_ts": 1.0, "end_ts": 1.0,
+            "program_mix": [["kernel", 1]], "sample_raw": ["kernel: one"],
+            "label": None,
+        },
+    )
+
+    set_display_utc(False)
+    local = _render([finding])
+    assert '<table class="findings-table syslog-table">' in local
+    assert '<table class="findings-table syslog-table utc-stamps">' not in local
+
+    set_display_utc(True)
+    utc = _render([finding])
+    assert '<table class="findings-table syslog-table utc-stamps">' in utc
+
+
+def test_html_syslog_open_pill_swaps_both_meat_shapes_for_raw_on_screen() -> None:
+    case_one = _finding(
+        detector="syslog", severity=Severity.LOW, title="family",
+        evidence={
+            "tier": "family", "host": "host", "program": "kernel",
+            "line_count": 2, "start_ts": 1.0, "end_ts": 2.0,
+            "span_seconds": 1.0, "sample_raw": ["kernel: a", "kernel: b"],
+            "member_fragments": ["tokens: a b"], "label": None,
+        },
+    )
+    case_two = _finding(
+        detector="syslog", severity=Severity.INFO, title="burst",
+        evidence={
+            "tier": "burst", "line_count": 2, "start_ts": 3.0, "end_ts": 4.0,
+            "span_seconds": 1.0, "sample_raw": ["kernel: c", "kernel: d"],
+            "program_mix": [["kernel", 2]],
+            "member_fragments": ["fragment c", "fragment d"], "label": None,
+        },
+    )
+
+    out = _render([case_one, case_two])
+    screen_block = out[out.index("@media screen {"):out.index("@media print")]
+
+    assert out.count('class="row-toggle"') == 2
+    assert out.count('class="meat-row"') == 2
+    assert out.count('class="sample-detail"') == 2
+    assert (
+        ".syslog-table tr.finding-row:has(.row-toggle[open]) + tr.meat-row"
+        in screen_block
+    )
+    assert (
+        ".syslog-table tr.finding-row:has(.row-toggle[open]) + tr.sample-detail"
+        in screen_block
+    )
+    assert (
+        ".syslog-table tr.finding-row:has(.row-toggle[open]) + tr.meat-row "
+        "+ tr.sample-detail"
+        in screen_block
+    )
+    assert "tr.meat-row" not in out[out.index("@media print"):]
+
+
+def test_html_syslog_highlight_palettes_keep_timestamp_brightest() -> None:
+    out = _render([_finding()])
+    light = ("#9a6700", "#0969da", "#8250df")
+    dark = ("#ffd166", "#70d6ff", "#c4a7e7")
+
+    def luminance(value: str) -> float:
+        channels = [int(value[i:i + 2], 16) / 255 for i in (1, 3, 5)]
+        linear = [
+            channel / 12.92
+            if channel <= 0.04045
+            else ((channel + 0.055) / 1.055) ** 2.4
+            for channel in channels
+        ]
+        return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2]
+
+    assert "--hl-ts: #9a6700; --hl-host: #0969da; --hl-prog: #8250df;" in out
+    assert "--hl-ts: #ffd166; --hl-host: #70d6ff; --hl-prog: #c4a7e7;" in out
+    assert luminance(light[0]) > max(map(luminance, light[1:]))
+    assert luminance(dark[0]) > max(map(luminance, dark[1:]))
+    assert ".hl-ts { color: var(--hl-ts); font-weight: 700; }" in out
+    assert ".hl-host { color: var(--hl-host); font-weight: 600; }" in out
+    assert ".hl-prog { color: var(--hl-prog); font-weight: 600; }" in out
+
+
+def test_html_severity_pill_palettes_meet_wcag_contrast_floor() -> None:
+    out = _render([_finding()])
+    style = out[out.index("<style>") + len("<style>"):out.index("</style>")]
+    palette_blocks = re.findall(
+        r"(?ms)^(?:  )?:root \{\n(.*?)^(?:  )?\}", style
+    )
+    assert len(palette_blocks) == 2
+
+    severity_names = ("high", "medium", "low", "info")
+
+    def variables(block: str) -> dict[str, str]:
+        return dict(re.findall(
+            r"--(sev-(?:high|medium|low|info)(?:-ink)?):\s*"
+            r"(#[0-9a-fA-F]{6})",
+            block,
+        ))
+
+    def luminance(value: str) -> float:
+        channels = [int(value[i:i + 2], 16) / 255 for i in (1, 3, 5)]
+        linear = [
+            channel / 12.92
+            if channel <= 0.04045
+            else ((channel + 0.055) / 1.055) ** 2.4
+            for channel in channels
+        ]
+        return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2]
+
+    for block in palette_blocks:
+        palette = variables(block)
+        assert set(palette) == {
+            *(f"sev-{name}" for name in severity_names),
+            *(f"sev-{name}-ink" for name in severity_names),
+        }
+        for name in severity_names:
+            background = luminance(palette[f"sev-{name}"])
+            ink = luminance(palette[f"sev-{name}-ink"])
+            ratio = (max(background, ink) + 0.05) / (min(background, ink) + 0.05)
+            assert ratio >= 4.5, (name, palette[f"sev-{name}"], ratio)
 
 
 def test_html_syslog_meat_row_is_escaped_visible_and_ordered() -> None:
@@ -341,7 +571,7 @@ def test_html_syslog_meat_row_is_escaped_visible_and_ordered() -> None:
     assert '<div class="meat-line">second-fragment</div>' in out
     assert "<script>x</script>" not in out
     assert "<img src=x>" not in out
-    assert ".sample-detail-body { display: none; }" in out
+    assert ".findings-table tr.sample-detail { display: none; }" in out
     print_block = out[out.index("@media print"):]
     assert ".meat-line" not in print_block
 
@@ -546,11 +776,16 @@ def test_print_css_data_nowrap_is_screen_only() -> None:
     assert ".findings-table td.data { white-space: nowrap; }" in screen_block
     assert ".syslog-table { table-layout: fixed; width: 100%; }" in screen_block
     assert (
-        ".syslog-table th.sev-col, .syslog-table td.sev-cell { width: 48px; }"
+        ".syslog-table th.sev-col, .syslog-table td.sev-cell { width: 64px; }"
         in screen_block
     )
     assert (
-        ".syslog-table th.col-first, .syslog-table td.col-first { width: 184px; }"
+        ".syslog-table th.col-first, .syslog-table td.col-first { width: 135px; }"
+        in screen_block
+    )
+    assert (
+        ".syslog-table.utc-stamps th.col-first, .syslog-table.utc-stamps "
+        "td.col-first { width: 169px; }"
         in screen_block
     )
     assert ".syslog-table .clip, .syslog-table .meat-line" in screen_block

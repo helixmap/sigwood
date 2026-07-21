@@ -7,6 +7,18 @@ can, and in this file where it can't yet. Found something that isn't here? Open 
 
 ## Detectors
 
+**Duplicate syslog coverage across feeds can hide unique lines.** The syslog detector
+reads up to two feeds in one run: local system logs (files or the journal) and Zeek's
+own `syslog.log`. These are different observations - Zeek sees syslog traffic on the
+wire - and sigwood does not deduplicate identical events across them. When the same
+host's messages reach both feeds (for example, a host that ships its syslog across a
+Zeek-monitored segment to a collector whose files sigwood also reads), that host's
+template counts double, and a line that would have surfaced as a unique rare event
+counts as two and is no longer rare. If your file export and your Zeek sensor cover
+the same hosts, point the run at one source (`sigwood syslog /path/to/syslog-files`)
+or keep `syslog*.log*` out of the hunted Zeek directory. Per-host arbitration between
+the feeds is planned.
+
 **Beacon wants a week or more of data.** A jittered periodic beacon only clears the
 FFT score threshold intermittently over a single day, so a short window tends to
 surface the most machine-regular flows - which are often benign infrastructure (NTP,

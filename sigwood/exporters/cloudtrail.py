@@ -44,6 +44,7 @@ except ImportError:
 
 from sigwood.common.display import fmt_window, liveness, plural
 from sigwood.common.errors import ExportAborted
+from sigwood.common.paths import private_mkdir, private_open
 from sigwood.common.sanitize import strip_control
 
 
@@ -459,10 +460,10 @@ def write(
         ``len(paths) > 1`` to detect a split and reports ``+K more`` where
         ``K = len(paths) - 1``.
     """
-    outpath.parent.mkdir(parents=True, exist_ok=True)
+    private_mkdir(outpath.parent)
 
     current_path = outpath
-    current_handle = current_path.open("w", encoding="utf-8")
+    current_handle = private_open(current_path, encoding="utf-8")
     current_bytes = 0
     part_num = 0   # 0 means "no split yet"; first split renames current to _part01.
     total_lines = 0
@@ -486,7 +487,7 @@ def write(
                     part_num = 1
                 next_part = part_num + 1
                 current_path = _split_name(outpath, next_part)
-                current_handle = current_path.open("w", encoding="utf-8")
+                current_handle = private_open(current_path, encoding="utf-8")
                 paths.append(current_path)
                 current_bytes = 0
                 part_num = next_part

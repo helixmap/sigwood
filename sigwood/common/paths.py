@@ -1,4 +1,4 @@
-"""Be-like-water target resolution shared by CLI, runner, and exporters.
+"""Path resolution and private artifact creation shared across sigwood.
 
 One function (``be_like_water``) decides whether a user-supplied target string
 points to a FILE or a DIRECTORY, via a gated ladder. The trailing-slash gate is
@@ -8,13 +8,18 @@ overridden by what happens to exist on disk.
 A second helper (``resolve_path``) resolves a config-supplied path string
 against the SIGWOOD_ROOT base. ``effective_root`` reads the active root from env or
 config. CLI-supplied paths never get root applied; only config-file values do.
+
+The private-write helpers are the single owner of modes for files and directories
+sigwood creates. They enforce private modes independently of the ambient umask while
+leaving every pre-existing directory untouched.
 """
 
 from __future__ import annotations
 
+import errno
 import os
 from pathlib import Path
-from typing import Any, NamedTuple
+from typing import Any, NamedTuple, TextIO
 
 
 class ResolvedTarget(NamedTuple):
@@ -28,6 +33,107 @@ class ResolvedTarget(NamedTuple):
 
     path: Path
     is_file: bool
+
+
+def private_mkdir(
+    path: str | os.PathLike[str], *, private: bool = True,
+) -> None:
+    """Create ``path`` and missing parents without touching existing modes.
+
+    Private components are created and then set to ``0700``. Public components
+    request ``0777`` and remain governed by the ambient umask. Only a component
+    successfully created by this call is eligible for chmod; a directory created
+    concurrently by another process is accepted but never mode-touched.
+    """
+    target = Path(path)
+    if target.is_dir():
+        return
+    if target.exists():
+        raise FileExistsError(errno.EEXIST, os.strerror(errno.EEXIST), str(target))
+
+    missing: list[Path] = []
+    current = target
+    while not current.exists():
+        missing.append(current)
+        parent = current.parent
+        if parent == current:
+            break
+        current = parent
+
+    requested_mode = 0o700 if private else 0o777
+    for component in reversed(missing):
+        try:
+            os.mkdir(component, requested_mode)
+        except FileExistsError:
+            if component.is_dir():
+                continue
+            raise
+        if private:
+            os.chmod(component, 0o700)
+
+
+def _write_fd(path: str | os.PathLike[str], *, private: bool) -> int:
+    """Open one write-truncate fd and apply the selected permission policy."""
+    requested_mode = 0o600 if private else 0o666
+    fd = os.open(
+        path,
+        os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
+        requested_mode,
+    )
+    try:
+        if private:
+            os.fchmod(fd, 0o600)
+    except BaseException:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        raise
+    return fd
+
+
+def private_open(
+    path: str | os.PathLike[str], *, private: bool = True,
+    encoding: str = "utf-8", newline: str | None = None,
+) -> TextIO:
+    """Open a write-truncate text stream under the selected permission policy."""
+    fd = _write_fd(path, private=private)
+    try:
+        return os.fdopen(fd, "w", encoding=encoding, newline=newline)
+    except BaseException:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        raise
+
+
+def private_write_text(
+    path: str | os.PathLike[str], text: str, *, private: bool = True,
+    encoding: str = "utf-8", newline: str | None = None,
+) -> None:
+    """Write one text value through :func:`private_open`."""
+    with private_open(
+        path, private=private, encoding=encoding, newline=newline,
+    ) as stream:
+        stream.write(text)
+
+
+def private_write_bytes(
+    path: str | os.PathLike[str], data: bytes, *, private: bool = True,
+) -> None:
+    """Write one byte value through the shared write-truncate fd path."""
+    fd = _write_fd(path, private=private)
+    try:
+        stream = os.fdopen(fd, "wb")
+    except BaseException:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        raise
+    with stream:
+        stream.write(data)
 
 
 def be_like_water(target: str) -> ResolvedTarget:

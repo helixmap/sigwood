@@ -27,6 +27,7 @@ from sigwood.common.display import (
 )
 from sigwood.common.finding import Finding, MethodTag, RunSummary, Severity
 from sigwood.common.output import OutputHandler, register_handler
+from sigwood.common.paths import private_mkdir, private_write_text
 from sigwood.parsers.syslog import split_header
 from sigwood.outputs._evidence import evidence_at_level
 from sigwood.outputs._render_model import (
@@ -678,8 +679,8 @@ class HtmlHandler(OutputHandler):
             self._stream.write(html_str)
             self._stream.flush()
             return
-        self._output_path.parent.mkdir(parents=True, exist_ok=True)
-        self._output_path.write_text(html_str, encoding="utf-8")
+        private_mkdir(self._output_path.parent)
+        private_write_text(self._output_path, html_str, encoding="utf-8")
 
 
 register_handler("html", HtmlHandler)

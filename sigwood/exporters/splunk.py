@@ -24,6 +24,8 @@ from typing import Any
 
 from tqdm import tqdm
 
+from sigwood.common.paths import private_mkdir, private_open
+
 try:
     import splunklib.client as splunk_client
     import splunklib.results as splunk_results
@@ -246,8 +248,8 @@ def write(
     count = 0
     byte_total = 0
     try:
-        outpath.parent.mkdir(parents=True, exist_ok=True)
-        with outpath.open("w", encoding="utf-8") as fh:
+        private_mkdir(outpath.parent)
+        with private_open(outpath, encoding="utf-8") as fh:
             for row in rows_sorted:
                 raw = PRI_RE.sub("", row.get("_raw", "").strip())
                 if raw:

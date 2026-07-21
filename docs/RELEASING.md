@@ -66,7 +66,7 @@ version does not exactly match `__version__`.
 
 ### 0 - Preflight the current branch
 
-Do this *before* kicking off the release process. Start from an up-to-date, clean `main` and run the complete local suite:
+Do this *before* kicking off the release process. Start from an up-to-date, clean `main` in a fresh terminal and run the complete local suite:
 
 ```bash
 git switch main &&
@@ -152,18 +152,6 @@ git status --short && git diff
 then commit exactly those files and push `main`:
 
 ```bash
-git add CHANGELOG.md README.md sigwood/__init__.py
-git commit -m "sigwood release"
-git push origin main
-```
-
-The identity block below re-checks that the commit exists and that `main` matches the remote,
-so a forgotten push fails here rather than at the tag. Every version-specific command after
-this point uses these variables without editing. If the shell closes or `__version__` changes,
-run the block again.
-
-```bash
-REPO=helixmap/sigwood
 VERSION=$(
   .venv/bin/python - <<'PY'
 import pathlib
@@ -175,6 +163,22 @@ assert len(versions) == 1
 print(versions[0])
 PY
 )
+
+git add CHANGELOG.md README.md sigwood/__init__.py
+git commit -m "sigwood $VERSION"
+git push origin main
+```
+
+ and wait for [Release Workflow](https://github.com/helixmap/sigwood/actions) to show a green matrix before proceding.
+
+The identity block below re-checks that the commit exists and that `main` matches the remote,
+so a forgotten push fails here rather than at the tag. Every version-specific command after
+this point uses these variables without editing. If the shell closes or `__version__` changes,
+run the block again.
+
+```bash
+REPO=helixmap/sigwood
+
 if [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
   TAG="v${VERSION}"
   printf 'repository: %s\nversion:    %s\ntag:        %s\n' "$REPO" "$VERSION" "$TAG" &&
@@ -303,7 +307,7 @@ fi
 Both index flags are required. `--index-url` selects the sigwood package from TestPyPI;
 `--extra-index-url` allows dependencies such as pandas to resolve from real PyPI.
 
-On the [TestPyPI project page](https://test.pypi.org/project/sigwood/), confirm that the dev
+On the [TestPyPI project page](https://test.pypi.org/project/sigwood/#history), confirm that the dev
 release and its provenance/attestation panel are present. Rehearsing again creates a fresh
 `.dev` version because package indexes never accept the same version twice.
 

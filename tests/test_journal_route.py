@@ -375,6 +375,8 @@ def test_journal_capture_keyboard_interrupt_reenters_cli_130_and_cleans_up(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
+    tmp_path.chmod(0o700)
+    monkeypatch.chdir(tmp_path)
     pid_file = tmp_path / "pid"
     executable = tmp_path / "journalctl"
     executable.write_text(

@@ -94,9 +94,10 @@ def test_digest_fanout_cli_out_relative_ignores_root(
     try:
         assert dest == tmp_path / "rel.txt"
         fh = get_stream()
-        assert Path(fh.name) == tmp_path / "rel.txt"
+        fh.write("digest\n")
     finally:
         close_stream()
+    assert (tmp_path / "rel.txt").read_bytes() == b"digest\n"
 
 
 # ── exporter cascade: root applies to config tiers, "" to CLI ────────────────

@@ -26,6 +26,11 @@ from sigwood.common import allowlist as al
 from sigwood.common import config as cfg
 from sigwood.common.display import compact_home, plural
 from sigwood.common.errors import UsageError
+from sigwood.common.paths import (
+    private_mkdir,
+    private_write_bytes,
+    private_write_text,
+)
 from sigwood.common.sanitize import strip_control
 
 _VALID_SUBCOMMANDS = ("show", "enable", "disable", "copy")
@@ -240,8 +245,8 @@ def _toggle(sub: str, rest: list[str], config_path: str | None) -> None:
 
     bak = target.with_suffix(target.suffix + ".bak")
     try:
-        bak.write_bytes(raw)
-        target.write_bytes(new_text.encode("utf-8"))
+        private_write_bytes(bak, raw)
+        private_write_bytes(target, new_text.encode("utf-8"))
     except OSError as exc:
         raise ValueError(f"cannot write {target}: {exc}") from exc
 
@@ -360,8 +365,8 @@ def _copy(rest: list[str], config_path: str | None) -> None:
         f"# to replace the shipped list entirely: sigwood allowlist disable {name}\n\n"
     )
     try:
-        dest_dir.mkdir(parents=True, exist_ok=True)
-        dest.write_text(header + shipped_text, encoding="utf-8")
+        private_mkdir(dest_dir)
+        private_write_text(dest, header + shipped_text, encoding="utf-8")
     except OSError as exc:
         raise ValueError(f"cannot write {compact_home(dest)}: {exc}") from exc
 

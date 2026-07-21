@@ -1516,7 +1516,10 @@ def test_reset_config_preflights_writability_friendly(
     (home / "config.toml").write_text(original, encoding="utf-8")
     monkeypatch.setattr(
         cli, "_writability_error",
-        lambda h: "sigwood init: can't write to /etc/sigwood (denied). Re-run with sudo, or pick another location.",
+        lambda h, *, private=True: (
+            "sigwood init: can't write to /etc/sigwood (denied). "
+            "Re-run with sudo, or pick another location."
+        ),
     )
     _stub_candidates(monkeypatch)
     # reset, scope=config, typed confirm - preflight fails before any source prompt.
@@ -2358,7 +2361,17 @@ def test_import_boundary_allows_only_three_pure_common_leaves() -> None:
     assert project_imports == {
         ("sigwood.common.journal_probe", ()),
         ("sigwood.common.syslog_mode", ()),
-        ("sigwood.common.paths", ("effective_root", "resolve_path")),
+        (
+            "sigwood.common.paths",
+            (
+                "effective_root",
+                "private_mkdir",
+                "private_open",
+                "private_write_bytes",
+                "private_write_text",
+                "resolve_path",
+            ),
+        ),
     }
 
 

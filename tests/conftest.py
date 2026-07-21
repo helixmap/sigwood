@@ -8,6 +8,17 @@ import time
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _restore_process_umask():
+    """Keep process-wide CLI umask changes isolated to one in-process test."""
+    previous = os.umask(0)
+    os.umask(previous)
+    try:
+        yield
+    finally:
+        os.umask(previous)
+
+
 @pytest.fixture(autouse=True, scope="session")
 def _pin_utc_timezone():
     """Pin the process timezone to UTC for the whole suite.

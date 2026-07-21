@@ -25,6 +25,18 @@ pull logs *in* from Splunk or an S3 CloudTrail bucket to local files - and they 
 your data out. (For S3, you authenticate your own shell; sigwood never sees your AWS 
 credentials.)
 
+### Who can read the files it writes?
+
+Only you, by default. Reports, digests, graph artifacts, exports, and the config can
+carry domains, client addresses, and evidence, so every directory sigwood creates is
+mode 0700 and every file it writes is 0600 - regardless of your umask, and re-applied
+when a report is overwritten on a re-run. Sharing is a deliberate act: `chmod` the
+file you actually mean to hand out. If your sigwood home predates this and is group-
+or world-accessible, each run prints a one-line stderr reminder until you
+`chmod 700` it; sigwood never changes permissions on a directory it didn't create.
+The one exception is a system-wide `/etc/sigwood` config, which keeps ordinary
+shared permissions so non-root users can read it.
+
 ### Do I need Zeek?
 
 No. Pi-hole/dnsmasq, syslog, and CloudTrail each stand on their own. Zeek is simply where

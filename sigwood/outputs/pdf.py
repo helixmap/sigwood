@@ -25,6 +25,7 @@ from typing import Any, BinaryIO
 
 from sigwood.common.finding import Finding, RunSummary
 from sigwood.common.output import OutputHandler, register_handler
+from sigwood.common.paths import private_mkdir, private_write_bytes
 from sigwood.outputs.html import render_report_html
 
 # ImportError arm - the [pdf] python package is absent (the common case). Names
@@ -172,8 +173,8 @@ class PdfHandler(OutputHandler):
             self._stream.flush()
             return
         try:
-            self._output_path.parent.mkdir(parents=True, exist_ok=True)
-            self._output_path.write_bytes(pdf_bytes)
+            private_mkdir(self._output_path.parent)
+            private_write_bytes(self._output_path, pdf_bytes)
         except OSError as exc:
             raise ValueError(f"could not write pdf to {self._output_path}: {exc}") from exc
 

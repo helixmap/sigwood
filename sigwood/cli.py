@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import os
 import re
+import stat
 import sys
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -44,7 +45,14 @@ from sigwood.common.errors import (
     UsageError,
 )
 from sigwood.common.output import get_handler
-from sigwood.common.paths import be_like_water, effective_root, resolve_path, unique_path
+from sigwood.common.paths import (
+    be_like_water,
+    effective_root,
+    private_mkdir,
+    private_open,
+    resolve_path,
+    unique_path,
+)
 from sigwood.common.sanitize import strip_control
 from sigwood.common.syslog_mode import (
     SyslogMode,
@@ -301,6 +309,9 @@ def _main(argv: list[str] | None = None) -> int:
         print(f"sigwood: unknown command '{strip_control(cand)}'", file=sys.stderr)
         print("run 'sigwood --help' for usage", file=sys.stderr)
         sys.exit(1)
+
+    if verb != "init":
+        os.umask(0o077)
 
     # Side-effect-light help short-circuit - STANDALONE --help / -h ONLY.
     # `--help=anything` and `-h=anything` are NOT help; they fall through to
@@ -1042,6 +1053,22 @@ def _leading_flag_verb_hint(paths: list[str], args: list[str]) -> None:
         return
 
 
+def _advise_loose_root(config: dict[str, Any]) -> None:
+    """Advise when the existing effective root is group/world-accessible."""
+    try:
+        root = Path(effective_root(config)).expanduser().absolute()
+        root_stat = root.stat()
+    except (OSError, TypeError, ValueError):
+        return
+    if not stat.S_ISDIR(root_stat.st_mode) or (root_stat.st_mode & 0o077) == 0:
+        return
+    message = (
+        f"sigwood home {compact_home(root)} is group/world-accessible "
+        f"({stat.filemode(root_stat.st_mode)}) - chmod 700 {root} to close it"
+    )
+    print(strip_control(message), file=sys.stderr)
+
+
 def _load_config(parsed: dict[str, Any]) -> dict[str, Any]:
     """Load config for a verb and disclose any top-level section nothing reads.
 
@@ -1052,6 +1079,7 @@ def _load_config(parsed: dict[str, Any]) -> dict[str, Any]:
     seam. Not quiet-gated: a warning is not progress narration.
     """
     config = cfg.load(parsed.get("config"))
+    _advise_loose_root(config)
     unknown = cfg.unknown_sections(config)
     if unknown:
         names = ", ".join(f"[{strip_control(name)}]" for name in unknown)
@@ -1605,8 +1633,8 @@ def _build_digest_fanout_stream(
 
     def _get_stream() -> Any:
         if state["fh"] is None:
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            state["fh"] = dest.open("w", encoding="utf-8", newline="")
+            private_mkdir(dest.parent)
+            state["fh"] = private_open(dest, encoding="utf-8", newline="")
         return state["fh"]
 
     def _close_stream() -> None:

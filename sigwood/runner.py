@@ -59,7 +59,12 @@ from sigwood.common.finding import DetectorContext, Finding, RunSummary
 from sigwood.common.journal_probe import probe_journal
 from sigwood.common.loader import JournalCaptureOutcome
 from sigwood.common.output import OutputHandler, Reporter
-from sigwood.common.paths import unique_path
+from sigwood.common.paths import (
+    private_mkdir,
+    private_open,
+    private_write_text,
+    unique_path,
+)
 from sigwood.common.sources import (
     GraphKindSpec,
     ResolvedSources,
@@ -1080,22 +1085,22 @@ def _build_output_handler(
 
     # 2. Explicit FILE verdict - the EXACT path, never collision-suffixed.
     if output_file is not None:
-        output_file.parent.mkdir(parents=True, exist_ok=True)
+        private_mkdir(output_file.parent)
         if output_format in ("html", "pdf"):
             handler = handler_cls(output_path=output_file, verbose_level=verbose_level, **cap_kw)
             return handler, (lambda: None), output_file
-        opened = output_file.open("w", encoding="utf-8", newline="")
+        opened = private_open(output_file, encoding="utf-8", newline="")
         handler = handler_cls(stream=opened, verbose_level=verbose_level, **cap_kw)
         return handler, opened.close, output_file
 
     # 3. DIRECTORY verdict - auto-name inside it (collision-suffixed).
     if output_dir is not None:
-        output_dir.mkdir(parents=True, exist_ok=True)
+        private_mkdir(output_dir)
         path = unique_path(output_dir, _report_basename(output_format, detectors_run))
         if output_format in ("html", "pdf"):
             handler = handler_cls(output_path=path, verbose_level=verbose_level, **cap_kw)
             return handler, (lambda: None), path
-        opened = path.open("w", encoding="utf-8", newline="")
+        opened = private_open(path, encoding="utf-8", newline="")
         handler = handler_cls(stream=opened, verbose_level=verbose_level, **cap_kw)
         return handler, opened.close, path
 
@@ -2807,8 +2812,8 @@ def run_graph(
     # Do not create a directory or touch an exact target until the loader,
     # builder, and strict JSON-in-script renderer have all succeeded.
     if output_file is not None:
-        output_file.parent.mkdir(parents=True, exist_ok=True)
-        output_file.write_text(html, encoding="utf-8", newline="")
+        private_mkdir(output_file.parent)
+        private_write_text(output_file, html, encoding="utf-8", newline="")
         return output_file
     if stream is None:
         stream = sys.stdout

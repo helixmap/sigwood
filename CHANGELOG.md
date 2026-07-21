@@ -6,6 +6,19 @@ All notable changes to sigwood are recorded here. The format follows
 
 ## [Unreleased]
 
+### Security
+
+- **Artifacts are private by default.** Every directory sigwood creates is now mode
+  0700 and every file it writes is 0600 - reports, digests, graph artifacts, exports,
+  config and its backups, and allowlist seeds - independent of the process umask, and
+  re-applied when an artifact is overwritten in place. The CLI also sets a 077 umask
+  backstop for every command except `init`.
+- **Loose-home advisory.** When an existing sigwood home is group- or world-accessible,
+  each run prints a one-line stderr reminder with the exact `chmod 700` to close it.
+  sigwood never changes permissions on a directory it did not create.
+- A system-wide `/etc/sigwood` config keeps ordinary umask-governed permissions so
+  non-root users can still read it.
+
 ## [0.2.6] - 2026-07-20
 
 ### Changed

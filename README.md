@@ -319,6 +319,13 @@ has is documented in a commented "engine room" section at the bottom of the
 generated config (you rarely need to mess around in there). And `sigwood
 <detector> --help` lists that command's flags.
 
+Everything sigwood writes is private by default: directories it creates are mode
+`0700` and files `0600`, whatever your umask, because reports and exports can carry
+domains, client addresses, and evidence. If an existing sigwood home is group- or
+world-readable, a run points that out on stderr with the `chmod 700` to close it -
+sigwood never changes permissions on directories it didn't create. A system-wide
+`/etc/sigwood` config keeps normal shared permissions.
+
 ## Log sources it speaks
 
 - **Zeek** - `conn.log`, `dns.log`, `syslog.log`, in NDJSON or TSV, from a flat directory or

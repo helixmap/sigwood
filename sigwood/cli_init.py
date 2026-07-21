@@ -32,7 +32,14 @@ from typing import Callable
 # detector/runner/output/loader/config imports.
 import sigwood.common.journal_probe as journal_probe
 import sigwood.common.syslog_mode as syslog_mode
-from sigwood.common.paths import effective_root, resolve_path
+from sigwood.common.paths import (
+    effective_root,
+    private_mkdir,
+    private_open,
+    private_write_bytes,
+    private_write_text,
+    resolve_path,
+)
 
 # ── detection ─────────────────────────────────────────────────────────────────
 #
@@ -1415,7 +1422,7 @@ def _shadow_refusal(home: Path) -> str | None:
     return None
 
 
-def _writability_error(home: Path) -> str | None:
+def _writability_error(home: Path, *, private: bool = True) -> str | None:
     """Probe that init can create <home> and write inside it. Returns an
     actionable message or None. Creates <home> on success (mkdir is the probe).
 
@@ -1423,9 +1430,10 @@ def _writability_error(home: Path) -> str | None:
     the mkdir is a no-op and there is no new-dir lie. The FRESH location flow
     uses the NON-MUTATING `_writable_ancestor` instead (see `_preflight`)."""
     try:
-        home.mkdir(parents=True, exist_ok=True)
+        private_mkdir(home, private=private)
         probe = home / ".sigwood_init_write_probe"
-        probe.write_text("", encoding="utf-8")
+        with private_open(probe, private=private, encoding="utf-8"):
+            pass
         probe.unlink()
         return None
     except OSError as exc:
@@ -1475,17 +1483,20 @@ def _load_allowlist_template(name: str) -> str:
         return path.read_text(encoding="utf-8")
 
 
-def _seed_allowlist_d(allowlist_d: Path) -> None:
+def _seed_allowlist_d(allowlist_d: Path, *, private: bool = True) -> None:
     """Copy the flat drop-in templates into allowlist.d IF ABSENT. Idempotent;
     never overwrites an existing user file. Curated lists are not copied."""
-    allowlist_d.mkdir(parents=True, exist_ok=True)
+    private_mkdir(allowlist_d, private=private)
     for name in _ALLOWLIST_SEED_FILES:
         dst = allowlist_d / name
         if not dst.exists():
-            dst.write_text(_load_allowlist_template(name), encoding="utf-8")
+            private_write_text(
+                dst, _load_allowlist_template(name),
+                private=private, encoding="utf-8",
+            )
 
 
-def _reset_allowlist_d(allowlist_d: Path) -> None:
+def _reset_allowlist_d(allowlist_d: Path, *, private: bool = True) -> None:
     """Delete ONLY the dot-free prefixed drop-ins (domains* / connections*) that
     classify as a suppression list, then re-seed blanks. PRESERVES *.toml stanzas,
     any DOTTED name (including a legacy connections.txt), hidden and ~-terminated
@@ -1496,7 +1507,7 @@ def _reset_allowlist_d(allowlist_d: Path) -> None:
         for f in sorted(allowlist_d.iterdir()):
             if f.is_file() and _classify_dropin(f.name) in ("domain", "numeric"):
                 f.unlink()
-    _seed_allowlist_d(allowlist_d)
+    _seed_allowlist_d(allowlist_d, private=private)
 
 
 def _read_existing_config_for_root(
@@ -1559,7 +1570,7 @@ class _Redirect:
 
 def _write_config(
     target: Path, text_base: str, actions: dict[str, Action], *,
-    fresh: bool, existing_raw: bytes | None,
+    fresh: bool, existing_raw: bytes | None, private: bool = True,
 ) -> None:
     """POST-ACCEPT commit: create the home, `.bak` the existing file (verbatim
     bytes), apply every managed Action over ``text_base``, write. The ONLY
@@ -1568,7 +1579,7 @@ def _write_config(
     A home-mkdir failure surfaces the actionable ValueError at the CLI boundary
     (the E1 backstop for the non-mutating fresh preflight)."""
     try:
-        target.parent.mkdir(parents=True, exist_ok=True)
+        private_mkdir(target.parent, private=private)
     except OSError as exc:
         raise ValueError(
             f"can't write to {target.parent} ({exc}) - "
@@ -1577,7 +1588,7 @@ def _write_config(
     if existing_raw is not None:
         bak_path = target.with_suffix(".toml.bak")
         try:
-            bak_path.write_bytes(existing_raw)
+            private_write_bytes(bak_path, existing_raw, private=private)
         except OSError as exc:
             raise ValueError(
                 f"cannot write backup at {bak_path}: {exc}"
@@ -1587,7 +1598,7 @@ def _write_config(
     for key in _MANAGED_KEYS:
         text = _apply_action(text, key, actions[key], fresh=fresh)
     try:
-        target.write_bytes(text.encode("utf-8"))
+        private_write_bytes(target, text.encode("utf-8"), private=private)
     except OSError as exc:
         raise ValueError(
             f"can't write {target} ({exc}) - "
@@ -1632,6 +1643,7 @@ def _location_flow() -> tuple[Path, str] | _Redirect:
 
 def _do_merge(
     config_path: Path, existing_bytes: bytes, existing_text: str, existing_section: dict,
+    *, private: bool = True,
 ) -> None:
     """Non-destructive merge over the existing config text (fresh=False - skips
     preserve user values; tuning and exporter stanzas survive byte-identical).
@@ -1659,6 +1671,7 @@ def _do_merge(
 
     _write_config(
         config_path, existing_text, actions, fresh=False, existing_raw=existing_bytes,
+        private=private,
     )
     print()
     _print_confirm(config_path, resolved, probe)
@@ -1667,6 +1680,7 @@ def _do_merge(
 def _entry_for_config(config_path: Path) -> None:
     """Merge / reset decision for an existing config. Reached for a discovered
     search-home config AND (via _Redirect) a typed custom-home config."""
+    private = config_path.parent != Path(_SYSTEM_ROOT)
     existing_bytes, existing_text, existing_section = _read_existing_config_for_root(config_path)
     assert existing_bytes is not None and existing_text is not None
 
@@ -1675,15 +1689,20 @@ def _entry_for_config(config_path: Path) -> None:
         choice = input("> ").strip().lower()
         if choice in ("", "m", "merge"):
             print()
-            _do_merge(config_path, existing_bytes, existing_text, existing_section or {})
+            _do_merge(
+                config_path, existing_bytes, existing_text,
+                existing_section or {}, private=private,
+            )
             return
         if choice in ("r", "reset"):
             print()
             break
-    _do_reset(config_path, existing_section or {})
+    _do_reset(config_path, existing_section or {}, private=private)
 
 
-def _do_reset(config_path: Path, existing_section: dict) -> None:
+def _do_reset(
+    config_path: Path, existing_section: dict, *, private: bool = True,
+) -> None:
     """Reset config / allowlist / both for an existing install, behind a TYPED
     `reset` confirmation. An unrecognized scope ABORTS (no `both` default - that
     would silently widen a fat-finger into the broadest destructive reset)."""
@@ -1715,7 +1734,7 @@ def _do_reset(config_path: Path, existing_section: dict) -> None:
         # writability of the config home FIRST (friendly message, existing home →
         # mutating probe is a no-op), BEFORE any question.
         _validate_existing_syslog_source(existing_section)
-        reason = _writability_error(config_path.parent)
+        reason = _writability_error(config_path.parent, private=private)
         if reason is not None:
             print(reason)
             return
@@ -1742,10 +1761,12 @@ def _do_reset(config_path: Path, existing_section: dict) -> None:
         existing_raw = config_path.read_bytes() if config_path.exists() else None
         _write_config(
             config_path, _load_example_text(), actions, fresh=True,
-            existing_raw=existing_raw,
+            existing_raw=existing_raw, private=private,
         )
         if scope == "both":
-            _reset_allowlist_d(_resolve_allowlist_dir_from_config(config_path))
+            _reset_allowlist_d(
+                _resolve_allowlist_dir_from_config(config_path), private=private,
+            )
         print()
         _print_confirm(config_path, resolved, probe)
         return
@@ -1754,11 +1775,11 @@ def _do_reset(config_path: Path, existing_section: dict) -> None:
     # (default "allowlist.d/", SIGWOOD_ROOT-relative, abs/~ respected) - NOT a hardcoded
     # home/allowlist.d. Preflight the ACTUAL target before deleting/seeding.
     allowlist_d = _resolve_allowlist_dir_from_config(config_path)
-    reason = _writability_error(allowlist_d)
+    reason = _writability_error(allowlist_d, private=private)
     if reason is not None:
         print(reason)
         return
-    _reset_allowlist_d(allowlist_d)
+    _reset_allowlist_d(allowlist_d, private=private)
     print(f"Reset allowlist drop-ins under {allowlist_d} (curated lists untouched).")
 
 
@@ -1776,6 +1797,7 @@ def _fresh_flow() -> None:
             _entry_for_config(loc.config_path)
             return
         home, root_value = loc
+        private = home != Path(_SYSTEM_ROOT)
         # The location answer IS the root - no separate root prompt.
         actions["root"] = _set(root_value)
         config_path = home / "config.toml"
@@ -1792,9 +1814,12 @@ def _fresh_flow() -> None:
 
     existing_raw = config_path.read_bytes() if config_path.exists() else None
     _write_config(
-        config_path, _load_example_text(), actions, fresh=True, existing_raw=existing_raw,
+        config_path, _load_example_text(), actions, fresh=True,
+        existing_raw=existing_raw, private=private,
     )
-    _seed_allowlist_d(_resolve_allowlist_dir_from_config(config_path))
+    _seed_allowlist_d(
+        _resolve_allowlist_dir_from_config(config_path), private=private,
+    )
     print()
     _print_confirm(config_path, resolved, probe)
 

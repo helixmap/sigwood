@@ -6,6 +6,8 @@ All notable changes to sigwood are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.2.6] - 2026-07-20
+
 ### Changed
 
 - **Syslog capsule detail lines distill harder and fill the row.** A capsule whose
@@ -321,7 +323,8 @@ agent, no account.
 - Analysis-window controls (`--since`/`--until`/`--days`/`--all`), a per-source default
   lookback window, and local-or-UTC time rendering.
 
-[Unreleased]: https://github.com/helixmap/sigwood/compare/v0.2.5...HEAD
+[Unreleased]: https://github.com/helixmap/sigwood/compare/v0.2.6...HEAD
+[0.2.6]: https://github.com/helixmap/sigwood/compare/v0.2.5...v0.2.6
 [0.2.5]: https://github.com/helixmap/sigwood/compare/v0.2.4...v0.2.5
 [0.2.4]: https://github.com/helixmap/sigwood/compare/v0.2.3...v0.2.4
 [0.2.3]: https://github.com/helixmap/sigwood/compare/v0.2.2...v0.2.3

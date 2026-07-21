@@ -152,7 +152,7 @@ git status --short && git diff
 then commit exactly those files and push `main`:
 
 ```bash
-git add CHANGELOG.md sigwood/__init__.py
+git add CHANGELOG.md README.md sigwood/__init__.py
 git commit -m "sigwood release"
 git push origin main
 ```

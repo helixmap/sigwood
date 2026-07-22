@@ -38,10 +38,12 @@ from sigwood.common.display import (
     TEXT_RULE_WIDTH,
     _stream_isatty,
     compact_home,
+    cursor_visible,
     default_window_advisory,
     fmt_compact_span,
     fmt_timestamp,
     fmt_window,
+    hidden_cursor,
     liveness,
     phase_separator,
     plural,
@@ -183,13 +185,58 @@ def run(
     no surprise file: text / json / csv / html stream to stdout, and pdf streams
     to ``stdout.buffer`` on a pipe but raises on a terminal (binary safety).
     """
+    set_narration_enabled(not quiet)
+    with hidden_cursor():
+        return _run_analyze(
+            config=config,
+            detect=detect,
+            zeek_dir=zeek_dir,
+            syslog_dir=syslog_dir,
+            pihole_dir=pihole_dir,
+            cloudtrail_dir=cloudtrail_dir,
+            since=since,
+            until=until,
+            output_format=output_format,
+            output_dir=output_dir,
+            verbose_level=verbose_level,
+            dry_run=dry_run,
+            no_allowlist=no_allowlist,
+            load_all=load_all,
+            skip_confirm=skip_confirm,
+            output_file=output_file,
+            scope=scope,
+            quiet=quiet,
+            use_utc=use_utc,
+            syslog_source=syslog_source,
+            _detector_selection=_detector_selection,
+        )
+
+
+def _run_analyze(
+    config: dict[str, Any],
+    detect: str | None = None,
+    zeek_dir: str | Path | Sequence[str | Path] | None = None,
+    syslog_dir: str | Path | Sequence[str | Path] | None = None,
+    pihole_dir: str | Path | Sequence[str | Path] | None = None,
+    cloudtrail_dir: str | Path | Sequence[str | Path] | None = None,
+    since: datetime | None = None,
+    until: datetime | None = None,
+    output_format: str = "text",
+    output_dir: Path | None = None,
+    verbose_level: int = 0,
+    dry_run: bool = False,
+    no_allowlist: bool = False,
+    load_all: bool = False,
+    skip_confirm: bool = False,
+    output_file: Path | None = None,
+    scope: frozenset[str] | None = None,
+    quiet: bool = False,
+    use_utc: bool = False,
+    syslog_source: object | None = None,
+    _detector_selection: DetectorSelection | None = None,
+) -> int:
     cfg_sigwood = config.get("sigwood", {})
 
-    # Gate DETECTOR-owned narration (the syslog drain3 bar) on -q. Set once,
-    # early, so it covers the whole run. The runner can't thread quiet into the
-    # detector without crossing the render-blind rail, so it sets the process
-    # global the detector's bar reads through ``narration_active`` instead.
-    set_narration_enabled(not quiet)
     # Display timezone for every render surface this run touches (banner,
     # findings, report auto-name date). Set at entry so the dry-run banner and
     # all later render work inherit it - programmatic callers included.
@@ -427,9 +474,11 @@ def run(
     warn_above: int = cfg_sigwood.get("warn_above", 10_000_000)
     if total_records > warn_above and not skip_confirm:
         try:
-            answer = input(
-                f"{total_records:,} records found. This may take a while. Continue? [y/N] "
-            )
+            with cursor_visible():
+                answer = input(
+                    f"{total_records:,} records found. This may take a while. "
+                    "Continue? [y/N] "
+                )
         except (EOFError, KeyboardInterrupt):
             answer = ""
         if answer.strip().lower() not in ("y", "yes"):
@@ -2617,6 +2666,39 @@ def run_graph(
     ``skip_confirm`` remains a compatibility no-op because graph density is
     bounded by build-time degradation instead of a record-count prompt.
     """
+    set_narration_enabled(not quiet)
+    with hidden_cursor():
+        return _run_graph(
+            config,
+            kind=kind,
+            inputs=inputs,
+            since=since,
+            until=until,
+            output_file=output_file,
+            stream=stream,
+            load_all=load_all,
+            skip_confirm=skip_confirm,
+            quiet=quiet,
+            use_utc=use_utc,
+            show_progress=show_progress,
+        )
+
+
+def _run_graph(
+    config: dict[str, Any],
+    *,
+    kind: str,
+    inputs: str | Path | Sequence[str | Path] | None = None,
+    since: datetime | None = None,
+    until: datetime | None = None,
+    output_file: Path | None = None,
+    stream: Any = None,
+    load_all: bool = False,
+    skip_confirm: bool = False,
+    quiet: bool = False,
+    use_utc: bool = False,
+    show_progress: bool = True,
+) -> Path | None:
     from sigwood.common import loader
     from sigwood.graph import get_builder
     from sigwood.graph._core import (
@@ -2874,6 +2956,58 @@ def run_digest(
     fallback arm it threads the flag through to _render_blob_for_path
     (which owns blob emission) and does NOT emit itself.
     """
+    set_narration_enabled(not quiet)
+    with hidden_cursor():
+        return _run_digest(
+            config,
+            zeek_dir=zeek_dir,
+            pihole_dir=pihole_dir,
+            syslog_dir=syslog_dir,
+            cloudtrail_dir=cloudtrail_dir,
+            blob_path=blob_path,
+            since=since,
+            until=until,
+            output_format=output_format,
+            output_dir=output_dir,
+            output_file=output_file,
+            stream=stream,
+            verbose_level=verbose_level,
+            dry_run=dry_run,
+            load_all=load_all,
+            skip_confirm=skip_confirm,
+            schema=schema,
+            fallback_blob_path=fallback_blob_path,
+            leading_separator=leading_separator,
+            show_progress=show_progress,
+            quiet=quiet,
+            use_utc=use_utc,
+        )
+
+
+def _run_digest(
+    config: dict[str, Any],
+    zeek_dir: str | Path | None = None,
+    pihole_dir: str | Path | None = None,
+    syslog_dir: str | Path | None = None,
+    cloudtrail_dir: str | Path | None = None,
+    blob_path: Path | None = None,
+    since: datetime | None = None,
+    until: datetime | None = None,
+    output_format: str = "text",
+    output_dir: Path | None = None,
+    output_file: Path | None = None,
+    stream: Any = None,
+    verbose_level: int = 0,
+    dry_run: bool = False,
+    load_all: bool = False,
+    skip_confirm: bool = False,
+    schema: str = "conn",
+    fallback_blob_path: Path | None = None,
+    leading_separator: bool = False,
+    show_progress: bool = True,
+    quiet: bool = False,
+    use_utc: bool = False,
+) -> None:
     # Display timezone for the card's window/histogram rendering. Set at entry
     # for programmatic callers; the CLI digest path has already set it (its
     # output file is named CLI-side, before this function runs) - same value.
@@ -3077,10 +3211,11 @@ def run_digest(
     warn_above: int = cfg_sigwood.get("warn_above", 10_000_000)
     if total_records > warn_above and not skip_confirm:
         try:
-            answer = input(
-                f"{total_records:,} records found. This may take a while. "
-                "Continue? [y/N] "
-            )
+            with cursor_visible():
+                answer = input(
+                    f"{total_records:,} records found. This may take a while. "
+                    "Continue? [y/N] "
+                )
         except (EOFError, KeyboardInterrupt):
             answer = ""
         if answer.strip().lower() not in ("y", "yes"):

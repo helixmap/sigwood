@@ -5,6 +5,7 @@ from __future__ import annotations
 import gzip
 import io
 import json
+import threading
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -14,7 +15,12 @@ import pandas as pd
 import pytest
 
 import sigwood.runner as runner
-from sigwood.common.display import TEXT_RULE_WIDTH, default_window_advisory
+from sigwood.common.display import (
+    TEXT_RULE_WIDTH,
+    _CURSOR_HIDE,
+    _CURSOR_SHOW,
+    default_window_advisory,
+)
 from sigwood.runner import (
     _DIGEST_TS_CONFIDENCE_FLOOR,
     _aws_no_interactive_note,
@@ -1794,6 +1800,128 @@ def test_interactive_count_helper() -> None:
 
 
 _TINY_WARN_CFG = {"sigwood": {"detect": "beacon", "warn_above": 1, "default_window": "all"}}
+
+
+class _CursorTTY:
+    """Thread-safe fake stderr for cursor + liveness integration checks."""
+
+    encoding = "utf-8"
+
+    def __init__(self) -> None:
+        self._chunks: list[str] = []
+        self._lock = threading.Lock()
+
+    def isatty(self) -> bool:
+        return True
+
+    def write(self, value: str) -> int:
+        with self._lock:
+            self._chunks.append(value)
+        return len(value)
+
+    def flush(self) -> None:
+        return None
+
+    @property
+    def output(self) -> str:
+        with self._lock:
+            return "".join(self._chunks)
+
+
+@pytest.mark.parametrize("error_type", [RuntimeError, KeyboardInterrupt])
+def test_run_restores_cursor_when_loading_liveness_raises(
+    monkeypatch: pytest.MonkeyPatch, error_type: type[BaseException],
+) -> None:
+    fake = _CursorTTY()
+    monkeypatch.delenv("TERM", raising=False)
+    monkeypatch.setattr("sys.stderr", fake)
+
+    def _raise(_spec: str):
+        raise error_type("boom")
+
+    monkeypatch.setattr(runner, "select_detectors", _raise)
+    with pytest.raises(error_type, match="boom"):
+        runner.run(config={"sigwood": {}})
+
+    assert fake.output.startswith(_CURSOR_HIDE)
+    assert fake.output.endswith(_CURSOR_SHOW)
+    assert fake.output.count(_CURSOR_HIDE) == 1
+    assert fake.output.count(_CURSOR_SHOW) == 1
+    assert "loaded" not in fake.output
+
+
+def test_run_large_dataset_prompt_temporarily_shows_cursor(
+    tmp_path: Path, capture_summary, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake = _CursorTTY()
+    observed: list[str] = []
+    zeek_dir = _make_flat_zeek(tmp_path, [_conn(_TS_JAN1), _conn(_TS_JAN5)])
+    monkeypatch.delenv("TERM", raising=False)
+    monkeypatch.setattr("sys.stderr", fake)
+
+    def _accept(*_args: object, **_kwargs: object) -> str:
+        observed.append(fake.output)
+        assert fake.output.endswith(_CURSOR_SHOW)
+        return "y"
+
+    monkeypatch.setattr("builtins.input", _accept)
+    runner.run(config=_TINY_WARN_CFG, zeek_dir=zeek_dir)
+
+    assert observed
+    assert fake.output.count(_CURSOR_HIDE) == 2
+    assert fake.output.count(_CURSOR_SHOW) == 2
+    assert fake.output.endswith(_CURSOR_SHOW)
+
+
+def test_run_digest_large_dataset_prompt_temporarily_shows_cursor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake = _CursorTTY()
+    observed: list[str] = []
+    zeek_dir = _make_flat_zeek(tmp_path, [_conn(_TS_JAN1), _conn(_TS_JAN5)])
+    config = {"sigwood": {"warn_above": 1, "default_window": "all"}}
+    monkeypatch.delenv("TERM", raising=False)
+    monkeypatch.setattr("sys.stderr", fake)
+
+    def _accept(*_args: object, **_kwargs: object) -> str:
+        observed.append(fake.output)
+        assert fake.output.endswith(_CURSOR_SHOW)
+        return "y"
+
+    monkeypatch.setattr("builtins.input", _accept)
+    runner.run_digest(
+        config=config,
+        zeek_dir=zeek_dir,
+        stream=io.StringIO(),
+        load_all=True,
+    )
+
+    assert observed
+    assert fake.output.count(_CURSOR_HIDE) == 2
+    assert fake.output.count(_CURSOR_SHOW) == 2
+    assert fake.output.endswith(_CURSOR_SHOW)
+
+
+def test_quiet_analyze_and_digest_never_emit_cursor_bytes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake = _CursorTTY()
+    blob = tmp_path / "notes.txt"
+    blob.write_text("synthetic notes\n", encoding="utf-8")
+    monkeypatch.delenv("TERM", raising=False)
+    monkeypatch.setattr("sys.stderr", fake)
+
+    assert runner.run(config={"sigwood": {}}, dry_run=True, quiet=True) == 0
+    runner.run_digest(
+        config={"sigwood": {}},
+        schema="blob",
+        blob_path=blob,
+        dry_run=True,
+        quiet=True,
+    )
+
+    assert _CURSOR_HIDE not in fake.output
+    assert _CURSOR_SHOW not in fake.output
 
 
 def test_runner_skip_confirm_skips_prompt_entirely(

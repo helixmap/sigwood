@@ -97,6 +97,18 @@ def _spinner_frames_for(stream: Any) -> tuple[str, ...]:
 # keeps standalone/notebook callers narrating (still TTY-gated below).
 _NARRATION_ENABLED = True
 
+# Terminal cursor control is a third policy category beside color and progress:
+# it follows narration + terminal capability, but deliberately ignores NO_COLOR.
+# State is process-global because the cursor itself is terminal-global. The outer
+# engaged scope owns the stream; nested scopes and prompt suspensions only adjust
+# depth, so they cannot double-hide or prematurely restore it.
+_CURSOR_HIDE = "\x1b[?25l"
+_CURSOR_SHOW = "\x1b[?25h"
+_CURSOR_DEPTH = 0
+_CURSOR_SUSPEND_DEPTH = 0
+_CURSOR_STREAM: Any | None = None
+_CURSOR_LOCK = threading.RLock()
+
 
 def set_narration_enabled(enabled: bool) -> None:
     """Set the process-global gate for DETECTOR-owned stderr narration.
@@ -118,6 +130,79 @@ def narration_active(stream: Any = None) -> bool:
     if stream is None:
         stream = sys.stderr
     return _NARRATION_ENABLED and _stream_isatty(stream)
+
+
+def _cursor_write(stream: Any, control: str) -> None:
+    """Write and immediately flush one tool-authored cursor-control value."""
+    stream.write(control)
+    stream.flush()
+
+
+@contextmanager
+def hidden_cursor(stream: Any = None) -> Iterator[None]:
+    """Hide the stderr cursor for one narration lifecycle.
+
+    The outer eligible scope emits DECTCEM hide/show. Nested scopes share that
+    lifecycle without duplicate bytes. Non-TTY, dumb-terminal, and narration-
+    disabled contexts are exact no-ops.
+    """
+    global _CURSOR_DEPTH, _CURSOR_STREAM
+    if stream is None:
+        stream = sys.stderr
+
+    engaged = False
+    with _CURSOR_LOCK:
+        eligible = (
+            _NARRATION_ENABLED
+            and _stream_isatty(stream)
+            and os.environ.get("TERM") != "dumb"
+        )
+        if eligible:
+            if _CURSOR_DEPTH == 0:
+                _CURSOR_STREAM = stream
+                _cursor_write(stream, _CURSOR_HIDE)
+            _CURSOR_DEPTH += 1
+            engaged = True
+
+    try:
+        yield
+    finally:
+        if engaged:
+            with _CURSOR_LOCK:
+                _CURSOR_DEPTH -= 1
+                if _CURSOR_DEPTH == 0:
+                    active_stream = _CURSOR_STREAM
+                    try:
+                        if _CURSOR_SUSPEND_DEPTH == 0 and active_stream is not None:
+                            _cursor_write(active_stream, _CURSOR_SHOW)
+                    finally:
+                        _CURSOR_STREAM = None
+
+
+@contextmanager
+def cursor_visible() -> Iterator[None]:
+    """Temporarily show the cursor inside an engaged hidden narration scope."""
+    global _CURSOR_SUSPEND_DEPTH
+    engaged = False
+    with _CURSOR_LOCK:
+        if _CURSOR_DEPTH > 0 and _CURSOR_STREAM is not None:
+            if _CURSOR_SUSPEND_DEPTH == 0:
+                _cursor_write(_CURSOR_STREAM, _CURSOR_SHOW)
+            _CURSOR_SUSPEND_DEPTH += 1
+            engaged = True
+
+    try:
+        yield
+    finally:
+        if engaged:
+            with _CURSOR_LOCK:
+                _CURSOR_SUSPEND_DEPTH -= 1
+                if (
+                    _CURSOR_SUSPEND_DEPTH == 0
+                    and _CURSOR_DEPTH > 0
+                    and _CURSOR_STREAM is not None
+                ):
+                    _cursor_write(_CURSOR_STREAM, _CURSOR_HIDE)
 
 
 def _color_enabled(stream: Any) -> bool:

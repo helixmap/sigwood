@@ -19,7 +19,7 @@ from sigwood.common import loader, sources
 from sigwood.common.errors import GraphEmpty, GraphSourceUnreadable, UsageError
 from sigwood.common.loader import LoadResult, LoadWindow, PermissionSkipInfo
 from sigwood.common.sources import graph_kind_spec
-from sigwood.common.display import default_window_advisory
+from sigwood.common.display import _CURSOR_HIDE, _CURSOR_SHOW, default_window_advisory
 from sigwood.graph._core import attach_hunt_hint, validate_config
 from sigwood.graph.pihole import build as build_pihole
 
@@ -79,6 +79,32 @@ def _pihole_directory(tmp_path: Path) -> Path:
     source.mkdir()
     (source / "pihole.log").write_text(_PIHOLE_LINES, encoding="utf-8")
     return source
+
+
+class _CursorTTY(io.StringIO):
+    def isatty(self) -> bool:
+        return True
+
+
+@pytest.mark.parametrize("quiet", [False, True])
+def test_run_graph_cursor_scope_restores_on_early_error_and_respects_quiet(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, quiet: bool,
+) -> None:
+    fake = _CursorTTY()
+    monkeypatch.delenv("TERM", raising=False)
+    monkeypatch.setattr("sys.stderr", fake)
+
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        runner.run_graph(
+            _config(),
+            kind="conn",
+            output_file=tmp_path / "graph.html",
+            stream=io.StringIO(),
+            quiet=quiet,
+        )
+
+    expected = "" if quiet else _CURSOR_HIDE + _CURSOR_SHOW
+    assert fake.getvalue() == expected
 
 
 def _trim_candidate_conn_frame() -> pd.DataFrame:

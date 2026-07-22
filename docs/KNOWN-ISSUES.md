@@ -229,3 +229,9 @@ Converging on a representative event timestamp for every finding is planned.
 **The conn digest is slow on very large frames.** The connection digest walks every
 row to build its histogram and per-flow summary, so a multi-million-row `conn.log`
 takes a while. It's correct, just not yet optimized; performance work is on the list.
+
+**A force-killed run can leave the terminal cursor hidden.** sigwood hides the cursor
+while it narrates progress and restores it on every ordinary exit, including errors and
+Ctrl-C. `kill -9` (and an unhandled SIGTERM) gives the process no chance to clean up, so
+the cursor can stay hidden in that shell — the same trade every cursor-hiding CLI makes.
+`tput cnorm` (or opening a new tab) brings it back.

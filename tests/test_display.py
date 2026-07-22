@@ -11,11 +11,15 @@ import pytest
 from sigwood.common import display as display_mod
 from sigwood.common.display import (
     _ASCII_SPINNER_FRAMES,
+    _CURSOR_HIDE,
+    _CURSOR_SHOW,
     _SPINNER_FRAMES,
     _color_enabled,
     _spinner_frames_for,
     _stream_isatty,
+    cursor_visible,
     default_window_advisory,
+    hidden_cursor,
     liveness,
     narration_active,
     phase_separator,
@@ -64,6 +68,143 @@ class _FakeStream:
     def output(self) -> str:
         with self._lock:
             return "".join(self._chunks)
+
+
+@pytest.fixture()
+def _restore_cursor_state():
+    """Keep the process-global cursor manager hermetic across unit tests."""
+    saved = (
+        display_mod._NARRATION_ENABLED,
+        display_mod._CURSOR_DEPTH,
+        display_mod._CURSOR_SUSPEND_DEPTH,
+        display_mod._CURSOR_STREAM,
+    )
+    display_mod._CURSOR_DEPTH = 0
+    display_mod._CURSOR_SUSPEND_DEPTH = 0
+    display_mod._CURSOR_STREAM = None
+    try:
+        yield
+    finally:
+        (
+            display_mod._NARRATION_ENABLED,
+            display_mod._CURSOR_DEPTH,
+            display_mod._CURSOR_SUSPEND_DEPTH,
+            display_mod._CURSOR_STREAM,
+        ) = saved
+
+
+def test_hidden_cursor_dectcem_pair_is_byte_exact(
+    monkeypatch, _restore_cursor_state,
+) -> None:
+    fake = _FakeStream(tty=True)
+    monkeypatch.delenv("TERM", raising=False)
+    set_narration_enabled(True)
+
+    with hidden_cursor(fake):
+        pass
+
+    assert fake.output == _CURSOR_HIDE + _CURSOR_SHOW
+
+
+def test_hidden_cursor_nesting_and_visible_suspension_are_reentrant(
+    monkeypatch, _restore_cursor_state,
+) -> None:
+    fake = _FakeStream(tty=True)
+    observed: list[str] = []
+    monkeypatch.delenv("TERM", raising=False)
+    set_narration_enabled(True)
+
+    with hidden_cursor(fake):
+        with hidden_cursor(fake):
+            pass
+        with cursor_visible():
+            observed.append(fake.output)
+            with cursor_visible():
+                with hidden_cursor(fake):
+                    observed.append(fake.output)
+
+    assert observed == [
+        _CURSOR_HIDE + _CURSOR_SHOW,
+        _CURSOR_HIDE + _CURSOR_SHOW,
+    ]
+    assert fake.output == (
+        _CURSOR_HIDE + _CURSOR_SHOW + _CURSOR_HIDE + _CURSOR_SHOW
+    )
+
+
+def test_hidden_cursor_restores_after_exception(
+    monkeypatch, _restore_cursor_state,
+) -> None:
+    fake = _FakeStream(tty=True)
+    monkeypatch.delenv("TERM", raising=False)
+    set_narration_enabled(True)
+
+    with pytest.raises(RuntimeError, match="boom"):
+        with hidden_cursor(fake):
+            raise RuntimeError("boom")
+
+    assert fake.output == _CURSOR_HIDE + _CURSOR_SHOW
+
+
+@pytest.mark.parametrize(
+    ("tty", "term", "enabled"),
+    [
+        (False, "xterm-256color", True),
+        (True, "dumb", True),
+        (True, "xterm-256color", False),
+    ],
+)
+def test_hidden_cursor_gate_matrix_writes_nothing(
+    monkeypatch, _restore_cursor_state, tty: bool, term: str, enabled: bool,
+) -> None:
+    fake = _FakeStream(tty=tty)
+    monkeypatch.setenv("TERM", term)
+    set_narration_enabled(enabled)
+
+    with hidden_cursor(fake):
+        pass
+
+    assert fake.output == ""
+
+
+def test_hidden_cursor_default_captured_stderr_writes_nothing(
+    monkeypatch, capsys, _restore_cursor_state,
+) -> None:
+    monkeypatch.delenv("TERM", raising=False)
+    set_narration_enabled(True)
+
+    with hidden_cursor():
+        pass
+
+    assert capsys.readouterr().err == ""
+
+
+def test_hidden_cursor_ignores_no_color(
+    monkeypatch, _restore_cursor_state,
+) -> None:
+    fake = _FakeStream(tty=True)
+    monkeypatch.setenv("TERM", "xterm-256color")
+    monkeypatch.setenv("NO_COLOR", "1")
+    set_narration_enabled(True)
+
+    with hidden_cursor(fake):
+        pass
+
+    assert fake.output == _CURSOR_HIDE + _CURSOR_SHOW
+
+
+def test_hidden_cursor_leaves_piped_stderr_byte_clean(
+    monkeypatch, _restore_cursor_state,
+) -> None:
+    pipe = _FakeStream(tty=False)
+    pipe.write("existing diagnostic\n")
+    monkeypatch.delenv("TERM", raising=False)
+    set_narration_enabled(True)
+
+    with hidden_cursor(pipe):
+        pass
+
+    assert pipe.output == "existing diagnostic\n"
 
 
 def _has_any_frame(text: str) -> bool:

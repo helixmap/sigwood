@@ -6,6 +6,13 @@ All notable changes to sigwood are recorded here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- **Steadier terminal narration.** The terminal cursor is hidden during narrated
+  analyze, digest, graph, and export runs and restored across clean exits, failures,
+  and interrupts; interactive prompts show it while you type. Quiet runs,
+  dumb terminals, and redirected output see no cursor-control bytes at all.
+
 ### Security
 
 - **Artifacts are private by default.** Every directory sigwood creates is now mode

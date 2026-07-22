@@ -22,6 +22,12 @@ from typing import Any
 
 import pytest
 
+from sigwood.common import display as display_mod
+from sigwood.common.display import (
+    _CURSOR_HIDE,
+    _CURSOR_SHOW,
+    hidden_cursor,
+)
 from sigwood.common.errors import ExportAborted
 from sigwood.exporters import _resolve_output_path
 from sigwood.exporters import cloudtrail as ct
@@ -393,6 +399,47 @@ def test_egress_guard_user_accepts(monkeypatch) -> None:
     events, meta = ct.fetch({}, cfg, since, until, verbose=False)
     assert meta["units"] == 1
     assert len(events) == 1
+
+
+def test_egress_prompt_temporarily_shows_then_rehides_cursor(monkeypatch) -> None:
+    class _CursorTTY(io.StringIO):
+        def isatty(self) -> bool:
+            return True
+
+    fake = _CursorTTY()
+    observed_at_input: list[str] = []
+    observed_after_input: list[str] = []
+    _bucket_with_large_object(monkeypatch, body_size=10 * 10**9)
+    monkeypatch.delenv("TERM", raising=False)
+    monkeypatch.setattr(sys, "stderr", fake)
+    monkeypatch.setattr(display_mod, "_NARRATION_ENABLED", True)
+
+    def _accept(*_args: object, **_kwargs: object) -> str:
+        observed_at_input.append(fake.getvalue())
+        assert fake.getvalue().endswith(_CURSOR_SHOW)
+        return "y"
+
+    def _checking_tqdm(items, **_kwargs):
+        observed_after_input.append(fake.getvalue())
+        assert fake.getvalue().rfind(_CURSOR_HIDE) > fake.getvalue().rfind(
+            _CURSOR_SHOW
+        )
+        return items
+
+    monkeypatch.setattr("builtins.input", _accept)
+    monkeypatch.setattr(ct, "tqdm", _checking_tqdm)
+    cfg = {"path": "s3://example-trail-bucket/AWSLogs/", "egress_warn_gb": 5.0}
+    since = datetime(2026, 6, 1, tzinfo=timezone.utc)
+    until = datetime(2026, 6, 2, tzinfo=timezone.utc)
+
+    with hidden_cursor(fake):
+        events, _meta = ct.fetch({}, cfg, since, until, verbose=False)
+
+    assert len(events) == 1
+    assert observed_at_input and observed_after_input
+    assert fake.getvalue().count(_CURSOR_HIDE) == 2
+    assert fake.getvalue().count(_CURSOR_SHOW) == 2
+    assert fake.getvalue().endswith(_CURSOR_SHOW)
 
 
 def test_egress_guard_bypassed_by_skip_confirm(monkeypatch) -> None:

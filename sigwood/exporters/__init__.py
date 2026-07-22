@@ -70,10 +70,12 @@ from typing import Any
 from sigwood.common.display import (
     compact_home,
     fmt_window,
+    hidden_cursor,
     human_bytes,
     liveness,
     plural,
     set_display_utc,
+    set_narration_enabled,
 )
 from sigwood.common.errors import ExportAborted  # noqa: F401  (re-export)
 from sigwood.common.paths import be_like_water, effective_root, resolve_path
@@ -133,6 +135,33 @@ def run_export(
             the no-timeframe default window above. Set at entry; the window
             handed to backends stays timezone-aware either way.
     """
+    set_narration_enabled(True)
+    with hidden_cursor():
+        return _run_export(
+            config,
+            backend,
+            query_names,
+            since,
+            until,
+            out,
+            verbose,
+            skip_confirm=skip_confirm,
+            use_utc=use_utc,
+        )
+
+
+def _run_export(
+    config: dict[str, Any],
+    backend: str | None,
+    query_names: list[str],
+    since: datetime | None,
+    until: datetime | None,
+    out: str | None,
+    verbose: bool,
+    *,
+    skip_confirm: bool = False,
+    use_utc: bool = False,
+) -> None:
     # Display timezone for the window narration line. Set at entry so
     # programmatic callers inherit it; the CLI export path resolved the same
     # value before parsing the timeframe.

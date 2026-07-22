@@ -42,7 +42,7 @@ except ImportError:
     boto3 = None  # type: ignore[assignment]
     botocore_exc = None  # type: ignore[assignment]
 
-from sigwood.common.display import fmt_window, liveness, plural
+from sigwood.common.display import cursor_visible, fmt_window, liveness, plural
 from sigwood.common.errors import ExportAborted
 from sigwood.common.paths import private_mkdir, private_open
 from sigwood.common.sanitize import strip_control
@@ -393,7 +393,8 @@ def fetch(
             f"which may incur AWS egress charges. Continue? [y/N] "
         )
         try:
-            answer = input(prompt).strip().lower()
+            with cursor_visible():
+                answer = input(prompt).strip().lower()
         except EOFError:
             answer = ""
         if answer not in {"y", "yes"}:

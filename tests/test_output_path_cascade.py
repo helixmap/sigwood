@@ -22,6 +22,8 @@ import pytest
 
 from sigwood import cli
 from sigwood.common import config as cfg
+from sigwood.common import display as display_mod
+from sigwood.common.display import _CURSOR_HIDE, _CURSOR_SHOW
 from sigwood.common.paths import effective_root
 from sigwood.exporters import _resolve_output_path
 
@@ -37,6 +39,11 @@ class _FakeStdout:
 
     def isatty(self) -> bool:
         return self._tty
+
+
+class _CursorTTY(io.StringIO):
+    def isatty(self) -> bool:
+        return True
 
 
 def _boom_import():
@@ -361,6 +368,31 @@ def test_analyze_pdf_config_derived_preflights_on_file_target(tmp_path, monkeypa
 
 
 # ── Multi-query guard via resolver verdict ───────────────────────────────────
+
+
+def test_run_export_restores_cursor_and_resets_stale_narration_gate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from sigwood.exporters import run_export
+
+    fake = _CursorTTY()
+    monkeypatch.delenv("TERM", raising=False)
+    monkeypatch.setattr(sys, "stderr", fake)
+    monkeypatch.setattr(display_mod, "_NARRATION_ENABLED", False)
+
+    with pytest.raises(ValueError, match="unknown backend"):
+        run_export(
+            config={},
+            backend="not-a-backend",
+            query_names=[],
+            since=datetime(2026, 6, 1),
+            until=datetime(2026, 6, 2),
+            out=None,
+            verbose=False,
+        )
+
+    assert display_mod._NARRATION_ENABLED is True
+    assert fake.getvalue() == _CURSOR_HIDE + _CURSOR_SHOW
 
 
 def _splunk_config_with_queries(tmp_path: Path, queries: dict) -> dict:

@@ -34,6 +34,19 @@ All notable changes to sigwood are recorded here. The format follows
   and interrupts; interactive prompts show it while you type. Quiet runs,
   dumb terminals, and redirected output see no cursor-control bytes at all.
 
+### Fixed
+
+- **Cross-feed syslog duplication no longer hides unique lines.** When the same
+  host's messages reach both the local system-log feed (files or the journal) and
+  Zeek's `syslog.log`, the duplicate coverage doubled that host's template counts, so
+  a line that should have surfaced as a unique rare event silently left the rare set.
+  sigwood now arbitrates per host: a host present in the local feed keeps its local
+  rows only, and Zeek contributes just the hosts the local feed lacks. The run
+  summary discloses it in counts (`system logs: 1 host carried by both the local
+  feed and Zeek syslog.log - kept the local rows (16,094 Zeek rows set aside)`);
+  loaded record counts are unchanged. Hosts only Zeek can see are unaffected, and
+  hostless (`unknown`) lines are never arbitrated.
+
 ### Security
 
 - **Artifacts are private by default.** Every directory sigwood creates is now mode

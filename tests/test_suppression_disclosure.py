@@ -249,7 +249,7 @@ def test_host_suppression_real_two_feed_text_and_json_e2e(
 
     assert runner.run(config, **kwargs) == 0
     text = capsys.readouterr().out
-    assert "suppressed 2 rows from 1 host" in text
+    assert "suppressed 1 row from 1 host" in text
     assert "keep-lab" in text and "other-lab" in text
     assert "chatty-lab" not in text.lower()
     assert "hosts_bad:2: malformed pattern skipped (re:(bad-open)" in " ".join(
@@ -259,8 +259,8 @@ def test_host_suppression_real_two_feed_text_and_json_e2e(
     assert runner.run(config, output_format="json", **kwargs) == 0
     payload = json.loads(capsys.readouterr().out)
     suppression = payload["run_summary"]["suppression"]
-    assert suppression["host_rows"] == 2
-    assert suppression["host_total"] == 4
+    assert suppression["host_rows"] == 1
+    assert suppression["host_total"] == 3
     assert suppression["hosts_matched"] == 1
     rendered = json.dumps(payload["findings"]).lower()
     assert "keep-lab" in rendered and "other-lab" in rendered
@@ -297,7 +297,7 @@ def test_runner_coverage_query_frame_never_counts_as_host(
     ) == 0
     suppression = json.loads(capsys.readouterr().out)["run_summary"]["suppression"]
     assert suppression["domain_total"] == 1
-    assert suppression["host_total"] == 4
+    assert suppression["host_total"] == 3
     assert suppression["host_rows"] == 0
 
 

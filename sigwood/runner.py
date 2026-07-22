@@ -18,7 +18,7 @@ import pkgutil
 import shlex
 import sys
 from contextlib import ExitStack
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Collection, Mapping, Sequence
@@ -418,6 +418,7 @@ def _run_analyze(
         load_result = loader.apply_default_window(
             load_result, family_patterns, w.trim_span, keep_null=w.keep_null,
         )
+    load_result, syslog_arbitration = _arbitrate_cross_feed_syslog(load_result)
     logs = load_result.logs
 
     for warning in load_result.warnings:
@@ -525,6 +526,13 @@ def _run_analyze(
     syslog_provider_note = _syslog_provider_note(decision, syslog_intent, plan)
     if syslog_provider_note:
         notes.append(syslog_provider_note)
+    if syslog_arbitration is not None:
+        host_count, row_count = syslog_arbitration
+        notes.append(
+            f"system logs: {host_count:,} {plural(host_count, 'host')} carried by "
+            "both the local feed and Zeek syslog.log - kept the local rows "
+            f"({row_count:,} Zeek {plural(row_count, 'row')} set aside)"
+        )
     # Source-dir overlap disclosure: when two IN-PLAN families resolve to the
     # same directory, flat discovery globs cross-read it (one log surfaced as
     # another's finding). Derives from already-resolved source_dirs + plan, like
@@ -1974,6 +1982,35 @@ def _syslog_provider_note(
     if warning:
         detail += f"; {warning}"
     return f"{base} ({detail})"
+
+
+def _arbitrate_cross_feed_syslog(
+    load_result: "loader.LoadResult",
+) -> tuple["loader.LoadResult", tuple[int, int] | None]:
+    """Keep the local carrier for hosts also present in Zeek syslog."""
+    # These contract patterns are claimed only by the syslog lane. Provider
+    # arbitration has already selected the one local carrier behind ``*.log*``.
+    local = load_result.logs.get("*.log*")
+    zeek = load_result.logs.get("syslog*.log*")
+    if local is None or zeek is None or zeek.empty:
+        return load_result, None
+    if "host" not in local.columns or "host" not in zeek.columns:
+        return load_result, None
+
+    local_hosts = set(local["host"].astype(str).str.lower().unique()) - {"unknown"}
+    if not local_hosts:
+        return load_result, None
+
+    folded_zeek_hosts = zeek["host"].astype(str).str.lower()
+    drop_mask = folded_zeek_hosts.isin(local_hosts)
+    dropped_rows = int(drop_mask.sum())
+    if dropped_rows == 0:
+        return load_result, None
+
+    arbitrated_hosts = int(folded_zeek_hosts[drop_mask].nunique())
+    logs = load_result.logs.copy()
+    logs["syslog*.log*"] = zeek[~drop_mask].copy()
+    return replace(load_result, logs=logs), (arbitrated_hosts, dropped_rows)
 
 
 def _dns_nudge(data_sources: list[str]) -> str | None:

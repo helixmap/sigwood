@@ -133,6 +133,12 @@ requires it; `files` uses the flat directory only; `off` turns the local lane of
 explicitly if you want the on-disk archive). It needs systemd 236 or newer, and a single journal
 entry larger than 1 MiB fails the run visibly rather than being silently truncated.
 
+Zeek's own `syslog.log` can load alongside the local source, and the same rule extends per host:
+a host present in the local feed keeps its local rows only, and Zeek contributes just the hosts
+the local feed lacks - otherwise a doubly-carried line would count twice and stop looking rare.
+The run summary discloses it in counts when it happens (`system logs: 1 host carried by both the
+local feed and Zeek syslog.log - kept the local rows (16,094 Zeek rows set aside)`).
+
 **Existing configs migrate to `auto`.** If you never set `syslog_source`, sigwood now prefers the
 journal on a systemd host and tells you which source it used; set `syslog_source = "files"` to keep
 the old file-only behavior.

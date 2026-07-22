@@ -225,6 +225,37 @@ def test_syslog_needle_signals_add_first_seen_only() -> None:
     assert "member_fragments" not in row["signals"]
 
 
+def test_syslog_transaction_signals_are_curated_without_nested_members() -> None:
+    f = _finding(
+        detector="syslog", severity=Severity.INFO, title="host-a",
+        evidence={
+            "tier": "transaction", "label": "update run", "host": "host-a",
+            "member_count": 2, "represented_line_count": 4,
+            "start_ts": 1.0, "end_ts": 61.0,
+            "first_seen": "1970-01-01T00:00:01+00:00", "span_seconds": 60.0,
+            "program_mix": [["dnf", 3], ["kernel", 1]],
+            "members": [
+                {"severity": "low", "tier": "family",
+                 "represented_line_count": 3, "title": "host-a", "program": "dnf"},
+                {"severity": "low", "tier": "needle",
+                 "represented_line_count": 1, "title": "kernel event",
+                 "program": "kernel"},
+            ],
+        },
+    )
+
+    row = _rows(_emit([f]))[0]
+
+    assert row["signals"] == (
+        "label=update run; member_count=2; represented_line_count=4; "
+        "span_seconds=60.0; first_seen=1970-01-01T00:00:01+00:00; "
+        "program_mix=dnf (3), kernel (1)"
+    )
+    assert "members" not in row["signals"]
+    assert "start_ts" not in row["signals"]
+    assert "end_ts" not in row["signals"]
+
+
 def test_verbosity_invariant() -> None:
     f = [_finding()]
     assert _emit(f, verbose_level=0) == _emit(f, verbose_level=2)

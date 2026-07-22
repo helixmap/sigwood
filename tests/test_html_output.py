@@ -335,6 +335,48 @@ def test_html_syslog_sample_details_real_path_is_closed_escaped_and_print_hidden
         assert "<img src=x>" not in out
 
 
+def test_html_syslog_transaction_summary_and_member_drilldown_are_safe() -> None:
+    finding = _finding(
+        detector="syslog", severity=Severity.MEDIUM, title="host-a",
+        evidence={
+            "tier": "transaction", "label": "admin session", "host": "host-a",
+            "member_count": 2, "represented_line_count": 3,
+            "start_ts": 1.0, "end_ts": 121.0,
+            "first_seen": "1970-01-01T00:00:01+00:00", "span_seconds": 120.0,
+            "program_mix": [["useradd", 2], ["cron", 1]],
+            "members": [
+                {"severity": "medium", "tier": "family",
+                 "represented_line_count": 2, "program": "useradd",
+                 "title": "safe\x1b<script>member</script>", "privileged": True},
+                {"severity": "low", "tier": "needle",
+                 "represented_line_count": 1, "program": "cron",
+                 "title": "second-member"},
+            ],
+            "privileged": True,
+        },
+    )
+
+    out = _render([finding], verbose_level=2)
+
+    _assert_no_data_controls(out)
+    assert "privileged (1)" in out
+    assert "bursts (" not in out
+    assert (
+        "host-a · admin session · 2 member findings · 2m · "
+        "mostly useradd, cron"
+    ) in out
+    assert (
+        '<details class="row-toggle"><summary><span class="pill sev-medium">'
+        '[M]</span></summary></details>'
+    ) in out
+    assert "[M] · useradd · family · 2 rare lines · " in out
+    assert "safe&lt;script&gt;member&lt;/script&gt;" in out
+    assert "[L] · cron · needle · 1 rare line · second-member" in out
+    assert "<script>member</script>" not in out
+    assert '<td class="k">members</td>' not in out
+    assert ".findings-table tr.sample-detail { display: none; }" in out[out.index("@media print"):]
+
+
 def test_html_syslog_sample_highlight_uses_exact_parser_split_and_safe_fallback() -> None:
     rfc = '<134>Jul  1 12:00:00 host<script> sshd[7]: accepted <img src=x>'
     iso = '2026-06-28T14:34:43-05:00 web01 cron[2]: ran "job"'

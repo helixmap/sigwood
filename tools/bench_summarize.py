@@ -56,8 +56,9 @@ SUPPRESSION_KEYS = frozenset({
 METHOD_KEYS = frozenset({"label", "named"})
 SEVERITIES = ("high", "medium", "low", "info")
 SYNTHETIC_TIERS = frozenset({
-    "ranked_summary", "scan_summary", "burst", "family", "reboot",
+    "ranked_summary", "scan_summary", "burst", "family", "reboot", "transaction",
 })
+TRANSACTION_LABELS = ("admin session", "update run")
 
 LEDGER_FIELDS = frozenset({
     "path",
@@ -559,6 +560,57 @@ def _child_command(args: argparse.Namespace, output_format: str) -> list[str]:
     return command
 
 
+def _transaction_rollup(findings: list[dict[str, Any]]) -> dict[str, Any]:
+    """Project only aggregate transaction accounting; reject data-shaped labels."""
+    units = {
+        label: {severity: 0 for severity in SEVERITIES}
+        for label in TRANSACTION_LABELS
+    }
+    claimed = {label: 0 for label in TRANSACTION_LABELS}
+    represented = {label: 0 for label in TRANSACTION_LABELS}
+    unit_members: dict[str, list[int]] = {label: [] for label in TRANSACTION_LABELS}
+    unit_lines: dict[str, list[int]] = {label: [] for label in TRANSACTION_LABELS}
+    remainder = {severity: 0 for severity in SEVERITIES}
+    for index, finding in enumerate(findings):
+        if finding["detector"] != "syslog":
+            continue
+        evidence = finding["evidence"]
+        if evidence.get("tier") != "transaction":
+            remainder[finding["severity"]] += 1
+            continue
+        label = evidence.get("label")
+        if label not in units:
+            raise SummaryRefusal(
+                f"findings[{index}].evidence.label", "unexpected transaction label"
+            )
+        member_count = evidence.get("member_count")
+        represented_count = evidence.get("represented_line_count")
+        if type(member_count) is not int or member_count < 0:
+            raise SummaryRefusal(
+                f"findings[{index}].evidence.member_count", "expected non-negative integer"
+            )
+        if type(represented_count) is not int or represented_count < 0:
+            raise SummaryRefusal(
+                f"findings[{index}].evidence.represented_line_count",
+                "expected non-negative integer",
+            )
+        units[label][finding["severity"]] += 1
+        claimed[label] += member_count
+        represented[label] += represented_count
+        unit_members[label].append(member_count)
+        unit_lines[label].append(represented_count)
+    for values in (*unit_members.values(), *unit_lines.values()):
+        values.sort(reverse=True)
+    return {
+        "units_by_label_severity": units,
+        "claimed_member_findings": claimed,
+        "represented_rare_lines": represented,
+        "unit_member_counts": unit_members,
+        "unit_represented_line_counts": unit_lines,
+        "remaining_findings_by_severity": remainder,
+    }
+
+
 def _run_child(
     args: argparse.Namespace,
     output_format: str,
@@ -680,6 +732,7 @@ def _project_summary(
         "config_hash": config_hash,
         "dataset_id": dataset_id,
         "exit_code": exit_code,
+        "transaction_rollup": _transaction_rollup(findings),
     }
     if include_known_examples:
         detector_names = (

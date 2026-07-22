@@ -102,7 +102,8 @@ full run against that corpus, and the same findings as an HTML report:
   `pipx install sigwood`, point it at a directory, get output. The only setup step is
   optional: `sigwood init`, which just writes plain text files under `~/.sigwood/`.
 - **Named methods.** beacon uses an FFT over connection timing; dns uses HDBSCAN clustering
-  over per-query behavior; syslog uses drain3 log-templating plus rarity scoring; aws uses a
+  over per-query behavior; syslog uses drain3 log-templating plus rarity scoring, and folds
+  recognized admin sessions and update runs into single labeled review units; aws uses a
   per-principal z-score composite. Every run names the technique each detector used, and `-v`
   shows the evidence behind a finding.
 - **Big-tent ingestion.** One tool reads Zeek (NDJSON *and* TSV, flat *or* date-partitioned

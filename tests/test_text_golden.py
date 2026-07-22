@@ -189,6 +189,29 @@ def test_golden_syslog_privileged_rare_events_and_bursts():
     )
 
 
+def test_golden_syslog_transaction_row():
+    out = _render([
+        _f("syslog", Severity.INFO, "host-t",
+           {"tier": "transaction", "label": "update run", "host": "host-t",
+            "member_count": 2, "represented_line_count": 7,
+            "start_ts": 1.0, "end_ts": 121.0,
+            "first_seen": "1970-01-01T00:00:01+00:00", "span_seconds": 120.0,
+            "program_mix": [["dnf", 5], ["kernel", 2]],
+            "members": [
+                {"severity": "low", "tier": "family",
+                 "represented_line_count": 5, "title": "host-t", "program": "dnf"},
+                {"severity": "low", "tier": "family",
+                 "represented_line_count": 2, "title": "host-t", "program": "kernel"},
+            ]}),
+    ])
+    assert out == (
+        f"\nsyslog - 1 finding · 1 I\n{RULE}\n"
+        "bursts (1)\n"
+        "  [I]   Jan  1 00:00:01 · host-t · update run · "
+        "2 member findings · 2m · mostly dnf, kernel\n\n"
+    )
+
+
 # ── duration: split flow, with and without states (rstrip) ───────────────────
 def test_golden_duration_with_states():
     out = _render([_f("duration", Severity.HIGH, "192.0.2.10 → 198.51.100.20:443/tcp",

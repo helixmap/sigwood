@@ -108,6 +108,19 @@ _VARIANTS: dict[str, Finding] = {
         "program_mix": [["kernsentinel", 91], ["syssentinel", 41]],
         "sample_raw": ["raw-sentinel-a", "raw-sentinel-b"],
         "member_fragments": ["burst-fragment-sentinel-727"], "label": "rebooted"}),
+    "syslog_transaction": _f("syslog", Severity.INFO, "host-sentinel-txn-9", {
+        "tier": "transaction", "label": "update run", "host": "host-sentinel-txn-9",
+        "member_count": 2, "represented_line_count": 7,
+        "start_ts": 1.0, "end_ts": 121.0,
+        "first_seen": "1970-01-01T00:00:01+00:00", "span_seconds": 120.0,
+        "program_mix": [["dnfsentinel", 5], ["kernsentinel", 2]],
+        "members": [
+            {"severity": "low", "tier": "family", "represented_line_count": 5,
+             "title": "host-sentinel-txn-9", "program": "dnfsentinel"},
+            {"severity": "low", "tier": "family", "represented_line_count": 2,
+             "title": "host-sentinel-txn-9", "program": "kernsentinel"},
+        ],
+    }),
     "duration": _f("duration", Severity.HIGH, "x", {
         "src": "192.0.2.241", "dst": "198.51.100.251", "port": 9931, "proto": "tcp",
         "max_duration_str": "4h 17m", "connection_count": 37,

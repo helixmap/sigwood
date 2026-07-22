@@ -26,6 +26,7 @@ from sigwood.common.display import (
     fmt_window,
     human_bytes,
     paint,
+    plural,
 )
 from sigwood.common.finding import (
     BlobCard,
@@ -348,8 +349,8 @@ def _debug_tail(finding: Finding, indent: str) -> list[str]:
     if finding.evidence:
         body.append(f"{indent}evidence:")
         for k, v in finding.evidence.items():
-            if k == "member_fragments":
-                continue  # already rendered as level-0 syslog row content
+            if k in ("member_fragments", "members"):
+                continue  # already rendered as syslog row/drilldown content
             body.append(f"{indent}  {_sanitize(k)}: {_sanitize(v)}")
     if finding.next_steps:
         body.append(f"{indent}next steps:")
@@ -370,6 +371,39 @@ def _level_tail(finding: Finding, indent: str, verbose_level: int) -> list[str]:
     if verbose_level >= 2:
         return _debug_tail(finding, indent)
     return _verbose_tail(finding, indent, evidence_at_level(finding, 1))
+
+
+def _transaction_member_lines(finding: Finding, indent: str) -> list[str]:
+    """Render conserved transaction members as a compact human drilldown."""
+    if finding.detector != "syslog" or finding.evidence.get("tier") != "transaction":
+        return []
+    members = finding.evidence.get("members")
+    if not isinstance(members, (list, tuple)) or not members:
+        return []
+    lines = [f"{indent}members:"]
+    for member in members:
+        if not isinstance(member, dict):
+            continue
+        severity = str(member.get("severity", "info"))[:1].upper() or "I"
+        program = member.get("program")
+        if program is None:
+            mix = member.get("program_mix")
+            if isinstance(mix, (list, tuple)):
+                program = ", ".join(
+                    str(item[0])
+                    for item in mix
+                    if isinstance(item, (list, tuple)) and item
+                )
+        count = int(member.get("represented_line_count", 1))
+        parts = [
+            f"[{severity}]",
+            str(program or "unknown"),
+            str(member.get("tier", "needle")),
+            f"{count} {plural(count, 'rare line')}",
+            str(member.get("title", "")),
+        ]
+        lines.append(f"{indent}  · {_sanitize(' · '.join(parts))}")
+    return lines if len(lines) > 1 else []
 
 
 def _render_group_header(detector: str, renderable: DetectorRenderable) -> list[str]:
@@ -845,6 +879,11 @@ class TextHandler(OutputHandler):
                             for fragment in fragments
                             if str(fragment)
                         )
+                if (
+                    self._verbose_level >= 1
+                    and f.evidence.get("tier") == "transaction"
+                ):
+                    row_lines.extend(_transaction_member_lines(f, indent))
                 tail = _level_tail(f, indent, self._verbose_level)
                 row_lines.extend(tail)
                 out.append("\n".join(row_lines))

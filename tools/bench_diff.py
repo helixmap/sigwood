@@ -19,6 +19,7 @@ BEHAVIORAL_PREFIXES = (
     "cap_hidden",
     "level_hidden",
     "known_example_ranks",
+    "transaction_rollup",
     "detectors_run",
     "detectors_skipped",
     "detectors_failed",

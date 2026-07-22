@@ -43,6 +43,39 @@ REBOOT_SIGNALS_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Recognized transaction grammars operate on canonical ``message`` values. Each
+# expression is non-capturing so pandas vector matching stays warning-free.
+ADMIN_SESSION_OPEN_RE = re.compile(
+    r"(?:\bpam_unix\([^)]*:session\):\s+session opened for user\b|"
+    r"^sshd(?:-session|-auth)?(?:\[\*\])?:\s+Accepted\s+"
+    r"(?:password|publickey|keyboard-interactive|hostbased)\s+for\b|"
+    r"^systemd-logind(?:\[\*\])?:\s+New session\b)",
+    re.IGNORECASE,
+)
+
+ADMIN_SESSION_CLOSE_RE = re.compile(
+    r"(?:\bpam_unix\([^)]*:session\):\s+session closed for user\b|"
+    r"^systemd-logind(?:\[\*\])?:\s+Removed session\b)",
+    re.IGNORECASE,
+)
+
+ADMIN_SESSION_ENRICHER_RE = re.compile(
+    r"^sudo(?:\[\*\])?:\s+",
+    re.IGNORECASE,
+)
+
+UPDATE_RUN_ANCHOR_RE = re.compile(
+    r"(?:^(?:dnf(?:d)?|rpm|akmods|dracut|kernel-install|"
+    r"packagekit(?:d)?)(?:\[\*\])?:\s+|"
+    r"^setsebool(?:\[\*\])?:\s+.*\bpolicy boolean was changed\b|"
+    r"^(?:systemd|kernel)(?:\[\*\])?:\s+.*"
+    r"\bselinux:\s+avc:\s+op=load_policy\b|"
+    r"^auditd(?:\[\*\])?:\s+(?:The audit daemon is exiting\.|"
+    r"Init complete,\s+auditd\s+\S+\s+listening for events\s+"
+    r"\(startup state enable\)))",
+    re.IGNORECASE,
+)
+
 
 # ── Parsing functions ─────────────────────────────────────────────────────────
 

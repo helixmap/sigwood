@@ -77,6 +77,11 @@ def curated_evidence(finding: Finding) -> dict[str, Any]:
             )
         elif tier == "reboot":
             keys = ("label", "signal_count")
+        elif tier == "transaction":
+            keys = (
+                "label", "member_count", "represented_line_count",
+                "span_seconds", "first_seen", "program_mix",
+            )
         else:  # isolated rare row
             keys = (
                 "template_str", "host", "program_total", "count", "threshold",
@@ -103,10 +108,14 @@ def curated_evidence(finding: Finding) -> dict[str, Any]:
         for key in ("new_actions", "new_services"):
             if isinstance(out.get(key), (list, tuple)):
                 out[key] = cap_evidence_list(out[key])
-    # syslog burst program_mix is list[[name, count]] (lossless json shape); the
+    # syslog aggregate program_mix is list[[name, count]] (lossless json shape); the
     # human worklist / verbose cell stringifies it so it reads "sshd (12), …"
     # instead of a flattened "sshd,12,…" - mirrors the aws list post-step above.
-    if det == "syslog" and ev.get("tier") == "burst" and isinstance(out.get("program_mix"), (list, tuple)):
+    if (
+        det == "syslog"
+        and ev.get("tier") in ("burst", "transaction")
+        and isinstance(out.get("program_mix"), (list, tuple))
+    ):
         out["program_mix"] = ", ".join(
             f"{name} ({count})" for name, count in out["program_mix"]
         )
@@ -145,6 +154,18 @@ def evidence_at_level(finding: Finding, level: int) -> dict[str, Any]:
     if level <= 0:
         return {}
     if level >= 2:
+        if (
+            finding.detector == "syslog"
+            and finding.evidence.get("tier") == "transaction"
+        ):
+            # Human surfaces render transaction members as a structured
+            # drilldown. Keep the same evidence full at the detector/JSON seam,
+            # but do not also dump its nested list as a generic value here.
+            return {
+                key: value
+                for key, value in finding.evidence.items()
+                if key != "members"
+            }
         return finding.evidence
     out = curated_evidence(finding)
     if (

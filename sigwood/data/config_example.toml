@@ -200,6 +200,7 @@ allowlist_dir    = "allowlist.d/"
 #   "systemd-coredump",
 # ]
 # reboot_cluster_seconds = 600     # reboot signals on a host closer than this = one boot event
+# recognize_transactions = true    # group recognized admin/update activity into review units
 
 # aws - per-principal CloudTrail surfacing (rarity + weirdness + bursts).
 # [detectors.aws]

@@ -280,6 +280,49 @@ def test_family_review_units_do_not_shift_known_example_ranks() -> None:
     assert ranks["syslog_target"]["rank"] == 1
 
 
+def test_transaction_review_units_do_not_shift_known_example_ranks() -> None:
+    transaction = _finding(detector="syslog", severity="medium", title="host-a")
+    transaction["evidence"] = {
+        "tier": "transaction", "label": "admin session", "member_count": 2,
+        "represented_line_count": 3,
+    }
+    needle = _finding(detector="syslog", severity="low", title="target raw line")
+    selector = [{
+        "example_id": "syslog_target",
+        "detector": "syslog",
+        "field": "title",
+        "op": "eq",
+        "value": "target raw line",
+    }]
+
+    ranks = bench_summarize._known_example_ranks(
+        [transaction, needle], selector, {"syslog"}
+    )
+
+    assert ranks["syslog_target"]["rank"] == 1
+
+
+def test_transaction_rollup_projects_aggregate_accounting_only() -> None:
+    transaction = _finding(detector="syslog", severity="medium", title="private-host")
+    transaction["evidence"] = {
+        "tier": "transaction", "label": "admin session", "member_count": 2,
+        "represented_line_count": 5, "members": [{"title": "private-member"}],
+    }
+    remainder = _finding(detector="syslog", severity="low", title="private-remainder")
+
+    projected = bench_summarize._transaction_rollup([transaction, remainder])
+
+    assert projected["units_by_label_severity"]["admin session"]["medium"] == 1
+    assert projected["claimed_member_findings"]["admin session"] == 2
+    assert projected["represented_rare_lines"]["admin session"] == 5
+    assert projected["unit_member_counts"]["admin session"] == [2]
+    assert projected["unit_represented_line_counts"]["admin session"] == [5]
+    assert projected["remaining_findings_by_severity"]["low"] == 1
+    assert "private-host" not in json.dumps(projected)
+    assert "private-member" not in json.dumps(projected)
+    assert "private-remainder" not in json.dumps(projected)
+
+
 def test_demo_default_and_explicit_scenario_are_byte_identical(tmp_path: Path) -> None:
     default_dir = tmp_path / "default"
     explicit_dir = tmp_path / "explicit"

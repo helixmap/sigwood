@@ -120,7 +120,7 @@ def _partition_aws(findings: list[Finding]) -> list[Section]:
 
 
 def _partition_syslog(findings: list[Finding]) -> list[Section]:
-    """Syslog: privileged MEDIUM, sieve LOW, then burst/reboot INFO.
+    """Syslog: privileged MEDIUM, sieve LOW, then aggregate INFO.
 
     Membership keys on evidence, never severity. Declared order makes the cap spend
     its budget on the strongest channel first while preserving timestamp order inside
@@ -132,7 +132,11 @@ def _partition_syslog(findings: list[Finding]) -> list[Section]:
         if not f.evidence.get("privileged")
         and f.evidence.get("tier") in (None, "family")
     ]
-    bursts = [f for f in findings if f.evidence.get("tier") in ("burst", "reboot")]
+    bursts = [
+        f for f in findings
+        if not f.evidence.get("privileged")
+        and f.evidence.get("tier") in ("burst", "reboot", "transaction")
+    ]
     out: list[Section] = []
     if privileged:
         out.append(Section("privileged", privileged, len(privileged)))
@@ -158,7 +162,7 @@ _PARTITIONERS = {
 # right DEFAULT - within a flat or per-section list, H → M → L → I reads as
 # urgency-first. But syslog's row order CARRIES meaning: the detector emits
 # chronologically, and its three sections ("privileged" = MEDIUM, "rare events"
-# = LOW, "bursts" = INFO collapsed-bursts + standalone reboots) are each single-severity
+# = LOW, "bursts" = INFO bursts + reboots + transactions) are each single-severity
 # - so severity-sort is a no-op anyway, and what matters is preserving ts-order
 # WITHIN a section (a burst sits next to the reboot near it in time). Listing
 # syslog here keeps that incoming order explicit.
@@ -432,6 +436,35 @@ def _project_syslog(f: Finding) -> list[Cell]:
         if span is not None:
             parts.append(fmt_compact_span(timedelta(seconds=float(span))))
         line = " · ".join(parts)
+        start_ts = ev.get("start_ts")
+        if start_ts is None:
+            return [Cell(None, line, full_width=True)]
+        return [
+            Cell(
+                "first",
+                fmt_syslog_timestamp(
+                    datetime.fromtimestamp(float(start_ts), tz=timezone.utc)
+                ),
+            ),
+            Cell(None, line),
+        ]
+    if tier == "transaction":
+        host = f.title
+        label = str(ev.get("label", "transaction"))
+        member_count = int(ev.get("member_count", 0))
+        span = fmt_compact_span(
+            timedelta(seconds=float(ev.get("span_seconds", 0.0)))
+        )
+        progs = ", ".join(
+            str(name) for name, _count in ev.get("program_mix", [])
+        ) or "unknown"
+        line = " · ".join([
+            host,
+            label,
+            f"{member_count} {plural(member_count, 'member finding')}",
+            span,
+            f"mostly {progs}",
+        ])
         start_ts = ev.get("start_ts")
         if start_ts is None:
             return [Cell(None, line, full_width=True)]

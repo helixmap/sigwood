@@ -6,10 +6,12 @@ import bz2
 import gzip
 import lzma
 import math
+import warnings
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
+import pandas as pd
 
 from sigwood.common.loader import (
     _stem_hostname,
@@ -18,7 +20,12 @@ from sigwood.common.loader import (
 )
 from sigwood.common.display import fmt_timestamp
 from sigwood.parsers.syslog import (
+    ADMIN_SESSION_CLOSE_RE,
+    ADMIN_SESSION_ENRICHER_RE,
+    ADMIN_SESSION_OPEN_RE,
+    UPDATE_RUN_ANCHOR_RE,
     is_reboot_signal,
+    parse_line,
     parse_host,
     parse_program,
     parse_timestamp,
@@ -252,6 +259,78 @@ def test_is_reboot_signal_kernel_boot_banner() -> None:
 def test_is_reboot_signal_false_for_normal_line() -> None:
     line = "<134>May 31 12:00:00 router sshd[1234]: Accepted publickey for user"
     assert is_reboot_signal(line) is False
+
+
+@pytest.mark.parametrize(
+    ("pattern", "message"),
+    [
+        (ADMIN_SESSION_OPEN_RE, "sshd[*]: Accepted publickey for analyst"),
+        (ADMIN_SESSION_OPEN_RE, "sudo[*]: pam_unix(sudo:session): session opened for user root"),
+        (ADMIN_SESSION_OPEN_RE, "systemd-logind[*]: New session 42 of user analyst."),
+        (ADMIN_SESSION_CLOSE_RE, "runuser[*]: pam_unix(runuser:session): session closed for user root"),
+        (ADMIN_SESSION_CLOSE_RE, "systemd-logind[*]: Removed session 42."),
+        (ADMIN_SESSION_ENRICHER_RE, "sudo[*]: analyst : TTY=pts/0 ; COMMAND=/usr/bin/true"),
+        (UPDATE_RUN_ANCHOR_RE, "dnf[*]: upgraded placeholder package"),
+        (UPDATE_RUN_ANCHOR_RE, "rpm[*]: transaction completed"),
+        (UPDATE_RUN_ANCHOR_RE, "akmods[*]: rebuilding placeholder module"),
+        (UPDATE_RUN_ANCHOR_RE, "dracut[*]: rebuilding placeholder image"),
+        (UPDATE_RUN_ANCHOR_RE, "kernel-install[*]: adding placeholder kernel"),
+        (UPDATE_RUN_ANCHOR_RE, "packagekitd[*]: transaction started"),
+        (UPDATE_RUN_ANCHOR_RE, "setsebool[*]: The placeholder policy boolean was changed to on by root"),
+        (UPDATE_RUN_ANCHOR_RE, "systemd[*]: selinux: avc:  op=load_policy lsm=selinux seqno=7 res=1"),
+        (UPDATE_RUN_ANCHOR_RE, "kernel[*]: selinux: avc: op=load_policy lsm=selinux seqno=7 res=1"),
+        (UPDATE_RUN_ANCHOR_RE, "auditd[*]: The audit daemon is exiting."),
+        (UPDATE_RUN_ANCHOR_RE, "auditd[*]: Init complete, auditd 4.1 listening for events (startup state enable)"),
+    ],
+)
+def test_transaction_grammar_positive_arms(pattern, message: str) -> None:
+    assert pattern.search(message) is not None
+
+
+@pytest.mark.parametrize(
+    ("pattern", "message"),
+    [
+        (ADMIN_SESSION_OPEN_RE, "sshd[*]: Failed password for analyst"),
+        (ADMIN_SESSION_CLOSE_RE, "systemd-logind[*]: New session 42 of user analyst."),
+        (ADMIN_SESSION_ENRICHER_RE, "cron[*]: sudo report completed"),
+        (UPDATE_RUN_ANCHOR_RE, "setsebool[*]: queried a policy boolean"),
+        (UPDATE_RUN_ANCHOR_RE, "systemd[*]: selinux: avc: denied operation"),
+        (UPDATE_RUN_ANCHOR_RE, "auditd[*]: configuration unchanged"),
+        (UPDATE_RUN_ANCHOR_RE, "myrpm[*]: transaction completed"),
+    ],
+)
+def test_transaction_grammar_near_misses(pattern, message: str) -> None:
+    assert pattern.search(message) is None
+
+
+def test_transaction_grammars_are_warning_free_and_non_capturing() -> None:
+    patterns = (
+        ADMIN_SESSION_OPEN_RE,
+        ADMIN_SESSION_CLOSE_RE,
+        ADMIN_SESSION_ENRICHER_RE,
+        UPDATE_RUN_ANCHOR_RE,
+    )
+    assert all(pattern.groups == 0 for pattern in patterns)
+    messages = pd.Series([
+        "sshd[*]: Accepted publickey for analyst",
+        "auditd[*]: The audit daemon is exiting.",
+    ])
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        for pattern in patterns:
+            messages.str.contains(pattern, na=False)
+
+
+def test_transaction_grammar_uses_canonical_message_for_flat_and_journal() -> None:
+    flat = parse_line(
+        "Jul 12 21:57:33 host.example sshd[17]: Accepted publickey for analyst"
+    )
+    assert flat is not None
+    assert ADMIN_SESSION_OPEN_RE.search(flat["message"])
+
+    journal_message = "sshd[*]: Accepted publickey for analyst"
+    assert ADMIN_SESSION_OPEN_RE.search(journal_message)
+    assert ADMIN_SESSION_OPEN_RE.search("Accepted publickey for analyst") is None
 
 
 # ── parse_program ──────────────────────────────────────────────────────────────

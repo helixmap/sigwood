@@ -24,8 +24,10 @@ Pipeline:
 7. Reconciliation: reboot rows are clustered per host into boot events
    (reboot_cluster_seconds); each event either labels the nearest contemporaneous
    burst "rebooted" (within burst_gap_seconds) or emits one standalone INFO reboot
-   finding - exactly one representation per boot event. run() owns the final
-   cross-channel output sort.
+   finding - exactly one representation per boot event.
+8. Recognized transactions (full-frame, rarity-blind) claim contemporaneous
+   stored findings into one bounded review unit while conserving member evidence.
+   run() owns the final cross-channel output sort.
 """
 
 from __future__ import annotations
@@ -42,7 +44,15 @@ from tqdm import tqdm
 
 from sigwood.common.display import narration_active
 from sigwood.common.finding import DetectorContext, Finding, MethodTag, Severity
-from sigwood.parsers.syslog import REBOOT_SIGNALS_RE, parse_timestamp, strip_program
+from sigwood.parsers.syslog import (
+    ADMIN_SESSION_CLOSE_RE,
+    ADMIN_SESSION_ENRICHER_RE,
+    ADMIN_SESSION_OPEN_RE,
+    REBOOT_SIGNALS_RE,
+    UPDATE_RUN_ANCHOR_RE,
+    parse_timestamp,
+    strip_program,
+)
 
 DETECTOR_NAME = "syslog"
 STATUS = "available"
@@ -79,6 +89,12 @@ BURST_MIN_SIZE            = 3    # min rare rows in a window to collapse to a bu
 FAMILY_MIN_SIZE           = 2    # min isolated rows for one host/program review unit
 LINE_TRIM_LIMIT           = 200  # max finding trim length
 REBOOT_CLUSTER_SECONDS    = 600  # reboot signals on a host closer than this = one boot event
+ADMIN_SESSION_CLUSTER_SECONDS = 2700
+UPDATE_RUN_CLUSTER_SECONDS = 600
+TRANSACTION_LEAD_TOLERANCE_SECONDS = 60
+TRANSACTION_TAIL_TOLERANCE_SECONDS = 120
+TRANSACTION_MIN_MEMBER_FINDINGS = 2
+UPDATE_RUN_MIN_ANCHORS = 2
 
 # Tool-shipped Drain3 calibration. Keep the specification as strings so importing
 # this detector never imports optional runtime objects or compiles their regexes.
@@ -124,6 +140,7 @@ DEFAULT_CONFIG = {
     # Fresh copy: operator/config mutation must never alter the module constant.
     "privileged_programs": list(PRIVILEGED_PROGRAMS),
     "reboot_cluster_seconds": REBOOT_CLUSTER_SECONDS,
+    "recognize_transactions": True,
     "line_trim_limit":     LINE_TRIM_LIMIT,
 }
 
@@ -280,6 +297,18 @@ class _BootEvent(NamedTuple):
     signal_count: int
 
 
+class _TransactionEvent(NamedTuple):
+    """One bounded recognized transaction on a concrete host."""
+
+    label: str
+    host: str
+    start_ts: float
+    end_ts: float
+    claim_start_ts: float
+    claim_end_ts: float
+    anchor_times: tuple[float, ...]
+
+
 def run(context: DetectorContext) -> list[Finding]:
     """Detect anomalous syslog lines using drain3 templating, rarity scoring,
     temporal burst collapse, and per-program family review units."""
@@ -305,11 +334,20 @@ def run(context: DetectorContext) -> list[Finding]:
         "privileged_programs", DEFAULT_CONFIG["privileged_programs"]
     )
     cluster_seconds = cfg.get("reboot_cluster_seconds", DEFAULT_CONFIG["reboot_cluster_seconds"])
+    recognize_transactions = cfg.get(
+        "recognize_transactions", DEFAULT_CONFIG["recognize_transactions"]
+    )
 
     df = _run_drain3(df, sim_thresh, depth, parametrize)
     df, threshold, freq = _score_rarity(df, rarity_pct, max_count)
 
     now = datetime.now(timezone.utc)
+
+    transaction_events = (
+        _detect_transaction_events(df)
+        if recognize_transactions
+        else []
+    )
 
     # Reboot detection is a SECOND, rarity-blind, full-frame channel: a vectorized
     # mask over canonical `message` catches every reboot signal even when its
@@ -370,6 +408,13 @@ def run(context: DetectorContext) -> list[Finding]:
         boot_events, [*burst_pairs, *sieve_pairs, *member_pairs],
         gap_seconds=gap_seconds, now=now, data_window=context.data_window,
     )
+    if transaction_events:
+        pairs = _reconcile_transactions(
+            transaction_events,
+            pairs,
+            now=now,
+            data_window=context.data_window,
+        )
     # run() owns the SINGLE final cross-channel output sort; the helpers keep their
     # own internal stable ts sorts but return unsorted pairs.
     pairs.sort(key=lambda pair: pair[0])
@@ -557,6 +602,355 @@ def _detect_boot_events(
         if len(nan_rows) > 0:
             events.append(_BootEvent(str(host), None, None, len(nan_rows)))
     return events
+
+
+def _transaction_source(df: pd.DataFrame) -> pd.DataFrame:
+    """Return a positional, timed, concrete-host copy for recognition."""
+    if df.empty or not {"ts", "host", "message"}.issubset(df.columns):
+        return pd.DataFrame()
+    work = df.reset_index(drop=True).copy()
+    work["ts"] = pd.to_numeric(work["ts"], errors="coerce")
+    concrete = (
+        work["ts"].notna()
+        & work["host"].notna()
+        & work["host"].astype(str).ne("unknown")
+    )
+    return work.loc[concrete].copy()
+
+
+def _make_transaction_event(
+    label: str,
+    host: str,
+    start_ts: float,
+    end_ts: float,
+    anchor_times: Iterable[float],
+) -> _TransactionEvent:
+    """Build one event with fixed lead/tail association padding."""
+    return _TransactionEvent(
+        label=label,
+        host=host,
+        start_ts=start_ts,
+        end_ts=end_ts,
+        claim_start_ts=start_ts - TRANSACTION_LEAD_TOLERANCE_SECONDS,
+        claim_end_ts=end_ts + TRANSACTION_TAIL_TOLERANCE_SECONDS,
+        anchor_times=tuple(sorted(float(ts) for ts in anchor_times)),
+    )
+
+
+def _detect_admin_session_events(
+    work: pd.DataFrame,
+) -> list[_TransactionEvent]:
+    """Recognize bounded open-through-close admin sessions per host."""
+    messages = work["message"].astype(str)
+    open_mask = messages.str.contains(ADMIN_SESSION_OPEN_RE, na=False)
+    close_mask = messages.str.contains(ADMIN_SESSION_CLOSE_RE, na=False)
+    enrich_mask = messages.str.contains(ADMIN_SESSION_ENRICHER_RE, na=False)
+
+    anchors = work.loc[open_mask | close_mask, ["ts", "host"]].copy()
+    if anchors.empty:
+        return []
+    anchors["txn_open"] = open_mask.loc[anchors.index].astype(bool)
+    anchors["txn_close"] = close_mask.loc[anchors.index].astype(bool)
+
+    enrichers = work.loc[enrich_mask, ["ts", "host"]]
+    events: list[_TransactionEvent] = []
+    for host, host_df in anchors.groupby("host", sort=False):
+        ordered = host_df.sort_values("ts", kind="stable")
+        for cluster in _gap_cluster(
+            ordered.itertuples(), ADMIN_SESSION_CLUSTER_SECONDS
+        ):
+            opens = [float(row.ts) for row in cluster if bool(row.txn_open)]
+            if not opens:
+                continue
+            start_ts = min(opens)
+            closes = [
+                float(row.ts)
+                for row in cluster
+                if bool(row.txn_close) and float(row.ts) >= start_ts
+            ]
+            if not closes:
+                continue
+            end_ts = max(closes)
+            event_anchors = [
+                float(row.ts)
+                for row in cluster
+                if start_ts <= float(row.ts) <= end_ts
+            ]
+            claim_start = start_ts - TRANSACTION_LEAD_TOLERANCE_SECONDS
+            claim_end = end_ts + TRANSACTION_TAIL_TOLERANCE_SECONDS
+            host_enrichers = enrichers[
+                (enrichers["host"] == host)
+                & enrichers["ts"].between(claim_start, claim_end, inclusive="both")
+            ]
+            event_anchors.extend(float(ts) for ts in host_enrichers["ts"])
+            events.append(
+                _make_transaction_event(
+                    "admin session", str(host), start_ts, end_ts, event_anchors
+                )
+            )
+    return events
+
+
+def _detect_update_run_events(work: pd.DataFrame) -> list[_TransactionEvent]:
+    """Recognize per-host update activity from the frozen v1 grammar."""
+    messages = work["message"].astype(str)
+    mask = messages.str.contains(UPDATE_RUN_ANCHOR_RE, na=False)
+    anchors = work.loc[mask, ["ts", "host"]].copy()
+    if anchors.empty:
+        return []
+
+    events: list[_TransactionEvent] = []
+    for host, host_df in anchors.groupby("host", sort=False):
+        ordered = host_df.sort_values("ts", kind="stable")
+        for cluster in _gap_cluster(ordered.itertuples(), UPDATE_RUN_CLUSTER_SECONDS):
+            if len(cluster) < UPDATE_RUN_MIN_ANCHORS:
+                continue
+            times = [float(row.ts) for row in cluster]
+            events.append(
+                _make_transaction_event(
+                    "update run", str(host), times[0], times[-1], times
+                )
+            )
+    return events
+
+
+def _detect_transaction_events(
+    df: pd.DataFrame,
+) -> list[_TransactionEvent]:
+    """Recognize named full-frame events without reading rarity state."""
+    work = _transaction_source(df)
+    if work.empty:
+        return []
+
+    events = _detect_admin_session_events(work)
+    events.extend(_detect_update_run_events(work))
+
+    label_order = {"admin session": 0, "update run": 1}
+    events.sort(
+        key=lambda event: (
+            event.start_ts,
+            label_order[event.label],
+            event.host,
+        )
+    )
+    return events
+
+
+def _finding_interval(finding: Finding) -> tuple[float, float] | None:
+    """Return the complete represented interval for a claimable finding."""
+    evidence = finding.evidence
+    tier = evidence.get("tier")
+    if tier in ("reboot", "transaction"):
+        return None
+    if tier in ("family", "burst"):
+        start = evidence.get("start_ts")
+        end = evidence.get("end_ts")
+        if start is None or end is None:
+            return None
+        try:
+            return float(start), float(end)
+        except (TypeError, ValueError):
+            return None
+
+    first_seen = evidence.get("first_seen")
+    if first_seen is None:
+        return None
+    try:
+        instant = datetime.fromisoformat(str(first_seen)).timestamp()
+    except (TypeError, ValueError):
+        return None
+    return instant, instant
+
+
+def _represented_line_count(finding: Finding) -> int:
+    """Return the number of rare rows represented by one stored finding."""
+    if finding.evidence.get("tier") in ("family", "burst"):
+        try:
+            return max(1, int(finding.evidence.get("line_count", 1)))
+        except (TypeError, ValueError):
+            return 1
+    return 1
+
+
+def _transaction_member(finding: Finding) -> dict[str, object]:
+    """Project one claimed Finding into JSON-native conserved member evidence."""
+    evidence = finding.evidence
+    tier = str(evidence.get("tier") or "needle")
+    member: dict[str, object] = {
+        "severity": finding.severity.name.lower(),
+        "tier": tier,
+        "represented_line_count": _represented_line_count(finding),
+        "title": finding.title,
+        "first_seen": evidence.get("first_seen") or _iso_utc(
+            evidence.get("start_ts")
+        ),
+    }
+    program = evidence.get("program")
+    if program is not None:
+        member["program"] = str(program)
+    program_mix = evidence.get("program_mix")
+    if isinstance(program_mix, (list, tuple)):
+        member["program_mix"] = [list(item) for item in program_mix]
+    label = evidence.get("label")
+    if label is not None:
+        member["label"] = str(label)
+    if evidence.get("privileged") is True:
+        member["privileged"] = True
+    return member
+
+
+def _transaction_program_mix(
+    findings: list[Finding],
+) -> list[list[object]]:
+    """Build a represented-row-weighted top-three program mix."""
+    counts: Counter[str] = Counter()
+    for finding in findings:
+        evidence = finding.evidence
+        if evidence.get("tier") == "burst":
+            for item in evidence.get("program_mix", []):
+                if not isinstance(item, (list, tuple)) or len(item) != 2:
+                    continue
+                name, count = item
+                try:
+                    counts[str(name)] += int(count)
+                except (TypeError, ValueError):
+                    continue
+            continue
+        program = evidence.get("program", "unknown")
+        counts[str(program)] += _represented_line_count(finding)
+    return [
+        [name, int(count)]
+        for name, count in sorted(counts.items(), key=lambda item: (-item[1], item[0]))[:3]
+    ]
+
+
+def _transaction_finding(
+    event: _TransactionEvent,
+    members: list[Finding],
+    now: datetime,
+    data_window: tuple[datetime, datetime],
+) -> tuple[float, Finding]:
+    """Build one recognized transaction review unit from stored members."""
+    privileged = any(
+        member.evidence.get("privileged") is True for member in members
+    )
+    if event.label == "admin session":
+        description = (
+            "Recognized administrative session activity grouped from "
+            "contemporaneous syslog findings."
+        )
+    elif event.label == "update run":
+        description = (
+            "Recognized system update activity grouped from contemporaneous "
+            "syslog findings."
+        )
+    else:  # Defensive: every producer above emits one of the two frozen labels.
+        raise ValueError(f"unknown transaction label: {event.label}")
+    evidence: dict[str, object] = {
+        "tier": "transaction",
+        "label": event.label,
+        "host": event.host,
+        "member_count": len(members),
+        "represented_line_count": sum(
+            _represented_line_count(member) for member in members
+        ),
+        "start_ts": event.start_ts,
+        "end_ts": event.end_ts,
+        "first_seen": _iso_utc(event.start_ts),
+        "span_seconds": event.end_ts - event.start_ts,
+        "program_mix": _transaction_program_mix(members),
+        "members": [_transaction_member(member) for member in members],
+    }
+    if privileged:
+        evidence["privileged"] = True
+    finding = Finding(
+        detector=DETECTOR_NAME,
+        severity=Severity.MEDIUM if privileged else Severity.INFO,
+        title=event.host,
+        description=description,
+        evidence=evidence,
+        next_steps=["Review the member findings for unexpected activity"],
+        ts_generated=now,
+        data_window=data_window,
+    )
+    return event.start_ts, finding
+
+
+def _reconcile_transactions(
+    events: list[_TransactionEvent],
+    collapsed_pairs: list[tuple[float, Finding]],
+    *,
+    now: datetime,
+    data_window: tuple[datetime, datetime],
+) -> list[tuple[float, Finding]]:
+    """Claim stored findings into bounded transaction units exactly once."""
+    if not events or not collapsed_pairs:
+        return list(collapsed_pairs)
+
+    label_order = {"admin session": 0, "update run": 1}
+    assignments: dict[int, tuple[int, int]] = {}
+    for pair_index, (_sort_ts, finding) in enumerate(collapsed_pairs):
+        finding_id = id(finding)
+        if finding_id in assignments:
+            continue
+        interval = _finding_interval(finding)
+        if interval is None:
+            continue
+        start_ts, end_ts = interval
+        midpoint = start_ts + ((end_ts - start_ts) / 2.0)
+        candidates: list[tuple[float, float, int, int]] = []
+        for event_index, event in enumerate(events):
+            if finding.title != event.host and finding.evidence.get("host") != event.host:
+                continue
+            if not (
+                event.claim_start_ts <= start_ts
+                and end_ts <= event.claim_end_ts
+            ):
+                continue
+            distance = min(abs(midpoint - anchor) for anchor in event.anchor_times)
+            candidates.append(
+                (
+                    distance,
+                    event.start_ts,
+                    label_order[event.label],
+                    event_index,
+                )
+            )
+        if candidates:
+            candidates.sort()
+            assignments[finding_id] = (candidates[0][3], pair_index)
+
+    grouped: dict[int, list[tuple[int, float, Finding]]] = defaultdict(list)
+    for event_index, pair_index in assignments.values():
+        sort_ts, finding = collapsed_pairs[pair_index]
+        grouped[event_index].append((pair_index, sort_ts, finding))
+
+    material = {
+        event_index
+        for event_index, values in grouped.items()
+        if len(values) >= TRANSACTION_MIN_MEMBER_FINDINGS
+    }
+    claimed_ids = {
+        id(finding)
+        for event_index in material
+        for _pair_index, _sort_ts, finding in grouped[event_index]
+    }
+    out = [
+        pair for pair in collapsed_pairs if id(pair[1]) not in claimed_ids
+    ]
+    for event_index in sorted(material, key=lambda index: (
+        events[index].start_ts,
+        label_order[events[index].label],
+        events[index].host,
+    )):
+        member_rows = sorted(grouped[event_index], key=lambda item: (item[1], item[0]))
+        members = [finding for _pair_index, _sort_ts, finding in member_rows]
+        out.append(
+            _transaction_finding(
+                events[event_index], members, now, data_window
+            )
+        )
+    return out
 
 
 def _collapse_bursts(

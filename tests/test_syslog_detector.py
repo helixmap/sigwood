@@ -34,12 +34,18 @@ from sigwood.detectors.syslog import (
     PRIVILEGED_PROGRAMS,
     STATUS,
     REBOOT_CLUSTER_SECONDS,
+    ADMIN_SESSION_CLUSTER_SECONDS,
+    UPDATE_RUN_CLUSTER_SECONDS,
+    TRANSACTION_LEAD_TOLERANCE_SECONDS,
+    TRANSACTION_TAIL_TOLERANCE_SECONDS,
     _BootEvent,
+    _TransactionEvent,
     _collapse_bursts,
     _collapse_families,
     _contains_opaque_hex,
     _decorate_burst_first_seen,
     _detect_boot_events,
+    _detect_transaction_events,
     _distill_member_fragments,
     _gap_cluster,
     _is_ip_token,
@@ -48,6 +54,7 @@ from sigwood.detectors.syslog import (
     _normalize_identity_columns,
     _reboot_finding,
     _reconcile,
+    _reconcile_transactions,
     _run_drain3,
     _truncate_fragment,
     run,
@@ -216,6 +223,41 @@ def _run_with(rows: list[dict], ids: list[int], strs: list[str], cfg: dict | Non
     df = pd.DataFrame(rows)
     with patch("sigwood.detectors.syslog._run_drain3", _patched_drain3(ids, strs)):
         return run(_ctx(df, cfg or {"max_count": 1, "rarity_pct": 10}))
+
+
+def _stored_needle(
+    ts: float,
+    host: str,
+    title: str,
+    *,
+    program: str = "cron",
+    privileged: bool = False,
+) -> tuple[float, Finding]:
+    first_seen = (
+        None if pd.isna(ts)
+        else datetime.fromtimestamp(ts, timezone.utc).isoformat()
+    )
+    evidence = {
+        "host": host,
+        "program": program,
+        "first_seen": first_seen,
+        "self_stamped": False,
+    }
+    if privileged:
+        evidence["privileged"] = True
+    return (
+        ts,
+        Finding(
+            detector="syslog",
+            severity=Severity.MEDIUM if privileged else Severity.LOW,
+            title=title,
+            description="Rare template.",
+            evidence=evidence,
+            next_steps=[],
+            ts_generated=_NOW,
+            data_window=_WINDOW,
+        ),
+    )
 
 
 # ── Reboot-channel helpers ────────────────────────────────────────────────────
@@ -1334,6 +1376,301 @@ class SyslogDetectorTests(unittest.TestCase):
         self.assertEqual(findings[0].title, "192.0.2.1")
         self.assertEqual(findings[0].evidence["signal_count"], 1)
 
+    # ── Recognized transactions ───────────────────────────────────────────
+
+    def test_admin_session_requires_open_then_close_inside_strict_gap(self) -> None:
+        rows = pd.DataFrame([
+            {"ts": _BASE_TS, "host": "h1",
+             "message": "sshd[*]: Accepted publickey for operator"},
+            {"ts": _BASE_TS + ADMIN_SESSION_CLUSTER_SECONDS - 1, "host": "h1",
+             "message": "pam_unix(sshd:session): session closed for user operator"},
+            {"ts": _BASE_TS, "host": "h2",
+             "message": "sshd[*]: Accepted publickey for operator"},
+            {"ts": _BASE_TS + ADMIN_SESSION_CLUSTER_SECONDS, "host": "h2",
+             "message": "pam_unix(sshd:session): session closed for user operator"},
+            {"ts": _BASE_TS, "host": "h3",
+             "message": "pam_unix(sshd:session): session closed for user operator"},
+            {"ts": _BASE_TS + 1, "host": "h3",
+             "message": "sshd[*]: Accepted publickey for operator"},
+        ])
+
+        events = _detect_transaction_events(rows)
+
+        self.assertEqual([(event.label, event.host) for event in events], [
+            ("admin session", "h1"),
+        ])
+        self.assertEqual(events[0].start_ts, _BASE_TS)
+        self.assertEqual(
+            events[0].end_ts, _BASE_TS + ADMIN_SESSION_CLUSTER_SECONDS - 1
+        )
+
+    def test_update_run_requires_two_anchors_inside_strict_gap(self) -> None:
+        rows = pd.DataFrame([
+            {"ts": _BASE_TS, "host": "h1", "message": "dnf[*]: starting update"},
+            {"ts": _BASE_TS + UPDATE_RUN_CLUSTER_SECONDS - 1, "host": "h1",
+             "message": "rpm[*]: installed package-example"},
+            {"ts": _BASE_TS, "host": "h2", "message": "dnf[*]: starting update"},
+            {"ts": _BASE_TS + UPDATE_RUN_CLUSTER_SECONDS, "host": "h2",
+             "message": "rpm[*]: installed package-example"},
+            {"ts": _BASE_TS, "host": "h3", "message": "dnf[*]: only anchor"},
+        ])
+
+        events = _detect_transaction_events(rows)
+
+        self.assertEqual([(event.label, event.host) for event in events], [
+            ("update run", "h1"),
+        ])
+
+    def test_transaction_recognition_ignores_unknown_hosts_and_missing_time(self) -> None:
+        rows = pd.DataFrame([
+            {"ts": _BASE_TS, "host": "unknown",
+             "message": "sshd[*]: Accepted password for operator"},
+            {"ts": _BASE_TS + 1, "host": "unknown",
+             "message": "pam_unix(sshd:session): session closed for user operator"},
+            {"ts": float("nan"), "host": "h",
+             "message": "sshd[*]: Accepted password for operator"},
+            {"ts": _BASE_TS + 1, "host": "h",
+             "message": "pam_unix(sshd:session): session closed for user operator"},
+        ])
+        self.assertEqual(_detect_transaction_events(rows), [])
+        self.assertEqual(
+            _detect_transaction_events(pd.DataFrame([{"host": "h"}])), []
+        )
+
+    def test_run_recognizes_transactions_before_rarity_and_conserves_members(self) -> None:
+        common = [
+            {**_common_row(i), "program": "cron", "message": "cron: ordinary event"}
+            for i in range(50)
+        ]
+        anchors = [
+            {"ts": _BASE_TS + 100_000 + offset, "host": "h", "program": program,
+             "raw": message, "message": message}
+            for offset, program, message in (
+                (0, "sshd", "sshd[*]: Accepted publickey for operator"),
+                (1, "sshd", "sshd[*]: Accepted publickey for operator"),
+                (30, "sshd", "pam_unix(sshd:session): session closed for user operator"),
+                (31, "sshd", "pam_unix(sshd:session): session closed for user operator"),
+            )
+        ]
+        needles = [
+            {"ts": _BASE_TS + 100_010, "host": "h", "program": "useradd",
+             "raw": "useradd: privileged member", "message": "useradd: privileged member"},
+            {"ts": _BASE_TS + 100_020, "host": "h", "program": "cron",
+             "raw": "cron: sieve member", "message": "cron: sieve member"},
+        ]
+        ids = [1] * len(common) + [2, 2, 3, 3, 4, 5]
+        templates = ["ordinary"] * len(common) + [
+            "session-open", "session-open", "session-close", "session-close",
+            "privileged-member", "sieve-member",
+        ]
+
+        findings = _run_with(common + anchors + needles, ids, templates)
+
+        self.assertEqual(len(findings), 1)
+        transaction = findings[0]
+        self.assertEqual(transaction.evidence["tier"], "transaction")
+        self.assertEqual(transaction.evidence["label"], "admin session")
+        self.assertEqual(transaction.evidence["member_count"], 2)
+        self.assertEqual(transaction.evidence["represented_line_count"], 2)
+        self.assertEqual(transaction.severity, Severity.MEDIUM)
+        self.assertIs(transaction.evidence["privileged"], True)
+        members = transaction.evidence["members"]
+        self.assertEqual({member["title"] for member in members}, {
+            "useradd: privileged member", "cron: sieve member",
+        })
+        privileged = next(member for member in members if member.get("privileged"))
+        self.assertEqual(privileged["severity"], "medium")
+
+    def test_run_collapses_update_members_across_programs_as_info(self) -> None:
+        common = [
+            {**_common_row(i), "program": "cron", "message": "cron: ordinary event"}
+            for i in range(50)
+        ]
+        anchors = [
+            {"ts": _BASE_TS + 200_000 + offset, "host": "h", "program": program,
+             "raw": message, "message": message}
+            for offset, program, message in (
+                (0, "dnf", "dnf[*]: starting update"),
+                (1, "dnf", "dnf[*]: starting update"),
+                (30, "rpm", "rpm[*]: installed package-example"),
+                (31, "rpm", "rpm[*]: installed package-example"),
+            )
+        ]
+        needles = [
+            {"ts": _BASE_TS + 200_010, "host": "h", "program": "cron",
+             "raw": "cron: update-side effect", "message": "cron: update-side effect"},
+            {"ts": _BASE_TS + 200_020, "host": "h", "program": "kernel",
+             "raw": "kernel: update-side effect", "message": "kernel: update-side effect"},
+        ]
+        ids = [1] * len(common) + [2, 2, 3, 3, 4, 5]
+        templates = ["ordinary"] * len(common) + [
+            "dnf-anchor", "dnf-anchor", "rpm-anchor", "rpm-anchor",
+            "cron-side-effect", "kernel-side-effect",
+        ]
+
+        findings = _run_with(common + anchors + needles, ids, templates)
+
+        self.assertEqual(len(findings), 1)
+        transaction = findings[0]
+        self.assertEqual(transaction.evidence["label"], "update run")
+        self.assertEqual(transaction.evidence["member_count"], 2)
+        self.assertEqual(transaction.severity, Severity.INFO)
+        self.assertNotIn("privileged", transaction.evidence)
+        self.assertEqual(transaction.evidence["program_mix"], [["cron", 1], ["kernel", 1]])
+
+    def test_recognize_transactions_false_bypasses_recognition(self) -> None:
+        rows = [
+            {"ts": _BASE_TS + i, "host": "h", "program": "cron",
+             "raw": f"rare-{i}", "message": f"rare-{i}"}
+            for i in range(2)
+        ]
+        with patch(
+            "sigwood.detectors.syslog._detect_transaction_events",
+            side_effect=AssertionError("recognizer must be bypassed"),
+        ):
+            findings = _run_with(
+                rows, [1, 2], ["rare-1", "rare-2"],
+                {"recognize_transactions": False, "family_min_size": 3},
+            )
+        self.assertEqual([finding.title for finding in findings], ["rare-0", "rare-1"])
+
+    def test_transaction_claim_window_is_inclusive_and_requires_whole_interval(self) -> None:
+        event = _TransactionEvent(
+            "admin session", "h", _BASE_TS + 100, _BASE_TS + 100,
+            _BASE_TS + 100 - TRANSACTION_LEAD_TOLERANCE_SECONDS,
+            _BASE_TS + 100 + TRANSACTION_TAIL_TOLERANCE_SECONDS,
+            (_BASE_TS + 100,),
+        )
+        inside_left = _stored_needle(event.claim_start_ts, "h", "inside-left")
+        inside_right = _stored_needle(event.claim_end_ts, "h", "inside-right")
+        outside_left = _stored_needle(event.claim_start_ts - 1, "h", "outside-left")
+        crossing = _make_burst_pair("h", event.claim_end_ts - 1, event.claim_end_ts + 1)
+
+        result = _reconcile_transactions(
+            [event], [inside_left, inside_right, outside_left, crossing],
+            now=_NOW, data_window=_WINDOW,
+        )
+
+        transaction = next(finding for _, finding in result
+                           if finding.evidence.get("tier") == "transaction")
+        self.assertEqual(
+            {member["title"] for member in transaction.evidence["members"]},
+            {"inside-left", "inside-right"},
+        )
+        self.assertTrue(any(finding is outside_left[1] for _, finding in result))
+        self.assertTrue(any(finding is crossing[1] for _, finding in result))
+
+    def test_transaction_overlap_uses_nearest_anchor_then_earlier_event(self) -> None:
+        first = _TransactionEvent(
+            "admin session", "h", _BASE_TS + 100, _BASE_TS + 100,
+            _BASE_TS, _BASE_TS + 300, (_BASE_TS + 100,),
+        )
+        second = _TransactionEvent(
+            "update run", "h", _BASE_TS + 200, _BASE_TS + 200,
+            _BASE_TS, _BASE_TS + 300, (_BASE_TS + 200,),
+        )
+        pairs = [
+            _stored_needle(_BASE_TS + 150, "h", "exact-tie"),
+            _stored_needle(_BASE_TS + 149, "h", "first-nearest"),
+            _stored_needle(_BASE_TS + 190, "h", "second-nearest"),
+            _stored_needle(_BASE_TS + 191, "h", "second-nearest-2"),
+        ]
+
+        result = _reconcile_transactions(
+            [second, first], pairs, now=_NOW, data_window=_WINDOW
+        )
+        by_label = {
+            finding.evidence["label"]: finding
+            for _, finding in result
+            if finding.evidence.get("tier") == "transaction"
+        }
+        self.assertEqual(
+            {member["title"] for member in by_label["admin session"].evidence["members"]},
+            {"exact-tie", "first-nearest"},
+        )
+        self.assertEqual(
+            {member["title"] for member in by_label["update run"].evidence["members"]},
+            {"second-nearest", "second-nearest-2"},
+        )
+
+    def test_transaction_reconciliation_conserves_all_stored_shapes_once(self) -> None:
+        def aggregate(
+            tier: str, title: str, start: float, end: float, count: int,
+            *, program: str, privileged: bool = False,
+        ) -> tuple[float, Finding]:
+            evidence: dict[str, object] = {
+                "tier": tier, "host": "h", "program": program,
+                "line_count": count, "start_ts": start, "end_ts": end,
+                "first_seen": datetime.fromtimestamp(start, timezone.utc).isoformat(),
+                "program_mix": [[program, count]], "label": None,
+            }
+            if privileged:
+                evidence["privileged"] = True
+            return start, Finding(
+                detector="syslog",
+                severity=Severity.MEDIUM if privileged else (
+                    Severity.INFO if tier == "burst" else Severity.LOW
+                ),
+                title=title, description="stored review unit", evidence=evidence,
+                next_steps=[], ts_generated=_NOW, data_window=_WINDOW,
+            )
+
+        event = _TransactionEvent(
+            "admin session", "h", _BASE_TS + 100, _BASE_TS + 200,
+            _BASE_TS, _BASE_TS + 300, (_BASE_TS + 100, _BASE_TS + 200),
+        )
+        shapes = [
+            aggregate("family", "h", _BASE_TS + 110, _BASE_TS + 120, 2,
+                      program="useradd", privileged=True),
+            _stored_needle(_BASE_TS + 130, "h", "member-needle",
+                           program="sshd", privileged=True),
+            aggregate("burst", "h", _BASE_TS + 140, _BASE_TS + 150, 3,
+                      program="cron"),
+            aggregate("family", "h", _BASE_TS + 160, _BASE_TS + 170, 2,
+                      program="kernel"),
+            _stored_needle(_BASE_TS + 180, "h", "sieve-needle", program="cron"),
+        ]
+        nan_member = _stored_needle(
+            float("nan"), "h", "nan-member", program="sudo", privileged=True
+        )
+        reboot = _reboot_finding(
+            _BootEvent("h", _BASE_TS + 150, _BASE_TS + 150, 1), _NOW, _WINDOW
+        )
+
+        result = _reconcile_transactions(
+            [event], [*shapes, nan_member, reboot], now=_NOW, data_window=_WINDOW
+        )
+
+        transactions = [finding for _, finding in result
+                        if finding.evidence.get("tier") == "transaction"]
+        self.assertEqual(len(transactions), 1)
+        transaction = transactions[0]
+        self.assertEqual(transaction.evidence["member_count"], 5)
+        self.assertEqual(transaction.evidence["represented_line_count"], 9)
+        self.assertEqual(len(transaction.evidence["members"]), 5)
+        self.assertEqual(sum(
+            member["represented_line_count"]
+            for member in transaction.evidence["members"]
+        ), 9)
+        self.assertTrue(any(finding is nan_member[1] for _, finding in result))
+        self.assertTrue(any(finding is reboot[1] for _, finding in result))
+        self.assertEqual(len(result), 3)
+
+    def test_transaction_reconciliation_degrades_without_claimable_host(self) -> None:
+        event = _TransactionEvent(
+            "admin session", "expected", _BASE_TS, _BASE_TS + 1,
+            _BASE_TS - 60, _BASE_TS + 121, (_BASE_TS, _BASE_TS + 1),
+        )
+        pairs = [
+            _stored_needle(_BASE_TS, "other", "one"),
+            _stored_needle(_BASE_TS + 1, "other", "two"),
+        ]
+        result = _reconcile_transactions(
+            [event], pairs, now=_NOW, data_window=_WINDOW
+        )
+        self.assertEqual(len(result), 2)
+        self.assertTrue(all(result[index][1] is pairs[index][1] for index in range(2)))
+
     # ── Reboot full-frame channel ─────────────────────────────────────────────
 
     def test_run_repeated_reboot_template_surfaces_every_boot(self) -> None:
@@ -1547,6 +1884,57 @@ class SyslogDetectorTests(unittest.TestCase):
         self.assertNotIn("template_id", joined)
         # Reboot line leads with the display-timezone timestamp from evidence.
         self.assertIn("May 30 02:14:00 · host1 · rebooted", joined)
+
+    def test_text_renderer_transaction_summary_and_verbose_members(self) -> None:
+        from sigwood.outputs._render_model import _partition_syslog
+        from sigwood.outputs.text import TextHandler
+
+        transaction = Finding(
+            detector="syslog", severity=Severity.MEDIUM, title="host-a",
+            description="Recognized administrative session activity.",
+            evidence={
+                "tier": "transaction", "label": "admin session", "host": "host-a",
+                "member_count": 2, "represented_line_count": 3,
+                "start_ts": _BASE_TS, "end_ts": _BASE_TS + 120,
+                "first_seen": datetime.fromtimestamp(_BASE_TS, timezone.utc).isoformat(),
+                "span_seconds": 120.0, "program_mix": [["useradd", 2], ["cron", 1]],
+                "members": [
+                    {"severity": "medium", "tier": "family",
+                     "represented_line_count": 2, "program": "useradd",
+                     "title": "safe\x1b<script>member</script>", "privileged": True},
+                    {"severity": "low", "tier": "needle",
+                     "represented_line_count": 1, "program": "cron",
+                     "title": "second-member"},
+                ],
+                "privileged": True,
+            },
+            next_steps=["Review the member findings"],
+            ts_generated=_NOW, data_window=_WINDOW,
+        )
+        sections = _partition_syslog([transaction])
+        self.assertEqual([(section.label, len(section.findings)) for section in sections], [
+            ("privileged", 1),
+        ])
+
+        level_zero = "\n".join(
+            TextHandler(verbose_level=0)._render_syslog_group(sections)
+        )
+        self.assertIn(
+            "host-a · admin session · 2 member findings · 2m · mostly useradd, cron",
+            level_zero,
+        )
+        self.assertNotIn("second-member", level_zero)
+
+        for level in (1, 2):
+            rendered = "\n".join(
+                TextHandler(verbose_level=level)._render_syslog_group(sections)
+            )
+            self.assertEqual(rendered.count("members:"), 1)
+            self.assertIn("[M] · useradd · family · 2 rare lines", rendered)
+            self.assertIn("safe<script>member</script>", rendered)
+            self.assertIn("[L] · cron · needle · 1 rare line", rendered)
+            self.assertNotIn("{'severity'", rendered)
+            self.assertNotIn("\x1b", rendered)
 
     def test_text_renderer_member_fragments_once_at_every_level(self) -> None:
         from sigwood.outputs.text import TextHandler

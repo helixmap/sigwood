@@ -6,6 +6,17 @@ All notable changes to sigwood are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **Recognized syslog transactions.** The syslog detector now folds an administrative
+  session (login through logout) or a system update run (package, kernel-module, and
+  policy activity) into one labeled review unit per host - for example `update run ·
+  4 member findings · 1m` - with every member finding preserved behind it: a compact
+  drill-down at `-v` in text, an expandable row in HTML, and complete member evidence
+  in JSON. Severity still comes only from the privileged program class; recognition
+  groups findings, it never grades them. Default on; `recognize_transactions = false`
+  under `[detectors.syslog]` restores the previous behavior exactly.
+
 ### Changed
 
 - **Steadier terminal narration.** The terminal cursor is hidden during narrated

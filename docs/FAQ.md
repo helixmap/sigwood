@@ -424,6 +424,20 @@ The shipped class is configuration, not a hidden rule. Copy the commented
 list replaces the shipped roster. A restart should not bury the day's real signal, and
 rarity alone should not overstate it.
 
+On top of rarity, sigwood recognizes two routine *transactions* the same way it recognizes
+reboots: an **admin session** (a login through its logout, anchored on the session
+open/close lines the system itself writes) and an **update run** (package-manager,
+kernel-module, and policy-reload activity). When several findings on one host fall inside
+one recognized transaction, they fold into a single labeled review unit - `Jul 12
+22:11:11 · webhost · update run · 4 member findings · 1m · mostly kernel, systemd` - with
+every member preserved behind it (`-v` in text, an expandable row in HTML, complete in
+JSON). One admin doing one system update reads as one line, not nineteen. Recognition only
+groups; it never decides severity - a unit is MEDIUM exactly when one of its members is
+from the privileged class, and a rare line that matches no transaction is left exactly as
+it was. If the pattern isn't there - an unfamiliar distro, a log that rotates mid-session -
+findings simply stay ungrouped, and `recognize_transactions = false` turns the whole thing
+off.
+
 ### `aws` - why a plain z-score instead of a fancy model?
 
 Because you have to be able to read *why* a principal was surfaced. The CloudTrail detector is

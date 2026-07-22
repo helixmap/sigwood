@@ -119,6 +119,41 @@ def test_syslog_family_evidence_is_lossless_and_nullable() -> None:
     assert payload["findings"][0]["evidence"] == evidence
 
 
+def test_syslog_transaction_evidence_is_additive_without_schema_bump() -> None:
+    evidence = {
+        "tier": "transaction",
+        "label": "update run",
+        "host": "host-a",
+        "member_count": 2,
+        "represented_line_count": 4,
+        "start_ts": 1.0,
+        "end_ts": 61.0,
+        "first_seen": "1970-01-01T00:00:01+00:00",
+        "span_seconds": 60.0,
+        "program_mix": [["dnf", 3], ["kernel", 1]],
+        "members": [
+            {"severity": "low", "tier": "family", "represented_line_count": 3,
+             "title": "host-a", "first_seen": "1970-01-01T00:00:02+00:00",
+             "program": "dnf"},
+            {"severity": "low", "tier": "needle", "represented_line_count": 1,
+             "title": "kernel: package event",
+             "first_seen": "1970-01-01T00:00:03+00:00", "program": "kernel"},
+        ],
+    }
+    transaction = Finding(
+        detector="syslog", severity=Severity.INFO, title="host-a",
+        description="Recognized system update activity.", evidence=evidence,
+        next_steps=["Review the member findings"],
+        ts_generated=datetime(2026, 6, 1, 18, 0, tzinfo=timezone.utc),
+        data_window=_W,
+    )
+
+    payload = _emit([transaction])
+
+    assert payload["schema_version"] == 1
+    assert payload["findings"][0]["evidence"] == evidence
+
+
 def test_syslog_needle_stamp_evidence_is_lossless_without_schema_bump() -> None:
     evidence = {
         "host": "host-journal",

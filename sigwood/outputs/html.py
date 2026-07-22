@@ -226,16 +226,20 @@ def _render_detail_row(finding: Finding, *, verbose_level: int, colspan: int) ->
 
 
 def _render_sample_details(finding: Finding, *, colspan: int) -> str:
-    """Screen-only full syslog member sample controlled by the severity pill.
+    """Screen-only syslog sample/member drilldown controlled by the pill.
 
     Every member reaches markup only through ``_esc``. Data never enters an
     attribute, URL, or CSS value. The whole row is hidden in print so a level-0
     PDF cannot disclose verbose evidence or an inert browser control.
     """
-    samples = _syslog_samples(finding)
-    if samples is None:
-        return ""
-    lines = "".join(_render_sample_line(line) for line in samples)
+    members = _syslog_transaction_members(finding)
+    if members is not None:
+        lines = "".join(_render_transaction_member_line(member) for member in members)
+    else:
+        samples = _syslog_samples(finding)
+        if samples is None:
+            return ""
+        lines = "".join(_render_sample_line(line) for line in samples)
     return (
         '<tr class="sample-detail"><td class="sev-cell"></td>'
         f'<td colspan="{colspan}"><div class="sample-detail-body">{lines}</div>'
@@ -253,6 +257,46 @@ def _syslog_samples(finding: Finding) -> "list[object] | tuple[object, ...] | No
     if not isinstance(samples, (list, tuple)) or not samples:
         return None
     return samples[:20]
+
+
+def _syslog_transaction_members(
+    finding: Finding,
+) -> "list[object] | tuple[object, ...] | None":
+    """Return conserved transaction members that earn a pill drilldown."""
+    if finding.detector != "syslog" or finding.evidence.get("tier") != "transaction":
+        return None
+    members = finding.evidence.get("members")
+    if not isinstance(members, (list, tuple)) or not members:
+        return None
+    return members
+
+
+def _render_transaction_member_line(member: object) -> str:
+    """Render one transaction member summary through the HTML choke point."""
+    if not isinstance(member, dict):
+        return f'<div class="sample-line transaction-member">{_esc(member)}</div>'
+    severity = str(member.get("severity", "info"))[:1].upper() or "I"
+    program = member.get("program")
+    if program is None:
+        mix = member.get("program_mix")
+        if isinstance(mix, (list, tuple)):
+            program = ", ".join(
+                str(item[0])
+                for item in mix
+                if isinstance(item, (list, tuple)) and item
+            )
+    try:
+        count = int(member.get("represented_line_count", 1))
+    except (TypeError, ValueError):
+        count = 1
+    line = " · ".join([
+        f"[{severity}]",
+        str(program or "unknown"),
+        str(member.get("tier", "needle")),
+        f"{count} {plural(count, 'rare line')}",
+        str(member.get("title", "")),
+    ])
+    return f'<div class="sample-line transaction-member">{_esc(line)}</div>'
 
 
 def _render_sample_line(line: object) -> str:
@@ -313,7 +357,10 @@ def _render_finding_row(
     pill_value = (
         f'<span class="pill {sev_class}">{_esc(str(finding.severity))}</span>'
     )
-    if _syslog_samples(finding) is not None:
+    if (
+        _syslog_samples(finding) is not None
+        or _syslog_transaction_members(finding) is not None
+    ):
         pill_value = (
             '<details class="row-toggle"><summary>'
             f'{pill_value}</summary></details>'

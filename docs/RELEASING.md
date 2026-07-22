@@ -165,7 +165,7 @@ PY
 )
 
 git add CHANGELOG.md README.md sigwood/__init__.py
-git commit -m "sigwood $VERSION"
+git commit -m "sigwood $VERSION final"
 git push origin main
 ```
 
@@ -318,7 +318,7 @@ This starts the production release workflow against the exact tagged commit:
 ```bash
 if test -z "$(git tag --list "$TAG")" &&
   test -z "$(git ls-remote --tags origin "refs/tags/$TAG")" &&
-  git tag -a "$TAG" -m "sigwood $TAG" &&
+  git tag -a "$TAG" -m "sigwood $TAG tag" &&
   git show --no-patch --decorate "$TAG" &&
   git push origin "$TAG"; then
   printf 'pushed %s\n' "$TAG"

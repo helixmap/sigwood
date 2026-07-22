@@ -78,6 +78,7 @@ enabled = true   # master switch; false disables ALL suppression every run
 #                   additive - to replace a shipped list, disable it:
 #                   `sigwood allowlist disable common`)
 #   connections*  → numeric flow suppressions (start blank, add after review)
+#   hosts*        → system-log host suppressions (start blank; silences the whole host's story)
 #   *.toml        → structured stanzas (all loaded; today these suppress too)
 # Any OTHER dot, or a trailing ~, means "not a list": a dotted prefixed copy like
 # domains_user.bak will not load (the readout nudges you to rename it); to park a

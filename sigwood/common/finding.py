@@ -77,12 +77,13 @@ class SuppressionSummary:
     """Per-run allowlist coverage, surfaced on the run-summary banner.
 
     ``enabled`` is the effective master state for THIS run (false when
-    ``--no-allowlist`` or a false master switch). ``connections`` / ``domains``
-    are scope-blind counts of rows the allowlist covers across the loaded frames
-    - "how much of the data the allowlist suppresses", not a per-detector view.
-    ``connection_total`` / ``domain_total`` are the row totals of the eligible
-    frames per kind - the denominators behind the banner's suppression percentage
-    (row-based, matching the row-count numerators).
+    ``--no-allowlist`` or a false master switch). ``connections`` / ``domains`` /
+    ``host_rows`` are scope-blind counts of rows the allowlist covers across the
+    loaded frames - "how much of the data the allowlist suppresses", not a
+    per-detector view. ``connection_total`` / ``domain_total`` / ``host_total``
+    are the row totals of eligible frames per kind. The first two are denominators
+    behind the banner percentages; host coverage is disclosed as rows and
+    distinct matched hosts.
     """
 
     enabled: bool
@@ -90,6 +91,9 @@ class SuppressionSummary:
     domains: int
     connection_total: int = 0
     domain_total: int = 0
+    host_rows: int = 0
+    host_total: int = 0
+    hosts_matched: int = 0
 
 
 @dataclass

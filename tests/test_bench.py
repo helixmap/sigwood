@@ -451,6 +451,23 @@ def test_projection_handles_nullable_shapes_span_and_absent_header() -> None:
     assert summary["level_hidden"] == {"duration": 1}
 
 
+def test_payload_validation_accepts_exact_host_suppression_keys() -> None:
+    raw = _payload()
+    raw["run_summary"]["suppression"] = {
+        "enabled": True,
+        "connections": 1,
+        "domains": 2,
+        "connection_total": 10,
+        "domain_total": 20,
+        "host_rows": 3,
+        "host_total": 30,
+        "hosts_matched": 2,
+    }
+    assert bench_summarize._validate_payload(raw)["run_summary"]["suppression"] == (
+        raw["run_summary"]["suppression"]
+    )
+
+
 def test_config_hash_is_salted_path_redacted_and_behavior_sensitive() -> None:
     salt = "0123456789abcdef0123456789abcdef"
     config = _projection_config()

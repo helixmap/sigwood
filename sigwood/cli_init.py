@@ -118,7 +118,7 @@ _SEARCH_HOMES: tuple[str, ...] = ("~/.sigwood", "/etc/sigwood")
 
 # Flat allowlist drop-in templates seeded into <home>/allowlist.d on a fresh
 # init (and re-seeded on reset-allowlist). Curated lists are NOT copied.
-_ALLOWLIST_SEED_FILES: tuple[str, ...] = ("domains_user", "connections")
+_ALLOWLIST_SEED_FILES: tuple[str, ...] = ("domains_user", "connections", "hosts")
 
 _DEFAULT_ROOT: str = "~/.sigwood"
 _SYSTEM_ROOT: str = "/etc/sigwood"
@@ -153,8 +153,8 @@ def _classify_dropin(name: str) -> str | None:
     """Stdlib MIRROR of allowlist._classify_dropin - cli_init cannot import
     common/allowlist (stdlib-only boundary), so the dot rule is mirrored here and a
     drift test pins the two identical. Classify an allowlist.d entry BY NAME:
-    "domain" | "numeric" | "stanza" | None. Clause order IS the spec. The reset
-    deleter reads this to unlink only files classifying "domain" / "numeric"."""
+    "domain" | "numeric" | "host" | "stanza" | None. Clause order IS the spec.
+    The reset deleter reads this to unlink only files classifying as flat lists."""
     if name.startswith("."):        # hidden
         return None
     if name.endswith("~"):          # editor backup
@@ -167,6 +167,8 @@ def _classify_dropin(name: str) -> str | None:
         return "domain"
     if name.startswith("connections"):
         return "numeric"
+    if name.startswith("hosts"):
+        return "host"
     return None
 
 
@@ -1497,15 +1499,17 @@ def _seed_allowlist_d(allowlist_d: Path, *, private: bool = True) -> None:
 
 
 def _reset_allowlist_d(allowlist_d: Path, *, private: bool = True) -> None:
-    """Delete ONLY the dot-free prefixed drop-ins (domains* / connections*) that
-    classify as a suppression list, then re-seed blanks. PRESERVES *.toml stanzas,
+    """Delete ONLY dot-free domains* / connections* / hosts* drop-ins that
+    classify as suppression lists, then re-seed blanks. PRESERVES *.toml stanzas,
     any DOTTED name (including a legacy connections.txt), hidden and ~-terminated
     names, subdirectories, and dot-free UNPREFIXED names (e.g. notes). A dot-free
     prefixed file IS claimed by the reserved namespace and is deleted. Curated
     package lists live in the package, never here, so they are untouched."""
     if allowlist_d.is_dir():
         for f in sorted(allowlist_d.iterdir()):
-            if f.is_file() and _classify_dropin(f.name) in ("domain", "numeric"):
+            if f.is_file() and _classify_dropin(f.name) in (
+                "domain", "numeric", "host"
+            ):
                 f.unlink()
     _seed_allowlist_d(allowlist_d, private=private)
 

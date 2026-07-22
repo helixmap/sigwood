@@ -153,6 +153,8 @@ def _unit(kind: str, count: int) -> str:
     """Display unit for a list's loadable count."""
     if kind == "domain":
         return plural(count, "domain")
+    if kind == "host":
+        return plural(count, "pattern")
     return plural(count, "rule")
 
 
@@ -184,7 +186,7 @@ def _show(rest: list[str], config_path: str | None) -> None:
             f"shipped: {', '.join(spec.name for spec in al._SHIPPED_LISTS)}"
         )
 
-    if rl.kind == "domain":
+    if rl.kind in ("domain", "host"):
         out = al.load_pattern_file(rl.path)
     else:
         out = [_format_numeric_rule(r) for r in al.load_numeric_rule_file(rl.path)]

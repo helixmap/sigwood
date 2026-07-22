@@ -72,6 +72,65 @@ def test_master_off_resolver_returns_complete_plan() -> None:
     }
 
 
+def test_host_dropins_resolve_sorted_deduped_after_numeric(
+    tmp_path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(al, "_SHIPPED_LISTS", ())
+    dropins = tmp_path / "allowlist.d"
+    dropins.mkdir()
+    (dropins / "domains_z").write_text("z.example\n", encoding="utf-8")
+    (dropins / "connections_z").write_text(":443\n", encoding="utf-8")
+    first = dropins / "hosts_a"
+    first.write_text("lab-*\n# note\nre:^kiosk-[0-9]+$\n", encoding="utf-8")
+    (dropins / "hosts_b").symlink_to(first)
+    config = {
+        "sigwood": {"root": str(tmp_path)},
+        "allowlist": {
+            "allowlist_dir": "allowlist.d", "domain_patterns": [],
+            "connection_rules": [],
+        },
+    }
+
+    plan = al.resolve_allowlist_plan(config)
+    dropin_lists = [item for item in plan.lists if item.origin == "dropin"]
+    assert [(item.name, item.kind) for item in dropin_lists] == [
+        ("domains_z", "domain"),
+        ("connections_z", "numeric"),
+        ("hosts_a", "host"),
+    ]
+    host = dropin_lists[-1]
+    assert host.enabled is True
+    assert host.state_reason == "drop-in"
+    assert host.pattern_count == 2
+
+
+def test_master_and_force_off_leave_host_rules_inert(tmp_path) -> None:
+    dropins = tmp_path / "allowlist.d"
+    dropins.mkdir()
+    (dropins / "hosts_lab").write_text("lab-*\n", encoding="utf-8")
+    base = {
+        "sigwood": {"root": str(tmp_path)},
+        "allowlist": {"allowlist_dir": "allowlist.d"},
+    }
+    off_config = {
+        **base,
+        "allowlist": {"allowlist_dir": "allowlist.d", "enabled": False},
+    }
+    plan = al.resolve_allowlist_plan(off_config)
+    assert any(item.kind == "host" for item in plan.lists)
+    assert al.matcher_from_plan(plan)._host_patterns == []
+
+    on_plan = al.resolve_allowlist_plan(base)
+    assert al.matcher_from_plan(on_plan, force_off=True)._host_patterns == []
+
+
+def test_host_count_short_circuits_without_patterns_or_column() -> None:
+    matcher = al.AllowlistMatcher()
+    assert matcher.count_host_suppressed(pd.DataFrame({"host": ["lab-a"]})) == (0, set())
+    matcher = al.AllowlistMatcher(host_patterns=["lab-*"])
+    assert matcher.count_host_suppressed(pd.DataFrame({"message": ["x"]})) == (0, set())
+
+
 # ── matcher_from_plan ─────────────────────────────────────────────────────────
 
 

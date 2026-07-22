@@ -11,10 +11,12 @@ from __future__ import annotations
 
 import io
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 
 from sigwood import runner
 from sigwood.common import config as cfg
+from sigwood.common.display import fmt_suppression
 from sigwood.common.finding import RunSummary, SuppressionSummary
 from sigwood.outputs.html import HtmlHandler
 from sigwood.outputs.json import JsonHandler
@@ -88,6 +90,27 @@ def test_banner_both_kinds_connections_first() -> None:
     )
 
 
+def test_banner_three_clauses_hosts_last_without_percent() -> None:
+    summary = SuppressionSummary(
+        True, 1_284, 312, 2_568, 624,
+        host_rows=9_412, host_total=10_000, hosts_matched=2,
+    )
+    assert fmt_suppression(summary) == (
+        "suppressed 1,284 connections (50%) and 312 domains (50%) and "
+        "9,412 rows from 2 hosts"
+    )
+    assert "hosts (" not in fmt_suppression(summary)
+
+
+def test_banner_hosts_only_real_plurals() -> None:
+    assert "suppressed 2 rows from 1 host" in _banner(
+        SuppressionSummary(True, 0, 0, host_rows=2, hosts_matched=1)
+    )
+    assert "suppressed 1 row from 2 hosts" in _banner(
+        SuppressionSummary(True, 0, 0, host_rows=1, hosts_matched=2)
+    )
+
+
 def test_banner_single_kind_drops_other_clause() -> None:
     s = SuppressionSummary(True, 1, 0, 4, 0)
     assert "allowlist:     suppressed 1 connection (25%)" in _banner(s)
@@ -135,7 +158,10 @@ def test_json_serializes_raw_suppression() -> None:
         data_window=(__import__("datetime").datetime(2026, 6, 1),
                      __import__("datetime").datetime(2026, 6, 1, 6)),
         record_counts={}, data_size_bytes=0, detectors_run=[], detectors_skipped={},
-        suppression=SuppressionSummary(True, 5, 7, 50, 70),
+        suppression=SuppressionSummary(
+            True, 5, 7, 50, 70,
+            host_rows=9, host_total=90, hosts_matched=2,
+        ),
     ))
     h.write([])
     h.end()
@@ -143,6 +169,7 @@ def test_json_serializes_raw_suppression() -> None:
     assert payload["run_summary"]["suppression"] == {
         "enabled": True, "connections": 5, "domains": 7,
         "connection_total": 50, "domain_total": 70,
+        "host_rows": 9, "host_total": 90, "hosts_matched": 2,
     }
 
 
@@ -153,7 +180,7 @@ def test_html_renders_visible_suppression_row(tmp_path: Path) -> None:
         data_window=(__import__("datetime").datetime(2026, 6, 1),
                      __import__("datetime").datetime(2026, 6, 1, 6)),
         record_counts={}, data_size_bytes=0, detectors_run=[], detectors_skipped={},
-        suppression=SuppressionSummary(True, 5, 7),
+        suppression=SuppressionSummary(True, 5, 7, host_rows=9, hosts_matched=2),
     ))
     h.write([])
     h.end()
@@ -161,7 +188,117 @@ def test_html_renders_visible_suppression_row(tmp_path: Path) -> None:
     # The header renders a lowercase `allowlist` meta-label + the shared
     # fmt_suppression value (escaped) in its own span.
     assert "allowlist" in text
-    assert "suppressed 5 connections and 7 domains" in text
+    assert "suppressed 5 connections and 7 domains and 9 rows from 2 hosts" in text
+
+
+def _host_suppression_env(tmp_path: Path) -> tuple[dict, Path, Path]:
+    flat = tmp_path / "flat"
+    flat.mkdir()
+    (flat / "system.log").write_text(
+        "Jul 21 12:00:00 Chatty-Lab sshd[10]: accepted from 192.0.2.10\n"
+        "Jul 21 12:00:01 keep-lab cron[11]: job started\n",
+        encoding="utf-8",
+    )
+    zeek = tmp_path / "zeek"
+    zeek.mkdir()
+    ts = datetime(2026, 7, 21, 12, tzinfo=timezone.utc).timestamp()
+    records = [
+        {
+            "_path": "syslog", "ts": ts, "uid": "C1",
+            "id.orig_h": "192.0.2.10", "id.orig_p": 40001,
+            "id.resp_h": "198.51.100.20", "id.resp_p": 514,
+            "proto": "udp", "facility": "DAEMON", "severity": "INFO",
+            "message": "Jul 21 12:00:02 Chatty-Lab sshd[12]: session closed",
+        },
+        {
+            "_path": "syslog", "ts": ts + 3, "uid": "C2",
+            "id.orig_h": "192.0.2.11", "id.orig_p": 40002,
+            "id.resp_h": "198.51.100.20", "id.resp_p": 514,
+            "proto": "udp", "facility": "DAEMON", "severity": "INFO",
+            "message": "Jul 21 12:00:03 other-lab kernel: link ready",
+        },
+    ]
+    (zeek / "syslog.log").write_text(
+        "".join(json.dumps(record) + "\n" for record in records),
+        encoding="utf-8",
+    )
+    allowlist_d = tmp_path / "allowlist.d"
+    allowlist_d.mkdir()
+    (allowlist_d / "hosts").write_text("chatty-*\n", encoding="utf-8")
+    (allowlist_d / "hosts_bad").write_text(
+        "# first\nre:(bad-open\n", encoding="utf-8",
+    )
+    config = {
+        "sigwood": {"root": str(tmp_path), "default_window": ""},
+        "allowlist": {
+            "enabled": True, "allowlist_dir": "allowlist.d",
+            "domain_patterns": [], "connection_rules": [],
+        },
+    }
+    return config, flat, zeek
+
+
+def test_host_suppression_real_two_feed_text_and_json_e2e(
+    tmp_path: Path, capsys,
+) -> None:
+    config, flat, zeek = _host_suppression_env(tmp_path)
+    kwargs = {
+        "detect": "syslog", "syslog_dir": str(flat), "zeek_dir": str(zeek),
+        "syslog_source": "files", "quiet": True,
+    }
+
+    assert runner.run(config, **kwargs) == 0
+    text = capsys.readouterr().out
+    assert "suppressed 2 rows from 1 host" in text
+    assert "keep-lab" in text and "other-lab" in text
+    assert "chatty-lab" not in text.lower()
+    assert "hosts_bad:2: malformed pattern skipped (re:(bad-open)" in " ".join(
+        text.split()
+    )
+
+    assert runner.run(config, output_format="json", **kwargs) == 0
+    payload = json.loads(capsys.readouterr().out)
+    suppression = payload["run_summary"]["suppression"]
+    assert suppression["host_rows"] == 2
+    assert suppression["host_total"] == 4
+    assert suppression["hosts_matched"] == 1
+    rendered = json.dumps(payload["findings"]).lower()
+    assert "keep-lab" in rendered and "other-lab" in rendered
+    assert "chatty-lab" not in rendered
+
+
+def test_host_suppression_no_allowlist_is_inert(tmp_path: Path, capsys) -> None:
+    config, flat, zeek = _host_suppression_env(tmp_path)
+    assert runner.run(
+        config, detect="syslog", syslog_dir=str(flat), zeek_dir=str(zeek),
+        syslog_source="files", no_allowlist=True, quiet=True,
+    ) == 0
+    text = capsys.readouterr().out.lower()
+    assert "allowlist:     off" in text
+    assert "chatty-lab" in text
+
+
+def test_runner_coverage_query_frame_never_counts_as_host(
+    tmp_path: Path, capsys,
+) -> None:
+    config, flat, zeek = _host_suppression_env(tmp_path)
+    (tmp_path / "allowlist.d" / "hosts").write_text("pihole*\n", encoding="utf-8")
+    pihole = tmp_path / "pihole"
+    pihole.mkdir()
+    (pihole / "pihole.log").write_text(
+        "Jul 21 12:00:00 dnsmasq[1]: query[A] keep.test from 192.0.2.10\n",
+        encoding="utf-8",
+    )
+
+    assert runner.run(
+        config, detect="syslog,dns", syslog_dir=str(flat), zeek_dir=str(zeek),
+        pihole_dir=str(pihole), syslog_source="files", output_format="json",
+        quiet=True,
+    ) == 0
+    suppression = json.loads(capsys.readouterr().out)["run_summary"]["suppression"]
+    assert suppression["domain_total"] == 1
+    assert suppression["host_total"] == 4
+    assert suppression["host_rows"] == 0
 
 
 # ── runner seam (real run) ────────────────────────────────────────────────────

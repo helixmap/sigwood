@@ -1338,6 +1338,7 @@ def test_reset_allowlist_removes_dropins_reseeds_preserves(
     ad.mkdir()
     (ad / "domains_extra").write_text("x.example.com\n", encoding="utf-8")
     (ad / "connections_local").write_text("192.0.2.1\n", encoding="utf-8")
+    (ad / "hosts_lab").write_text("lab-*\n", encoding="utf-8")
     (ad / "keep.toml").write_text("[[allowlist.entry]]\nmatch = 'example.com'\n", encoding="utf-8")
     (ad / "notes.txt").write_text("personal notes\n", encoding="utf-8")
     (home / "exports").mkdir()
@@ -1349,8 +1350,10 @@ def test_reset_allowlist_removes_dropins_reseeds_preserves(
 
     assert not (ad / "domains_extra").exists()             # drop-in removed
     assert not (ad / "connections_local").exists()
+    assert not (ad / "hosts_lab").exists()
     assert (ad / "domains_user").exists()                  # re-seeded blank
     assert (ad / "connections").exists()
+    assert (ad / "hosts").exists()
     assert (ad / "keep.toml").exists()                         # stanza preserved
     assert (ad / "notes.txt").exists()                         # unrecognized preserved
     assert (home / "exports" / "k").exists()                   # data dir untouched
@@ -1401,7 +1404,18 @@ def test_fresh_seeds_allowlist_d(
     ad = home / "allowlist.d"
     assert (ad / "domains_user").exists()              # seeded
     assert (ad / "connections").exists()
+    assert (ad / "hosts").exists()
     assert not (ad / "domains_common").exists()        # curated NOT copied
+
+
+def test_allowlist_seed_is_idempotent_for_hosts(tmp_path: Path) -> None:
+    allowlist_d = tmp_path / "allowlist.d"
+    cli._seed_allowlist_d(allowlist_d)
+    hosts = allowlist_d / "hosts"
+    hosts.write_text("lab-*\n", encoding="utf-8")
+
+    cli._seed_allowlist_d(allowlist_d)
+    assert hosts.read_text(encoding="utf-8") == "lab-*\n"
 
 
 def test_custom_home_redetect_discards_stale_source_answers(
@@ -1501,6 +1515,7 @@ def test_reset_allowlist_honors_custom_allowlist_dir(
     assert not (custom / "domains_site").exists()         # configured dir reset
     assert (custom / "domains_user").exists()             # re-seeded there
     assert (custom / "connections").exists()
+    assert (custom / "hosts").exists()
     assert not (home / "allowlist.d").exists()                # default dir NOT touched
 
 
@@ -2516,10 +2531,12 @@ def test_classify_dropin_mirrors_allowlist() -> None:
     in ~ is in the table so a prefix-only mirror fails."""
     from sigwood.common import allowlist as al
     names = [
-        "domains_user", "connections_local", "domains", "connections",
-        "domains_user.txt", "connections.txt", "domains_user.bak", "x.toml",
+        "domains_user", "connections_local", "hosts_lab",
+        "domains", "connections", "hosts",
+        "domains_user.txt", "connections.txt", "hosts.bak",
+        "domains_user.bak", "x.toml", "hosts.toml",
         "domains_user.toml", ".hidden", "domains_user~", "domains_user~.bak",
-        "notes", "legacy.txt", "domains_readme", "domains_x.toml~",
+        "hosts~", "notes", "legacy.txt", "domains_readme", "domains_x.toml~",
     ]
     for n in names:
         assert cli._classify_dropin(n) == al._classify_dropin(n), n
@@ -2529,7 +2546,7 @@ def test_reset_allowlist_deletes_only_dotfree_prefixed(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
     """The destructive guard that must never regress. reset-allowlist unlinks ONLY
-    dot-free prefixed drop-ins (domains* / connections*), INCLUDING a reserved-
+    dot-free prefixed drop-ins (domains* / connections* / hosts*), INCLUDING a reserved-
     namespace domains_readme. Everything else survives: a *.toml stanza, a dotted
     backup, a legacy dotted connections.txt, a dot-free UNPREFIXED file, a hidden
     file, a ~ backup, and a subdirectory. The two seed templates are re-created."""
@@ -2541,25 +2558,34 @@ def test_reset_allowlist_deletes_only_dotfree_prefixed(
     # deleted - dot-free prefixed (the last one is the reserved-namespace edge):
     (ad / "domains_extra").write_text("x.example.com\n", encoding="utf-8")
     (ad / "connections_local").write_text("192.0.2.1\n", encoding="utf-8")
+    (ad / "hosts_lab").write_text("lab-*\n", encoding="utf-8")
     (ad / "domains_readme").write_text("*.example\n", encoding="utf-8")
     # preserved:
     (ad / "keep.toml").write_text("[[allowlist.entry]]\nmatch = 'example.com'\n", encoding="utf-8")
     (ad / "domains_user.bak").write_text("x.example.com\n", encoding="utf-8")
     (ad / "connections.txt").write_text("192.0.2.9\n", encoding="utf-8")   # legacy dotted survives
+    (ad / "hosts.bak").write_text("lab-*\n", encoding="utf-8")
+    (ad / "hosts~").write_text("lab-*\n", encoding="utf-8")
+    (ad / "hosts.toml").write_text(
+        "[[allowlist.entry]]\nmatch = 'dst_port'\nvalue = 22\n", encoding="utf-8",
+    )
     (ad / "notes").write_text("dot-free unprefixed\n", encoding="utf-8")
     (ad / ".hidden").write_text("hidden\n", encoding="utf-8")
     (ad / "backup~").write_text("editor backup\n", encoding="utf-8")
     (ad / "domains_sub").mkdir()
+    (ad / "hosts_x").mkdir()
 
     _stub_candidates(monkeypatch)
     _stage_inputs(monkeypatch, ["r", "a", "reset"])
     cli._run_init([])
 
-    for gone in ("domains_extra", "connections_local", "domains_readme"):
+    for gone in ("domains_extra", "connections_local", "hosts_lab", "domains_readme"):
         assert not (ad / gone).exists(), gone
     for kept in ("keep.toml", "domains_user.bak", "connections.txt", "notes",
-                 ".hidden", "backup~"):
+                 "hosts.bak", "hosts~", "hosts.toml", ".hidden", "backup~"):
         assert (ad / kept).exists(), kept
     assert (ad / "domains_sub").is_dir()          # subdir untouched
+    assert (ad / "hosts_x").is_dir()
     assert (ad / "domains_user").exists()         # re-seeded blank
     assert (ad / "connections").exists()
+    assert (ad / "hosts").exists()

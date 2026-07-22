@@ -344,8 +344,8 @@ sigwood never changes permissions on directories it didn't create. A system-wide
 sigwood filters **before** it analyzes: known-harmless traffic is dropped before any detector
 sees it, so signal isn't buried in plumbing. Two kinds of allowlist file:
 
-- **Flat files = suppression.** One rule per line - an IP, a CIDR, a `:port/proto`, or a domain
-  glob/regex. Matching traffic is dropped before any detector runs.
+- **Flat files = suppression.** One rule per line - an IP, a CIDR, a `:port/proto`, a domain
+  glob/regex, or a system-log host pattern. Matching traffic is dropped before any detector runs.
 - **TOML stanzas = structured suppression.** The same drop, expressed as an entry that carries a
   comment and an optional per-detector scope (`detectors = ["duration"]`). A richer
   classification role - telling a detector *what* something is - is planned, but no shipped
@@ -360,8 +360,8 @@ sigwood ships three curated **domain** lists, toggled by name:
 | `homelab` | off | self-hosted tooling (Splunk, Proxmox, UniFi, …) - opt-in, since suppressing a product you run is a real blind spot |
 
 Nothing ad-, tracking-, or destination-specific ships - opinions differ and you may want to see
-those. sigwood never ships numeric connection suppressions (those depend on your hosts, and
-shipping them could hide real findings).
+those. sigwood never ships numeric connection or host suppressions (both depend on your
+environment, and shipping them could hide real findings).
 
 ```bash
 sigwood allowlist                 # what's loaded, each list's on/off state and size
@@ -374,11 +374,15 @@ sigwood allowlist copy common     # fork a shipped list into your allowlist.d to
 Toggles can also be set under `[allowlist.lists]` in config; the whole allowlist turns off for
 one run with `--no-allowlist` or permanently with `enabled = false`. Every detect run discloses
 its coverage on the banner (`allowlist: suppressed 1,284 connections (12%) and 312 domains
-(59%)` - the share of loaded rows suppressed, per kind), so a surprising suppression rate is
-visible at a glance.
+(59%)` - the share of loaded rows suppressed, per kind; host suppression adds a third clause,
+`9,412 rows from 2 hosts`), so a surprising suppression rate is visible at a glance.
 
 Add your own in any `domains_*` file under `~/.sigwood/allowlist.d/` (the shipped `domains_user`
-is a starter). Drop-ins are additive and survive upgrades; to replace a shipped list, `disable`
+is a starter). A chatty machine's system logs can be silenced whole-host: one glob or `re:`
+pattern per line in the `hosts` file there, matched against the syslog host column across every
+feed (flat files, the journal, Zeek `syslog.log`) - it removes that host's entire system-log
+story, reboots and update runs included, so prefer narrow patterns. Drop-ins are additive and
+survive upgrades; to replace a shipped list, `disable`
 it and add your own. A bare host IP with no port suppresses *all* traffic involving that host - powerful
 but dangerous, and flagged as such wherever it appears.
 

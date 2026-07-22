@@ -2,7 +2,8 @@
 
 ``build_matcher`` (via ``resolve_allowlist_plan`` + ``matcher_from_plan``)
 discovers flat suppression files in the resolved allowlist_dir by the dot rule -
-dot-free ``domains*`` (domain globs) and ``connections*`` (numeric rules) -
+dot-free ``domains*`` (domain globs), ``connections*`` (numeric rules), and
+``hosts*`` (system-log host patterns) -
 alongside the long-standing ``*.toml`` classification stanzas. The shipped curated
 lists form a base; EVERY drop-in is ADDITIVE (there is no same-basename
 shadow - replacing a shipped list is ``allowlist disable <name>``). Explicit
@@ -48,18 +49,20 @@ def _one_shipped(monkeypatch: pytest.MonkeyPatch, path: Path) -> None:
     monkeypatch.setattr(allowlist, "_shipped_path", lambda s: path)
 
 
-def test_domains_and_connections_dropins_auto_load(
+def test_all_three_flat_dropin_kinds_auto_load(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
     _isolate_shipped(monkeypatch)
     d = _mk_allowlist_d(tmp_path)
     (d / "domains_site").write_text("*.internal.example.com\n", encoding="utf-8")
     (d / "connections_local").write_text("192.0.2.10  :443/tcp\n", encoding="utf-8")
+    (d / "hosts_lab").write_text("lab-*\n", encoding="utf-8")
 
     matcher = allowlist.build_matcher(_config(tmp_path))
 
     assert matcher.is_domain_allowed("host.internal.example.com")
     assert len(matcher._numeric_rules) == 1
+    assert matcher._host_patterns == ["lab-*"]
 
 
 def test_dropin_basename_is_now_additive_to_shipped_list(
@@ -199,12 +202,17 @@ def test_classify_dropin_table() -> None:
     assert c("domains") == "domain"              # bare prefix classifies
     assert c("connections_local") == "numeric"
     assert c("connections") == "numeric"
+    assert c("hosts_lab") == "host"
+    assert c("hosts") == "host"
     assert c("domains_user.txt") is None         # any other dot: ignored
     assert c("domains_user.bak") is None
+    assert c("hosts.bak") is None
     assert c("x.toml") == "stanza"
     assert c("domains_user.toml") == "stanza"    # clause 3 precedes the prefix clauses
+    assert c("hosts.toml") == "stanza"
     assert c(".hidden") is None                  # hidden
     assert c("domains_user~") is None            # editor backup
+    assert c("hosts~") is None
     assert c("notes") is None                    # dot-free unprefixed
     assert c("legacy.txt") is None
 
@@ -214,6 +222,7 @@ def test_ignored_suggestion_table() -> None:
     assert s("domains_user.txt") == "domains_user"
     assert s("connections.txt") == "connections"
     assert s("domains_user.bak") == "domains_user"
+    assert s("hosts.bak") == "hosts"
     # recognized-AS-the-branch, not merely prefixed: a prefixed head that ends in ~,
     # or a ~-terminated name whose head classifies, stays silent - a prefix-only
     # implementation would wrongly suggest an inert name.
@@ -221,6 +230,7 @@ def test_ignored_suggestion_table() -> None:
     assert s("domains_x.toml~") is None          # ~-terminated name, head classifies
     assert s("domains_user") is None             # loads as a list, not ignored
     assert s("domains_user.toml") is None        # loads as a stanza
+    assert s("hosts.toml") is None
     assert s("legacy.txt") is None               # head unprefixed
     assert s("notes") is None
     assert s(".hidden") is None
@@ -256,6 +266,27 @@ def test_reserved_namespace_prefixed_dotfree_loads(
     assert allowlist._classify_dropin("domains_readme") == "domain"
     matcher = allowlist.build_matcher(_config(tmp_path))
     assert matcher.is_domain_allowed("host.example")
+
+
+def test_directory_named_hosts_never_loads(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """Classification is name-only, but discovery gates regular files."""
+    _isolate_shipped(monkeypatch)
+    d = _mk_allowlist_d(tmp_path)
+    (d / "hosts_x").mkdir()
+
+    plan = allowlist.resolve_allowlist_plan(_config(tmp_path))
+    assert not any(item.kind == "host" for item in plan.lists)
+    assert allowlist.build_matcher(_config(tmp_path))._host_patterns == []
+
+
+def test_packaged_hosts_template_has_no_active_patterns() -> None:
+    path = Path(allowlist.__file__).parent.parent / "data" / "allowlist" / "hosts"
+    assert allowlist.load_pattern_file(path) == []
+    text = path.read_text(encoding="utf-8")
+    assert "ENTIRE system-log story" in text
+    assert "rarity is relative to the loaded corpus" in text
 
 
 def test_stale_dotted_dropin_does_not_suppress(

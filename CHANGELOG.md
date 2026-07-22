@@ -16,6 +16,16 @@ All notable changes to sigwood are recorded here. The format follows
   in JSON. Severity still comes only from the privileged program class; recognition
   groups findings, it never grades them. Default on; `recognize_transactions = false`
   under `[detectors.syslog]` restores the previous behavior exactly.
+- **Host suppression allowlist.** A third flat-list kind silences a chatty machine's
+  system logs whole-host: dot-free `hosts*` drop-ins in `allowlist.d/` (one fnmatch glob
+  or `re:` regex per line, matched case-insensitively against the syslog host column),
+  applied before analysis across all three syslog feeds - flat files, the system journal,
+  and Zeek `syslog.log`. DNS and connection logs are untouched. The run banner gains a
+  third coverage clause (`suppressed 9,412 rows from 2 hosts`), JSON carries the new
+  `host_rows` / `host_total` / `hosts_matched` suppression fields, and `sigwood init`
+  seeds a blank `hosts` template whose header warns that host suppression removes the
+  whole host's story and shifts relative rarity. Host lists are local-only - sigwood
+  never ships one.
 
 ### Changed
 

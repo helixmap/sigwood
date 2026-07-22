@@ -1,0 +1,33 @@
+# sigwood - System-Log Host Allowlist
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# Format: one fnmatch glob or re: pattern per line. Matching is
+# case-insensitive against the report's host column. # starts a comment
+# (inline or full-line), and blank lines are ignored.
+#
+# !! WHOLE-HOST WARNING !!
+# ─────────────────────────────────────────────────────────────────────────────
+# Suppressing a host silences that host's ENTIRE system-log story across every
+# feed: flat files, the system journal, and Zeek syslog.log. Rare lines, bursts,
+# reboots, admin-session units, and update-run units from that host all disappear
+# before analysis.
+#
+# Removing a chatty host also shifts what counts as rare for every remaining
+# host because rarity is relative to the loaded corpus. Prefer narrow patterns
+# and review this list periodically.
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# Syntax examples (documentation only - not active patterns):
+#
+#   Glob:
+#     lab-*
+#
+#   Regular expression:
+#     re:^kiosk-[0-9]+$
+#
+#   Placeholder internal suffix:
+#     *.internal.example
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# Add your patterns below this line.
+# ─────────────────────────────────────────────────────────────────────────────

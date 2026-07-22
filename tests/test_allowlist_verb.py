@@ -70,6 +70,24 @@ def test_readout_legacy_universal_nudge(tmp_path: Path, capsys) -> None:
     assert "the shipped list is 'common' - disable common to replace" in out
 
 
+def test_readout_and_show_host_dropin(tmp_path: Path, capsys) -> None:
+    (_allowlist_d(tmp_path) / "hosts_lab").write_text(
+        "# local\nlab-*\nre:^kiosk-[0-9]+$ # narrow\n", encoding="utf-8",
+    )
+    config_path = str(_config(tmp_path))
+
+    cli_allowlist.run_allowlist([], config_path=config_path)
+    out = capsys.readouterr().out
+    assert "your lists" in out
+    assert "hosts_lab" in out
+    assert "2 patterns" in out
+
+    cli_allowlist.run_allowlist(["show", "hosts_lab"], config_path=config_path)
+    assert capsys.readouterr().out.strip().splitlines() == [
+        "lab-*", "re:^kiosk-[0-9]+$",
+    ]
+
+
 # ── show ──────────────────────────────────────────────────────────────────────
 
 
@@ -250,6 +268,25 @@ def test_copy_accepts_only_names_classifying_as_spec_kind(tmp_path: Path) -> Non
     dest = _allowlist_d(tmp_path) / "domains_sites"
     assert dest.exists()
     assert al._classify_dropin(dest.name) == "domain"
+
+
+def test_copy_has_no_shipped_host_list_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A synthetic shipped host list cannot cross the kind-equality gate."""
+    spec = al.ShippedList(
+        "synthetic-hosts", "host", True, "hosts_synthetic", "test",
+    )
+    source = tmp_path / "hosts_synthetic"
+    source.write_text("lab-*\n", encoding="utf-8")
+    monkeypatch.setattr(al, "_SHIPPED_LISTS", (spec,))
+    monkeypatch.setattr(al, "_shipped_path", lambda item: source)
+
+    with pytest.raises(UsageError):
+        cli_allowlist.run_allowlist(
+            ["copy", "synthetic-hosts"], config_path=str(_config(tmp_path)),
+        )
+    assert not (tmp_path / "allowlist.d").exists()
 
 
 def test_readout_nudges_ignored_dotted_dropin_silent_on_unprefixed(

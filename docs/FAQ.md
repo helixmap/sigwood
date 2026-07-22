@@ -184,6 +184,19 @@ like `domains_user.bak` won't load (the readout nudges a rename); park a retired
 trailing `~` or by dropping the prefix. Turn suppression off for one run with
 `--no-allowlist`, or permanently with `enabled = false`.
 
+### How do I silence one noisy host?
+
+Put a pattern in the `hosts` file under `~/.sigwood/allowlist.d/` (seeded blank by
+`sigwood init`) - one fnmatch glob or `re:` regex per line, matched case-insensitively
+against the system-log host column (`lab-*`, `re:^kiosk-[0-9]+$`). It applies to every
+syslog feed - flat files, the system journal, and Zeek `syslog.log` - before analysis, and
+the run banner discloses it (`suppressed 9,412 rows from 1 host`). Two things to know
+before you reach for it: suppression removes that host's *entire* system-log story - rare
+lines, bursts, reboots, admin-session and update-run units - and removing a chatty host
+shifts what counts as rare for the remaining hosts, because rarity is relative to the
+loaded corpus. Prefer narrow patterns, and review the file periodically. Host lists are
+local-only: sigwood never ships one.
+
 ### What does the shipped allowlist not protect you from seeing?
 
 Treat it as a discovery aid, not a fence. The shipped lists quiet DNS queries to known-good

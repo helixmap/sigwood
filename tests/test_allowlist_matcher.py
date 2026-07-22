@@ -225,6 +225,99 @@ def test_edge_cases_empty_and_missing_column() -> None:
     assert none.count_domain_suppressed(df) == 0
 
 
+# ── system-log host patterns: bare-only engine + dispatch ────────────────────
+
+
+def test_host_filter_count_casefold_regex_and_no_apex_probe() -> None:
+    patterns = ["lab-*", r"re:(?-i:kiosk)-[0-9]+$", "foo.example"]
+    matcher = al.AllowlistMatcher(host_patterns=patterns)
+    df = pd.DataFrame({
+        "host": [
+            "LAB-1", "lab-1", "KIOSK-2", "foo.example",
+            "x.foo.example", float("nan"),
+        ],
+        "message": ["m"] * 6,
+    })
+
+    filtered = matcher.filter_df(df, "syslog")
+    assert filtered["host"].tolist()[:1] == ["x.foo.example"]
+    assert len(filtered) == 2
+    count, hosts = matcher.count_host_suppressed(df)
+    assert count == 4
+    assert hosts == {"lab-1", "kiosk-2", "foo.example"}
+
+
+def test_host_scoped_uppercase_body_stays_exact_after_lowering() -> None:
+    matcher = al.AllowlistMatcher(host_patterns=[r"re:(?-i:UPPER)-host$"])
+    df = pd.DataFrame({"host": ["UPPER-host", "upper-host"]})
+    assert len(matcher.filter_df(df, "syslog")) == 2
+    assert matcher.count_host_suppressed(df) == (0, set())
+
+
+def test_query_wins_over_host_and_nonquery_frames_dispatch_narrowly() -> None:
+    matcher = al.AllowlistMatcher(host_patterns=["chatty-*"])
+    pihole = pd.DataFrame({
+        "query": ["keep.example"], "host": ["chatty-dns"],
+        "message": ["query[A] keep.example"],
+    })
+    syslog = pd.DataFrame({"host": ["chatty-flat", "keep-flat"],
+                           "message": ["a", "b"]})
+    conn = pd.DataFrame({"src": ["192.0.2.1"], "dst": ["198.51.100.1"]})
+    cloudtrail = pd.DataFrame({"event_name": ["ListThings"]})
+
+    assert matcher.filter_df(pihole, "dns").equals(pihole)
+    assert matcher.filter_df(syslog, "syslog")["host"].tolist() == ["keep-flat"]
+    assert matcher.filter_df(conn, "beacon").equals(conn)
+    assert matcher.filter_df(cloudtrail, "aws").equals(cloudtrail)
+
+
+def test_numeric_filter_precedes_host_filter_on_nonquery_frame() -> None:
+    matcher = al.AllowlistMatcher(
+        numeric_rules=[al.NumericRule(port=22)], host_patterns=["chatty-*"],
+    )
+    df = pd.DataFrame({
+        "src": ["192.0.2.1", "192.0.2.2", "192.0.2.3"],
+        "dst": ["198.51.100.1", "198.51.100.2", "198.51.100.3"],
+        "port": [22, 443, 443], "proto": ["tcp", "tcp", "tcp"],
+        "host": ["keep", "chatty-box", "keep"],
+    })
+    assert matcher.filter_df(df, "syslog").index.tolist() == [2]
+
+
+def test_host_malformed_patterns_follow_domain_with_provenance() -> None:
+    matcher = al.AllowlistMatcher(
+        domain_patterns=["re:(bad-domain"],
+        domain_pattern_sources=[("domains_test", 2)],
+        host_patterns=["re:(bad-host", "keep-*"],
+        host_pattern_sources=[("hosts_test", 4), ("hosts_test", 5)],
+    )
+    assert [item.pattern for item in matcher.malformed_patterns] == [
+        "re:(bad-domain", "re:(bad-host",
+    ]
+    assert matcher.malformed_patterns[1].source == "hosts_test"
+    assert matcher.malformed_patterns[1].lineno == 4
+    assert matcher.filter_df(pd.DataFrame({"host": ["keep-one"]}), "syslog").empty
+
+
+def test_host_provenance_length_mismatch_raises() -> None:
+    import pytest
+
+    with pytest.raises(ValueError, match="host_pattern_sources length.*lockstep drift"):
+        al.AllowlistMatcher(
+            host_patterns=["one", "two"],
+            host_pattern_sources=[("hosts_test", 1)],
+        )
+
+
+def test_host_empty_and_missing_column_short_circuits() -> None:
+    matcher = al.AllowlistMatcher(host_patterns=["chatty-*"])
+    empty = pd.DataFrame({"host": []})
+    missing = pd.DataFrame({"message": ["x"]})
+    assert matcher.filter_df(empty, "syslog") is empty
+    assert matcher.count_host_suppressed(empty) == (0, set())
+    assert matcher.count_host_suppressed(missing) == (0, set())
+
+
 def test_load_pattern_file_lines_original_linenos(tmp_path) -> None:
     """`load_pattern_file_lines` reports the ORIGINAL line number (before strip);
     `load_pattern_file` delegates to it (same patterns, no drift)."""

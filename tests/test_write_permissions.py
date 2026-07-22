@@ -411,7 +411,7 @@ def test_fresh_init_creates_private_home_config_and_allowlist(
     assert _mode(allowlist_dir) == 0o700
     assert {
         path.name: _mode(path) for path in allowlist_dir.iterdir() if path.is_file()
-    } == {"connections": 0o600, "domains_user": 0o600}
+    } == {"connections": 0o600, "domains_user": 0o600, "hosts": 0o600}
 
 
 @_POSIX_ONLY

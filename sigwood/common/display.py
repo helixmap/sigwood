@@ -466,11 +466,13 @@ def _suppression_clause(count: int, total: int, noun: str) -> str:
 def fmt_suppression(summary: "SuppressionSummary") -> str:
     """Render the run-summary allowlist-coverage value - three states, shared by
     the text banner and the HTML report header so they cannot drift. Connections
-    lead; a single-kind run drops the other clause. Fact, not verdict.
+    lead, domains follow, and hosts come last. Fact, not verdict.
 
       off:    not enabled
       no hits: enabled, nothing matched
       else:   "suppressed 1,284 connections (12%) and 312 domains (59%)"
+      all:    "suppressed 1,284 connections (12%) and 312 domains (59%) and
+               9,412 rows from 2 hosts"
 
     The percentage is row-based (numerator and denominator both count rows over
     the same eligible frames). Takes the SuppressionSummary so the denominators
@@ -478,7 +480,7 @@ def fmt_suppression(summary: "SuppressionSummary") -> str:
     """
     if not summary.enabled:
         return "off"
-    if summary.connections == 0 and summary.domains == 0:
+    if summary.connections == 0 and summary.domains == 0 and summary.host_rows == 0:
         return "no hits"
     clauses: list[str] = []
     if summary.connections:
@@ -488,6 +490,11 @@ def fmt_suppression(summary: "SuppressionSummary") -> str:
     if summary.domains:
         clauses.append(
             _suppression_clause(summary.domains, summary.domain_total, "domain")
+        )
+    if summary.host_rows:
+        clauses.append(
+            f"{summary.host_rows:,} {plural(summary.host_rows, 'row')} from "
+            f"{summary.hosts_matched:,} {plural(summary.hosts_matched, 'host')}"
         )
     return "suppressed " + " and ".join(clauses)
 

@@ -128,6 +128,9 @@ class JsonHandler(OutputHandler):
                     "domains": run_summary.suppression.domains,
                     "connection_total": run_summary.suppression.connection_total,
                     "domain_total": run_summary.suppression.domain_total,
+                    "host_rows": run_summary.suppression.host_rows,
+                    "host_total": run_summary.suppression.host_total,
+                    "hosts_matched": run_summary.suppression.hosts_matched,
                 }
                 if run_summary.suppression is not None
                 else None

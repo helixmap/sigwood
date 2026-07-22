@@ -69,7 +69,7 @@ class NumericRule:
 
 @dataclass(frozen=True)
 class MalformedPattern:
-    """A domain pattern that failed to compile - dropped from matching and
+    """A flat-list pattern that failed to compile - dropped from matching and
     surfaced as a runner advisory rather than raising mid-run.
 
     ``source`` (file path str) and ``lineno`` (1-based original line) carry
@@ -85,8 +85,12 @@ class MalformedPattern:
 def _compile_domain_patterns(
     patterns: list[str],
     sources: list[tuple[str | None, int | None]],
+    *,
+    source_kind: str = "domain",
 ) -> tuple["re.Pattern[str] | None", list["re.Pattern[str]"], tuple[MalformedPattern, ...]]:
     """Compile domain patterns into a two-lane match engine.
+
+    Host patterns share this pattern grammar and compile through the same engine.
 
     Returns ``(union, fallback, malformed)``:
 
@@ -116,8 +120,8 @@ def _compile_domain_patterns(
     # under-suppressing.
     if len(sources) != len(patterns):
         raise ValueError(
-            f"domain_pattern_sources length ({len(sources)}) does not match "
-            f"domain_patterns length ({len(patterns)}) - internal lockstep drift"
+            f"{source_kind}_pattern_sources length ({len(sources)}) does not match "
+            f"{source_kind}_patterns length ({len(patterns)}) - internal lockstep drift"
         )
 
     union_arms: list[str] = []
@@ -165,8 +169,11 @@ class AllowlistMatcher:
         entries: list[AllowlistEntry] | None = None,
         numeric_rules: list[NumericRule] | None = None,
         domain_pattern_sources: list[tuple[str | None, int | None]] | None = None,
+        host_patterns: list[str] | None = None,
+        host_pattern_sources: list[tuple[str | None, int | None]] | None = None,
     ) -> None:
         self._domain_patterns: list[str] = domain_patterns or []
+        self._host_patterns: list[str] = host_patterns or []
         self._entries: list[AllowlistEntry] = entries or []
         self._numeric_rules: list[NumericRule] = numeric_rules or []
         # Provenance parallel to _domain_patterns (file path str + original
@@ -180,14 +187,25 @@ class AllowlistMatcher:
         (
             self._domain_regex,
             self._domain_fallback,
-            self._malformed_patterns,
+            self._malformed_domain_patterns,
         ) = _compile_domain_patterns(self._domain_patterns, sources)
+        if host_pattern_sources is None:
+            host_sources = [(None, None)] * len(self._host_patterns)
+        else:
+            host_sources = list(host_pattern_sources)
+        (
+            self._host_regex,
+            self._host_fallback,
+            self._malformed_host_patterns,
+        ) = _compile_domain_patterns(
+            self._host_patterns, host_sources, source_kind="host"
+        )
 
     @property
     def malformed_patterns(self) -> tuple[MalformedPattern, ...]:
-        """Domain patterns dropped at compile time - read-only. The runner
+        """Flat-list patterns dropped at compile time, domain first. The runner
         surfaces them as a per-pattern advisory."""
-        return self._malformed_patterns
+        return self._malformed_domain_patterns + self._malformed_host_patterns
 
     def _has_domain_patterns(self) -> bool:
         """True when any domain matching can fire (union OR a fallback pattern).
@@ -196,24 +214,38 @@ class AllowlistMatcher:
         may have been malformed and dropped."""
         return self._domain_regex is not None or bool(self._domain_fallback)
 
+    def _has_host_patterns(self) -> bool:
+        """True when any host matching can fire after malformed patterns drop."""
+        return self._host_regex is not None or bool(self._host_fallback)
+
+    @staticmethod
+    def _match_series_with_engine(
+        s: pd.Series,
+        union: "re.Pattern[str] | None",
+        fallback: list["re.Pattern[str]"],
+    ) -> pd.Series:
+        """Match lowered string values through one compiled two-lane engine."""
+        out = pd.Series(False, index=s.index)
+        if union is not None:
+            out = out | s.str.contains(union, na=False)
+        if fallback:
+            with warnings.catch_warnings():
+                # Tightly scoped to pandas' capturing-group warning. User regex
+                # groups stay intact because backreferences make rewriting unsafe.
+                warnings.filterwarnings(
+                    "ignore", message=".*match groups.*", category=UserWarning
+                )
+                for cp in fallback:
+                    out = out | s.str.contains(cp, na=False)
+        return out
+
     def _match_series(self, s: pd.Series) -> pd.Series:
         """Boolean Series: True where a value (ALREADY str + lowered) matches any
         active domain pattern. Union first (zero groups → no warning), then each
         fallback pattern (capturing groups → pandas UserWarning, suppressed)."""
-        out = pd.Series(False, index=s.index)
-        if self._domain_regex is not None:
-            out = out | s.str.contains(self._domain_regex, na=False)
-        if self._domain_fallback:
-            with warnings.catch_warnings():
-                # Tightly scoped to the pandas "has match groups" warning that
-                # fallback patterns trip - NOT a blanket silence, and we do NOT
-                # rewrite user regex groups (unsafe with backreferences).
-                warnings.filterwarnings(
-                    "ignore", message=".*match groups.*", category=UserWarning
-                )
-                for cp in self._domain_fallback:
-                    out = out | s.str.contains(cp, na=False)
-        return out
+        return self._match_series_with_engine(
+            s, self._domain_regex, self._domain_fallback
+        )
 
     def _match_distinct(self, values: pd.Series) -> pd.Series:
         """Two-probe match over already-str-lowered values: a value matches if the
@@ -221,6 +253,12 @@ class AllowlistMatcher:
         required - ``re:\\.akamai\\.net$`` misses bare ``akamai.net`` but hits
         ``x.akamai.net``. ``"x."`` is lowercase, so the probe stays lowered."""
         return self._match_series(values) | self._match_series("x." + values)
+
+    def _match_host_distinct(self, values: pd.Series) -> pd.Series:
+        """Bare-value host match over already-str-lowered distinct values."""
+        return self._match_series_with_engine(
+            values, self._host_regex, self._host_fallback
+        )
 
     def is_domain_allowed(self, domain: str, detector: str | None = None) -> bool:
         """Return True if domain matches any pattern in the loaded domain lists.
@@ -240,16 +278,18 @@ class AllowlistMatcher:
         """Remove allowlisted rows from a normalized log DataFrame.
 
         Connection logs use canonical src, dst, port, proto columns and numeric rules.
-        DNS logs use query plus domain pattern files. Missing columns are handled
-        gracefully - rules referencing absent columns are skipped rather than erroring.
+        DNS logs use query plus domain patterns. Non-query system logs use host
+        patterns after numeric filtering. Missing columns are handled gracefully.
         """
         if df.empty:
             return df
 
         if "query" in df.columns:
             return self._filter_domain_df(df, detector)
-
-        return self._filter_numeric_df(df, detector)
+        out = self._filter_numeric_df(df, detector)
+        if "host" in out.columns:
+            out = self._filter_host_df(out, detector)
+        return out
 
     def _filter_domain_df(self, df: pd.DataFrame, detector: str) -> pd.DataFrame:
         """Remove DNS rows whose query matches a loaded domain pattern.
@@ -283,6 +323,21 @@ class AllowlistMatcher:
             drop_mask |= rule_mask
 
         return df[~drop_mask].copy()
+
+    def _filter_host_df(self, df: pd.DataFrame, detector: str) -> pd.DataFrame:
+        """Remove system-log rows whose lowered host matches a host pattern.
+
+        Host suppression is scope-blind, so ``detector`` is unused. Matching is
+        over bare values only; DNS's registrable-domain apex probe does not apply.
+        """
+        if not self._has_host_patterns():
+            return df.copy()
+        hosts = df["host"].astype(str).str.lower()
+        uniq = pd.Series(hosts.unique())
+        matched = self._match_host_distinct(uniq)
+        lut = dict(zip(uniq.to_numpy(), matched.to_numpy()))
+        drop = hosts.map(lut).astype(bool)
+        return df[~drop].copy()
 
     def count_domain_suppressed(self, df: pd.DataFrame) -> int:
         """Count rows a domain list would suppress - SCOPE-BLIND parity with
@@ -322,6 +377,19 @@ class AllowlistMatcher:
         for rule in self._numeric_rules:
             drop_mask |= _numeric_rule_mask(df, rule, has_src, has_dst, has_port, has_proto)
         return int(drop_mask.sum())
+
+    def count_host_suppressed(self, df: pd.DataFrame) -> tuple[int, set[str]]:
+        """Return suppressed rows and distinct matched lowered host values."""
+        if df.empty or not self._has_host_patterns() or "host" not in df.columns:
+            return (0, set())
+        hosts = df["host"].astype(str).str.lower()
+        counts = hosts.value_counts()
+        if counts.empty:
+            return (0, set())
+        matched = self._match_host_distinct(pd.Series(counts.index))
+        mask = matched.to_numpy()
+        values = {str(value) for value in counts.index[mask]}
+        return (int(counts.to_numpy()[mask].sum()), values)
 
 
 def _numeric_rule_mask(
@@ -582,7 +650,7 @@ class ResolvedList:
     homelab still reads "22 domains")."""
 
     name: str
-    kind: str          # "domain" | "numeric"
+    kind: str          # "domain" | "numeric" | "host"
     origin: str        # "shipped" | "dropin" | "config-path"
     path: Path
     enabled: bool
@@ -635,7 +703,9 @@ def resolve_allowlist_dir(config: dict[str, Any]) -> Path | None:
 
 
 def _classify_dropin(name: str) -> str | None:
-    """Classify an allowlist.d entry BY NAME: "domain" | "numeric" | "stanza" | None.
+    """Classify an allowlist.d entry BY NAME.
+
+    Returns "domain" | "numeric" | "host" | "stanza" | None.
 
     Pure over the name; every caller gates ``is_file()`` itself (a DIRECTORY named
     ``x.toml`` or ``domains_x`` must never load or be deleted). The dot rule, in this
@@ -656,13 +726,15 @@ def _classify_dropin(name: str) -> str | None:
         return "domain"
     if name.startswith("connections"):
         return "numeric"
+    if name.startswith("hosts"):
+        return "host"
     return None
 
 
 def _ignored_suggestion(name: str) -> str | None:
     """The dot-free name to suggest for a NON-loading allowlist.d entry, or ``None``
     to stay silent. Reports ONLY a file whose dot-stripped HEAD classifies AS a list
-    kind (domain/numeric) - recognized-AS-the-branch, not merely prefixed - and never
+    kind (domain/numeric/host) - recognized-AS-the-branch, not merely prefixed - and never
     a stanza, hidden, or ``~``-backup. Pure over the name; caller gates ``is_file()``.
     """
     if _classify_dropin(name) is not None:          # loads as list/stanza - not ignored
@@ -670,7 +742,7 @@ def _ignored_suggestion(name: str) -> str | None:
     if name.startswith(".") or name.endswith("~"):  # never nudge a hidden / editor backup
         return None
     head = name.split(".", 1)[0]
-    return head if _classify_dropin(head) in ("domain", "numeric") else None
+    return head if _classify_dropin(head) in ("domain", "numeric", "host") else None
 
 
 def resolve_allowlist_plan(config: dict[str, Any]) -> AllowlistPlan:
@@ -695,8 +767,8 @@ def resolve_allowlist_plan(config: dict[str, Any]) -> AllowlistPlan:
     defaults = default_allowlist_paths()
 
     # Resolve the allowlist.d directory once (shared owner) - it drives BOTH the
-    # *.toml classification stanzas and the dot-free domains* / connections*
-    # flat-file drop-in discovery (the dot rule; see _classify_dropin).
+    # *.toml classification stanzas and the dot-free domains* / connections* /
+    # hosts* flat-file drop-in discovery (the dot rule; see _classify_dropin).
     dir_path = resolve_allowlist_dir(config)
     have_dir = dir_path is not None and dir_path.is_dir()
 
@@ -706,6 +778,7 @@ def resolve_allowlist_plan(config: dict[str, Any]) -> AllowlistPlan:
     # readout-only advisory.
     domain_dropins: list[Path] = []
     numeric_dropins: list[Path] = []
+    host_dropins: list[Path] = []
     stanza_files: list[Path] = []
     ignored: list[IgnoredDropin] = []
     if have_dir:
@@ -723,16 +796,20 @@ def resolve_allowlist_plan(config: dict[str, Any]) -> AllowlistPlan:
                 domain_dropins.append(entry)
             elif kind == "numeric":
                 numeric_dropins.append(entry)
+            elif kind == "host":
+                host_dropins.append(entry)
             else:  # "stanza"
                 stanza_files.append(entry)
     domain_dropins.sort()
     numeric_dropins.sort()
+    host_dropins.sort()
     stanza_files.sort()
     ignored.sort(key=lambda ig: ig.name)
 
     # First-seen dedup by resolved path, preserving load order:
     # shipped (registry order) -> domain drop-ins (sorted) -> numeric drop-ins
-    # (sorted) -> config-path domain -> config-path numeric. NO same-basename
+    # (sorted) -> host drop-ins (sorted) -> config-path domain -> config-path numeric.
+    # NO same-basename
     # shadow - every drop-in is additive; replacing a shipped list is `allowlist
     # disable <name>`.
     seen: set[str] = set()
@@ -743,7 +820,9 @@ def resolve_allowlist_plan(config: dict[str, Any]) -> AllowlistPlan:
         if key in seen:
             return
         seen.add(key)
-        loader = load_pattern_file if kind == "domain" else load_numeric_rule_file
+        loader = (
+            load_numeric_rule_file if kind == "numeric" else load_pattern_file
+        )
         count = len(loader(path))
         resolved_lists.append(
             ResolvedList(name, kind, origin, path, enabled, state_reason, count)
@@ -762,6 +841,8 @@ def resolve_allowlist_plan(config: dict[str, Any]) -> AllowlistPlan:
         _emit(path.name, "domain", "dropin", path, True, "drop-in")
     for path in numeric_dropins:
         _emit(path.name, "numeric", "dropin", path, True, "drop-in")
+    for path in host_dropins:
+        _emit(path.name, "host", "dropin", path, True, "drop-in")
     # Tier 3 - explicit config paths (default [] - escape hatch outside allowlist.d).
     domain_pattern_paths = allowlist_cfg.get("domain_patterns")
     if domain_pattern_paths is None:
@@ -816,6 +897,8 @@ def matcher_from_plan(plan: AllowlistPlan, *, force_off: bool = False) -> Allowl
 
     domain_patterns: list[str] = []
     domain_pattern_sources: list[tuple[str | None, int | None]] = []
+    host_patterns: list[str] = []
+    host_pattern_sources: list[tuple[str | None, int | None]] = []
     numeric_rules: list[NumericRule] = []
     for rl in plan.lists:
         if not rl.enabled:
@@ -828,6 +911,11 @@ def matcher_from_plan(plan: AllowlistPlan, *, force_off: bool = False) -> Allowl
             for pattern, lineno in load_pattern_file_lines(rl.path):
                 domain_patterns.append(pattern)
                 domain_pattern_sources.append((src, lineno))
+        elif rl.kind == "host":
+            src = str(rl.path)
+            for pattern, lineno in load_pattern_file_lines(rl.path):
+                host_patterns.append(pattern)
+                host_pattern_sources.append((src, lineno))
         else:
             numeric_rules.extend(load_numeric_rule_file(rl.path))
 
@@ -844,6 +932,8 @@ def matcher_from_plan(plan: AllowlistPlan, *, force_off: bool = False) -> Allowl
         entries=entries,
         numeric_rules=numeric_rules,
         domain_pattern_sources=domain_pattern_sources,
+        host_patterns=host_patterns,
+        host_pattern_sources=host_pattern_sources,
     )
 
 

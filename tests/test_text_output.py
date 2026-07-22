@@ -377,7 +377,10 @@ def test_render_run_summary_detect_banner_snapshot() -> None:
             "beacon": MethodTag("FFT", named=True),
             "dns":    MethodTag("HDBSCAN", named=True),
         },
-        suppression=SuppressionSummary(enabled=True, connections=1_284, domains=312),
+        suppression=SuppressionSummary(
+            enabled=True, connections=1_284, domains=312,
+            host_rows=9_412, hosts_matched=2,
+        ),
     )
     rendered = TextHandler(stream=io.StringIO())._render_run_summary(rs)
     assert rendered == (
@@ -385,7 +388,9 @@ def test_render_run_summary_detect_banner_snapshot() -> None:
         "════════════════════════════════════════════════════════════════════════════════\n"
         "data found:    2026-06-01 12:00 → 2026-06-01 18:30 local  (6h)\n"
         "records:       12,345 conn*.log*  ·  678 dns*.log*\n"
-        "allowlist:     suppressed 1,284 connections and 312 domains\n"
+        "allowlist:     suppressed 1,284 connections and 312 domains and "
+        "9,412 rows from\n"
+        "               2 hosts\n"
         "detectors:     beacon (FFT)  ·  dns (HDBSCAN)\n"
         "skipped:       scan - no conn data\n"
         "note:          test note\n"

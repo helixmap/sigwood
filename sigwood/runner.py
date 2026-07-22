@@ -573,11 +573,14 @@ def _run_analyze(
     # `allowlist: off` renders without a wasted pass over huge frames.
     suppressed_connections = 0
     suppressed_domains = 0
+    host_rows = 0
+    matched_hosts: set[str] = set()
     # Row-based denominators per kind, accumulated in the SAME pass and over the
     # SAME eligible frames as the numerators, so the banner percentage matches the
     # row-count numerator (count_*_suppressed count rows, not distinct values).
     connection_total = 0
     domain_total = 0
+    host_total = 0
     if suppression_enabled:
         with liveness("scanning allowlist coverage", enabled=not quiet):
             for _pat, _df in load_result.logs.items():
@@ -586,17 +589,26 @@ def _run_analyze(
                 if "query" in _df.columns:
                     suppressed_domains += allowlist.count_domain_suppressed(_df)
                     domain_total += len(_df)
-                elif "src" in _df.columns:
-                    suppressed_connections += allowlist.count_numeric_suppressed(_df)
-                    connection_total += len(_df)
+                else:
+                    if "src" in _df.columns:
+                        suppressed_connections += allowlist.count_numeric_suppressed(_df)
+                        connection_total += len(_df)
+                    if "host" in _df.columns:
+                        count, hosts = allowlist.count_host_suppressed(_df)
+                        host_rows += count
+                        host_total += len(_df)
+                        matched_hosts.update(hosts)
     run_summary.suppression = SuppressionSummary(
         enabled=suppression_enabled,
         connections=suppressed_connections,
         domains=suppressed_domains,
         connection_total=connection_total,
         domain_total=domain_total,
+        host_rows=host_rows,
+        host_total=host_total,
+        hosts_matched=len(matched_hosts),
     )
-    # Malformed-pattern advisory - a domain `re:` body that fails to compile is
+    # Malformed-pattern advisory - a flat-list `re:` body that fails to compile is
     # dropped from matching (it would otherwise raise mid-run); surface it as a
     # per-pattern STATUS note naming the file:line. `run_summary.notes` is the
     # same list assembled above; append before `reporter.begin`. Gated on

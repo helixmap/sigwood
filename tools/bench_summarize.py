@@ -52,6 +52,7 @@ FINDING_KEYS = frozenset({
 })
 SUPPRESSION_KEYS = frozenset({
     "enabled", "connections", "domains", "connection_total", "domain_total",
+    "host_rows", "host_total", "hosts_matched",
 })
 METHOD_KEYS = frozenset({"label", "named"})
 SEVERITIES = ("high", "medium", "low", "info")
@@ -284,7 +285,10 @@ def _validate_payload(payload: object) -> dict[str, Any]:
             suppression, SUPPRESSION_KEYS, "run_summary.suppression"
         )
         _require_bool(suppression_map["enabled"], "run_summary.suppression.enabled")
-        for field in ("connections", "domains", "connection_total", "domain_total"):
+        for field in (
+            "connections", "domains", "connection_total", "domain_total",
+            "host_rows", "host_total", "hosts_matched",
+        ):
             _require_int(suppression_map[field], f"run_summary.suppression.{field}")
 
     requested = run["requested_span"]

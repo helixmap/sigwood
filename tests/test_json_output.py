@@ -39,7 +39,10 @@ def _run_summary() -> RunSummary:
             "aws": MethodTag("statistical", False),
         },
         requested_span=timedelta(hours=6),
-        suppression=SuppressionSummary(True, 5, 2, 100, 50),
+        suppression=SuppressionSummary(
+            True, 5, 2, 100, 50,
+            host_rows=7, host_total=70, hosts_matched=3,
+        ),
     )
 
 
@@ -265,6 +268,9 @@ def test_run_summary_added_fields_present() -> None:
     assert rs["requested_span"] == 6 * 3600
     assert rs["data_sources"] == ["zeek_conn"]
     assert rs["suppression"]["connection_total"] == 100
+    assert rs["suppression"]["host_rows"] == 7
+    assert rs["suppression"]["host_total"] == 70
+    assert rs["suppression"]["hosts_matched"] == 3
 
 
 def test_no_severity_tag() -> None:

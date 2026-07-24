@@ -102,6 +102,7 @@ class JsonHandler(OutputHandler):
                 ]
             ),
             "record_counts": run_summary.record_counts,
+            "record_labels": run_summary.record_labels,
             "data_size_bytes": run_summary.data_size_bytes,
             "detectors_run": run_summary.detectors_run,
             "detectors_skipped": run_summary.detectors_skipped,

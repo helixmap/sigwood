@@ -968,6 +968,56 @@ def _ts_window_span():
     )
 
 
+def test_runner_composes_distinct_record_labels_for_loaded_plan_patterns(
+    tmp_path,
+    capture_summary,
+    mock_load_required_logs,
+) -> None:
+    from sigwood.common.loader import LoadResult
+
+    zeek_dir = tmp_path / "zeek"
+    zeek_dir.mkdir()
+    _write_ndjson(zeek_dir / "dns.log", [{
+        "ts": _TS_JAN5,
+        "id.orig_h": "192.0.2.10",
+        "query": "example.test",
+        "qclass": 1,
+    }])
+    pihole_dir = tmp_path / "pihole"
+    pihole_dir.mkdir()
+    (pihole_dir / "pihole.log").write_text(
+        "Jun  1 12:00:00 dnsmasq[1]: query[A] example.test from 192.0.2.10\n",
+        encoding="utf-8",
+    )
+    fake_lr = LoadResult(
+        logs={
+            "dns*.log*": pd.DataFrame(columns=["ts", "src", "query", "qclass"]),
+            "pihole*.log*": pd.DataFrame(columns=_PIHOLE_COLUMNS_FOR_MOCK),
+        },
+        record_counts={
+            "dns*.log*": 2,
+            "pihole*.log*": 1,
+            "mystery*.log*": 3,
+        },
+        data_window=None,
+    )
+    mock_load_required_logs(fake_lr)
+
+    runner.run(
+        config={"sigwood": {"detect": "dns", "default_window": ""}},
+        zeek_dir=zeek_dir,
+        pihole_dir=pihole_dir,
+    )
+
+    labels = capture_summary["summary"].record_labels
+    assert labels == {
+        "dns*.log*": "Zeek dns",
+        "pihole*.log*": "Pi-hole",
+    }
+    assert len(set(labels.values())) == len(labels)
+    assert "mystery*.log*" not in labels
+
+
 def test_runner_stale_pihole_emits_pihole_span_note(
     tmp_path, capture_summary, mock_load_required_logs,
 ):

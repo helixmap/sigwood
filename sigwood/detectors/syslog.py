@@ -876,7 +876,7 @@ def _transaction_finding(
         title=event.host,
         description=description,
         evidence=evidence,
-        next_steps=["Review the member findings for unexpected activity"],
+        next_steps=["Review the grouped lines for unexpected activity"],
         ts_generated=now,
         data_window=data_window,
     )

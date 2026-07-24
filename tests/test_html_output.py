@@ -66,9 +66,18 @@ def _finding(
     )
 
 
-def _render(findings, *, verbose_level=0, cap=100) -> str:
+def _render(
+    findings,
+    *,
+    verbose_level=0,
+    cap=100,
+    summary: RunSummary | None = None,
+) -> str:
     return render_report_html(
-        findings, _summary(), verbose_level=verbose_level, max_findings_per_detector=cap
+        findings,
+        summary if summary is not None else _summary(),
+        verbose_level=verbose_level,
+        max_findings_per_detector=cap,
     )
 
 
@@ -94,6 +103,18 @@ def test_url_in_evidence_is_inert_text_not_a_link() -> None:
     )
     assert "http://192.0.2.50/c2" in out  # present as inert escaped text
     assert "href=" not in out             # but never turned into a link
+
+
+def test_html_header_uses_record_labels_with_raw_pattern_fallback() -> None:
+    summary = _summary(
+        record_counts={"conn*.log*": 3, "mystery*.log*": 2},
+        record_labels={"conn*.log*": "Zeek conn"},
+    )
+
+    out = _render([], summary=summary)
+
+    assert "3 Zeek conn · 2 mystery*.log*" in out
+    assert "3 conn*.log*" not in out
 
 
 # ── escaping (security) ──────────────────────────────────────────────────────
@@ -437,17 +458,19 @@ def test_html_syslog_transaction_summary_and_member_drilldown_are_safe() -> None
             "member_count": 3, "represented_line_count": 7,
             "start_ts": 1.0, "end_ts": 121.0,
             "first_seen": "1970-01-01T00:00:01+00:00", "span_seconds": 120.0,
-            "program_mix": [["useradd", 4], ["kernel", 2], ["cron", 1]],
+            "program_mix": [
+                ["useradd", 3], ["CRON", 2], ["cron", 1], ["sshd", 1],
+            ],
             "members": [
                 {"severity": "medium", "tier": "family",
-                 "represented_line_count": 4,
+                 "represented_line_count": 3,
                  "program": "useradd\x9b<script>sep</script>",
                  "title": "family-title-must-not-repeat",
                  "sample_raw": [aggregate_hostile, "family-raw-second"],
                  "privileged": True},
                 {"severity": "info", "tier": "burst",
-                 "represented_line_count": 2,
-                 "program_mix": [["kernel", 2]],
+                 "represented_line_count": 3,
+                 "program_mix": [["CRON", 1], "abcd", []],
                  "title": "burst-title-must-not-repeat",
                  "sample_raw": ["burst-raw-first", "burst-raw-second"]},
                 {"severity": "low", "represented_line_count": 1,
@@ -463,22 +486,23 @@ def test_html_syslog_transaction_summary_and_member_drilldown_are_safe() -> None
     assert "privileged (1)" in out
     assert "bursts (" not in out
     assert (
-        "host-a · admin session · 3 member findings · 2m · "
-        "mostly useradd, kernel, cron"
+        "host-a · admin session · 7 rare lines · 2m · "
+        "mostly useradd, CRON, sshd"
     ) in out
     assert (
         '<details class="row-toggle"><summary><span class="pill sev-medium">'
         '[M]</span></summary></details>'
     ) in out
     family_separator = (
-        "[M] · useradd&lt;script&gt;sep&lt;/script&gt; · 4 rare lines"
+        "[M] · useradd&lt;script&gt;sep&lt;/script&gt; · 3 rare lines"
     )
-    burst_separator = "[I] · kernel · 2 rare lines"
+    burst_separator = "[I] · CRON · 3 rare lines"
     plain_separator = "[L] · cron · 1 rare line"
     assert family_separator in out
     assert burst_separator in out
     assert plain_separator in out
     assert "needle" not in out
+    assert "member finding" not in out.casefold()
     assert "family-title-must-not-repeat" not in out
     assert "burst-title-must-not-repeat" not in out
     assert (
@@ -505,8 +529,11 @@ def test_html_syslog_transaction_summary_and_member_drilldown_are_safe() -> None
     assert ".findings-table tr.sample-detail { display: none; }" in out[out.index("@media print"):]
 
 
-def test_html_syslog_transaction_preserves_needle_in_operator_sample_data() -> None:
-    raw = 'Jul 12 21:57:35 host-a cron: operator needle <script>x</script>'
+def test_html_syslog_transaction_preserves_operator_vocabulary_in_sample_data() -> None:
+    raw = (
+        "Jul 12 21:57:35 host-a cron: operator member findings "
+        "<script>x</script>"
+    )
     finding = _finding(
         detector="syslog", severity=Severity.INFO, title="host-a",
         evidence={
@@ -525,7 +552,8 @@ def test_html_syslog_transaction_preserves_needle_in_operator_sample_data() -> N
 
     out = _render([finding])
 
-    assert "operator needle &lt;script&gt;x&lt;/script&gt;" in out
+    assert "host-a · update run · 4 rare lines · 1s · mostly cron" in out
+    assert "operator member findings &lt;script&gt;x&lt;/script&gt;" in out
     assert "<script>x</script>" not in out
 
 

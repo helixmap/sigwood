@@ -23,6 +23,17 @@ All notable changes to sigwood are recorded here. The format follows
 
 ### Changed
 
+- **Syslog rows share one grammar.** Burst spans render through the same compact form
+  as family and transaction rows (with a new honest seconds tier below one minute -
+  `45s`, not `0m`), burst counts pluralize properly, and a transaction row now leads
+  with its rare-line magnitude (`19 rare lines`) instead of the internal
+  "member findings" phrase; the member count remains in evidence and JSON. Program
+  mixes de-duplicate case variants for display (`CRON, cron` reads once, first
+  spelling kept) - counts and machine output keep both.
+- **The report header names sources, not glob patterns.** The `records:` line reads
+  `12,345 syslog · 90,000 Zeek conn` instead of `12,345 *.log* · 90,000 conn*.log*`.
+  The JSON feed additively carries the mapping as `run_summary.record_labels`
+  (no schema bump); `record_counts` keys are unchanged.
 - **Syslog review units roll up only when it pays.** Family and burst folding now
   starts at four rare lines (previously two and three): below that, a summary row plus
   its expansion costs as much space as the lines themselves, so one to three rare

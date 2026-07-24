@@ -1855,6 +1855,10 @@ class SyslogDetectorTests(unittest.TestCase):
         self.assertIsNone(projected[-1]["first_seen"])
         self.assertEqual(transaction.evidence["member_count"], 4)
         self.assertEqual(transaction.evidence["represented_line_count"], 10)
+        self.assertEqual(
+            transaction.next_steps,
+            ["Review the grouped lines for unexpected activity"],
+        )
 
     def test_transaction_reconciliation_degrades_without_claimable_host(self) -> None:
         event = _TransactionEvent(
@@ -2094,21 +2098,23 @@ class SyslogDetectorTests(unittest.TestCase):
             description="Recognized administrative session activity.",
             evidence={
                 "tier": "transaction", "label": "admin session", "host": "host-a",
-                "member_count": 2, "represented_line_count": 3,
+                "member_count": 2, "represented_line_count": 5,
                 "start_ts": _BASE_TS, "end_ts": _BASE_TS + 120,
                 "first_seen": datetime.fromtimestamp(_BASE_TS, timezone.utc).isoformat(),
-                "span_seconds": 120.0, "program_mix": [["useradd", 2], ["cron", 1]],
+                "span_seconds": 120.0,
+                "program_mix": [["useradd", 2], ["USERADD", 1], ["cron", 2]],
                 "members": [
                     {"severity": "medium", "tier": "family",
                      "represented_line_count": 2,
                      "program": "useradd\x9b<script>sep</script>",
                      "title": "safe\x1b<script>member</script>", "privileged": True},
-                    {"severity": "low", "represented_line_count": 1, "program": "cron",
+                    {"severity": "low", "represented_line_count": 3,
+                     "program_mix": [["CRON", 1], ["cron", 1], ["sshd", 1]],
                      "title": "second-member"},
                 ],
                 "privileged": True,
             },
-            next_steps=["Review the member findings"],
+            next_steps=["Review the grouped lines for unexpected activity"],
             ts_generated=_NOW, data_window=_WINDOW,
         )
         sections = _partition_syslog([transaction])
@@ -2120,7 +2126,7 @@ class SyslogDetectorTests(unittest.TestCase):
             TextHandler(verbose_level=0)._render_syslog_group(sections)
         )
         self.assertIn(
-            "host-a · admin session · 2 member findings · 2m · mostly useradd, cron",
+            "host-a · admin session · 5 rare lines · 2m · mostly useradd, cron",
             level_zero,
         )
         self.assertNotIn("second-member", level_zero)
@@ -2134,11 +2140,51 @@ class SyslogDetectorTests(unittest.TestCase):
                 "[M] · useradd<script>sep</script> · 2 rare lines", rendered
             )
             self.assertIn("safe<script>member</script>", rendered)
-            self.assertIn("[L] · cron · 1 rare line", rendered)
+            self.assertIn("[L] · CRON, sshd · 3 rare lines", rendered)
+            self.assertNotIn("member finding", rendered.casefold())
             self.assertNotIn("needle", rendered)
             self.assertNotIn("{'severity'", rendered)
             self.assertNotIn("\x1b", rendered)
             self.assertNotIn("\x9b", rendered)
+
+    def test_text_renderer_preserves_operator_vocabulary_in_member_data(self) -> None:
+        from sigwood.outputs._render_model import _partition_syslog
+        from sigwood.outputs.text import TextHandler
+
+        transaction = Finding(
+            detector="syslog",
+            severity=Severity.INFO,
+            title="host-a",
+            description="Recognized system update activity.",
+            evidence={
+                "tier": "transaction",
+                "label": "update run",
+                "member_count": 1,
+                "represented_line_count": 1,
+                "start_ts": _BASE_TS,
+                "end_ts": _BASE_TS + 1,
+                "span_seconds": 1.0,
+                "program_mix": [["cron", 1]],
+                "members": [{
+                    "severity": "low",
+                    "represented_line_count": 1,
+                    "program": "cron",
+                    "title": "operator member findings remain verbatim",
+                }],
+            },
+            next_steps=["Review the grouped lines for unexpected activity"],
+            ts_generated=_NOW,
+            data_window=_WINDOW,
+        )
+
+        rendered = "\n".join(
+            TextHandler(verbose_level=1)._render_syslog_group(
+                _partition_syslog([transaction])
+            )
+        )
+
+        self.assertIn("host-a · update run · 1 rare line · 1s", rendered)
+        self.assertIn("operator member findings remain verbatim", rendered)
 
     def test_text_renderer_member_fragments_once_at_every_level(self) -> None:
         from sigwood.outputs.text import TextHandler

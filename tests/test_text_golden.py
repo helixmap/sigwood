@@ -165,7 +165,7 @@ def test_golden_syslog_privileged_rare_events_and_bursts():
         _f("syslog", Severity.INFO, "host-b",
            {"tier": "burst", "line_count": 13, "span_seconds": 47.0,
             "start_ts": 1.0, "end_ts": 48.0,
-            "program_mix": [["kernel", 9], ["systemd", 4]],
+            "program_mix": [["CRON", 9], ["cron", 3], ["sshd", 1]],
             "sample_raw": ["a", "b"], "member_fragments": ["burst meat"],
             "label": "rebooted"}),
         _f("syslog", Severity.INFO, "host-a",
@@ -183,7 +183,7 @@ def test_golden_syslog_privileged_rare_events_and_bursts():
         "  [L]   Jul 12 21:57:33 · journal needle sentinel\n\n"
         "bursts (2)\n"
         "  [I]   Jan  1 00:00:01 · host-b · rebooted · 13 rare lines · "
-        "47s · mostly kernel, systemd\n"
+        "47s · mostly CRON, sshd\n"
         "        burst meat\n"
         "  [I]   Jun  1 03:04:05 · host-a · rebooted\n\n"
     )
@@ -196,7 +196,7 @@ def test_golden_syslog_transaction_row():
             "member_count": 2, "represented_line_count": 7,
             "start_ts": 1.0, "end_ts": 121.0,
             "first_seen": "1970-01-01T00:00:01+00:00", "span_seconds": 120.0,
-            "program_mix": [["dnf", 5], ["kernel", 2]],
+            "program_mix": [["dnf", 4], ["DNF", 1], ["kernel", 2]],
             "members": [
                 {"severity": "low", "tier": "family",
                  "represented_line_count": 5, "title": "host-t", "program": "dnf"},
@@ -208,8 +208,37 @@ def test_golden_syslog_transaction_row():
         f"\nsyslog - 1 finding · 1 I\n{RULE}\n"
         "bursts (1)\n"
         "  [I]   Jan  1 00:00:01 · host-t · update run · "
-        "2 member findings · 2m · mostly dnf, kernel\n\n"
+        "7 rare lines · 2m · mostly dnf, kernel\n\n"
     )
+
+
+def test_golden_syslog_burst_compact_span_and_singular_noun():
+    one = _render([
+        _f("syslog", Severity.INFO, "host-one",
+           {"tier": "burst", "line_count": 1, "span_seconds": 105.0,
+            "start_ts": 1.0, "end_ts": 106.0,
+            "program_mix": [["CRON", 1], ["cron", 1], ["sshd", 1]],
+            "sample_raw": ["one"], "label": None}),
+    ])
+    assert "host-one · 1 rare line · 2m · mostly CRON, sshd" in one
+
+    two = _render([
+        _f("syslog", Severity.INFO, "host-two",
+           {"tier": "burst", "line_count": 4, "span_seconds": 2.0,
+            "start_ts": 1.0, "end_ts": 3.0,
+            "program_mix": [["kernel", 4]], "sample_raw": ["two"],
+            "label": None}),
+    ])
+    assert "host-two · 4 rare lines · 2s · mostly kernel" in two
+
+    zero = _render([
+        _f("syslog", Severity.INFO, "host-zero",
+           {"tier": "burst", "line_count": 4, "span_seconds": 0.0,
+            "start_ts": 1.0, "end_ts": 1.0,
+            "program_mix": [["kernel", 4]], "sample_raw": ["zero"],
+            "label": None}),
+    ])
+    assert "host-zero · 4 rare lines · 0s · mostly kernel" in zero
 
 
 # ── duration: split flow, with and without states (rstrip) ───────────────────

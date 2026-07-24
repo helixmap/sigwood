@@ -25,6 +25,7 @@ Cell-projection contract:
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
@@ -36,6 +37,23 @@ from sigwood.common.display import (
 )
 from sigwood.common.finding import Finding, Severity
 from sigwood.outputs._evidence import level_visible
+
+
+def fold_mix_names(mix: Iterable[object]) -> str:
+    """Join first-seen program names after case-insensitive display deduplication."""
+    names: list[str] = []
+    seen: set[str] = set()
+    for item in mix:
+        # Evidence is an open dict; malformed mix entries are skipped, never raised.
+        if not isinstance(item, (list, tuple)) or not item:
+            continue
+        rendered = str(item[0])
+        key = rendered.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        names.append(rendered)
+    return ", ".join(names)
 
 
 # ── pipeline (moved verbatim from text.py - semantics byte-preserved) ────────
@@ -403,13 +421,13 @@ def _project_syslog(f: Finding) -> list[Cell]:
         host = f.title  # burst title IS the host (evidence carries no host key)
         line_count = int(ev.get("line_count", 0))
         span = float(ev.get("span_seconds", 0.0))
-        progs = ", ".join(str(name) for name, _count in ev.get("program_mix", []))
+        progs = fold_mix_names(ev.get("program_mix", []))
         parts = [host]
         if ev.get("label") == "rebooted":
             parts.append("rebooted")
         parts.extend([
-            f"{line_count} rare lines",
-            f"{span:.0f}s",
+            f"{line_count} {plural(line_count, 'rare line')}",
+            fmt_compact_span(timedelta(seconds=span)),
             f"mostly {progs}",
         ])
         line = " · ".join(parts)
@@ -451,17 +469,18 @@ def _project_syslog(f: Finding) -> list[Cell]:
     if tier == "transaction":
         host = f.title
         label = str(ev.get("label", "transaction"))
-        member_count = int(ev.get("member_count", 0))
+        represented_line_count = int(ev.get("represented_line_count", 0))
         span = fmt_compact_span(
             timedelta(seconds=float(ev.get("span_seconds", 0.0)))
         )
-        progs = ", ".join(
-            str(name) for name, _count in ev.get("program_mix", [])
-        ) or "unknown"
+        progs = fold_mix_names(ev.get("program_mix", [])) or "unknown"
         line = " · ".join([
             host,
             label,
-            f"{member_count} {plural(member_count, 'member finding')}",
+            (
+                f"{represented_line_count} "
+                f"{plural(represented_line_count, 'rare line')}"
+            ),
             span,
             f"mostly {progs}",
         ])

@@ -370,6 +370,7 @@ def test_render_run_summary_detect_banner_snapshot() -> None:
             datetime(2026, 6, 1, 18, 30, tzinfo=timezone.utc),
         ),
         record_counts={"conn*.log*": 12_345, "dns*.log*": 678},
+        record_labels={"conn*.log*": "Zeek conn"},
         data_size_bytes=0,
         detectors_run=["beacon", "dns"],
         detectors_skipped={"scan": "no conn data"},
@@ -389,7 +390,7 @@ def test_render_run_summary_detect_banner_snapshot() -> None:
         "sigwood  ·  threat hunt\n"
         "════════════════════════════════════════════════════════════════════════════════\n"
         "data found:    2026-06-01 12:00 → 2026-06-01 18:30 local  (6h)\n"
-        "records:       12,345 conn*.log*  ·  678 dns*.log*\n"
+        "records:       12,345 Zeek conn  ·  678 dns*.log*\n"
         "allowlist:     suppressed 1,284 connections and 312 domains and "
         "9,412 rows from\n"
         "               2 hosts\n"
@@ -485,7 +486,10 @@ def test_render_run_summary_detect_omits_optional_rows_when_empty() -> None:
 
 
 def test_fmt_compact_span_edges() -> None:
-    # Sub-hour spans render minutes - a short window never collapses to "0h"/"0.0d".
+    # Sub-minute spans render seconds; larger tiers stay compact.
+    assert fmt_compact_span(timedelta(0)) == "0s"
+    assert fmt_compact_span(timedelta(seconds=2)) == "2s"
+    assert fmt_compact_span(timedelta(seconds=45)) == "45s"
     assert fmt_compact_span(timedelta(minutes=1)) == "1m"
     assert fmt_compact_span(timedelta(minutes=20)) == "20m"
     assert fmt_compact_span(timedelta(minutes=59)) == "59m"
@@ -494,10 +498,28 @@ def test_fmt_compact_span_edges() -> None:
     assert fmt_compact_span(timedelta(days=2)) == "2d"
     assert fmt_compact_span(timedelta(days=1, hours=12)) == "1.5d"
     assert fmt_compact_span(timedelta(days=7)) == "7d"
-    # No surprising unit-crossing: minutes that round up promote to "1h", and a
-    # sub-24h span that rounds up promotes to "1d".
+    # No surprising unit-crossing: rounded units promote instead of printing
+    # "60s", "60m", or "24h".
+    assert fmt_compact_span(timedelta(seconds=59.5)) == "1m"
+    assert fmt_compact_span(timedelta(seconds=60)) == "1m"
     assert fmt_compact_span(timedelta(seconds=3570)) == "1h"      # 59.5m → "1h", never "60m"
     assert fmt_compact_span(timedelta(hours=23, minutes=40)) == "1d"
+
+
+def test_fold_mix_names_keeps_first_verbatim_case() -> None:
+    from sigwood.outputs._render_model import fold_mix_names
+
+    assert fold_mix_names([
+        ["CRON", 5],
+        ["cron", 3],
+        ["sshd", 1],
+    ]) == "CRON, sshd"
+
+
+def test_fold_mix_names_skips_malformed_entries() -> None:
+    from sigwood.outputs._render_model import fold_mix_names
+
+    assert fold_mix_names([["cron", 2], "abcd", []]) == "cron"
 
 
 def _summary_window(span: timedelta, requested_span: timedelta | None) -> RunSummary:

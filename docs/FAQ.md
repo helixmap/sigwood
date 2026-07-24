@@ -453,7 +453,7 @@ reboots: an **admin session** (a login through its logout, anchored on the sessi
 open/close lines the system itself writes) and an **update run** (package-manager,
 kernel-module, and policy-reload activity). When several findings on one host fall inside
 one recognized transaction, they fold into a single labeled review unit - `Jul 12
-22:11:11 · webhost · update run · 4 member findings · 1m · mostly kernel, systemd` - with
+22:11:11 · webhost · update run · 19 rare lines · 1m · mostly kernel, systemd` - with
 every member preserved behind it (`-v` in text, complete in JSON; in HTML the row expands
 straight to the members' raw log lines, grouped under thin per-member separators). One admin doing one system update reads as one line, not nineteen. Recognition only
 groups; it never decides severity - a unit is MEDIUM exactly when one of its members is

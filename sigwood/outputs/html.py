@@ -37,6 +37,7 @@ from sigwood.outputs._render_model import (
     Section,
     _SEVERITY_ORDER,
     _build_renderable,
+    fold_mix_names,
     html_cell_value,
     html_columns,
     needs_landscape,
@@ -131,7 +132,8 @@ def _render_header(run_summary: "RunSummary | None") -> str:
         rows.append(_meta_row("window", _esc(window_cell)))
         if run_summary.record_counts:
             records = " · ".join(
-                f"{count:,} {_esc(name)}" for name, count in run_summary.record_counts.items()
+                f"{count:,} {_esc(run_summary.record_labels.get(name, name))}"
+                for name, count in run_summary.record_counts.items()
             )
             rows.append(_meta_row("records", records))
         rows.append(_meta_row("data", _esc(human_bytes(run_summary.data_size_bytes))))
@@ -292,11 +294,7 @@ def _render_transaction_member_line(member: object) -> str:
     if program is None:
         mix = member.get("program_mix")
         if isinstance(mix, (list, tuple)):
-            program = ", ".join(
-                str(item[0])
-                for item in mix
-                if isinstance(item, (list, tuple)) and item
-            )
+            program = fold_mix_names(mix)
     try:
         count = int(member.get("represented_line_count", 1))
     except (TypeError, ValueError):

@@ -44,6 +44,7 @@ from sigwood.outputs._render_model import (
     Section,
     _SEVERITY_ORDER,
     _build_renderable,
+    fold_mix_names,
     project_row,
     text_columns,
 )
@@ -386,11 +387,7 @@ def _transaction_member_lines(finding: Finding, indent: str) -> list[str]:
         if program is None:
             mix = member.get("program_mix")
             if isinstance(mix, (list, tuple)):
-                program = ", ".join(
-                    str(item[0])
-                    for item in mix
-                    if isinstance(item, (list, tuple)) and item
-                )
+                program = fold_mix_names(mix)
         count = int(member.get("represented_line_count", 1))
         parts = [
             f"[{severity}]",
@@ -566,7 +563,8 @@ class TextHandler(OutputHandler):
 
         if run_summary.record_counts:
             counts_str = "  ·  ".join(
-                f"{v:,} {k}" for k, v in run_summary.record_counts.items()
+                f"{v:,} {run_summary.record_labels.get(k, k)}"
+                for k, v in run_summary.record_counts.items()
             )
             lines.extend(_summary_line("records:", counts_str))
 

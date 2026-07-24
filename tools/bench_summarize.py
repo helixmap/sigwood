@@ -31,6 +31,7 @@ TOP_KEYS = frozenset({"sigwood_version", "schema_version", "run_summary", "findi
 RUN_SUMMARY_KEYS = frozenset({
     "data_window",
     "record_counts",
+    "record_labels",
     "data_size_bytes",
     "detectors_run",
     "detectors_skipped",
@@ -264,6 +265,12 @@ def _validate_payload(payload: object) -> dict[str, Any]:
         _require_str(key, "run_summary.record_counts key")
         if _require_int(value, f"run_summary.record_counts.{key}") < 0:
             raise SummaryRefusal(f"run_summary.record_counts.{key}", "expected non-negative")
+    record_labels = _require_exact_keys_dynamic(
+        run["record_labels"], "run_summary.record_labels"
+    )
+    for key, value in record_labels.items():
+        _require_str(key, "run_summary.record_labels key")
+        _require_str(value, f"run_summary.record_labels.{key}")
     _require_int(run["data_size_bytes"], "run_summary.data_size_bytes")
     for field in ("detectors_run", "data_sources"):
         for index, value in enumerate(_require_list(run[field], f"run_summary.{field}")):
@@ -751,6 +758,10 @@ def _project_summary(
         "allowlist_state": _allowlist_state(run, config),
         "record_counts": {
             strip_control(key): value for key, value in sorted(run["record_counts"].items())
+        },
+        "record_labels": {
+            strip_control(key): strip_control(value)
+            for key, value in sorted(run["record_labels"].items())
         },
         "data_size_bytes": run["data_size_bytes"],
         "requested_span_seconds": requested_seconds,

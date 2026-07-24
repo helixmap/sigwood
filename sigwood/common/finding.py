@@ -107,6 +107,9 @@ class RunSummary:
     data_size_bytes: int
     detectors_run: list[str]
     detectors_skipped: dict[str, str]  # name → reason
+    # Loaded pattern → operator-language label. Missing keys deliberately fall
+    # back to the pattern at reading surfaces.
+    record_labels: dict[str, str] = field(default_factory=dict)
     notes: list[str] = field(default_factory=list)
     data_sources: list[str] = field(default_factory=list)
     detector_methods: dict[str, "MethodTag | None"] = field(default_factory=dict)

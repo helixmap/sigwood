@@ -51,7 +51,7 @@ def test_default_window_advisory_exact_string() -> None:
         (timedelta(hours=23, minutes=30), timedelta(days=1), "(1d)"),
         (timedelta(days=3), timedelta(days=1), "(3d)"),
         (timedelta(hours=6), None, "(6h)"),
-        (timedelta(0), None, "(0m)"),
+        (timedelta(0), None, "(0s)"),
     ],
 )
 def test_fmt_data_found_suffix_arms(

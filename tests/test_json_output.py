@@ -29,6 +29,7 @@ def _run_summary() -> RunSummary:
     return RunSummary(
         data_window=_W,
         record_counts={"conn*.log*": 3},
+        record_labels={"conn*.log*": "Zeek conn"},
         data_size_bytes=2048,
         detectors_run=["beacon", "aws"],
         detectors_skipped={"dns": "no dns.log"},
@@ -174,16 +175,16 @@ def test_syslog_transaction_evidence_is_additive_without_schema_bump() -> None:
         "label": "update run",
         "host": "host-a",
         "member_count": 2,
-        "represented_line_count": 4,
+        "represented_line_count": 5,
         "start_ts": 1.0,
         "end_ts": 61.0,
         "first_seen": "1970-01-01T00:00:01+00:00",
         "span_seconds": 60.0,
-        "program_mix": [["dnf", 3], ["kernel", 1]],
+        "program_mix": [["CRON", 3], ["cron", 1], ["kernel", 1]],
         "members": [
-            {"severity": "low", "tier": "family", "represented_line_count": 3,
+            {"severity": "low", "tier": "family", "represented_line_count": 4,
              "title": "host-a", "first_seen": "1970-01-01T00:00:02+00:00",
-             "program": "dnf", "sample_raw": ["dnf-raw-a", "dnf-raw-b"]},
+             "program": "CRON", "sample_raw": ["cron-raw-a", "cron-raw-b"]},
             {"severity": "low", "represented_line_count": 1,
              "title": "kernel: package event",
              "first_seen": "1970-01-01T00:00:03+00:00", "program": "kernel"},
@@ -192,7 +193,7 @@ def test_syslog_transaction_evidence_is_additive_without_schema_bump() -> None:
     transaction = Finding(
         detector="syslog", severity=Severity.INFO, title="host-a",
         description="Recognized system update activity.", evidence=evidence,
-        next_steps=["Review the member findings"],
+        next_steps=["Review the grouped lines for unexpected activity"],
         ts_generated=datetime(2026, 6, 1, 18, 0, tzinfo=timezone.utc),
         data_window=_W,
     )
@@ -205,9 +206,45 @@ def test_syslog_transaction_evidence_is_additive_without_schema_bump() -> None:
     assert [member["title"] for member in members] == [
         "host-a", "kernel: package event",
     ]
-    assert members[0]["sample_raw"] == ["dnf-raw-a", "dnf-raw-b"]
+    assert members[0]["sample_raw"] == ["cron-raw-a", "cron-raw-b"]
     assert "tier" not in members[1]
     assert "sample_raw" not in members[1]
+    assert payload["findings"][0]["next_steps"] == [
+        "Review the grouped lines for unexpected activity",
+    ]
+    assert "member finding" not in json.dumps(payload, sort_keys=True).casefold()
+
+
+def test_syslog_transaction_operator_vocabulary_remains_lossless() -> None:
+    phrase = "operator member findings remain verbatim"
+    evidence = {
+        "tier": "transaction",
+        "label": "update run",
+        "member_count": 1,
+        "represented_line_count": 1,
+        "span_seconds": 1.0,
+        "program_mix": [["cron", 1]],
+        "members": [{
+            "severity": "low",
+            "represented_line_count": 1,
+            "program": "cron",
+            "title": phrase,
+        }],
+    }
+    transaction = Finding(
+        detector="syslog",
+        severity=Severity.INFO,
+        title="host-a",
+        description="Recognized system update activity.",
+        evidence=evidence,
+        next_steps=["Review the grouped lines for unexpected activity"],
+        ts_generated=datetime(2026, 6, 1, 18, 0, tzinfo=timezone.utc),
+        data_window=_W,
+    )
+
+    payload = _emit([transaction])
+
+    assert payload["findings"][0]["evidence"]["members"][0]["title"] == phrase
 
 
 def test_syslog_needle_stamp_evidence_is_lossless_without_schema_bump() -> None:
@@ -314,6 +351,7 @@ def test_dns_label_score_evidence_keys_reach_json(monkeypatch: pytest.MonkeyPatc
 
 def test_run_summary_added_fields_present() -> None:
     rs = _emit([_finding({})])["run_summary"]
+    assert rs["record_labels"] == {"conn*.log*": "Zeek conn"}
     assert rs["detector_methods"] == {
         "beacon": {"label": "FFT", "named": True},
         "aws": {"label": "statistical", "named": False},

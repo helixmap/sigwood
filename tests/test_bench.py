@@ -203,6 +203,7 @@ def _payload(
     requested_span: float | None = None,
     detectors_run: list[str] | None = None,
     record_counts: dict[str, int] | None = None,
+    record_labels: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     return {
         "sigwood_version": "0.2.3",
@@ -210,6 +211,7 @@ def _payload(
         "run_summary": {
             "data_window": None,
             "record_counts": record_counts or {},
+            "record_labels": record_labels or {},
             "data_size_bytes": 0,
             "detectors_run": detectors_run or [],
             "detectors_skipped": {},
@@ -434,7 +436,13 @@ def test_bench_end_to_end_repeats_ranks_and_detects_threshold_change(tmp_path: P
 
 
 def test_projection_handles_nullable_shapes_span_and_absent_header() -> None:
-    raw = _payload([_finding()], requested_span=604800.0, detectors_run=["duration"])
+    raw = _payload(
+        [_finding()],
+        requested_span=604800.0,
+        detectors_run=["duration"],
+        record_counts={"conn*.log*": 11},
+        record_labels={"conn*.log*": "Zeek conn"},
+    )
     payload = bench_summarize._validate_payload(raw)
     summary = bench_summarize._project_summary(
         payload,
@@ -451,6 +459,7 @@ def test_projection_handles_nullable_shapes_span_and_absent_header() -> None:
     assert summary["default_visible"] == {"duration": 0}
     assert summary["cap_hidden"] == {"duration": 0}
     assert summary["level_hidden"] == {"duration": 1}
+    assert summary["record_labels"] == {"conn*.log*": "Zeek conn"}
     assert "invocation" not in summary
     assert "generated_at" not in summary
 
@@ -504,6 +513,29 @@ def test_payload_refuses_schema_bump_and_structural_key_drift() -> None:
     negative = _payload(record_counts={"conn*.log*": -1})
     with pytest.raises(bench_summarize.SummaryRefusal, match="expected non-negative"):
         bench_summarize._validate_payload(negative)
+
+
+def test_payload_validates_record_labels_as_strings() -> None:
+    valid = _payload(record_labels={"conn*.log*": "Zeek conn"})
+    assert bench_summarize._validate_payload(valid)["run_summary"][
+        "record_labels"
+    ] == {"conn*.log*": "Zeek conn"}
+
+    bad_key = _payload()
+    bad_key["run_summary"]["record_labels"] = {7: "Zeek conn"}
+    with pytest.raises(
+        bench_summarize.SummaryRefusal,
+        match=r"run_summary\.record_labels key",
+    ):
+        bench_summarize._validate_payload(bad_key)
+
+    bad_value = _payload()
+    bad_value["run_summary"]["record_labels"] = {"conn*.log*": 7}
+    with pytest.raises(
+        bench_summarize.SummaryRefusal,
+        match=r"run_summary\.record_labels\.conn\*\.log\*",
+    ):
+        bench_summarize._validate_payload(bad_value)
 
 
 def test_payload_validates_nullable_provenance_types_and_timezone() -> None:
@@ -632,6 +664,7 @@ def _diff_summary(**overrides: Any) -> dict[str, Any]:
         "schema_version": 1,
         "dataset_id": "demo",
         "record_counts": {},
+        "record_labels": {},
         "data_size_bytes": 10,
         "requested_span_seconds": None,
         "total_findings": 2,

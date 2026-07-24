@@ -387,31 +387,39 @@ def fmt_window(window: "tuple[datetime, datetime]") -> str:
 
 
 def fmt_compact_span(td: timedelta) -> str:
-    """Compact span for a duration - ``"20m"`` / ``"18h"`` / ``"7d"`` / ``"1.5d"``.
+    """Compact span - ``"45s"`` / ``"20m"`` / ``"18h"`` / ``"7d"`` / ``"1.5d"``.
 
     The shared renderer for the window-suffix (digest card / finding tail / banner
     data-found), the data-found underfill parenthetical, and the beacon span-adequacy
-    note. ``< 1h`` → integer minutes (``"20m"``); ``< 24h`` → integer hours
-    (``"18h"``); ``>= 24h`` → days, integer when whole else one decimal (``"2d"``,
-    ``"1.5d"``). Rounding never crosses a unit surprisingly: minutes that round up to
-    a full hour print ``"1h"`` and hours that round up to a full day print ``"1d"``,
-    never ``"60m"`` / ``"24h"``.
+    note. ``< 1m`` → integer seconds (``"45s"``); ``< 1h`` → integer minutes
+    (``"20m"``); ``< 24h`` → integer hours (``"18h"``); ``>= 24h`` → days,
+    integer when whole else one decimal (``"2d"``, ``"1.5d"``). Rounding never
+    crosses a unit surprisingly: seconds that round up to a full minute print
+    ``"1m"``, minutes that round up to a full hour print ``"1h"``, and hours that
+    round up to a full day print ``"1d"``, never ``"60s"`` / ``"60m"`` / ``"24h"``.
     """
-    minutes = td.total_seconds() / 60
+    seconds = td.total_seconds()
+    if seconds < 60:
+        rounded_s = int(round(seconds))
+        if rounded_s < 60:
+            return f"{rounded_s}s"
+        # rounded up to a full minute - promote the unit rather than print "60s"
+        return "1m"
+    minutes = seconds / 60
     if minutes < 60:
         rounded_m = int(round(minutes))
         if rounded_m < 60:
             return f"{rounded_m}m"
         # rounded up to a full hour - promote the unit rather than print "60m"
         return "1h"
-    hours = td.total_seconds() / 3600
+    hours = seconds / 3600
     if hours < 24:
         rounded = int(round(hours))
         if rounded < 24:
             return f"{rounded}h"
         # rounded up to a full day - promote the unit rather than print "24h"
         return "1d"
-    days = td.total_seconds() / 86400
+    days = seconds / 86400
     if abs(days - round(days)) < 1e-9:
         return f"{int(round(days))}d"
     return f"{days:.1f}d"

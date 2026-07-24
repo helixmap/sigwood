@@ -546,12 +546,18 @@ def _run_analyze(
         name: getattr(plan.detectors[name], "DETECTOR_METHOD", None)
         for name in plan.will_run
     }
+    record_labels = {
+        pattern: _pattern_human_label(plan.needed_logs[pattern], pattern)
+        for pattern in load_result.record_counts
+        if pattern in plan.needed_logs
+    }
     run_summary = RunSummary(
         # The loader's window verbatim - None when no loaded rows establish a
         # window (the render surfaces answer "none"/null; the fabricated
         # fallback local feeds DetectorContext only).
         data_window=load_result.data_window,
         record_counts=load_result.record_counts,
+        record_labels=record_labels,
         data_size_bytes=load_result.data_size_bytes,
         detectors_run=plan.will_run,
         detectors_skipped=plan.skipped,

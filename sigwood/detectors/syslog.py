@@ -37,7 +37,7 @@ import re
 import sys
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
-from typing import Iterable, NamedTuple
+from typing import Iterable, Mapping, NamedTuple
 
 import pandas as pd
 from tqdm import tqdm
@@ -97,6 +97,11 @@ TRANSACTION_LEAD_TOLERANCE_SECONDS = 60
 TRANSACTION_TAIL_TOLERANCE_SECONDS = 120
 TRANSACTION_MIN_MEMBER_FINDINGS = 2
 UPDATE_RUN_MIN_ANCHORS = 2
+# Boot chatter satisfies the update grammar; anchors inside a boot window never
+# form update units. The lead covers shutdown-side anchors; the tail covers the
+# measured post-boot anchor offset and matches reboot clustering.
+BOOT_ANCHOR_SUPPRESS_LEAD_SECONDS = 120
+BOOT_ANCHOR_SUPPRESS_TAIL_SECONDS = 600
 
 # Tool-shipped Drain3 calibration. Keep the specification as strings so importing
 # this detector never imports optional runtime objects or compiles their regexes.
@@ -311,6 +316,9 @@ class _TransactionEvent(NamedTuple):
     anchor_times: tuple[float, ...]
 
 
+_BootWindows = Mapping[str, tuple[tuple[float, float], ...]]
+
+
 def run(context: DetectorContext) -> list[Finding]:
     """Detect anomalous syslog lines using drain3 templating, rarity scoring,
     temporal burst collapse, and per-program family review units."""
@@ -345,12 +353,6 @@ def run(context: DetectorContext) -> list[Finding]:
 
     now = datetime.now(timezone.utc)
 
-    transaction_events = (
-        _detect_transaction_events(df)
-        if recognize_transactions
-        else []
-    )
-
     # Reboot detection is a SECOND, rarity-blind, full-frame channel: a vectorized
     # mask over canonical `message` catches every reboot signal even when its
     # drain3 template
@@ -361,6 +363,14 @@ def run(context: DetectorContext) -> list[Finding]:
     # returned on an empty frame, so the combined mask is always a real boolean.
     reboot_mask = df["message"].astype(str).str.contains(REBOOT_SIGNALS_RE, na=False)
     boot_events = _detect_boot_events(df[reboot_mask], cluster_seconds=cluster_seconds)
+    boot_windows = _boot_anchor_suppression_windows(boot_events)
+
+    transaction_events = (
+        _detect_transaction_events(df, boot_windows=boot_windows)
+        if recognize_transactions
+        else []
+    )
+
     rare_df = df[df["is_anomaly"] & ~reboot_mask].copy()
 
     # The magnitude anchor is the FULL loaded population for each canonical
@@ -607,6 +617,24 @@ def _detect_boot_events(
     return events
 
 
+def _boot_anchor_suppression_windows(
+    boot_events: Iterable[_BootEvent],
+) -> dict[str, tuple[tuple[float, float], ...]]:
+    """Return inclusive update-anchor suppression windows for determinate boots."""
+    by_host: dict[str, list[tuple[float, float]]] = defaultdict(list)
+    for event in boot_events:
+        if event.start_ts is None or event.end_ts is None:
+            continue
+        by_host[event.host].append((
+            event.start_ts - BOOT_ANCHOR_SUPPRESS_LEAD_SECONDS,
+            event.end_ts + BOOT_ANCHOR_SUPPRESS_TAIL_SECONDS,
+        ))
+    return {
+        host: tuple(windows)
+        for host, windows in by_host.items()
+    }
+
+
 def _transaction_source(df: pd.DataFrame) -> pd.DataFrame:
     """Return a positional, timed, concrete-host copy for recognition."""
     if df.empty or not {"ts", "host", "message"}.issubset(df.columns):
@@ -698,10 +726,26 @@ def _detect_admin_session_events(
     return events
 
 
-def _detect_update_run_events(work: pd.DataFrame) -> list[_TransactionEvent]:
+def _detect_update_run_events(
+    work: pd.DataFrame,
+    *,
+    boot_windows: _BootWindows,
+) -> list[_TransactionEvent]:
     """Recognize per-host update activity from the frozen v1 grammar."""
     messages = work["message"].astype(str)
     mask = messages.str.contains(UPDATE_RUN_ANCHOR_RE, na=False)
+    suppressed = pd.Series(False, index=work.index, dtype=bool)
+    host_values = work["host"].astype(str)
+    for host, windows in boot_windows.items():
+        host_mask = host_values.eq(host)
+        for start_ts, end_ts in windows:
+            suppressed |= (
+                host_mask
+                & work["ts"].between(start_ts, end_ts, inclusive="both")
+            )
+    # Suppression changes only which grammar matches may form update units. The
+    # source rows remain in the full frame and still reach rarity analysis.
+    mask &= ~suppressed
     anchors = work.loc[mask, ["ts", "host"]].copy()
     if anchors.empty:
         return []
@@ -723,6 +767,8 @@ def _detect_update_run_events(work: pd.DataFrame) -> list[_TransactionEvent]:
 
 def _detect_transaction_events(
     df: pd.DataFrame,
+    *,
+    boot_windows: _BootWindows,
 ) -> list[_TransactionEvent]:
     """Recognize named full-frame events without reading rarity state."""
     work = _transaction_source(df)
@@ -730,7 +776,7 @@ def _detect_transaction_events(
         return []
 
     events = _detect_admin_session_events(work)
-    events.extend(_detect_update_run_events(work))
+    events.extend(_detect_update_run_events(work, boot_windows=boot_windows))
 
     label_order = {"admin session": 0, "update run": 1}
     events.sort(
@@ -908,6 +954,8 @@ def _reconcile_transactions(
     label_order = {"admin session": 0, "update run": 1}
     assignments: dict[int, tuple[int, int]] = {}
     for pair_index, (_sort_ts, finding) in enumerate(collapsed_pairs):
+        if finding.evidence.get("label") == "rebooted":
+            continue
         finding_id = id(finding)
         if finding_id in assignments:
             continue

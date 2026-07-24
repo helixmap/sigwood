@@ -6,6 +6,17 @@ All notable changes to sigwood are recorded here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **A reboot is never mislabeled an "update run", and its `rebooted` marker can
+  no longer vanish from the report.** On RHEL-family hosts a normal boot emits
+  lines that satisfy the update-run grammar (dracut, the auditd stop/start pair,
+  SELinux policy load), so a routine reboot could form a medium "update run"
+  review unit that swallowed the reboot itself. Update-run recognition now
+  ignores anchors inside a detected boot window (measured bounds), and a
+  `rebooted` burst is never claimed by any review unit - the reboot always
+  stays a visible row, including after a genuine update-then-reboot.
+
 ### Added
 
 - **`sigwood init` offers to skip detectors you have no logs for.** Decline a

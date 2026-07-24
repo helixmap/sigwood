@@ -24,6 +24,7 @@ from unittest.mock import patch
 
 import pandas as pd
 
+import sigwood.detectors.syslog as syslog_detector
 from sigwood.common.finding import DetectorContext, Finding, Severity
 from sigwood.detectors.syslog import (
     BURST_MIN_SIZE,
@@ -283,6 +284,20 @@ def _make_burst_pair(host: str, start: float, end: float) -> tuple[float, Findin
     return (start, f)
 
 
+def _represented_output_count(findings: list[Finding]) -> int:
+    """Count rare rows represented by a detector result exactly once."""
+    total = 0
+    for finding in findings:
+        tier = finding.evidence.get("tier")
+        if tier == "transaction":
+            total += int(finding.evidence["represented_line_count"])
+        elif tier in ("family", "burst"):
+            total += int(finding.evidence["line_count"])
+        elif tier != "reboot":
+            total += 1
+    return total
+
+
 # ── Tests ─────────────────────────────────────────────────────────────────────
 
 class SyslogDetectorTests(unittest.TestCase):
@@ -297,6 +312,14 @@ class SyslogDetectorTests(unittest.TestCase):
         self.assertEqual(DEFAULT_CONFIG["burst_min_size"], 4)
         self.assertEqual(DEFAULT_CONFIG["family_min_size"], 4)
         self.assertEqual(TRANSACTION_MIN_MEMBER_FINDINGS, 2)
+        self.assertEqual(
+            getattr(syslog_detector, "BOOT_ANCHOR_SUPPRESS_LEAD_SECONDS"),
+            120,
+        )
+        self.assertEqual(
+            getattr(syslog_detector, "BOOT_ANCHOR_SUPPRESS_TAIL_SECONDS"),
+            600,
+        )
 
     def test_privileged_roster_exact_and_default_is_fresh_copy(self) -> None:
         self.assertEqual(len(PRIVILEGED_PROGRAMS), 31)
@@ -1528,7 +1551,7 @@ class SyslogDetectorTests(unittest.TestCase):
              "message": "sshd[*]: Accepted publickey for operator"},
         ])
 
-        events = _detect_transaction_events(rows)
+        events = _detect_transaction_events(rows, boot_windows={})
 
         self.assertEqual([(event.label, event.host) for event in events], [
             ("admin session", "h1"),
@@ -1633,9 +1656,10 @@ class SyslogDetectorTests(unittest.TestCase):
                 "message": "rpm[*]: installed package-example",
             },
         ]
-        events = _detect_transaction_events(pd.DataFrame(
-            [*admin_rows, *update_rows]
-        ))
+        events = _detect_transaction_events(
+            pd.DataFrame([*admin_rows, *update_rows]),
+            boot_windows={},
+        )
 
         pairs = [
             _stored_needle(_BASE_TS + 18_000, "h", "update-member-1"),
@@ -1668,7 +1692,7 @@ class SyslogDetectorTests(unittest.TestCase):
             {"ts": _BASE_TS, "host": "h3", "message": "dnf[*]: only anchor"},
         ])
 
-        events = _detect_transaction_events(rows)
+        events = _detect_transaction_events(rows, boot_windows={})
 
         self.assertEqual([(event.label, event.host) for event in events], [
             ("update run", "h1"),
@@ -1685,9 +1709,16 @@ class SyslogDetectorTests(unittest.TestCase):
             {"ts": _BASE_TS + 1, "host": "h",
              "message": "pam_unix(sshd:session): session closed for user operator"},
         ])
-        self.assertEqual(_detect_transaction_events(rows), [])
         self.assertEqual(
-            _detect_transaction_events(pd.DataFrame([{"host": "h"}])), []
+            _detect_transaction_events(rows, boot_windows={}),
+            [],
+        )
+        self.assertEqual(
+            _detect_transaction_events(
+                pd.DataFrame([{"host": "h"}]),
+                boot_windows={},
+            ),
+            [],
         )
 
     def test_run_recognizes_transactions_before_rarity_and_conserves_members(self) -> None:
@@ -1771,21 +1802,456 @@ class SyslogDetectorTests(unittest.TestCase):
         self.assertNotIn("privileged", transaction.evidence)
         self.assertEqual(transaction.evidence["program_mix"], [["cron", 1], ["kernel", 1]])
 
+    def test_reboot_boot_anchors_do_not_form_update_transaction(self) -> None:
+        """Boot-only anchors stay as pre-recognition reboot review shapes."""
+        common = [
+            {**_common_row(i), "program": "cron", "message": "cron: ordinary event"}
+            for i in range(50)
+        ]
+        boot_ts = _BASE_TS + 300_000
+        boot_activity = [
+            {
+                "ts": boot_ts - 10,
+                "host": "192.0.2.44",
+                "program": "dracut",
+                "raw": "dracut[*]: rebuilding initramfs",
+                "message": "dracut[*]: rebuilding initramfs",
+            },
+            {
+                "ts": boot_ts,
+                "host": "192.0.2.44",
+                "program": "auditd",
+                "raw": "auditd[*]: The audit daemon is exiting.",
+                "message": "auditd[*]: The audit daemon is exiting.",
+            },
+            {
+                "ts": boot_ts + 30,
+                "host": "192.0.2.44",
+                "program": "auditd",
+                "raw": (
+                    "auditd[*]: Init complete, auditd 3.1.2 listening for events "
+                    "(startup state enable)"
+                ),
+                "message": (
+                    "auditd[*]: Init complete, auditd 3.1.2 listening for events "
+                    "(startup state enable)"
+                ),
+            },
+            *[
+                {
+                    "ts": boot_ts + 10 + index,
+                    "host": "192.0.2.44",
+                    "program": "kernel",
+                    "raw": f"kernel: boot storm line {index}",
+                    "message": f"kernel: boot storm line {index}",
+                }
+                for index in range(4)
+            ],
+            {
+                "ts": boot_ts + 20,
+                "host": "192.0.2.44",
+                "program": "systemd-logind",
+                "raw": "systemd-logind[1]: System is rebooting.",
+                "message": "systemd-logind: System is rebooting.",
+            },
+        ]
+        rows = [*common, *boot_activity]
+        ids = [1] * len(common) + list(range(2, 10))
+        templates = ["ordinary"] * len(common) + [
+            "dracut-anchor",
+            "audit-exit-anchor",
+            "audit-init-anchor",
+            "storm-0",
+            "storm-1",
+            "storm-2",
+            "storm-3",
+            "reboot-signal",
+        ]
+
+        findings = _run_with(rows, ids, templates)
+
+        self.assertFalse(any(
+            finding.evidence.get("tier") == "transaction"
+            for finding in findings
+        ))
+        rebooted = [
+            finding
+            for finding in findings
+            if finding.evidence.get("label") == "rebooted"
+        ]
+        self.assertEqual(len(rebooted), 1)
+        self.assertEqual(rebooted[0].evidence["tier"], "burst")
+        self.assertEqual(rebooted[0].evidence["line_count"], 5)
+        released = [
+            finding
+            for finding in findings
+            if finding.evidence.get("tier") is None
+        ]
+        self.assertEqual(
+            {finding.evidence["program"] for finding in released},
+            {"auditd"},
+        )
+        self.assertEqual(len(released), 2)
+        self.assertTrue(all(
+            finding.evidence.get("privileged") is True
+            for finding in released
+        ))
+        self.assertEqual(_represented_output_count(findings), 7)
+
+    def test_rebooted_burst_is_never_a_transaction_candidate(self) -> None:
+        event = _TransactionEvent(
+            "update run",
+            "h",
+            _BASE_TS,
+            _BASE_TS + 300,
+            _BASE_TS - 60,
+            _BASE_TS + 420,
+            (_BASE_TS, _BASE_TS + 300),
+        )
+
+        with self.subTest("enough non-reboot members"):
+            burst = _make_burst_pair("h", _BASE_TS + 350, _BASE_TS + 360)
+            burst[1].evidence["label"] = "rebooted"
+            members = [
+                _stored_needle(_BASE_TS + 100, "h", "update-member-1"),
+                _stored_needle(_BASE_TS + 200, "h", "update-member-2"),
+            ]
+            result = _reconcile_transactions(
+                [event], [*members, burst], now=_NOW, data_window=_WINDOW
+            )
+            transactions = [
+                finding
+                for _, finding in result
+                if finding.evidence.get("tier") == "transaction"
+            ]
+            self.assertEqual(len(transactions), 1)
+            self.assertEqual(
+                {
+                    member["title"]
+                    for member in transactions[0].evidence["members"]
+                },
+                {"update-member-1", "update-member-2"},
+            )
+            self.assertTrue(any(finding is burst[1] for _, finding in result))
+            self.assertEqual(burst[1].evidence["label"], "rebooted")
+            self.assertEqual(len(result), 2)
+
+        with self.subTest("unit dissolves below minimum"):
+            burst = _make_burst_pair("h", _BASE_TS + 350, _BASE_TS + 360)
+            burst[1].evidence["label"] = "rebooted"
+            member = _stored_needle(_BASE_TS + 100, "h", "only-update-member")
+            result = _reconcile_transactions(
+                [event], [member, burst], now=_NOW, data_window=_WINDOW
+            )
+            self.assertFalse(any(
+                finding.evidence.get("tier") == "transaction"
+                for _, finding in result
+            ))
+            self.assertEqual(
+                Counter(id(finding) for _, finding in result),
+                Counter((id(member[1]), id(burst[1]))),
+            )
+            self.assertEqual(burst[1].evidence["label"], "rebooted")
+
+    def test_update_anchor_suppression_is_host_scoped_and_endpoint_inclusive(
+        self,
+    ) -> None:
+        rows = pd.DataFrame([
+            {"ts": _BASE_TS - 2, "host": "h", "message": "dnf[*]: outside-a"},
+            {"ts": _BASE_TS - 1, "host": "h", "message": "rpm[*]: outside-b"},
+            {"ts": _BASE_TS, "host": "h", "message": "dracut[*]: at-start"},
+            {
+                "ts": _BASE_TS + 600,
+                "host": "h",
+                "message": "auditd[*]: The audit daemon is exiting.",
+            },
+            {"ts": _BASE_TS, "host": "other", "message": "dnf[*]: same-time-a"},
+            {
+                "ts": _BASE_TS + 1,
+                "host": "other",
+                "message": "rpm[*]: same-time-b",
+            },
+        ])
+
+        events = _detect_transaction_events(
+            rows,
+            boot_windows={"h": ((_BASE_TS, _BASE_TS + 600),)},
+        )
+
+        self.assertEqual(
+            [
+                (event.host, event.anchor_times)
+                for event in events
+                if event.label == "update run"
+            ],
+            [
+                ("h", (_BASE_TS - 2, _BASE_TS - 1)),
+                ("other", (_BASE_TS, _BASE_TS + 1)),
+            ],
+        )
+
+    def test_boot_windows_ignore_indeterminate_events(self) -> None:
+        boot_events = _detect_boot_events(
+            _reboot_df([
+                (
+                    float("nan"),
+                    "h",
+                    "systemd-logind[1]: System is rebooting.",
+                ),
+                (
+                    float("nan"),
+                    "h",
+                    "rsyslogd: [origin] exiting on signal 15",
+                ),
+            ]),
+            cluster_seconds=REBOOT_CLUSTER_SECONDS,
+        )
+        windows = syslog_detector._boot_anchor_suppression_windows(boot_events)
+        self.assertEqual(windows, {})
+
+        events = _detect_transaction_events(
+            pd.DataFrame([
+                {
+                    "ts": _BASE_TS,
+                    "host": "h",
+                    "message": "dnf[*]: starting update",
+                },
+                {
+                    "ts": _BASE_TS + 10,
+                    "host": "h",
+                    "message": "rpm[*]: installed package-example",
+                },
+            ]),
+            boot_windows=windows,
+        )
+        self.assertEqual(len(events), 1)
+        burst = _make_burst_pair("h", _BASE_TS, _BASE_TS + 1)
+        burst[1].evidence["label"] = "rebooted"
+        member = _stored_needle(_BASE_TS + 5, "h", "update-member")
+        result = _reconcile_transactions(
+            events, [burst, member], now=_NOW, data_window=_WINDOW
+        )
+        self.assertFalse(any(
+            finding.evidence.get("tier") == "transaction"
+            for _, finding in result
+        ))
+        self.assertEqual(len(result), 2)
+        self.assertTrue(any(finding is burst[1] for _, finding in result))
+
+    def test_genuine_update_away_from_boot_window_is_byte_identical(self) -> None:
+        rows = pd.DataFrame([
+            {
+                "ts": _BASE_TS,
+                "host": "h",
+                "message": "dnf[*]: starting update",
+            },
+            {
+                "ts": _BASE_TS + 300,
+                "host": "h",
+                "message": "rpm[*]: installed package-example",
+            },
+        ])
+        without_boot = _detect_transaction_events(rows, boot_windows={})
+        away_from_boot = _detect_transaction_events(
+            rows,
+            boot_windows={
+                "h": ((_BASE_TS + 600, _BASE_TS + 1320),),
+                "other": ((_BASE_TS - 120, _BASE_TS + 600),),
+            },
+        )
+        self.assertEqual(away_from_boot, without_boot)
+        self.assertEqual(
+            away_from_boot,
+            [
+                _TransactionEvent(
+                    "update run",
+                    "h",
+                    _BASE_TS,
+                    _BASE_TS + 300,
+                    _BASE_TS - TRANSACTION_LEAD_TOLERANCE_SECONDS,
+                    _BASE_TS + 300 + TRANSACTION_TAIL_TOLERANCE_SECONDS,
+                    (_BASE_TS, _BASE_TS + 300),
+                ),
+            ],
+        )
+
+    def test_admin_session_recognition_ignores_boot_windows(self) -> None:
+        rows = pd.DataFrame([
+            {
+                "ts": _BASE_TS,
+                "host": "h",
+                "message": "sshd[*]: Accepted publickey for operator",
+            },
+            {
+                "ts": _BASE_TS + 30,
+                "host": "h",
+                "message": (
+                    "pam_unix(sshd:session): session closed for user operator"
+                ),
+            },
+        ])
+        events = _detect_transaction_events(
+            rows,
+            boot_windows={"h": ((_BASE_TS - 120, _BASE_TS + 600),)},
+        )
+        self.assertEqual(
+            [(event.label, event.start_ts, event.end_ts) for event in events],
+            [("admin session", _BASE_TS, _BASE_TS + 30)],
+        )
+
+    def test_update_then_reboot_keeps_both_review_units(self) -> None:
+        common = [
+            {**_common_row(i), "program": "cron", "message": "cron: ordinary event"}
+            for i in range(50)
+        ]
+        start = _BASE_TS + 400_000
+        anchors = [
+            {
+                "ts": start + offset,
+                "host": "198.51.100.12",
+                "program": program,
+                "raw": message,
+                "message": message,
+            }
+            for offset, program, message in (
+                (0, "dnf", "dnf[*]: starting update"),
+                (1, "dnf", "dnf[*]: starting update"),
+                (299, "rpm", "rpm[*]: installed package-example"),
+                (300, "rpm", "rpm[*]: installed package-example"),
+            )
+        ]
+        update_members = [
+            {
+                "ts": start + offset,
+                "host": "198.51.100.12",
+                "program": program,
+                "raw": message,
+                "message": message,
+            }
+            for offset, program, message in (
+                (100, "cron", "cron: update-side effect"),
+                (200, "kernel", "kernel: update-side effect"),
+            )
+        ]
+        storm = [
+            {
+                "ts": start + 720 + index,
+                "host": "198.51.100.12",
+                "program": "kernel",
+                "raw": f"kernel: post-update boot storm {index}",
+                "message": f"kernel: post-update boot storm {index}",
+            }
+            for index in range(4)
+        ]
+        reboot = [{
+            "ts": start + 720,
+            "host": "198.51.100.12",
+            "program": "systemd-logind",
+            "raw": "systemd-logind[1]: System is rebooting.",
+            "message": "systemd-logind: System is rebooting.",
+        }]
+        rows = [*common, *anchors, *update_members, *storm, *reboot]
+        ids = [1] * len(common) + [2, 2, 3, 3, 4, 5, 6, 7, 8, 9, 10]
+        templates = ["ordinary"] * len(common) + [
+            "dnf-anchor",
+            "dnf-anchor",
+            "rpm-anchor",
+            "rpm-anchor",
+            "update-member-1",
+            "update-member-2",
+            "storm-0",
+            "storm-1",
+            "storm-2",
+            "storm-3",
+            "reboot-signal",
+        ]
+
+        findings = _run_with(rows, ids, templates)
+
+        transactions = [
+            finding
+            for finding in findings
+            if finding.evidence.get("tier") == "transaction"
+        ]
+        rebooted = [
+            finding
+            for finding in findings
+            if finding.evidence.get("label") == "rebooted"
+        ]
+        self.assertEqual(len(transactions), 1)
+        self.assertEqual(transactions[0].evidence["label"], "update run")
+        self.assertEqual(transactions[0].evidence["represented_line_count"], 2)
+        self.assertEqual(len(rebooted), 1)
+        self.assertEqual(rebooted[0].evidence["tier"], "burst")
+        self.assertEqual(rebooted[0].evidence["line_count"], 4)
+        self.assertEqual(_represented_output_count(findings), 6)
+
     def test_recognize_transactions_false_bypasses_recognition(self) -> None:
         rows = [
-            {"ts": _BASE_TS + i, "host": "h", "program": "cron",
-             "raw": f"rare-{i}", "message": f"rare-{i}"}
-            for i in range(2)
+            *[
+                {
+                    "ts": _BASE_TS + i,
+                    "host": "h",
+                    "program": "cron",
+                    "raw": f"storm-{i}",
+                    "message": f"storm-{i}",
+                }
+                for i in range(4)
+            ],
+            {
+                "ts": _BASE_TS + 2,
+                "host": "h",
+                "program": "systemd-logind",
+                "raw": "systemd-logind[1]: System is rebooting.",
+                "message": "systemd-logind: System is rebooting.",
+            },
+            *[
+                {
+                    "ts": _BASE_TS + 1000 + i,
+                    "host": "h",
+                    "program": "cron",
+                    "raw": f"rare-{i}",
+                    "message": f"rare-{i}",
+                }
+                for i in range(2)
+            ],
         ]
         with patch(
             "sigwood.detectors.syslog._detect_transaction_events",
             side_effect=AssertionError("recognizer must be bypassed"),
         ):
             findings = _run_with(
-                rows, [1, 2], ["rare-1", "rare-2"],
+                rows,
+                list(range(1, 8)),
+                [
+                    "storm-0",
+                    "storm-1",
+                    "storm-2",
+                    "storm-3",
+                    "reboot-signal",
+                    "rare-1",
+                    "rare-2",
+                ],
                 {"recognize_transactions": False, "family_min_size": 3},
             )
-        self.assertEqual([finding.title for finding in findings], ["rare-0", "rare-1"])
+        self.assertEqual(
+            [
+                (
+                    finding.severity,
+                    finding.title,
+                    finding.evidence.get("tier"),
+                    finding.evidence.get("label"),
+                    finding.evidence.get("line_count"),
+                )
+                for finding in findings
+            ],
+            [
+                (Severity.INFO, "h", "burst", "rebooted", 4),
+                (Severity.LOW, "rare-0", None, None, None),
+                (Severity.LOW, "rare-1", None, None, None),
+            ],
+        )
+        self.assertEqual(_represented_output_count(findings), 6)
 
     def test_transaction_claim_window_is_inclusive_and_requires_whole_interval(self) -> None:
         event = _TransactionEvent(

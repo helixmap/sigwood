@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gzip
 import io
 import json
 import os
@@ -78,6 +79,22 @@ def _pihole_directory(tmp_path: Path) -> Path:
     source = tmp_path / "pihole"
     source.mkdir()
     (source / "pihole.log").write_text(_PIHOLE_LINES, encoding="utf-8")
+    return source
+
+
+def _pihole_rotation_directory(tmp_path: Path) -> Path:
+    source = tmp_path / "pihole-rotations"
+    source.mkdir()
+    for name, day, domain, host in (
+        ("pihole.log", 20, "recent.example.test", "192.0.2.20"),
+        ("pihole.log.1", 18, "straddler.example.test", "192.0.2.18"),
+        ("pihole.log.2", 15, "old.example.test", "192.0.2.15"),
+    ):
+        (source / name).write_text(
+            f"Jul {day:2d} 12:00:00 dnsmasq[1]: "
+            f"query[A] {domain} from {host}\n",
+            encoding="utf-8",
+        )
     return source
 
 
@@ -1934,10 +1951,10 @@ def test_run_graph_dns_smooth_breach_sets_radius_only_degrade_note(
     assert capsys.readouterr().err.strip() == payload["meta"]["degrade_note"]
 
 
-def test_run_graph_pihole_skips_implicit_window_but_keeps_explicit_timeframe(
+def test_run_graph_pihole_resolves_bounded_file_and_keeps_explicit_timeframe(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Pihole follows the full-load default with explicit windows still passed on."""
+    """Pi-hole enters the universal resolver; bounded/explicit gates remain owned."""
     source = tmp_path / "pihole.log"
     source.write_text("placeholder\n", encoding="utf-8")
     frame = pd.DataFrame({
@@ -1949,18 +1966,20 @@ def test_run_graph_pihole_skips_implicit_window_but_keeps_explicit_timeframe(
     result = LoadResult(
         logs={"pihole*.log*": frame}, record_counts={"pihole*.log*": 1},
     )
-    from sigwood.common import loader
-
-    def _no_default(*_args: object, **_kwargs: object) -> None:
-        pytest.fail("pihole must not resolve an implicit graph window")
-
+    real_resolve = loader.resolve_load_windows
+    resolved: list[list[LoadWindow]] = []
     calls: list[tuple[object, ...]] = []
+
+    def _resolve(*args: object, **kwargs: object) -> list[LoadWindow]:
+        windows = real_resolve(*args, **kwargs)
+        resolved.append(windows)
+        return windows
 
     def _load(*args: object, **_kwargs: object) -> LoadResult:
         calls.append(args)
         return result
 
-    monkeypatch.setattr(loader, "resolve_load_windows", _no_default)
+    monkeypatch.setattr(loader, "resolve_load_windows", _resolve)
     monkeypatch.setattr(loader, "load_required_logs", _load)
     config = _config()
     config["sigwood"]["default_window"] = "7d"
@@ -1971,6 +1990,7 @@ def test_run_graph_pihole_skips_implicit_window_but_keeps_explicit_timeframe(
         ";</script>", 1,
     )[0])
     assert first["meta"]["default_window_note"] is None
+    assert resolved == [[]]
     assert calls[0][2:4] == (None, None)
 
     since = datetime(2026, 1, 1, tzinfo=timezone.utc)
@@ -1984,4 +2004,404 @@ def test_run_graph_pihole_skips_implicit_window_but_keeps_explicit_timeframe(
         stream=io.StringIO(),
         quiet=True,
     )
+    assert resolved == [[], []]
     assert calls[1][2:4] == (since, until)
+
+
+def test_run_graph_pihole_directory_uses_default_window_with_real_loader(
+    tmp_path: Path, pin_tz, restore_display_utc,
+) -> None:
+    """A bare Pi-hole archive is disclosed and precisely trimmed by its own data."""
+    pin_tz("UTC")
+    source = _pihole_rotation_directory(tmp_path)
+    config = _config()
+    config["sigwood"]["default_window"] = "1d"
+    stream = io.StringIO()
+
+    runner.run_graph(
+        config,
+        kind="pihole",
+        inputs=source,
+        stream=stream,
+        quiet=True,
+        use_utc=True,
+    )
+
+    payload = json.loads(
+        stream.getvalue().split("const DATA = ", 1)[1].split(";</script>", 1)[0]
+    )
+    assert payload["meta"]["default_window_note"] == default_window_advisory("1d")
+    assert payload["meta"]["rows"] == 1
+    assert [node["id"] for node in payload["dstNodes"]] == ["recent.example.test"]
+
+
+def test_run_graph_pihole_floor_routes_to_file_selection_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A conservative flat floor prunes files but never row-filters."""
+    source = tmp_path / "pihole"
+    source.mkdir()
+    (source / "pihole.log").write_text("placeholder\n", encoding="utf-8")
+    floor = datetime(2026, 7, 19, tzinfo=timezone.utc)
+    span = timedelta(days=1)
+    window = LoadWindow("pihole_dir", (floor, None), span, True)
+    frame = pd.DataFrame({
+        "ts": [floor.timestamp() + 1],
+        "src": ["192.0.2.20"],
+        "query": ["recent.example.test"],
+        "event_type": ["query"],
+    })
+    result = LoadResult(
+        logs={"pihole*.log*": frame},
+        record_counts={"pihole*.log*": 1},
+    )
+    observed: dict[str, object] = {"resolved": False}
+
+    def _resolve(*_args: object, **_kwargs: object) -> list[LoadWindow]:
+        observed["resolved"] = True
+        return [window]
+
+    def _load(*_args: object, **kwargs: object) -> LoadResult:
+        observed["source_windows"] = kwargs.get("source_windows")
+        observed["file_select_windows"] = kwargs.get("file_select_windows")
+        return result
+
+    def _apply(
+        actual: LoadResult,
+        patterns: list[str],
+        actual_span: timedelta,
+        *,
+        keep_null: bool,
+    ) -> LoadResult:
+        observed["apply"] = (actual, patterns, actual_span, keep_null)
+        return result
+
+    monkeypatch.setattr(loader, "resolve_load_windows", _resolve)
+    monkeypatch.setattr(loader, "load_required_logs", _load)
+    monkeypatch.setattr(loader, "apply_default_window", _apply)
+    config = _config()
+    config["sigwood"]["default_window"] = "1d"
+
+    runner.run_graph(
+        config, kind="pihole", inputs=source, stream=io.StringIO(), quiet=True,
+    )
+
+    assert observed["resolved"] is True
+    assert observed["source_windows"] is None
+    assert observed["file_select_windows"] == {
+        "pihole_dir": (floor, None),
+    }
+    assert observed["apply"] == (
+        result, ["pihole*.log*"], span, True,
+    )
+
+
+def test_run_graph_pihole_unpeekable_default_loads_full_then_trims(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An unpeekable flat default carries no selection map but still trims."""
+    source = tmp_path / "pihole"
+    source.mkdir()
+    (source / "pihole.log").write_text("placeholder\n", encoding="utf-8")
+    span = timedelta(days=1)
+    window = LoadWindow("pihole_dir", None, span, True)
+    frame = pd.DataFrame({
+        "ts": [1779750000.0],
+        "src": ["192.0.2.20"],
+        "query": ["recent.example.test"],
+        "event_type": ["query"],
+    })
+    result = LoadResult(
+        logs={"pihole*.log*": frame},
+        record_counts={"pihole*.log*": 1},
+    )
+    observed: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        loader, "resolve_load_windows", lambda *_a, **_kw: [window],
+    )
+
+    def _load(*_args: object, **kwargs: object) -> LoadResult:
+        observed["source_windows"] = kwargs.get("source_windows")
+        observed["file_select_windows"] = kwargs.get("file_select_windows")
+        return result
+
+    def _apply(
+        actual: LoadResult,
+        patterns: list[str],
+        actual_span: timedelta,
+        *,
+        keep_null: bool,
+    ) -> LoadResult:
+        observed["apply"] = (actual, patterns, actual_span, keep_null)
+        return result
+
+    monkeypatch.setattr(loader, "load_required_logs", _load)
+    monkeypatch.setattr(loader, "apply_default_window", _apply)
+    config = _config()
+    config["sigwood"]["default_window"] = "1d"
+
+    runner.run_graph(
+        config, kind="pihole", inputs=source, stream=io.StringIO(), quiet=True,
+    )
+
+    assert observed["source_windows"] is None
+    assert observed["file_select_windows"] is None
+    assert observed["apply"] == (
+        result, ["pihole*.log*"], span, True,
+    )
+
+
+@pytest.mark.parametrize(
+    ("default_window", "mode", "expected_rows"),
+    [
+        ("all", "default", 3),
+        ("1d", "all", 3),
+        ("1d", "explicit", 2),
+    ],
+)
+def test_run_graph_pihole_directory_respects_window_opt_outs(
+    tmp_path: Path,
+    pin_tz,
+    restore_display_utc,
+    default_window: str,
+    mode: str,
+    expected_rows: int,
+) -> None:
+    """Disabled, --all, and explicit windows retain their existing semantics."""
+    pin_tz("UTC")
+    source = _pihole_rotation_directory(tmp_path)
+    config = _config()
+    config["sigwood"]["default_window"] = default_window
+    stream = io.StringIO()
+    kwargs: dict[str, object] = {}
+    if mode == "all":
+        kwargs["load_all"] = True
+    elif mode == "explicit":
+        recent = loader._peek_first_ts(source / "pihole.log")
+        straddler = loader._peek_first_ts(source / "pihole.log.1")
+        assert recent is not None and straddler is not None
+        kwargs.update({
+            "since": straddler - timedelta(hours=1),
+            "until": recent + timedelta(hours=1),
+        })
+
+    runner.run_graph(
+        config,
+        kind="pihole",
+        inputs=source,
+        stream=stream,
+        quiet=True,
+        use_utc=True,
+        **kwargs,
+    )
+
+    payload = json.loads(
+        stream.getvalue().split("const DATA = ", 1)[1].split(";</script>", 1)[0]
+    )
+    assert payload["meta"]["default_window_note"] is None
+    assert payload["meta"]["rows"] == expected_rows
+
+
+def test_run_graph_windowed_pihole_directory_disables_density_trim(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A resolver window remains the only automatic trim act for Pi-hole dirs."""
+    source = tmp_path / "pihole"
+    source.mkdir()
+    (source / "pihole.log").write_text("placeholder\n", encoding="utf-8")
+    frame = pd.DataFrame({
+        "ts": [1779750000.0],
+        "src": ["192.0.2.20"],
+        "query": ["recent.example.test"],
+        "event_type": ["query"],
+    })
+    result = LoadResult(
+        logs={"pihole*.log*": frame},
+        record_counts={"pihole*.log*": 1},
+    )
+    window = LoadWindow(
+        "pihole_dir",
+        (datetime(2026, 5, 20, tzinfo=timezone.utc), None),
+        timedelta(days=1),
+        True,
+    )
+    monkeypatch.setattr(
+        loader, "resolve_load_windows", lambda *_a, **_kw: [window],
+    )
+    monkeypatch.setattr(loader, "load_required_logs", lambda *_a, **_kw: result)
+    monkeypatch.setattr(loader, "apply_default_window", lambda *_a, **_kw: result)
+    module = __import__("sigwood.graph.pihole", fromlist=["build"])
+    actual_build = module.build
+    trim_flags: list[bool] = []
+
+    def _capture(*args: object, **kwargs: object) -> dict[str, Any]:
+        trim_flags.append(bool(kwargs["trim_sparse_edges"]))
+        return actual_build(*args, **kwargs)
+
+    monkeypatch.setattr(module, "build", _capture)
+    config = _config()
+    config["sigwood"]["default_window"] = "1d"
+
+    runner.run_graph(
+        config, kind="pihole", inputs=source, stream=io.StringIO(), quiet=True,
+    )
+
+    assert trim_flags == [False]
+
+
+def test_run_graph_pihole_file_stays_bounded_and_unwindowed(
+    tmp_path: Path, pin_tz, restore_display_utc,
+) -> None:
+    """An explicitly named Pi-hole file keeps every row and gets no default note."""
+    pin_tz("UTC")
+    source = tmp_path / "pihole.log"
+    source.write_text(
+        "Jul 20 12:00:00 dnsmasq[1]: query[A] "
+        "recent.example.test from 192.0.2.20\n"
+        "Jul 15 12:00:00 dnsmasq[1]: query[A] "
+        "old.example.test from 192.0.2.15\n",
+        encoding="utf-8",
+    )
+    config = _config()
+    config["sigwood"]["default_window"] = "1d"
+    stream = io.StringIO()
+
+    runner.run_graph(
+        config,
+        kind="pihole",
+        inputs=source,
+        stream=stream,
+        quiet=True,
+        use_utc=True,
+    )
+
+    payload = json.loads(
+        stream.getvalue().split("const DATA = ", 1)[1].split(";</script>", 1)[0]
+    )
+    assert payload["meta"]["default_window_note"] is None
+    assert payload["meta"]["rows"] == 2
+
+
+def test_run_graph_pihole_rotation_fallback_is_exact_and_quiet_gated(
+    tmp_path: Path,
+    pin_tz,
+    restore_display_utc,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Fallback reasons reuse the shared safe stderr line and honor quiet."""
+    pin_tz("UTC")
+    source = tmp_path / "pihole"
+    source.mkdir()
+    line = (
+        "Jul 20 12:00:00 dnsmasq[1]: query[A] "
+        "recent.example.test from 192.0.2.20\n"
+    )
+    (source / "pihole.log").write_text(line, encoding="utf-8")
+    with gzip.open(source / "pihole.log.gz", "wt", encoding="utf-8") as handle:
+        handle.write(line)
+    config = _config()
+    config["sigwood"]["default_window"] = "1d"
+    expected = (
+        "Pi-hole: duplicate rotation files - read the full archive "
+        "(windowing skipped; duplicate rows may be counted twice)"
+    )
+
+    runner.run_graph(
+        config,
+        kind="pihole",
+        inputs=source,
+        stream=io.StringIO(),
+        quiet=False,
+        show_progress=False,
+        use_utc=True,
+    )
+    assert capsys.readouterr().err.strip() == expected
+
+    runner.run_graph(
+        config,
+        kind="pihole",
+        inputs=source,
+        stream=io.StringIO(),
+        quiet=True,
+        show_progress=False,
+        use_utc=True,
+    )
+    assert capsys.readouterr().err == ""
+
+
+def test_run_graph_pihole_normal_rotation_prune_has_no_stderr_disclosure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    pin_tz,
+    restore_display_utc,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Ordinary pruning remains represented by the window, not live narration."""
+    pin_tz("UTC")
+    source = _pihole_rotation_directory(tmp_path)
+    config = _config()
+    config["sigwood"]["default_window"] = "1d"
+    real_load = loader.load_required_logs
+    observed_skips = []
+
+    def _load(*args: object, **kwargs: object) -> LoadResult:
+        result = real_load(*args, **kwargs)
+        observed_skips.append(result.rotation_skips["pihole*.log*"])
+        return result
+
+    monkeypatch.setattr(loader, "load_required_logs", _load)
+
+    runner.run_graph(
+        config,
+        kind="pihole",
+        inputs=source,
+        stream=io.StringIO(),
+        quiet=False,
+        show_progress=False,
+        use_utc=True,
+    )
+
+    assert len(observed_skips) == 1
+    assert observed_skips[0].skipped > 0
+    assert observed_skips[0].fallback is False
+    assert capsys.readouterr().err == ""
+
+
+def test_run_graph_windowed_pihole_empty_names_selected_window(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A resolver-selected Pi-hole window keeps the generalized empty wording."""
+    source = tmp_path / "pihole"
+    source.mkdir()
+    (source / "pihole.log").write_text("placeholder\n", encoding="utf-8")
+    frame = pd.DataFrame({
+        "ts": [1779750000.0],
+        "src": ["192.0.2.20"],
+        "query": ["recent.example.test"],
+        "event_type": ["query"],
+    })
+    loaded = LoadResult(
+        logs={"pihole*.log*": frame},
+        record_counts={"pihole*.log*": 1},
+    )
+    empty = LoadResult(
+        logs={"pihole*.log*": frame.iloc[0:0]},
+        record_counts={},
+    )
+    monkeypatch.setattr(
+        loader,
+        "resolve_load_windows",
+        lambda *_a, **_kw: [
+            LoadWindow("pihole_dir", None, timedelta(days=1), True),
+        ],
+    )
+    monkeypatch.setattr(loader, "load_required_logs", lambda *_a, **_kw: loaded)
+    monkeypatch.setattr(loader, "apply_default_window", lambda *_a, **_kw: empty)
+    config = _config()
+    config["sigwood"]["default_window"] = "1d"
+
+    with pytest.raises(GraphEmpty, match="no records in selected window"):
+        runner.run_graph(
+            config, kind="pihole", inputs=source, stream=io.StringIO(), quiet=True,
+        )

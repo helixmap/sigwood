@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import math
+from datetime import timedelta
 
 import pandas as pd
 import pytest
 
 from sigwood.common.errors import GraphEmpty
+from sigwood.common.loader import LoadResult, apply_default_window
 from sigwood.graph import _core
 from sigwood.graph._core import validate_config
 from sigwood.graph.pihole import _DISPOSITIONS, build
@@ -114,6 +116,54 @@ def test_pihole_evidence_window_includes_a_late_disposition_tail(
     assert payload["meta"]["t0"] == 10.0
     assert payload["meta"]["t1"] == 20.0
     assert payload["meta"]["bins"] * payload["meta"]["bin_seconds"] >= 10.0
+    assert _service_mass(payload) == pytest.approx({"forwarded": 1.0})
+    assert all(value == 0 for value in payload["totB"][1:])
+    assert all(value == 0 for value in payload["totC"][1:])
+
+
+def test_pihole_evidence_window_composes_with_default_window_trim() -> None:
+    """Accepted evidence extrema and empty tail bins derive from the trimmed frame."""
+    rows = pd.DataFrame(
+        [
+            {
+                "ts": 0.0,
+                "src": "192.0.2.1",
+                "query": "old.example.test",
+                "event_type": "query",
+            },
+            {
+                "ts": 100.0,
+                "src": "192.0.2.10",
+                "query": "relay.example.test",
+                "event_type": "query",
+            },
+            {
+                "ts": 120.0,
+                "src": None,
+                "query": "relay.example.test",
+                "event_type": "forwarded",
+            },
+        ]
+    )
+    result = apply_default_window(
+        LoadResult(logs={"pihole*.log*": rows}, record_counts={"pihole*.log*": 3}),
+        ["pihole*.log*"],
+        timedelta(seconds=30),
+        keep_null=True,
+    )
+
+    payload = build(
+        result.logs["pihole*.log*"],
+        config=validate_config({}),
+        source_label="pihole rotations",
+        default_window_note="default window active",
+        trim_sparse_edges=False,
+    )
+
+    assert payload["meta"]["rows"] == 1
+    assert payload["meta"]["t0"] == 100.0
+    assert payload["meta"]["t1"] == 120.0
+    assert payload["meta"]["bins"] * payload["meta"]["bin_seconds"] >= 20.0
     assert _service_mass(payload) == pytest.approx({"forwarded": 1.0})
     assert all(value == 0 for value in payload["totB"][1:])
     assert all(value == 0 for value in payload["totC"][1:])

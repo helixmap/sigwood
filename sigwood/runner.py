@@ -2814,9 +2814,10 @@ def _run_graph(
         if has_explicit_inputs and path.is_file()
     ]
 
-    # Graph follows digest's Zeek-only default-window contract. The resolver's
+    # Graph windows through the same universal resolver as analyze. The resolver's
     # non-empty return is the one authoritative fact for artifact disclosure;
-    # it holds for both dated-select and flat-trim window shapes.
+    # it holds across dated-select, flat-trim, and flat-floor window shapes. A
+    # flat floor selects files only - the post-load trim owns the row window.
     cfg_sigwood = config.get("sigwood", {})
     default_spec = cfg_sigwood.get("default_window", "7d")
     operator_since, operator_until = since, until
@@ -2841,16 +2842,14 @@ def _run_graph(
                 date_dir_note += (
                     "; connections that began before that day are not shown"
                 )
-    load_windows = []
-    if spec.source_key == "zeek_dir":
-        load_windows = loader.resolve_load_windows(
-            needed_logs,
-            source_dirs,
-            default_spec,
-            since=since,
-            until=until,
-            load_all=load_all,
-        )
+    load_windows = loader.resolve_load_windows(
+        needed_logs,
+        source_dirs,
+        default_spec,
+        since=since,
+        until=until,
+        load_all=load_all,
+    )
     allow_tail_trim = (
         operator_since is None
         and operator_until is None
@@ -2861,6 +2860,9 @@ def _run_graph(
     )
     default_window_note = date_dir_note
     source_windows: dict[str, tuple[datetime | None, datetime | None]] | None = None
+    file_select_windows: (
+        dict[str, tuple[datetime | None, datetime | None]] | None
+    ) = None
     flat_span: timedelta | None = None
     keep_null = False
     if load_windows:
@@ -2868,9 +2870,13 @@ def _run_graph(
         default_window_note = default_window_advisory(default_spec)
         if window.trim_span is None and window.select_window is not None:
             source_windows = {spec.source_key: window.select_window}
-        else:
+        elif window.trim_span is not None:
             flat_span = window.trim_span
             keep_null = window.keep_null
+            if window.select_window is not None:
+                file_select_windows = {
+                    spec.source_key: window.select_window,
+                }
 
     load_result = loader.load_required_logs(
         needed_logs,
@@ -2879,6 +2885,7 @@ def _run_graph(
         until,
         source_windows=source_windows,
         show_progress=show_progress and not quiet,
+        file_select_windows=file_select_windows,
         trusted_files={spec.pattern: trusted_files},
     )
     if flat_span is not None:
@@ -2887,6 +2894,11 @@ def _run_graph(
         )
     for warning in load_result.warnings:
         _estderr(warning)
+    if not quiet:
+        for pattern, info in load_result.rotation_skips.items():
+            if info.fallback:
+                label = _pattern_human_label(needed_logs[pattern], pattern)
+                _estderr(_rotation_fallback_line(label, info))
 
     # Strict graph accounting deliberately happens before the clean-empty
     # branch: an unreadable requested source is operationally incomplete even

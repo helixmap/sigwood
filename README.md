@@ -179,6 +179,12 @@ on in the data.
        width="760" alt="sigwood graph replaying conn.log flows as an animated Sankey - hosts, the services they reach, and destination hosts over a two-day window; scrambled sample data">
 </p>
 
+Pointed at a directory, `graph` windows like the hunt does: the last
+`default_window` (7d out of the box) of that source's available data, peeking
+rotation files' timestamps and skipping the rest instead of decompressing a whole
+archive. `--all` or an explicit `--since` widens, and a single named file always
+loads in full.
+
 A Zeek directory produces two graphs - a **conn** graph (hosts vs the services
 they reach) and a **dns** graph (clients vs the domains they look up). Pi-hole
 adds a **disposition lane**: alongside the domains each client queried, you can

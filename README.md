@@ -303,7 +303,9 @@ python3 -m venv .venv                # Python 3.11+
 Configuration is optional - sigwood will run against a path with no config. When you want it
 repeatable, `sigwood init` looks at the conventional locations on your box, profiles what it
 finds (which log families, rough size, freshness), and writes an annotated config under `~/.sigwood/` (or
-`/etc/sigwood` for a system-wide install). Re-run it any time: it merges into an existing
+`/etc/sigwood` for a system-wide install). If you decline a source, it offers to skip the
+detectors that would have read it (a `detect` exclusion in the config - re-running init after
+you add the source offers to lift it again). Re-run it any time: it merges into an existing
 config without clobbering settings you already have, and shows a summary of what will change
 before it writes anything.
 

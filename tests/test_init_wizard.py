@@ -273,9 +273,10 @@ def test_init_writes_bak_on_existing_config_update(
 
     _stub_candidates(monkeypatch)  # nothing detected
     # An existing config routes to merge/reset. Inputs: merge (Enter), 4 source
-    # prompts (all skip), root prompt (Enter keeps the set root), accept (Enter).
+    # prompts (all skip), keep the detector spec, root prompt (Enter keeps the
+    # set root), accept (Enter).
     # Merge has no location prompt and writes the .bak back to the found config.
-    _stage_inputs(monkeypatch, ["", "", "", "", "", "", ""])
+    _stage_inputs(monkeypatch, ["", "", "", "", "", "k", "", ""])
 
     cli._run_init([])
 
@@ -296,8 +297,8 @@ def _merge_skip_all(monkeypatch: pytest.MonkeyPatch) -> None:
     and the accept gate. Root by presence: a SET value is kept on Enter; an UNSET
     root routes through the HOME MENU, whose Enter writes the default ~/.sigwood."""
     _stub_candidates(monkeypatch)
-    # merge, zeek, pihole, syslog, cloudtrail, root, accept.
-    _stage_inputs(monkeypatch, ["", "", "", "", "", "", ""])
+    # merge, zeek, pihole, syslog, cloudtrail, keep detect, root, accept.
+    _stage_inputs(monkeypatch, ["", "", "", "", "", "k", "", ""])
     cli._run_init([])
 
 
@@ -358,9 +359,12 @@ def test_reset_config_regenerates_in_place_preserving_split_root(
         encoding="utf-8",
     )
     _stub_candidates(monkeypatch)
-    # reset, scope=config, typed `reset`, 4 sources skip, root Enter (keeps the
-    # split root), accept Enter. NO location prompt.
-    _stage_inputs(monkeypatch, ["r", "c", "reset", "", "", "", "", "", ""])
+    # reset, scope=config, typed `reset`, 4 sources skip, keep the detector
+    # default, root Enter (keeps the split root), accept Enter. NO location prompt.
+    _stage_inputs(
+        monkeypatch,
+        ["r", "c", "reset", "", "", "", "", "k", "", ""],
+    )
     cli._run_init([])
 
     parsed = tomllib.loads((home / "config.toml").read_text(encoding="utf-8"))
@@ -899,9 +903,9 @@ def test_flow_all_found_all_accepted_root_enter(
     pihole_dir, pihole_candidates = _setup_pihole(tmp_path)
     syslog = _setup_syslog(tmp_path)
     _stub_candidates(monkeypatch, zeek=(zeek,), pihole=pihole_candidates, syslog=syslog)
-    # zeek/pihole/syslog (Enter-keep), cloudtrail (Enter-skip), location Enter
-    # (~/.sigwood - the home IS the root, asked once), accept Enter.
-    _stage_inputs(monkeypatch, ["", "", "", "", "", ""])
+    # zeek/pihole/syslog (Enter-keep), cloudtrail (Enter-skip), keep detect,
+    # location Enter (~/.sigwood - the home IS the root, asked once), accept.
+    _stage_inputs(monkeypatch, ["", "", "", "", "k", "", ""])
 
     cli._run_init([])
 
@@ -927,9 +931,9 @@ def test_flow_dated_zeek_detected_writes_candidate_root(
     (cand / "current").mkdir()
     _make_file(cand / "current" / "conn.log")
     _stub_candidates(monkeypatch, zeek=(str(cand),))
-    # zeek (Enter-use), pihole/syslog/cloudtrail (Enter-skip), location Enter
-    # (~/.sigwood), accept Enter.
-    _stage_inputs(monkeypatch, ["", "", "", "", "", ""])
+    # zeek (Enter-use), pihole/syslog/cloudtrail (Enter-skip), keep detect,
+    # location Enter (~/.sigwood), accept Enter.
+    _stage_inputs(monkeypatch, ["", "", "", "", "k", "", ""])
 
     cli._run_init([])
 
@@ -948,8 +952,8 @@ def test_flow_typed_pihole_path(
     syslog = _setup_syslog(tmp_path)
     _stub_candidates(monkeypatch, zeek=(zeek,), pihole=pihole_candidates, syslog=syslog)
     # zeek Enter, pihole typed (absolute → stored as-is), syslog Enter, cloudtrail
-    # skip, location Enter, accept Enter.
-    _stage_inputs(monkeypatch, ["", "/custom/pihole", "", "", "", ""])
+    # skip, keep detect, location Enter, accept Enter.
+    _stage_inputs(monkeypatch, ["", "/custom/pihole", "", "", "k", "", ""])
 
     cli._run_init([])
     parsed = tomllib.loads((home / "config.toml").read_text(encoding="utf-8"))
@@ -964,8 +968,10 @@ def test_flow_pihole_not_found_typed_path(
     syslog = _setup_syslog(tmp_path)
     _stub_candidates(monkeypatch, zeek=(zeek,), pihole=(), syslog=syslog)
     # zeek Enter, pihole not-found→typed, syslog Enter, cloudtrail skip, location
-    # Enter, accept Enter.
-    _stage_inputs(monkeypatch, ["", "/somewhere/pihole", "", "", "", ""])
+    # Enter, keep detect, accept Enter.
+    _stage_inputs(
+        monkeypatch, ["", "/somewhere/pihole", "", "", "k", "", ""],
+    )
 
     cli._run_init([])
     parsed = tomllib.loads((home / "config.toml").read_text(encoding="utf-8"))
@@ -991,8 +997,8 @@ def test_flow_summary_redo_rebuilds_answers(
     # would-be leak), pihole/syslog keep, cloudtrail skip, location Enter, redo.
     # Pass 2: keep zeek/pihole/syslog (Enter), skip cloudtrail, location, accept.
     _stage_inputs(monkeypatch, [
-        "/stale/leak", "", "", "", "", "r",
-        "", "", "", "", "", "",
+        "/stale/leak", "", "", "", "k", "", "r",
+        "", "", "", "", "k", "", "",
     ])
 
     cli._run_init([])
@@ -1013,7 +1019,7 @@ def test_flow_all_skipped_proceeds_no_gate(
     _stub_candidates(monkeypatch, zeek=(zeek,), pihole=pihole_candidates, syslog=syslog)
     # Skip all four with the `-` drop sentinel (zeek/pihole/syslog detected,
     # cloudtrail nothing), location Enter, accept Enter. No gate.
-    _stage_inputs(monkeypatch, ["-", "-", "-", "-", "", ""])
+    _stage_inputs(monkeypatch, ["-", "-", "-", "-", "k", "", ""])
 
     cli._run_init([])
     parsed = tomllib.loads((home / "config.toml").read_text(encoding="utf-8"))
@@ -1042,7 +1048,7 @@ def test_fresh_skip_writes_explicit_empty_so_fallback_stays_disabled(
     _, pihole_candidates = _setup_pihole(tmp_path)
     syslog = _setup_syslog(tmp_path)
     _stub_candidates(monkeypatch, zeek=(zeek,), pihole=pihole_candidates, syslog=syslog)
-    _stage_inputs(monkeypatch, ["-", "-", "-", "-", "", ""])
+    _stage_inputs(monkeypatch, ["-", "-", "-", "-", "k", "", ""])
     cli._run_init([])
 
     config = cfg.load(str(home / "config.toml"))
@@ -1064,7 +1070,7 @@ def test_fresh_skip_summary_reads_skipped(
     _, pihole_candidates = _setup_pihole(tmp_path)
     syslog = _setup_syslog(tmp_path)
     _stub_candidates(monkeypatch, zeek=(zeek,), pihole=pihole_candidates, syslog=syslog)
-    _stage_inputs(monkeypatch, ["-", "-", "-", "-", "", ""])
+    _stage_inputs(monkeypatch, ["-", "-", "-", "-", "k", "", ""])
     cli._run_init([])
     out = capsys.readouterr().out
     assert re.search(r'zeek_dir\s+-\s+skipped', out)
@@ -1088,7 +1094,7 @@ def test_flow_reinit_preserves_custom_root_and_other_stanzas(
     # Existing config → merge. merge; CONFIGURED zeek_dir → TYPE the new path to
     # update; pihole/syslog are unconfigured → Enter accepts the detected dirs;
     # cloudtrail skip; root Enter (keeps /data/sigwood); accept. No location prompt.
-    _stage_inputs(monkeypatch, ["", zeek, "", "", "", "", ""])
+    _stage_inputs(monkeypatch, ["", zeek, "", "", "", "k", "", ""])
 
     cli._run_init([])
 
@@ -1113,7 +1119,7 @@ def test_flow_reinit_with_empty_root_preserved(
     _stub_candidates(monkeypatch)
     # merge, 4 sources skip, root Enter (explicit "" is a SET value, kept on
     # Enter - presence-based), accept. The user chose CWD; it must survive.
-    _stage_inputs(monkeypatch, ["", "", "", "", "", "", ""])
+    _stage_inputs(monkeypatch, ["", "", "", "", "", "k", "", ""])
 
     cli._run_init([])
     parsed = tomllib.loads((home / "config.toml").read_text(encoding="utf-8"))
@@ -1130,8 +1136,8 @@ def test_verbatim_zeek_not_found_block(
 ) -> None:
     _isolated_home(monkeypatch, tmp_path)
     _stub_candidates(monkeypatch)
-    # fresh: 4 sources skip, location Enter, accept Enter.
-    _stage_inputs(monkeypatch, ["", "", "", "", "", ""])
+    # fresh: 4 sources skip, keep detect, location Enter, accept Enter.
+    _stage_inputs(monkeypatch, ["", "", "", "", "k", "", ""])
     cli._run_init([])
     out = capsys.readouterr().out
     # The nothing-state nudge voice is preserved (only the footer is uniform).
@@ -1145,8 +1151,8 @@ def test_verbatim_summary_advisory_and_confirm_blocks(
 ) -> None:
     home = _isolated_home(monkeypatch, tmp_path)
     _stub_candidates(monkeypatch)
-    # fresh: 4 sources skip, location Enter, accept Enter.
-    _stage_inputs(monkeypatch, ["", "", "", "", "", ""])
+    # fresh: 4 sources skip, keep detect, location Enter, accept Enter.
+    _stage_inputs(monkeypatch, ["", "", "", "", "k", "", ""])
     cli._run_init([])
     out = capsys.readouterr().out
     # The at-least-one gate is replaced by the no-source advisory in the summary.
@@ -1239,9 +1245,9 @@ def test_bak_byte_identical_for_crlf_existing_config(
     cfg_path.write_bytes(original_bytes)
 
     _stub_candidates(monkeypatch)
-    # Existing config → merge: merge, 4 sources skip, root Enter (keeps /data/sigwood),
-    # accept Enter.
-    _stage_inputs(monkeypatch, ["", "", "", "", "", "", ""])
+    # Existing config → merge: merge, 4 sources skip, keep detect, root Enter
+    # (keeps /data/sigwood), accept Enter.
+    _stage_inputs(monkeypatch, ["", "", "", "", "", "k", "", ""])
     cli._run_init([])
 
     bak = cfg_path.with_suffix(".toml.bak")
@@ -1294,7 +1300,7 @@ def test_merge_keeps_export_stanza_and_tuning(
     # merge: a CONFIGURED zeek_dir shows the configured state (not re-detected) -
     # TYPE the new path to update it; pihole/syslog/cloudtrail skip; root Enter
     # (keep /data/sigwood); accept.
-    _stage_inputs(monkeypatch, ["", zeek, "", "", "", "", ""])
+    _stage_inputs(monkeypatch, ["", zeek, "", "", "", "k", "", ""])
 
     cli._run_init([])
 
@@ -1319,7 +1325,10 @@ def test_reset_config_regenerates_fresh_preserves_data_dirs(
     _stub_candidates(monkeypatch)
     # reset, scope=config, typed confirm, 4 sources skip, root Enter (keep set
     # root), accept Enter. NO location prompt in the reset path.
-    _stage_inputs(monkeypatch, ["r", "c", "reset", "", "", "", "", "", ""])
+    _stage_inputs(
+        monkeypatch,
+        ["r", "c", "reset", "", "", "", "", "k", "", ""],
+    )
     cli._run_init([])
 
     out = (home / "config.toml").read_text(encoding="utf-8")
@@ -1382,8 +1391,9 @@ def test_cloudtrail_typed_path_and_only_proceeds_no_gate(
 ) -> None:
     home = _isolated_home(monkeypatch, tmp_path)
     _stub_candidates(monkeypatch)  # nothing detected
-    # zeek/pihole/syslog skip, cloudtrail typed (absolute), location, accept.
-    _stage_inputs(monkeypatch, ["", "", "", "/srv/ct", "", ""])
+    # zeek/pihole/syslog skip, cloudtrail typed (absolute), keep detect, location,
+    # accept.
+    _stage_inputs(monkeypatch, ["", "", "", "/srv/ct", "k", "", ""])
     cli._run_init([])
 
     parsed = tomllib.loads((home / "config.toml").read_text(encoding="utf-8"))
@@ -1397,8 +1407,8 @@ def test_fresh_seeds_allowlist_d(
 ) -> None:
     home = _isolated_home(monkeypatch, tmp_path)
     _stub_candidates(monkeypatch)
-    # 4 sources skip, location Enter, accept.
-    _stage_inputs(monkeypatch, ["", "", "", "", "", ""])
+    # 4 sources skip, keep detect, location Enter, accept.
+    _stage_inputs(monkeypatch, ["", "", "", "", "k", "", ""])
     cli._run_init([])
 
     ad = home / "allowlist.d"
@@ -1434,8 +1444,8 @@ def test_custom_home_redetect_discards_stale_source_answers(
     # location = custom home → REDIRECT (terminal, before any root/summary) →
     # merge → keep/skip all sources → root → accept.
     _stage_inputs(monkeypatch, [
-        "/stale/zeek", "", "", "", str(custom),     # fresh source pass + location
-        "", "", "", "", "", "", "",                  # merge, 4 sources, root, accept
+        "/stale/zeek", "", "", "", "k", str(custom),
+        "", "", "", "", "", "k", "", "",
     ])
     cli._run_init([])
 
@@ -1449,8 +1459,9 @@ def test_custom_home_no_config_writes_fresh_with_disclosure(
     monkeypatch.setattr(cli, "_SEARCH_HOMES", (str(tmp_path / "uh"), str(tmp_path / "sh")))
     custom = tmp_path / "custom"
     _stub_candidates(monkeypatch)
-    # 4 sources skip, location = custom (no config → fresh + disclosure), accept.
-    _stage_inputs(monkeypatch, ["", "", "", "", str(custom), ""])
+    # 4 sources skip, keep detect, location = custom (no config → fresh +
+    # disclosure), accept.
+    _stage_inputs(monkeypatch, ["", "", "", "", "k", str(custom), ""])
     cli._run_init([])
 
     assert (custom / "config.toml").exists()
@@ -1586,8 +1597,9 @@ def test_root_empty_summary_and_confirm_surfaces(
     home.mkdir(parents=True)
     (home / "config.toml").write_text("[sigwood]\nroot = \"\"\n", encoding="utf-8")
     _stub_candidates(monkeypatch)
-    # merge, 4 sources skip, root Enter (keeps the explicit ""), accept.
-    _stage_inputs(monkeypatch, ["", "", "", "", "", "", ""])
+    # merge, 4 sources skip, keep detect, root Enter (keeps the explicit ""),
+    # accept.
+    _stage_inputs(monkeypatch, ["", "", "", "", "", "k", "", ""])
     cli._run_init([])
 
     out = capsys.readouterr().out
@@ -1614,7 +1626,7 @@ def test_summary_annotations_added_changed_removed(
     # merge; zeek configured → type /new (was: /old); pihole nothing → type /p
     # (added); legacy system logs preserve the effective default; cloudtrail skips;
     # root present → `-` removes; accept.
-    _stage_inputs(monkeypatch, ["", "/new", "/p", "", "", "-", ""])
+    _stage_inputs(monkeypatch, ["", "/new", "/p", "", "", "k", "-", ""])
     cli._run_init([])
 
     out = capsys.readouterr().out
@@ -1635,8 +1647,9 @@ def test_fresh_abort_after_typed_home_leaves_nothing(
     monkeypatch.setattr(cli, "_SEARCH_HOMES", (str(tmp_path / "uh"), str(tmp_path / "sh")))
     newhome = tmp_path / "newhome"  # does not exist
     _stub_candidates(monkeypatch)
-    # fresh: 4 sources skip, location = newhome (typed custom), summary → abort.
-    _stage_inputs(monkeypatch, ["", "", "", "", str(newhome), "a"])
+    # fresh: 4 sources skip, keep detect, location = newhome (typed custom),
+    # summary → abort.
+    _stage_inputs(monkeypatch, ["", "", "", "", "k", str(newhome), "a"])
     cli._run_init([])
 
     assert "Aborted - nothing changed." in capsys.readouterr().out
@@ -1669,7 +1682,10 @@ def test_reset_both_rootless_config_resolves_allowlist_under_default_root(
     _stub_candidates(monkeypatch)
     # reset, scope=both, typed confirm; zeek configured (Enter keep), pihole/
     # syslog/cloudtrail skip; root UNSET → HOME MENU Enter (writes default); accept.
-    _stage_inputs(monkeypatch, ["r", "b", "reset", "", "", "", "", "", ""])
+    _stage_inputs(
+        monkeypatch,
+        ["r", "b", "reset", "", "", "", "", "k", "", ""],
+    )
     cli._run_init([])
 
     parsed = tomllib.loads((home / "config.toml").read_text(encoding="utf-8"))
@@ -1754,7 +1770,7 @@ def test_merge_rootless_relative_source_profiles_under_default_root(
     _stub_candidates(monkeypatch)
     # merge, zeek Enter (keep VERBATIM - relative stays relative), pihole/syslog/
     # cloudtrail skip, root unset → HOME MENU Enter (writes default), accept.
-    _stage_inputs(monkeypatch, ["", "", "", "", "", "", ""])
+    _stage_inputs(monkeypatch, ["", "", "", "", "", "k", "", ""])
     cli._run_init([])
 
     out = capsys.readouterr().out
@@ -1775,7 +1791,7 @@ def test_typed_relative_source_stored_absolute(
     _stub_candidates(monkeypatch)  # nothing detected
     # fresh: zeek skip, pihole typed RELATIVE, syslog/cloudtrail skip, location
     # Enter (~/.sigwood - the home IS the root), accept.
-    _stage_inputs(monkeypatch, ["", "relpihole", "", "", "", ""])
+    _stage_inputs(monkeypatch, ["", "relpihole", "", "", "k", "", ""])
     cli._run_init([])
 
     parsed = tomllib.loads((home / "config.toml").read_text(encoding="utf-8"))
@@ -2216,7 +2232,8 @@ def test_fresh_asks_home_once_no_separate_root_prompt(
     prompt would consume an extra input and StopIteration."""
     home = _isolated_home(monkeypatch, tmp_path)
     _stub_candidates(monkeypatch)
-    _stage_inputs(monkeypatch, ["", "", "", "", "", ""])  # 4 skip, location, accept
+    # 4 skip, keep detect, location, accept.
+    _stage_inputs(monkeypatch, ["", "", "", "", "k", "", ""])
     cli._run_init([])
     out = capsys.readouterr().out
     assert out.count(cli._FRESH_LOCATION_LEAD) == 1
@@ -2243,7 +2260,7 @@ def test_reset_explicit_mode_preserves_raw_absent_fallback_and_backup(
     _stub_candidates(monkeypatch)
     _stage_inputs(
         monkeypatch,
-        ["r", "c", "reset", "", "", "", "", "", ""],
+        ["r", "c", "reset", "", "", "", "", "k", "", ""],
     )
 
     cli._run_init([])
@@ -2259,7 +2276,7 @@ def test_fresh_off_writes_both_compatibility_keys(
 ) -> None:
     home = _isolated_home(monkeypatch, tmp_path)
     _stub_candidates(monkeypatch)
-    _stage_inputs(monkeypatch, ["", "", "", "", "", ""])
+    _stage_inputs(monkeypatch, ["", "", "", "", "k", "", ""])
 
     cli._run_init([])
 
@@ -2278,7 +2295,7 @@ def test_summary_counts_system_logs_once_and_separates_fallback(
         monkeypatch,
         journal_code=cli.journal_probe.JournalProbeCode.READY,
     )
-    _stage_inputs(monkeypatch, ["", "", "", "", "", ""])
+    _stage_inputs(monkeypatch, ["", "", "", "", "k", "", ""])
 
     cli._run_init([])
 
@@ -2404,7 +2421,7 @@ def test_init_uses_shared_probe_once_and_creates_no_capture_before_abort(
         return _journal_result(cli.journal_probe.JournalProbeCode.EMPTY)
 
     monkeypatch.setattr(cli.journal_probe, "probe_journal", _probe)
-    _stage_inputs(monkeypatch, ["", "", "", "", "", "a"])
+    _stage_inputs(monkeypatch, ["", "", "", "", "k", "", "a"])
 
     cli._run_init([])
 
@@ -2459,8 +2476,9 @@ def test_eof_at_summary_accept_aborts_nothing_written(
     """EOF at the accept prompt itself - the last prompt in the fresh flow."""
     home = _isolated_home(monkeypatch, tmp_path)
     _stub_candidates(monkeypatch)
-    # fresh: 4 source skips + location Enter; EOF arrives at the accept prompt.
-    _stage_inputs_then_eof(monkeypatch, ["", "", "", "", ""])
+    # fresh: 4 source skips + keep detect + location Enter; EOF arrives at the
+    # accept prompt.
+    _stage_inputs_then_eof(monkeypatch, ["", "", "", "", "k", ""])
 
     cli._run_init([])
 
@@ -2589,3 +2607,363 @@ def test_reset_allowlist_deletes_only_dotfree_prefixed(
     assert (ad / "domains_user").exists()         # re-seeded blank
     assert (ad / "connections").exists()
     assert (ad / "hosts").exists()
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# M1 - source-aware default-hunt exclusions
+# ════════════════════════════════════════════════════════════════════════════
+
+
+def _write_init_detect_config(home: Path, detect_line: str) -> str:
+    """Write a minimal existing config and return its byte-stable text."""
+    home.mkdir(parents=True, exist_ok=True)
+    text = (
+        "[sigwood]\n"
+        'root = "~/.sigwood"\n'
+        f"{detect_line}\n"
+    )
+    (home / "config.toml").write_text(text, encoding="utf-8")
+    return text
+
+
+def test_init_detect_fresh_accepts_compound_offer(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Pi-hole and local syslog keep dns/syslog satisfiable when Zeek is dropped."""
+    home = _isolated_home(monkeypatch, tmp_path)
+    _, pihole_candidates = _setup_pihole(tmp_path)
+    syslog = _setup_syslog(tmp_path)
+    _stub_candidates(
+        monkeypatch, pihole=pihole_candidates, syslog=syslog,
+    )
+    # zeek skip; pihole/system logs keep; CloudTrail skip; accept detector offer;
+    # default location; accept summary.
+    _stage_inputs(monkeypatch, ["", "", "", "", "", "", ""])
+
+    cli._run_init([])
+
+    text = (home / "config.toml").read_text(encoding="utf-8")
+    assert text.splitlines().count(
+        'detect = "default, !aws, !beacon, !scan"'
+    ) == 1
+    out = capsys.readouterr().out
+    assert (
+        "beacon, scan (need Zeek logs) · aws (needs CloudTrail)"
+        in out
+    )
+    assert "dns (needs" not in out
+    assert "syslog (needs" not in out
+    assert re.search(
+        r"^  detectors\s+default, !aws, !beacon, !scan\s+added$",
+        out,
+        re.MULTILINE,
+    )
+
+
+def test_init_detect_fresh_decline_preserves_example_default(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    home = _isolated_home(monkeypatch, tmp_path)
+    _stub_candidates(monkeypatch)
+    # Four source answers; decline the detector offer; location; accept.
+    _stage_inputs(monkeypatch, ["", "", "", "", "k", "", ""])
+
+    cli._run_init([])
+
+    text = (home / "config.toml").read_text(encoding="utf-8")
+    assert text.splitlines().count('detect = "default"') == 1
+    assert "!aws" not in text
+    out = capsys.readouterr().out
+    assert "These detectors have nothing to read" in out
+    assert not re.search(r"^  detectors\s", out, re.MULTILINE)
+
+
+def test_init_detect_fresh_all_sources_on_emits_no_step(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    home = _isolated_home(monkeypatch, tmp_path)
+    zeek = _setup_zeek_dir(tmp_path)
+    _, pihole_candidates = _setup_pihole(tmp_path)
+    syslog = _setup_syslog(tmp_path)
+    _stub_candidates(
+        monkeypatch, zeek=(zeek,), pihole=pihole_candidates, syslog=syslog,
+    )
+    # Accept three detected lanes, type CloudTrail, then location + summary.
+    _stage_inputs(monkeypatch, ["", "", "", "/cloudtrail", "", ""])
+
+    cli._run_init([])
+
+    out = capsys.readouterr().out
+    assert "These detectors have nothing to read" not in out
+    assert "Lift the exclusion" not in out
+    assert not re.search(r"^  detectors\s", out, re.MULTILINE)
+    parsed = tomllib.loads((home / "config.toml").read_text(encoding="utf-8"))
+    assert parsed["sigwood"]["detect"] == "default"
+
+
+def test_init_detect_fresh_dual_source_and_system_lane_satisfiability(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """No Zeek or Pi-hole offers dns; an auto local lane still satisfies syslog."""
+    _isolated_home(monkeypatch, tmp_path)
+    _stub_candidates(
+        monkeypatch,
+        journal_code=cli.journal_probe.JournalProbeCode.READY,
+    )
+    # zeek/pihole skip; system auto; CloudTrail set; decline offer; location; accept.
+    _stage_inputs(monkeypatch, ["", "", "", "/cloudtrail", "k", "", ""])
+
+    cli._run_init([])
+
+    out = capsys.readouterr().out
+    assert "dns (needs Zeek or Pi-hole DNS logs)" in out
+    assert "syslog (needs system logs or Zeek syslog.log)" not in out
+
+
+def test_init_detect_fresh_off_local_lane_offers_syslog_without_zeek(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _isolated_home(monkeypatch, tmp_path)
+    _, pihole_candidates = _setup_pihole(tmp_path)
+    _stub_candidates(monkeypatch, pihole=pihole_candidates)
+    # zeek skip; pihole keep; system off; CloudTrail set; decline; location; accept.
+    _stage_inputs(monkeypatch, ["", "", "-", "/cloudtrail", "k", "", ""])
+
+    cli._run_init([])
+
+    out = capsys.readouterr().out
+    assert "syslog (needs system logs or Zeek syslog.log)" in out
+    assert "dns (needs" not in out
+
+
+@pytest.mark.parametrize(
+    "detect_line",
+    [
+        'detect = "all"',
+        'detect = ["beacon", "scan"]',
+    ],
+)
+def test_init_detect_merge_custom_value_skips_step_and_preserves_bytes(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+    capsys: pytest.CaptureFixture[str], detect_line: str,
+) -> None:
+    home = _isolated_home(monkeypatch, tmp_path)
+    original = _write_init_detect_config(home, detect_line)
+    _stub_candidates(monkeypatch)
+    # merge; four source answers; root keep; summary accept. No detect answer.
+    _stage_inputs(monkeypatch, ["", "", "", "", "", "", ""])
+
+    cli._run_init([])
+
+    out = capsys.readouterr().out
+    assert "These detectors have nothing to read" not in out
+    assert "Lift the exclusion" not in out
+    written = (home / "config.toml").read_text(encoding="utf-8")
+    assert detect_line in written
+    assert (home / "config.toml.bak").read_text(encoding="utf-8") == original
+
+
+@pytest.mark.parametrize("choice, expected", [("", "default"), ("k", "default, !aws")])
+def test_init_detect_merge_lift_accept_or_decline(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+    capsys: pytest.CaptureFixture[str], choice: str, expected: str,
+) -> None:
+    home = _isolated_home(monkeypatch, tmp_path)
+    _write_init_detect_config(home, 'detect = "default, !aws"')
+    _stub_candidates(monkeypatch)
+    # merge; make every lane satisfiable; lift choice; root keep; accept.
+    _stage_inputs(
+        monkeypatch,
+        ["", "/zeek", "/pihole", "", "/cloudtrail", choice, "", ""],
+    )
+
+    cli._run_init([])
+
+    text = (home / "config.toml").read_text(encoding="utf-8")
+    assert f'detect = "{expected}"' in text
+    out = capsys.readouterr().out
+    assert "detect currently skips aws." in out
+    if choice == "":
+        assert re.search(
+            r"^  detectors\s+default\s+was: default, !aws$",
+            out,
+            re.MULTILINE,
+        )
+    else:
+        assert not re.search(r"^  detectors\s", out, re.MULTILINE)
+
+
+def test_init_detect_merge_out_of_table_exclusion_is_untouched(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    home = _isolated_home(monkeypatch, tmp_path)
+    _write_init_detect_config(home, 'detect = "default, !duration"')
+    _stub_candidates(monkeypatch)
+    _stage_inputs(
+        monkeypatch,
+        ["", "/zeek", "/pihole", "", "/cloudtrail", "", ""],
+    )
+
+    cli._run_init([])
+
+    out = capsys.readouterr().out
+    assert "These detectors have nothing to read" not in out
+    assert "Lift the exclusion" not in out
+    assert not re.search(r"^  detectors\s", out, re.MULTILINE)
+    text = (home / "config.toml").read_text(encoding="utf-8")
+    assert 'detect = "default, !duration"' in text
+
+
+def test_init_detect_merge_additions_and_lifts_compose(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    home = _isolated_home(monkeypatch, tmp_path)
+    _write_init_detect_config(home, 'detect = "default, !aws"')
+    _stub_candidates(monkeypatch)
+    # merge; leave Zeek off, enable Pi-hole/system/CloudTrail; accept additions
+    # then lift; keep root; accept summary.
+    _stage_inputs(
+        monkeypatch,
+        ["", "", "/pihole", "", "/cloudtrail", "", "", "", ""],
+    )
+
+    cli._run_init([])
+
+    text = (home / "config.toml").read_text(encoding="utf-8")
+    assert 'detect = "default, !beacon, !scan"' in text
+    out = capsys.readouterr().out
+    assert "Skip them in the default hunt?" in out
+    assert "Lift the exclusion?" in out
+    assert 'writes detect = "default, !beacon, !scan"' in out
+
+
+def test_init_detect_invalid_choice_reprompts(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _isolated_home(monkeypatch, tmp_path)
+    _stub_candidates(monkeypatch)
+    # Invalid detector choice, then decline; location; accept.
+    _stage_inputs(monkeypatch, ["", "", "", "", "x", "k", "", ""])
+
+    cli._run_init([])
+
+    menu = (
+        "[Enter to skip them · k to keep them "
+        "(each run notes the missing sources)]"
+    )
+    assert capsys.readouterr().out.count(menu) == 2
+
+
+def test_init_detect_eof_aborts_at_offer_without_mutation(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    home = _isolated_home(monkeypatch, tmp_path)
+    _stub_candidates(monkeypatch)
+    _stage_inputs_then_eof(monkeypatch, ["", "", "", ""])
+
+    cli._run_init([])
+
+    out = capsys.readouterr().out
+    assert "These detectors have nothing to read" in out
+    assert "Aborted - nothing changed." in out
+    assert not home.exists()
+
+
+def test_init_detect_accept_then_summary_abort_keeps_e1(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _isolated_home(monkeypatch, tmp_path)
+    newhome = tmp_path / "newhome"
+    monkeypatch.setattr(
+        cli, "_SEARCH_HOMES",
+        (str(tmp_path / "user-home"), str(tmp_path / "system-home")),
+    )
+    _stub_candidates(monkeypatch)
+    # Four sources; accept additions; type a new home; abort at summary.
+    _stage_inputs(monkeypatch, ["", "", "", "", "", str(newhome), "a"])
+
+    cli._run_init([])
+
+    assert "Aborted - nothing changed." in capsys.readouterr().out
+    assert not newhome.exists()
+    assert not (newhome / "config.toml").exists()
+    assert not (newhome / "config.toml.bak").exists()
+    assert not (newhome / "allowlist.d").exists()
+
+
+def test_init_detect_reset_rederives_existing_exclusion(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    home = _isolated_home(monkeypatch, tmp_path)
+    _write_init_detect_config(home, 'detect = "default, !aws"')
+    _stub_candidates(monkeypatch)
+    # reset config; enable Zeek/Pi-hole/system, leave CloudTrail off; accept the
+    # fresh-shaped aws addition; keep root; accept summary.
+    _stage_inputs(
+        monkeypatch,
+        ["r", "c", "reset", "/zeek", "/pihole", "", "", "", "", ""],
+    )
+
+    cli._run_init([])
+
+    out = capsys.readouterr().out
+    assert "aws (needs CloudTrail)" in out
+    text = (home / "config.toml").read_text(encoding="utf-8")
+    assert 'detect = "default, !aws"' in text
+
+
+def test_init_detect_reset_ignores_old_custom_value_and_runs_fresh_step(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    home = _isolated_home(monkeypatch, tmp_path)
+    _write_init_detect_config(home, 'detect = "all"')
+    _stub_candidates(monkeypatch)
+    # Same reset shape, but decline the fresh-shaped aws addition.
+    _stage_inputs(
+        monkeypatch,
+        ["r", "c", "reset", "/zeek", "/pihole", "", "", "k", "", ""],
+    )
+
+    cli._run_init([])
+
+    out = capsys.readouterr().out
+    assert "aws (needs CloudTrail)" in out
+    text = (home / "config.toml").read_text(encoding="utf-8")
+    assert 'detect = "default"' in text
+    assert 'detect = "all"' not in text
+
+
+def test_init_detect_default_hunt_slots_mirror_available_detectors() -> None:
+    """The stdlib wizard mirror stays locked to available default-hunt modules."""
+    from sigwood.runner import discover_detectors
+
+    modules = {
+        name: mod
+        for name, mod in discover_detectors().items()
+        if getattr(mod, "IN_DEFAULT_HUNT", False)
+    }
+    assert set(cli._DEFAULT_HUNT_SLOTS) == set(modules)
+
+    source_slot = {
+        "zeek_dir": "zeek",
+        "pihole_dir": "pihole",
+        "cloudtrail_dir": "cloudtrail",
+        "syslog_dir": "local_syslog",
+        "journal": "local_syslog",
+    }
+    for name, mod in modules.items():
+        logs = list(mod.REQUIRED_LOGS) + list(mod.OPTIONAL_LOGS)
+        expected = frozenset(source_slot[log["source"]] for log in logs)
+        assert cli._DEFAULT_HUNT_SLOTS[name] == expected

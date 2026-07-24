@@ -541,7 +541,7 @@ def _toml_str(value: str) -> str:
 
 # ── Section-bound keyed upsert ────────────────────────────────────────────────
 #
-# The six managed keys
+# The seven managed keys
 # are rewritten ONLY inside the [sigwood] table span. A token appearing in any
 # other stanza, a comment outside the span, or even a [sigwood.subtable] is
 # never matched - that IS the non-clobber guarantee.
@@ -549,7 +549,7 @@ def _toml_str(value: str) -> str:
 _SIGWOOD_HEADER_RE = re.compile(r'^\[sigwood\]\s*(?:#.*)?$', re.MULTILINE)
 _MANAGED_KEYS: tuple[str, ...] = (
     "root", "zeek_dir", "pihole_dir", "syslog_dir", "cloudtrail_dir",
-    "syslog_source",
+    "syslog_source", "detect",
 )
 
 
@@ -790,13 +790,30 @@ _SOURCE_SPECS: tuple[_SourceSpec, ...] = (
 _SOURCE_KEYS: tuple[str, ...] = (
     "zeek_dir", "pihole_dir", "syslog_source", "cloudtrail_dir",
 )
+_DEFAULT_HUNT_SLOTS: dict[str, frozenset[str]] = {
+    "aws": frozenset({"cloudtrail"}),
+    "beacon": frozenset({"zeek"}),
+    "dns": frozenset({"zeek", "pihole"}),
+    "scan": frozenset({"zeek"}),
+    "syslog": frozenset({"zeek", "local_syslog"}),
+}
+_DEFAULT_HUNT_NEEDS: dict[frozenset[str], str] = {
+    frozenset({"zeek"}): "Zeek logs",
+    frozenset({"cloudtrail"}): "CloudTrail",
+    frozenset({"zeek", "pihole"}): "Zeek or Pi-hole DNS logs",
+    frozenset({"zeek", "local_syslog"}): "system logs or Zeek syslog.log",
+}
+_DEFAULT_DETECT_RE = re.compile(
+    r"^\s*default\s*(?:,\s*!\w+\s*)*$"
+)
 _SUMMARY_ORDER: tuple[str, ...] = (
     "zeek_dir", "pihole_dir", "syslog_source", "syslog_dir",
-    "cloudtrail_dir", "root",
+    "cloudtrail_dir", "detect", "root",
 )
 _SUMMARY_LABELS: dict[str, str] = {
     "syslog_source": "system logs",
     "syslog_dir": "file fallback",
+    "detect": "detectors",
 }
 _SOURCE_LABELS: tuple[tuple[str, str], ...] = tuple(
     (s.key, s.label) for s in _SOURCE_SPECS
@@ -1177,6 +1194,8 @@ def _resolve_all(
     for key in _MANAGED_KEYS:
         if key in ("syslog_source", "syslog_dir"):
             continue
+        if key not in actions:
+            continue
         present = key in existing
         ev = existing.get(key)
         if key != "root":
@@ -1230,6 +1249,188 @@ def _source_active(
     return value is not None
 
 
+def _default_detect_exclusions(
+    existing: dict, *, flow: str,
+) -> set[str] | None:
+    """Return merge exclusions, or None when a custom value owns selection.
+
+    Fresh and reset regenerate from the example, so they deliberately ignore
+    the old detect value and derive exclusions only from the current answers.
+    """
+    if flow != "merge":
+        return set()
+    if "detect" not in existing:
+        return set()
+    value = existing["detect"]
+    if value == "":
+        return set()
+    if not isinstance(value, str) or _DEFAULT_DETECT_RE.fullmatch(value) is None:
+        return None
+    return set(re.findall(r"!(\w+)", value))
+
+
+def _resolved_hunt_slots(
+    actions: dict[str, Action], existing: dict, *, flow: str,
+) -> frozenset[str]:
+    """Resolve source availability through the summary's end-state owner."""
+    active: set[str] = set()
+    dir_slots = {
+        "zeek_dir": "zeek",
+        "pihole_dir": "pihole",
+        "cloudtrail_dir": "cloudtrail",
+    }
+    for key, slot in dir_slots.items():
+        present = key in existing
+        existing_value = existing.get(key) or None
+        value, _ = _resolve_row(
+            key,
+            actions[key],
+            existing_value,
+            present=present,
+            flow=flow,
+        )
+        if value:
+            active.add(slot)
+
+    mode_present = "syslog_source" in existing
+    mode, _ = _resolve_row(
+        "syslog_source",
+        actions["syslog_source"],
+        existing.get("syslog_source") if mode_present else None,
+        present=mode_present,
+        flow=flow,
+    )
+    if mode != syslog_mode.SyslogMode.OFF.value:
+        active.add("local_syslog")
+    return frozenset(active)
+
+
+def _serialize_default_detect(exclusions: set[str]) -> str:
+    """Render the bounded default-hunt selection grammar canonically."""
+    suffix = "".join(f", !{name}" for name in sorted(exclusions))
+    return f"default{suffix}"
+
+
+def _need_groups(detectors: set[str]) -> list[tuple[list[str], str]]:
+    """Group detector names by their identical source-slot need."""
+    grouped: dict[frozenset[str], list[str]] = {}
+    for detector in sorted(detectors):
+        slots = _DEFAULT_HUNT_SLOTS[detector]
+        grouped.setdefault(slots, []).append(detector)
+    groups = [
+        (names, _DEFAULT_HUNT_NEEDS[slots])
+        for slots, names in grouped.items()
+    ]
+    # A compound offer leads with the shared need that accounts for the most
+    # detectors, then keeps singleton groups alphabetic. This preserves the
+    # quick visual scan in the canonical beacon/scan + aws offer.
+    return sorted(groups, key=lambda group: (-len(group[0]), group[0][0]))
+
+
+def _format_need_groups(detectors: set[str]) -> str:
+    """Render detector groups with singular-aware need/needs grammar."""
+    rendered: list[str] = []
+    for names, need_phrase in _need_groups(detectors):
+        verb = "needs" if len(names) == 1 else "need"
+        rendered.append(f"{', '.join(names)} ({verb} {need_phrase})")
+    return " · ".join(rendered)
+
+
+def _prompt_detect_offer(menu: str) -> bool:
+    """Return True for Enter and False for k; repeat the menu on other input."""
+    while True:
+        print(menu)
+        answer = input("> ").strip().lower()
+        if answer == "":
+            return True
+        if answer == "k":
+            return False
+
+
+def _collect_detect_action(
+    actions: dict[str, Action], existing: dict, *, flow: str,
+) -> Action | None:
+    """Offer source-derived default-hunt additions and merge-only lifts."""
+    existing_exclusions = _default_detect_exclusions(existing, flow=flow)
+    if existing_exclusions is None:
+        return None
+
+    active_slots = _resolved_hunt_slots(actions, existing, flow=flow)
+    unsatisfied = {
+        detector
+        for detector, slots in _DEFAULT_HUNT_SLOTS.items()
+        if slots.isdisjoint(active_slots)
+    }
+    additions = unsatisfied - existing_exclusions
+    composed = set(existing_exclusions)
+    accepted = False
+
+    if additions:
+        target = composed | additions
+        pronoun = "it" if len(additions) == 1 else "them"
+        print("These detectors have nothing to read with the sources above:")
+        print(f"  {_format_need_groups(additions)}")
+        print(
+            f"Skip {pronoun} in the default hunt?  "
+            f'writes detect = "{_serialize_default_detect(target)}"'
+        )
+        menu = (
+            f"[Enter to skip {pronoun} · k to keep {pronoun} "
+            "(each run notes the missing sources)]"
+        )
+        if _prompt_detect_offer(menu):
+            composed = target
+            accepted = True
+        print()
+
+    if flow == "merge":
+        lifts = {
+            detector
+            for detector in existing_exclusions
+            if (
+                detector in _DEFAULT_HUNT_SLOTS
+                and not _DEFAULT_HUNT_SLOTS[detector].isdisjoint(active_slots)
+            )
+        }
+        if lifts:
+            target = composed - lifts
+            lift_groups = _need_groups(lifts)
+            need_phrases = [phrase for _names, phrase in lift_groups]
+            if len(need_phrases) == 1:
+                source_copy = need_phrases[0]
+            else:
+                source_copy = (
+                    ", ".join(need_phrases[:-1])
+                    + f" and {need_phrases[-1]}"
+                )
+            skipped = ", ".join(sorted(lifts))
+            plural = len(lifts) != 1
+            noun = "exclusions" if plural else "exclusion"
+            pronoun = "them" if plural else "it"
+            source_verb = (
+                "is" if need_phrases == ["CloudTrail"] else "are"
+            )
+            print(
+                f"{source_copy} {source_verb} configured now; "
+                f"detect currently skips {skipped}."
+            )
+            print(
+                f"Lift the {noun}?  "
+                f'writes detect = "{_serialize_default_detect(target)}"'
+            )
+            menu = (
+                f"[Enter to lift {pronoun} · k to keep detect as it is]"
+            )
+            if _prompt_detect_offer(menu):
+                composed = target
+                accepted = True
+            print()
+
+    if not accepted:
+        return None
+    return _set(_serialize_default_detect(composed))
+
+
 def _render_summary(
     config_path: Path,
     resolved: dict[str, tuple[str | None, str]],
@@ -1238,16 +1439,17 @@ def _render_summary(
     """Print the change summary (aligned) BEFORE any write. The VALUE column is
     the resulting config value; the ANNOTATION is the change verb."""
     print(f"About to write {config_path}:")
+    summary_keys = [key for key in _SUMMARY_ORDER if key in resolved]
     labels = {
-        key: _SUMMARY_LABELS.get(key, key) for key in _SUMMARY_ORDER
+        key: _SUMMARY_LABELS.get(key, key) for key in summary_keys
     }
     keyw = max(
         [len(label) for label in labels.values()] + [len("journal probe")]
     )
     valw = max(
-        len(_disp_value(key, resolved[key][0])) for key in _SUMMARY_ORDER
+        len(_disp_value(key, resolved[key][0])) for key in summary_keys
     )
-    for key in _SUMMARY_ORDER:
+    for key in summary_keys:
         value, ann = resolved[key]
         shown = _disp_value(key, value)
         print(f"  {labels[key].ljust(keyw)}  {shown.ljust(valw)}  {ann}")
@@ -1340,9 +1542,9 @@ def _collect_source_action(
 
 
 def _collect_actions(
-    existing: dict, *, fresh_install: bool,
+    existing: dict, *, flow: str,
 ) -> tuple[dict[str, Action], journal_probe.JournalProbeResult]:
-    """Collect three directory sources plus one compound system-log lane."""
+    """Collect sources and an optional source-derived detector action."""
     actions: dict[str, Action] = {}
     root = _effective_root_with_default(existing)
     for spec in _SOURCE_SPECS[:2]:
@@ -1351,7 +1553,7 @@ def _collect_actions(
 
     probe = journal_probe.probe_journal()
     state = _system_logs_state(
-        existing, fresh_install=fresh_install, probe=probe, root=root,
+        existing, fresh_install=flow == "fresh", probe=probe, root=root,
     )
     mode_action, dir_action = _prompt_system_logs(state, probe)
     actions["syslog_source"] = mode_action
@@ -1361,6 +1563,9 @@ def _collect_actions(
     for spec in _SOURCE_SPECS[2:]:
         actions[spec.key] = _collect_source_action(spec, existing, root=root)
         print()
+    detect_action = _collect_detect_action(actions, existing, flow=flow)
+    if detect_action is not None:
+        actions["detect"] = detect_action
     return actions, probe
 
 
@@ -1600,6 +1805,8 @@ def _write_config(
 
     text = text_base
     for key in _MANAGED_KEYS:
+        if key not in actions:
+            continue
         text = _apply_action(text, key, actions[key], fresh=fresh)
     try:
         private_write_bytes(target, text.encode("utf-8"), private=private)
@@ -1656,7 +1863,7 @@ def _do_merge(
     _validate_existing_syslog_source(existing_section)
     while True:
         actions, probe = _collect_actions(
-            existing_section, fresh_install=False,
+            existing_section, flow="merge",
         )
         actions["root"] = _prompt_root(
             present="root" in existing_section, default=existing_section.get("root"),
@@ -1745,7 +1952,7 @@ def _do_reset(
 
         while True:
             actions, probe = _collect_actions(
-                existing_section, fresh_install=False,
+                existing_section, flow="reset",
             )
             actions["root"] = _prompt_root(
                 present="root" in existing_section, default=existing_section.get("root"),
@@ -1792,7 +1999,7 @@ def _fresh_flow() -> None:
     - asked once), summarize, and only on accept write fresh + seed allowlist.d."""
     _print_intro(False)
     while True:
-        actions, probe = _collect_actions({}, fresh_install=True)
+        actions, probe = _collect_actions({}, flow="fresh")
         loc = _location_flow()
         if isinstance(loc, _Redirect):
             # The typed custom home already holds a config - discard sources,

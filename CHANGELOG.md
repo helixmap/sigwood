@@ -8,6 +8,14 @@ All notable changes to sigwood are recorded here. The format follows
 
 ### Added
 
+- **`sigwood init` offers to skip detectors you have no logs for.** Decline a
+  source during setup and the wizard now names the default-hunt detectors that
+  would have read it and offers a one-keystroke `detect` exclusion (e.g.
+  `detect = "default, !beacon, !scan"`) - so a box without Zeek stops seeing
+  per-run "conn.log not found" notes it can do nothing about. Re-running init
+  after adding the source offers to lift the exclusion; a hand-written custom
+  `detect` value is never touched, and declining the offer writes nothing.
+
 - **Pick a graph by name: `sigwood graph conn` (also `dns`, `pihole`).** Kind
   names select just those artifacts from configured sources; names compose
   (`sigwood graph conn dns`) and a single selected kind may stream to stdout or

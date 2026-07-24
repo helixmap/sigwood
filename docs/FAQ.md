@@ -462,8 +462,11 @@ straight to the members' raw log lines, grouped under thin per-member separators
 groups; it never decides severity - a unit is MEDIUM exactly when one of its members is
 from the privileged class, and a rare line that matches no transaction is left exactly as
 it was. If the pattern isn't there - an unfamiliar distro, a log that rotates mid-session -
-findings simply stay ungrouped, and `recognize_transactions = false` turns the whole thing
-off.
+findings simply stay ungrouped, and the same is true when the pattern is there but too big
+to be one session: recognition declines any candidate longer than eight hours (periodic
+privileged automation, like a frequent sudo cron, would otherwise chain into one
+enormous false "session"), so those findings keep their own shapes too.
+`recognize_transactions = false` turns the whole thing off.
 
 ### `aws` - why a plain z-score instead of a fancy model?
 

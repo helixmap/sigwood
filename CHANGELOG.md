@@ -23,6 +23,14 @@ All notable changes to sigwood are recorded here. The format follows
 
 ### Changed
 
+- **An "admin session" can no longer span days.** Hosts with periodic privileged
+  automation (a sudo cron under 45 minutes) used to chain their session
+  open/close lines into one enormous "admin session" review unit - up to two
+  weeks wide on long lookbacks - hiding unrelated findings under a wrong label.
+  Session recognition now declines any candidate longer than 8 hours (measured:
+  real interactive sessions top out well under 2 hours, automation chains start
+  near a day), and the affected findings simply keep their own shapes. Genuine
+  sessions, update runs, and reboot handling are unchanged.
 - **Hardware-key logins and kernel dumps no longer flood the syslog report.**
   A second calibrated drain3 mask recognizes space-separated hex-pair runs (four
   or more pairs - FIDO2/CBOR debug dumps, kernel oops `Code:` lines), so a dump

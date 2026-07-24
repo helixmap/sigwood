@@ -46,6 +46,7 @@ from sigwood.detectors.syslog import (
     _collapse_families,
     _contains_opaque_hex,
     _decorate_burst_first_seen,
+    _detect_admin_session_events,
     _detect_boot_events,
     _detect_transaction_events,
     _distill_member_fragments,
@@ -190,6 +191,41 @@ def _run_with(rows: list[dict], ids: list[int], strs: list[str], cfg: dict | Non
     df = pd.DataFrame(rows)
     with patch("sigwood.detectors.syslog._run_drain3", _patched_drain3(ids, strs)):
         return run(_ctx(df, cfg or {"max_count": 1, "rarity_pct": 10}))
+
+
+def _admin_chain_rows(
+    start_ts: float,
+    end_ts: float,
+    *,
+    host: str = "h",
+    step_seconds: int = 1800,
+) -> list[dict]:
+    """Build one gap-connected admin chain from a first open to a final close."""
+    times = [start_ts]
+    cursor = start_ts + step_seconds
+    while cursor < end_ts:
+        times.append(cursor)
+        cursor += step_seconds
+    if end_ts != start_ts:
+        times.append(end_ts)
+
+    rows: list[dict] = []
+    last_index = len(times) - 1
+    for index, ts in enumerate(times):
+        is_open = index == 0 or (index < last_index and index % 2 == 0)
+        message = (
+            "sshd[*]: Accepted publickey for operator"
+            if is_open
+            else "pam_unix(sshd:session): session closed for user operator"
+        )
+        rows.append({
+            "ts": ts,
+            "host": host,
+            "program": "sshd",
+            "raw": message,
+            "message": message,
+        })
+    return rows
 
 
 def _stored_needle(
@@ -1500,6 +1536,125 @@ class SyslogDetectorTests(unittest.TestCase):
         self.assertEqual(events[0].start_ts, _BASE_TS)
         self.assertEqual(
             events[0].end_ts, _BASE_TS + ADMIN_SESSION_CLUSTER_SECONDS - 1
+        )
+
+    def test_admin_session_forms_at_exact_max_span(self) -> None:
+        events = _detect_admin_session_events(pd.DataFrame(
+            _admin_chain_rows(_BASE_TS, _BASE_TS + 28_800)
+        ))
+
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0].start_ts, _BASE_TS)
+        self.assertEqual(events[0].end_ts, _BASE_TS + 28_800)
+
+    def test_admin_session_declines_one_second_over_max_span(self) -> None:
+        events = _detect_admin_session_events(pd.DataFrame(
+            _admin_chain_rows(_BASE_TS, _BASE_TS + 28_801)
+        ))
+
+        self.assertEqual(events, [])
+
+    def test_overlong_admin_chain_declines_and_conserves_review_shapes(self) -> None:
+        anchors = _admin_chain_rows(_BASE_TS, _BASE_TS + (2 * 86_400))
+        family = [
+            {
+                "ts": _BASE_TS + offset,
+                "host": "h",
+                "program": "worker",
+                "raw": f"worker: family-{index}",
+                "message": f"worker: family-{index}",
+            }
+            for index, offset in enumerate((10_000, 20_000, 30_000, 40_000))
+        ]
+        burst = [
+            {
+                "ts": _BASE_TS + 50_000 + (index * 10),
+                "host": "h",
+                "program": "kernel",
+                "raw": f"kernel: burst-{index}",
+                "message": f"kernel: burst-{index}",
+            }
+            for index in range(4)
+        ]
+        needle = [{
+            "ts": _BASE_TS + 60_000,
+            "host": "h",
+            "program": "cron",
+            "raw": "cron: bare rare line",
+            "message": "cron: bare rare line",
+        }]
+        rows = [*anchors, *family, *burst, *needle]
+        anchor_ids = [
+            1 if "Accepted publickey" in row["message"] else 2
+            for row in anchors
+        ]
+        rare_ids = list(range(3, 12))
+        findings = _run_with(
+            rows,
+            [*anchor_ids, *rare_ids],
+            [
+                *(["session-open" if template_id == 1 else "session-close"
+                   for template_id in anchor_ids]),
+                *(f"rare-{template_id}" for template_id in rare_ids),
+            ],
+        )
+
+        self.assertFalse(any(
+            finding.evidence.get("tier") == "transaction"
+            for finding in findings
+        ))
+        self.assertEqual(
+            Counter(finding.evidence.get("tier") for finding in findings),
+            Counter({"family": 1, "burst": 1, None: 1}),
+        )
+        represented = sum(
+            int(finding.evidence.get("line_count", 1))
+            if finding.evidence.get("tier") in ("family", "burst")
+            else 1
+            for finding in findings
+        )
+        self.assertEqual(represented, 9)
+
+    def test_declined_admin_chain_cannot_outcompete_update_run(self) -> None:
+        admin_rows = _admin_chain_rows(_BASE_TS, _BASE_TS + 34_200)
+        update_rows = [
+            {
+                "ts": _BASE_TS + 18_010,
+                "host": "h",
+                "program": "dnf",
+                "raw": "dnf[*]: starting update",
+                "message": "dnf[*]: starting update",
+            },
+            {
+                "ts": _BASE_TS + 18_020,
+                "host": "h",
+                "program": "rpm",
+                "raw": "rpm[*]: installed package-example",
+                "message": "rpm[*]: installed package-example",
+            },
+        ]
+        events = _detect_transaction_events(pd.DataFrame(
+            [*admin_rows, *update_rows]
+        ))
+
+        pairs = [
+            _stored_needle(_BASE_TS + 18_000, "h", "update-member-1"),
+            _stored_needle(_BASE_TS + 18_001, "h", "update-member-2"),
+        ]
+        result = _reconcile_transactions(
+            events, pairs, now=_NOW, data_window=_WINDOW
+        )
+        transactions = [
+            finding
+            for _sort_ts, finding in result
+            if finding.evidence.get("tier") == "transaction"
+        ]
+        self.assertEqual(len(transactions), 1)
+        self.assertEqual(transactions[0].evidence["label"], "update run")
+        self.assertEqual([event.label for event in events], ["update run"])
+        self.assertEqual(
+            {member["title"] for member in transactions[0].evidence["members"]},
+            {"update-member-1", "update-member-2"},
         )
 
     def test_update_run_requires_two_anchors_inside_strict_gap(self) -> None:

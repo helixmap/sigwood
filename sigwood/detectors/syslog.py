@@ -91,6 +91,7 @@ FAMILY_MIN_SIZE           = 4    # min isolated rows for one host/program review
 LINE_TRIM_LIMIT           = 200  # max finding trim length
 REBOOT_CLUSTER_SECONDS    = 600  # reboot signals on a host closer than this = one boot event
 ADMIN_SESSION_CLUSTER_SECONDS = 2700
+ADMIN_SESSION_MAX_SPAN_SECONDS = 28_800
 UPDATE_RUN_CLUSTER_SECONDS = 600
 TRANSACTION_LEAD_TOLERANCE_SECONDS = 60
 TRANSACTION_TAIL_TOLERANCE_SECONDS = 120
@@ -673,6 +674,10 @@ def _detect_admin_session_events(
             if not closes:
                 continue
             end_ts = max(closes)
+            # Longer automation chains are not one admin session; decline so
+            # their findings retain their own review shapes.
+            if end_ts - start_ts > ADMIN_SESSION_MAX_SPAN_SECONDS:
+                continue
             event_anchors = [
                 float(row.ts)
                 for row in cluster

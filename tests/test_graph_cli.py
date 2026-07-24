@@ -184,6 +184,328 @@ def test_graph_directory_fans_out_conn_and_dns_to_report_dir(
     assert any(name.startswith("sigwood-graph_dns_") for name in names)
 
 
+def test_graph_kind_token_narrows_bare_config_to_conn(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A kind token selects only that configured graph family member."""
+    source = _two_kind_directory(tmp_path)
+    reports = tmp_path / "reports"
+    reports.mkdir()
+    _stub_config(
+        monkeypatch,
+        _config(zeek_dir=source, report_dir=str(reports)),
+    )
+
+    assert cli._main(["graph", "conn", "--all", "-q"]) == 0
+
+    artifacts = list(reports.glob("*.html"))
+    assert len(artifacts) == 1
+    assert artifacts[0].name.startswith("sigwood-graph_conn_")
+
+
+def test_graph_kind_tokens_do_not_probe_unselected_denied_sibling(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A denied unselected source cannot fail an explicitly narrowed run."""
+    zeek = _two_kind_directory(tmp_path)
+    pihole = _pihole_directory(tmp_path)
+    reports = tmp_path / "reports"
+    reports.mkdir()
+    _stub_config(
+        monkeypatch,
+        _config(
+            zeek_dir=zeek,
+            pihole_dir=pihole,
+            report_dir=str(reports),
+        ),
+    )
+    pihole.chmod(0)
+    try:
+        rc = cli._main(["graph", "conn", "dns", "--all", "-q"])
+    finally:
+        pihole.chmod(0o700)
+
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert {
+        path.name.split("_", 2)[1] for path in reports.glob("*.html")
+    } == {"conn", "dns"}
+    assert "permission" not in captured.err.lower()
+
+
+@pytest.mark.parametrize(
+    ("tokens", "expected"),
+    [
+        (["conn", "conn"], ["conn"]),
+        (["conn", "dns"], ["conn", "dns"]),
+    ],
+)
+def test_graph_kind_tokens_compose_dedupe_and_keep_declaration_order(
+    tokens: list[str],
+    expected: list[str],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _two_kind_directory(tmp_path)
+    reports = tmp_path / "reports"
+    reports.mkdir()
+    _stub_config(
+        monkeypatch,
+        _config(zeek_dir=source, report_dir=str(reports)),
+    )
+    observed: list[str] = []
+
+    def _run_graph(
+        _config: dict[str, Any],
+        *,
+        kind: str,
+        output_file: Path,
+        **_kwargs: Any,
+    ) -> Path:
+        observed.append(kind)
+        return output_file
+
+    monkeypatch.setattr(runner, "run_graph", _run_graph)
+
+    assert cli._main(["graph", *tokens, "--all", "-q"]) == 0
+    assert observed == expected
+
+
+@pytest.mark.parametrize(
+    "positionals",
+    [
+        ["conn", "./conn.log"],
+        ["./conn.log", "conn"],
+    ],
+)
+def test_graph_kind_names_and_paths_cannot_mix_in_either_order(
+    positionals: list[str],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    (tmp_path / "conn.log").write_text(_CONN_LINE, encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    _stub_config(monkeypatch, _config())
+
+    with pytest.raises(UsageError) as exc:
+        cli._main(["graph", *positionals])
+
+    assert str(exc.value) == (
+        "kind names and paths cannot mix - pass one or the other "
+        "(a file literally named conn is ./conn)"
+    )
+
+
+def test_graph_kind_token_intersects_with_matching_source_flag(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _two_kind_directory(tmp_path)
+    reports = tmp_path / "reports"
+    reports.mkdir()
+    _stub_config(monkeypatch, _config(report_dir=str(reports)))
+
+    assert cli._main([
+        "graph", "conn", "--all", "-q", f"--zeek-dir={source}",
+    ]) == 0
+
+    artifacts = list(reports.glob("*.html"))
+    assert len(artifacts) == 1
+    assert artifacts[0].name.startswith("sigwood-graph_conn_")
+
+
+def test_graph_kind_token_rejects_disjoint_source_flag(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _pihole_directory(tmp_path)
+    _stub_config(monkeypatch, _config())
+
+    with pytest.raises(UsageError) as exc:
+        cli._main(["graph", "dns", f"--pihole-dir={source}"])
+
+    assert str(exc.value) == (
+        "--pihole-dir serves pihole, but this run selects dns - "
+        "drop the flag or add its kind"
+    )
+
+
+@pytest.mark.parametrize(
+    ("args", "message"),
+    [
+        (
+            ["graph", "conn", "./conn.log"],
+            "kind names and paths cannot mix - pass one or the other "
+            "(a file literally named conn is ./conn)",
+        ),
+        (
+            ["graph", "dns", "--pihole-dir=unused"],
+            "--pihole-dir serves pihole, but this run selects dns - "
+            "drop the flag or add its kind",
+        ),
+    ],
+)
+def test_graph_kind_usage_errors_render_at_public_cli_boundary(
+    args: list[str],
+    message: str,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with pytest.raises(SystemExit) as exc:
+        cli.main(args)
+
+    assert exc.value.code == 1
+    assert capsys.readouterr().err == (
+        f"sigwood: {message}\nrun 'sigwood --help' for usage\n"
+    )
+
+
+def test_graph_kind_tokens_intersect_two_matching_source_flags(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    zeek = _two_kind_directory(tmp_path)
+    pihole = _pihole_directory(tmp_path)
+    reports = tmp_path / "reports"
+    reports.mkdir()
+    _stub_config(monkeypatch, _config(report_dir=str(reports)))
+
+    assert cli._main([
+        "graph", "conn", "pihole", "--all", "-q",
+        f"--zeek-dir={zeek}", f"--pihole-dir={pihole}",
+    ]) == 0
+
+    assert {
+        path.name.split("_", 2)[1] for path in reports.glob("*.html")
+    } == {"conn", "pihole"}
+
+
+def test_graph_kind_token_keeps_selected_wrong_shape_clean_empty(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    source = tmp_path / "zeek"
+    source.mkdir()
+    (source / "dns.log").write_text(_DNS_LINE, encoding="utf-8")
+    reports = tmp_path / "reports"
+    reports.mkdir()
+    _stub_config(
+        monkeypatch,
+        _config(zeek_dir=source, report_dir=str(reports)),
+    )
+
+    assert cli._main(["graph", "conn", "--all", "-q"]) == 0
+
+    captured = capsys.readouterr()
+    assert list(reports.glob("*.html")) == []
+    assert "skipping" in captured.err
+    assert "nothing to graph" not in captured.err
+
+
+def test_graph_kind_token_is_exact_case_sensitive(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    _stub_config(monkeypatch, _config())
+
+    assert cli._main(["graph", "CONN", "-q"]) == 1
+
+    captured = capsys.readouterr()
+    assert "CONN: not found" in captured.err
+    assert captured.err.rstrip().endswith("sigwood: nothing to graph")
+
+
+def test_graph_kind_token_reserves_bare_name_but_dot_slash_reaches_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    configured = tmp_path / "configured"
+    configured.mkdir()
+    (configured / "conn.log").write_text(_CONN_LINE, encoding="utf-8")
+    reserved = tmp_path / "conn"
+    reserved.mkdir()
+    (reserved / "pihole.log").write_text(_PIHOLE_LINES, encoding="utf-8")
+    reports = tmp_path / "reports"
+    reports.mkdir()
+    monkeypatch.chdir(tmp_path)
+    _stub_config(
+        monkeypatch,
+        _config(zeek_dir=configured, report_dir=str(reports)),
+    )
+
+    assert cli._main(["graph", "conn", "--all", "-q"]) == 0
+    assert len(list(reports.glob("sigwood-graph_conn_*.html"))) == 1
+    assert list(reports.glob("sigwood-graph_pihole_*.html")) == []
+
+    assert cli._main(["graph", "./conn", "--all", "-q"]) == 0
+    assert len(list(reports.glob("sigwood-graph_pihole_*.html"))) == 1
+
+
+def test_graph_kind_token_narrows_dry_run_without_writes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    source = _two_kind_directory(tmp_path)
+    reports = tmp_path / "reports"
+    _stub_config(
+        monkeypatch,
+        _config(zeek_dir=source, report_dir=str(reports)),
+    )
+
+    assert cli._main(["graph", "conn", "--dry-run", "--all", "-q"]) == 0
+
+    captured = capsys.readouterr()
+    assert "sigwood  ·  graph  ·  dry run" in captured.out
+    assert "\n  conn:" in captured.out
+    assert "\n  dns:" not in captured.out
+    assert not reports.exists()
+
+
+def test_graph_one_kind_token_relaxes_stdout_and_exact_file_targets(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    source = _two_kind_directory(tmp_path)
+    _stub_config(monkeypatch, _config(zeek_dir=source))
+
+    assert cli._main([
+        "graph", "conn", "--all", "-q", "--out=-",
+    ]) == 0
+    streamed = capsys.readouterr().out
+    assert '"kind":"conn"' in streamed
+    assert '"kind":"dns"' not in streamed
+
+    target = tmp_path / "exact.html"
+    assert cli._main([
+        "graph", "conn", "--all", "-q", f"--out={target}",
+    ]) == 0
+    assert target.exists()
+    assert '"kind":"conn"' in target.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("out_value", ["-", "exact.html"])
+def test_graph_two_kind_tokens_keep_shared_target_guards(
+    out_value: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _two_kind_directory(tmp_path)
+    _stub_config(monkeypatch, _config(zeek_dir=source))
+    target = out_value if out_value == "-" else str(tmp_path / out_value)
+
+    with pytest.raises(UsageError, match="multiple kinds"):
+        cli._main([
+            "graph", "conn", "dns", "--all", "-q", f"--out={target}",
+        ])
+
+
 def test_graph_pihole_positional_file_writes_a_disposition_artifact(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:

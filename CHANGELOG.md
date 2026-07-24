@@ -8,6 +8,12 @@ All notable changes to sigwood are recorded here. The format follows
 
 ### Added
 
+- **Pick a graph by name: `sigwood graph conn` (also `dns`, `pihole`).** Kind
+  names select just those artifacts from configured sources; names compose
+  (`sigwood graph conn dns`) and a single selected kind may stream to stdout or
+  an exact `--out` file. Kind names and paths don't mix - a file literally named
+  `conn` is reached as `./conn`. With kinds selected, only those families are
+  probed, so a broken or unreadable unselected source no longer fails the run.
 - **The report says how it was made.** Text and HTML/PDF reports now carry a
   provenance row - `generated: <timestamp>  ·  sigwood <version>` - and, for CLI
   runs, `as: <the exact command line>` - so a saved report answers "which tool,

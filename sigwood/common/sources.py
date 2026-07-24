@@ -891,22 +891,38 @@ def probe_graph_inputs(
     inputs: Sequence[str | Path] | None = None,
     *,
     source_overrides: Mapping[str, str | Path | Sequence[str | Path]] | None = None,
+    kinds: frozenset[str] | None = None,
 ) -> GraphProbeResult:
     """Resolve graph inputs without letting one bad path abort sibling buckets.
 
     Positional ``inputs`` remain content-sniffed and can create every graph
     kind. ``source_overrides`` keeps graph source-dir flags family-scoped, so a
     declared Pi-hole source never becomes a Zeek bucket merely because a
-    neighboring file is graphable. The result preserves graphable same-kind
-    buckets plus typed probe issues. The CLI owns narration and final exit
-    precedence, so a bad or denied input can be reported while a valid sibling
-    still produces its artifact.
+    neighboring file is graphable. ``kinds`` narrows configured/declared
+    families and is mutually exclusive with positional inputs. The result
+    preserves graphable same-kind buckets plus typed probe issues. The CLI owns
+    narration and final exit precedence, so a bad or denied input can be
+    reported while a valid sibling still produces its artifact.
     """
     buckets: dict[str, list[Path]] = {}
     issues: list[GraphProbeIssue] = []
     multi_kinds: dict[str, tuple[str, ...]] = {}
     mixed_votes: dict[str, dict[str, int]] = {}
     graph_origins = {spec.sniff_origin for spec in GRAPH_KINDS}
+    supported_kinds = graph_supported_kinds()
+    if kinds is not None:
+        unknown = sorted(kinds - frozenset(supported_kinds))
+        if unknown:
+            supported = ", ".join(supported_kinds)
+            raise ValueError(
+                f"graph kind {unknown[0]!r} is not supported "
+                f"(supported: {supported})"
+            )
+    selected_specs = tuple(
+        spec
+        for spec in GRAPH_KINDS
+        if kinds is None or spec.kind in kinds
+    )
 
     def _issue(path: Path, exc: Exception) -> None:
         if isinstance(exc, PermissionError):
@@ -935,7 +951,10 @@ def probe_graph_inputs(
             mixed_votes[str(path)] = dict(tally)
 
     def _family_specs(source_key: str) -> tuple[GraphKindSpec, ...]:
-        return tuple(spec for spec in GRAPH_KINDS if spec.source_key == source_key)
+        return tuple(
+            spec for spec in selected_specs
+            if spec.source_key == source_key
+        )
 
     def _probe_family_path(path: Path, family_specs: tuple[GraphKindSpec, ...]) -> None:
         """Probe a configured or declared source without widening its family."""
@@ -971,6 +990,10 @@ def probe_graph_inputs(
             mixed_votes[str(path)] = dict(tally)
 
     raw_inputs = list(inputs or ())
+    if raw_inputs and kinds:
+        raise ValueError(
+            "graph kinds and positional inputs are mutually exclusive"
+        )
     if raw_inputs and source_overrides:
         raise ValueError("graph positionals and source overrides are mutually exclusive")
     if raw_inputs:
@@ -1022,7 +1045,7 @@ def probe_graph_inputs(
         # directory has no graphable files, retain empty buckets for that family
         # so runner.run_graph can return the honest GraphEmpty control signal.
         seen_sources: set[tuple[str, Path]] = set()
-        for spec in GRAPH_KINDS:
+        for spec in selected_specs:
             _, candidates = resolve_graph_source(config, spec.kind)
             for path in candidates:
                 source_id = (spec.source_key, path)

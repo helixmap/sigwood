@@ -389,6 +389,116 @@ def test_graph_source_override_keeps_an_empty_pihole_directory_clean(
     assert probe.buckets == {"pihole": [source]}
 
 
+def test_graph_probe_kinds_narrows_source_override_family(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "zeek"
+    source.mkdir()
+    (source / "conn.log").write_text(
+        '{"_path":"conn","ts":1779750000.0,"uid":"C1",'
+        '"id.orig_h":"192.0.2.10","id.resp_h":"198.51.100.20",'
+        '"id.resp_p":443,"proto":"tcp","duration":1.0}\n',
+        encoding="utf-8",
+    )
+    (source / "dns.log").write_text(
+        '{"_path":"dns","ts":1779750000.0,"uid":"D1",'
+        '"id.orig_h":"192.0.2.10","query":"example.test"}\n',
+        encoding="utf-8",
+    )
+
+    probe = probe_graph_inputs(
+        {"sigwood": {}},
+        source_overrides={"zeek_dir": source},
+        kinds=frozenset({"conn"}),
+    )
+
+    assert probe.buckets == {"conn": [source]}
+    assert probe.multi_kinds == {}
+
+
+def test_graph_probe_kinds_skips_unselected_bare_family_resolution(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "zeek"
+    source.mkdir()
+    (source / "conn.log").write_text(
+        '{"_path":"conn","ts":1779750000.0,"uid":"C1",'
+        '"id.orig_h":"192.0.2.10","id.resp_h":"198.51.100.20",'
+        '"id.resp_p":443,"proto":"tcp","duration":1.0}\n',
+        encoding="utf-8",
+    )
+    config = {
+        "sigwood": {
+            "zeek_dir": str(source),
+            "pihole_dir": str(tmp_path / "must-not-resolve"),
+        },
+    }
+    real_resolve = sources.resolve_graph_source
+    called: list[str] = []
+
+    def _resolve(
+        raw_config: dict[str, Any],
+        kind: str,
+        **kwargs: Any,
+    ) -> tuple[GraphKindSpec, list[Path]]:
+        called.append(kind)
+        if kind == "pihole":  # pragma: no cover - failure sentinel
+            raise AssertionError("unselected family was resolved")
+        return real_resolve(raw_config, kind, **kwargs)
+
+    monkeypatch.setattr(sources, "resolve_graph_source", _resolve)
+
+    probe = probe_graph_inputs(config, kinds=frozenset({"conn"}))
+
+    assert probe.buckets == {"conn": [source]}
+    assert called == ["conn"]
+
+
+def test_graph_probe_rejects_kind_selection_with_positionals(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "conn.log"
+    source.write_text("placeholder\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="kinds and positional inputs"):
+        probe_graph_inputs(
+            {"sigwood": {}},
+            [source],
+            kinds=frozenset({"conn"}),
+        )
+
+
+def test_graph_probe_rejects_unknown_kind_with_supported_list() -> None:
+    supported = ", ".join(sources.graph_supported_kinds())
+
+    with pytest.raises(ValueError) as exc:
+        probe_graph_inputs(
+            {"sigwood": {}},
+            kinds=frozenset({"bogus"}),
+        )
+
+    assert str(exc.value) == (
+        f"graph kind 'bogus' is not supported (supported: {supported})"
+    )
+
+
+def test_graph_probe_explicit_none_kinds_matches_default(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "zeek"
+    source.mkdir()
+    (source / "conn.log").write_text(
+        '{"_path":"conn","ts":1779750000.0,"uid":"C1",'
+        '"id.orig_h":"192.0.2.10","id.resp_h":"198.51.100.20",'
+        '"id.resp_p":443,"proto":"tcp","duration":1.0}\n',
+        encoding="utf-8",
+    )
+    config = {"sigwood": {"zeek_dir": str(source)}}
+
+    assert probe_graph_inputs(config, kinds=None) == probe_graph_inputs(config)
+
+
 def test_graph_probe_keeps_a_valid_file_when_a_sibling_cannot_be_read(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

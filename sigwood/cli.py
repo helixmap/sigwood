@@ -192,7 +192,7 @@ _VERBS: dict[str, VerbSpec] = {
     "digest":   VerbSpec("digest",   "orient-before-the-hunt card (schema sniffed)",
                          "[PATH ...]", _DIGEST_ALLOWED),
     "graph":    VerbSpec("graph",    "replay-oriented conn/DNS/Pi-hole HTML graph artifact",
-                         "[PATH ...]", _GRAPH_ALLOWED),
+                         "[conn|dns|pihole] [PATH ...]", _GRAPH_ALLOWED),
     "export":   VerbSpec("export",   "pull logs from external systems to local files",
                          "[BACKEND] [QUERY ...]", _EXPORT_ALLOWED),
     "init":     VerbSpec("init",     "first-run setup wizard",
@@ -404,7 +404,8 @@ def _global_usage_text(no_config: bool = False) -> str:
         "  sigwood digest [options] PATH    orient-before-the-hunt card; schema is",
         "                                   inferred from the file (conn, dns, syslog,",
         "                                   cloudtrail, or blob for unrecognized text)",
-        "  sigwood graph [options] [PATH ...] replay-oriented conn/DNS/Pi-hole HTML artifact",
+        "  sigwood graph [options] [conn|dns|pihole] [PATH ...] "
+        "replay-oriented conn/DNS/Pi-hole HTML artifact",
         "",
         "  sigwood export                   pull logs from external systems",
         "  sigwood init                     first-run setup wizard",
@@ -1278,20 +1279,47 @@ def _run_graph(args: list[str]) -> int:
     not silently routed to digest or an unrelated graph.
     """
     import sigwood.runner as runner
-    from sigwood.common.sources import probe_graph_inputs
+    from sigwood.common.sources import (
+        GRAPH_KINDS,
+        graph_supported_kinds,
+        probe_graph_inputs,
+    )
     from sigwood.graph._core import validate_config
 
     parsed = _parse_args(args, "graph")
     _assert_all_vs_timeframe(parsed)
 
     paths = parsed.get("paths") or []
-    if paths:
+    kind_names = graph_supported_kinds()
+    tokens = dict.fromkeys(path for path in paths if path in kind_names)
+    path_positionals = [
+        path for path in paths if path not in kind_names
+    ]
+    if tokens and path_positionals:
+        raise UsageError(
+            "kind names and paths cannot mix - pass one or the other "
+            "(a file literally named conn is ./conn)"
+        )
+    if path_positionals:
         for source_key in ("zeek_dir", "pihole_dir"):
             if source_key in parsed:
                 raise UsageError(
                     f"--{source_key.replace('_', '-')} is not valid alongside "
                     "a positional PATH (positionals self-route via sniff)"
                 )
+    for source_key in ("zeek_dir", "pihole_dir"):
+        if source_key not in parsed or not tokens:
+            continue
+        family_kinds = [
+            spec.kind for spec in GRAPH_KINDS
+            if spec.source_key == source_key
+        ]
+        if set(tokens).isdisjoint(family_kinds):
+            flag_display = source_key.replace("_", "-")
+            raise UsageError(
+                f"--{flag_display} serves {', '.join(family_kinds)}, but this "
+                f"run selects {', '.join(tokens)} - drop the flag or add its kind"
+            )
 
     config = _load_config(parsed)
     cfg.validate_table_sections(config, ("sigwood", "graph"))
@@ -1313,15 +1341,13 @@ def _run_graph(args: list[str]) -> int:
         for source_key in ("zeek_dir", "pihole_dir")
         if parsed.get(source_key)
     }
-    if paths:
-        raw_inputs = paths
-    else:
-        raw_inputs = None
+    raw_inputs = path_positionals or None
 
     probe = probe_graph_inputs(
         config,
         raw_inputs,
         source_overrides=source_overrides or None,
+        kinds=frozenset(tokens) or None,
     )
     buckets = probe.buckets
     input_errors = input_permissions = 0

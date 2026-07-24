@@ -28,7 +28,7 @@ from sigwood.common import config as cfg
 
 @pytest.mark.parametrize("verb", [
     "hunt", "beacon", "dns", "syslog", "scan", "duration", "aws",
-    "digest", "export", "init",
+    "digest", "graph", "export", "init",
 ])
 def test_render_verb_help_lists_verb_allowed_flags(verb: str) -> None:
     """Every flag in a verb's allowed set appears in its rendered help, and
@@ -59,6 +59,20 @@ def test_render_verb_help_blob_path_never_appears() -> None:
         assert "-blob-path" not in rendered
 
 
+def test_graph_kind_help_literals_track_supported_kinds() -> None:
+    from sigwood.common.sources import graph_supported_kinds
+
+    expected = (
+        "[" + "|".join(graph_supported_kinds()) + "] [PATH ...]"
+    )
+
+    assert cli._VERBS["graph"].positional_shape == expected
+    assert (
+        f"sigwood graph [options] {expected} "
+        "replay-oriented conn/DNS/Pi-hole HTML artifact"
+    ) in cli._global_usage_text()
+
+
 def test_init_help_only_lists_help(capsys: pytest.CaptureFixture[str]) -> None:
     """init's allowed set is ``{help}`` - its rendered help mentions
     ``--help`` and nothing else from the spec."""
@@ -84,6 +98,7 @@ def test_verb_help_does_not_load_config(
     for argv in (
         ["beacon", "--help"], ["beacon", "-h"],
         ["digest", "--help"], ["digest", "-h"],
+        ["graph", "--help"], ["graph", "-h"],
         ["export", "--help"], ["init", "--help"],
         ["--help"], ["-h"],
     ):

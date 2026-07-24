@@ -2379,6 +2379,332 @@ def test_progress_description_strips_control_filename(
     assert spy.calls[0]["desc"] == "loaded conn[31m.log"
 
 
+def _write_progress_conn(path: Path, ts: float = 1.0) -> None:
+    """Write one valid Zeek conn NDJSON row for progress-label tests."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _write_ndjson(
+        path,
+        [{
+            "_path": "conn",
+            "ts": ts,
+            "id.orig_h": "192.0.2.10",
+            "id.resp_h": "198.51.100.20",
+            "id.resp_p": 443,
+            "proto": "tcp",
+        }],
+    )
+
+
+def _run_progress_spy(
+    monkeypatch: pytest.MonkeyPatch,
+    strategy,
+    files: list[Path],
+    *,
+    pattern: str = "conn*.log*",
+) -> tuple[_ProgressSpy, list[str]]:
+    """Run real loader files while capturing progress descriptors and warnings."""
+    from sigwood.common import loader as loader_mod
+
+    spy = _ProgressSpy()
+    monkeypatch.setattr(loader_mod, "progress", spy)
+    warnings: list[str] = []
+    loader_mod.run_load(
+        strategy,
+        files,
+        pattern,
+        None,
+        None,
+        _warnings=warnings,
+    )
+    return spy, warnings
+
+
+def test_progress_qualifies_duplicate_basenames_with_parent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Duplicate rendered basenames include one parent component."""
+    from sigwood.common import loader as loader_mod
+
+    first = tmp_path / "2026-05-01" / "conn.log"
+    second = tmp_path / "2026-05-02" / "conn.log"
+    _write_progress_conn(first, 1.0)
+    _write_progress_conn(second, 2.0)
+
+    spy, _warnings = _run_progress_spy(
+        monkeypatch,
+        loader_mod._SOURCE_LOADERS["zeek_dir"],
+        [first, second],
+    )
+
+    assert [call["desc"] for call in spy.calls] == [
+        "loaded 2026-05-01/conn.log",
+        "loaded 2026-05-02/conn.log",
+    ]
+
+
+def test_progress_collision_qualifies_every_nonempty_parent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One basename collision selects the qualified form for the whole load."""
+    from sigwood.common import loader as loader_mod
+
+    first = tmp_path / "a" / "conn.log"
+    second = tmp_path / "b" / "conn.log"
+    distinct = tmp_path / "c" / "dns.log"
+    for index, path in enumerate((first, second, distinct), start=1):
+        _write_progress_conn(path, float(index))
+
+    spy, _warnings = _run_progress_spy(
+        monkeypatch,
+        loader_mod._SOURCE_LOADERS["zeek_dir"],
+        [first, second, distinct],
+    )
+
+    assert [call["desc"] for call in spy.calls] == [
+        "loaded a/conn.log",
+        "loaded b/conn.log",
+        "loaded c/dns.log",
+    ]
+
+
+def test_progress_distinct_basenames_across_directories_stay_bare(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Multiple directories alone do not select qualified labels."""
+    from sigwood.common import loader as loader_mod
+
+    conn = tmp_path / "a" / "conn.log"
+    dns = tmp_path / "b" / "dns.log"
+    _write_progress_conn(conn, 1.0)
+    _write_progress_conn(dns, 2.0)
+
+    spy, _warnings = _run_progress_spy(
+        monkeypatch,
+        loader_mod._SOURCE_LOADERS["zeek_dir"],
+        [conn, dns],
+    )
+
+    assert [call["desc"] for call in spy.calls] == [
+        "loaded conn.log",
+        "loaded dns.log",
+    ]
+
+
+def test_progress_display_label_precedes_collision_qualification(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A strategy display label remains the operator-facing identity."""
+    import dataclasses
+
+    from sigwood.common import loader as loader_mod
+
+    first = tmp_path / "a" / "capture.jsonl"
+    second = tmp_path / "b" / "capture.jsonl"
+    _write_progress_conn(first, 1.0)
+    _write_progress_conn(second, 2.0)
+    strategy = dataclasses.replace(
+        loader_mod._SOURCE_LOADERS["zeek_dir"],
+        display_label="system journal",
+    )
+
+    spy, _warnings = _run_progress_spy(
+        monkeypatch,
+        strategy,
+        [first, second],
+    )
+
+    assert [call["desc"] for call in spy.calls] == [
+        "loaded system journal",
+        "loaded system journal",
+    ]
+
+
+def test_progress_qualified_parent_strips_terminal_controls(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A qualified parent cannot relay terminal controls into progress text."""
+    from sigwood.common import loader as loader_mod
+
+    hostile = tmp_path / "d\x1b[31mir" / "conn.log"
+    sibling = tmp_path / "safe" / "conn.log"
+    _write_progress_conn(hostile, 1.0)
+    _write_progress_conn(sibling, 2.0)
+
+    spy, _warnings = _run_progress_spy(
+        monkeypatch,
+        loader_mod._SOURCE_LOADERS["zeek_dir"],
+        [hostile, sibling],
+    )
+
+    assert [call["desc"] for call in spy.calls] == [
+        "loaded d[31mir/conn.log",
+        "loaded safe/conn.log",
+    ]
+    assert "\x1b" not in "".join(call["desc"] for call in spy.calls)
+
+
+def test_progress_collision_uses_control_stripped_basename_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Basenames that render identically select qualified labels."""
+    from sigwood.common import loader as loader_mod
+
+    hostile = tmp_path / "a" / "conn\x1b.log"
+    plain = tmp_path / "b" / "conn.log"
+    _write_progress_conn(hostile, 1.0)
+    _write_progress_conn(plain, 2.0)
+
+    spy, _warnings = _run_progress_spy(
+        monkeypatch,
+        loader_mod._SOURCE_LOADERS["zeek_dir"],
+        [hostile, plain],
+    )
+
+    assert [call["desc"] for call in spy.calls] == [
+        "loaded a/conn.log",
+        "loaded b/conn.log",
+    ]
+
+
+def test_progress_compression_variants_have_distinct_basenames(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Compression suffixes remain part of rendered basename identity."""
+    from sigwood.common import loader as loader_mod
+
+    plain = tmp_path / "a" / "conn.log"
+    compressed = tmp_path / "a" / "conn.log.gz"
+    _write_progress_conn(plain, 1.0)
+    compressed.write_bytes(gzip.compress(
+        (json.dumps({
+            "_path": "conn",
+            "ts": 2.0,
+            "id.orig_h": "192.0.2.11",
+            "id.resp_h": "198.51.100.21",
+            "id.resp_p": 443,
+            "proto": "tcp",
+        }) + "\n").encode("utf-8")
+    ))
+
+    spy, _warnings = _run_progress_spy(
+        monkeypatch,
+        loader_mod._SOURCE_LOADERS["zeek_dir"],
+        [plain, compressed],
+    )
+
+    assert [call["desc"] for call in spy.calls] == [
+        "loaded conn.log",
+        "loaded conn.log.gz",
+    ]
+
+
+def test_progress_empty_parent_stays_bare_during_collision(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A bare relative file keeps its basename while a sibling qualifies."""
+    from sigwood.common import loader as loader_mod
+
+    monkeypatch.chdir(tmp_path)
+    bare = Path("conn.log")
+    qualified = Path("a/conn.log")
+    _write_progress_conn(bare, 1.0)
+    _write_progress_conn(qualified, 2.0)
+
+    spy, _warnings = _run_progress_spy(
+        monkeypatch,
+        loader_mod._SOURCE_LOADERS["zeek_dir"],
+        [bare, qualified],
+    )
+
+    assert [call["desc"] for call in spy.calls] == [
+        "loaded conn.log",
+        "loaded a/conn.log",
+    ]
+
+
+def test_read_warnings_share_qualified_progress_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Corrupt-file warnings share qualified labels and sanitize the parent."""
+    from sigwood.common import loader as loader_mod
+
+    hostile = tmp_path / "d\x1b[31mir" / "conn.log.gz"
+    sibling = tmp_path / "safe" / "conn.log.gz"
+    for path in (hostile, sibling):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"not a gzip stream")
+
+    _spy, warnings = _run_progress_spy(
+        monkeypatch,
+        loader_mod._SOURCE_LOADERS["zeek_dir"],
+        [hostile, sibling],
+    )
+
+    assert warnings == [
+        "d[31mir/conn.log.gz could not be read - "
+        "compressed file is incomplete or corrupt; skipping",
+        "safe/conn.log.gz could not be read - "
+        "compressed file is incomplete or corrupt; skipping",
+    ]
+    assert "\x1b" not in "".join(warnings)
+
+
+def test_single_read_warning_keeps_bare_basename(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A non-ambiguous corrupt file keeps the established bare warning."""
+    from sigwood.common import loader as loader_mod
+
+    single = tmp_path / "single" / "conn.log.gz"
+    single.parent.mkdir()
+    single.write_bytes(b"not a gzip stream")
+    _spy, single_warnings = _run_progress_spy(
+        monkeypatch,
+        loader_mod._SOURCE_LOADERS["zeek_dir"],
+        [single],
+    )
+    assert single_warnings == [
+        "conn.log.gz could not be read - "
+        "compressed file is incomplete or corrupt; skipping",
+    ]
+
+
+def test_progress_collision_includes_files_skipped_before_read(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A pre-read skip still participates in the call-wide label decision."""
+    from sigwood.common import loader as loader_mod
+
+    skipped = tmp_path / "a" / "x.log"
+    loaded = tmp_path / "b" / "x.log"
+    _write_progress_conn(skipped)
+    loaded.parent.mkdir(parents=True)
+    loaded.write_text(
+        "Jun  1 12:00:00 router sshd[1]: accepted placeholder\n",
+        encoding="utf-8",
+    )
+
+    spy, _warnings = _run_progress_spy(
+        monkeypatch,
+        loader_mod._SOURCE_LOADERS["syslog_dir"],
+        [skipped, loaded],
+        pattern="*.log*",
+    )
+
+    assert [call["desc"] for call in spy.calls] == ["loaded b/x.log"]
+
+
 def test_progress_seam_tsv_wraps_pre_materialization(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

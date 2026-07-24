@@ -29,6 +29,16 @@ All notable changes to sigwood are recorded here. The format follows
   burst rollup (a plain rare line omits it). Log content is never rewritten:
   whatever words an operator's own lines contain render verbatim.
 
+### Fixed
+
+- **Progress lines name the directory when file names repeat.** A dated Zeek archive
+  loads several files that share one rotation name, and the load narration used to
+  render identical `loaded conn.00:00:00-00:00:00.log.gz` lines for all of them. When
+  any file names in one load collide, every line now carries one parent-directory
+  component (`loaded 2026-05-01/conn.00:00:00-00:00:00.log.gz`), and a corrupt-file
+  warning names the same disambiguated file. Loads without repeated names render
+  exactly as before.
+
 ## [0.2.7] - 2026-07-21
 
 ### Added

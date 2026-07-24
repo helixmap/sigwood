@@ -633,6 +633,16 @@ def run_load(
     since_ts = since.timestamp() if since else None
     until_ts = until.timestamp() if until else None
 
+    # The full pre-skip list owns one rendered-label decision for the call;
+    # basename identity stays exact after control stripping.
+    stripped_names = [strip_control(path.name) for path in files]
+    ambiguous = len(set(stripped_names)) != len(stripped_names)
+
+    def _qualified_label(path: Path) -> str | None:
+        if not ambiguous or not path.parent.name:
+            return None
+        return strip_control(f"{path.parent.name}/{path.name}")
+
     rows: list[dict] = []
     frames: list[pd.DataFrame] = []
     attempted = 0
@@ -672,7 +682,14 @@ def run_load(
             with _loader._open_log(path) as fh:
                 line_iter = _loader.progress(
                     fh,
-                    desc=f"loaded {strip_control(strategy.display_label or path.name)}",
+                    desc=(
+                        "loaded "
+                        + strip_control(
+                            strategy.display_label
+                            or _qualified_label(path)
+                            or path.name
+                        )
+                    ),
                     show_progress=show_progress,
                     unit=strategy.unit,
                 )
@@ -745,7 +762,9 @@ def run_load(
             if _warnings is not None:
                 _warnings.append(
                     _zeek_file_read_warning(
-                        path, exc, display_label=strategy.display_label
+                        path,
+                        exc,
+                        display_label=strategy.display_label or _qualified_label(path),
                     )
                 )
             continue

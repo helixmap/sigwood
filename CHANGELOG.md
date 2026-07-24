@@ -19,6 +19,11 @@ All notable changes to sigwood are recorded here. The format follows
 
 ### Added
 
+- **The graph player carries a scale gauge.** A small bottom-left bracket shows
+  what a ribbon's height is worth (`200 B/s`, `5k/s`), reading the exact scale
+  the ribbons are drawn with - so the gauge can never disagree with the
+  picture. It breathes with the scale in `fill`, sits still in `absolute`,
+  follows the bytes/conns metric, and rides into saved clips.
 - **`sigwood init` offers to skip detectors you have no logs for.** Decline a
   source during setup and the wizard now names the default-hunt detectors that
   would have read it and offers a one-keystroke `detect` exclusion (e.g.

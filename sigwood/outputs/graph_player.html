@@ -573,7 +573,11 @@ let yLog = false;
 let ribbonStyle = "blend";
 let breathe = 0;
 let hover = null;
+const SCALE_GAUGE_LADDER = [1, 2, 5];
+const SCALE_GAUGE_TARGET = [48, 120];
+const SCALE_GAUGE_HYSTERESIS = [40, 132];
 let scaleEMA = null, snapScale = true;
+let scaleGaugeRate = null;
 let rangeSet = false, loopA = 0, loopB = 0;   // loop range in bins
 
 /* ---------- theme ---------- */
@@ -645,7 +649,8 @@ function layout(tt) {
     ? Math.pow(targetFill, 1 - breathe) * Math.pow(targetAbs, breathe)
     : targetFill;
   const sTarget = Math.max(usable, 50) / target;
-  if (snapScale || scaleEMA === null) { scaleEMA = sTarget; snapScale = false; }
+  const repickScaleGauge = snapScale || scaleEMA === null;
+  if (repickScaleGauge) { scaleEMA = sTarget; snapScale = false; }
   else scaleEMA += (sTarget - scaleEMA) * 0.10;
   const S = scaleEMA;
 
@@ -691,7 +696,10 @@ function layout(tt) {
                                offRd[k] = accD[l.d]; accD[l.d] += rv[k] * S; });
     links = { lv, rv, offLs, offLv, offRv, offRd };
   }
-  return { fv, sVal, dVal, vVal, S, L, R, Mid, offS, offD, links, total };
+  return {
+    fv, sVal, dVal, vVal, S, repickScaleGauge,
+    L, R, Mid, offS, offD, links, total,
+  };
 }
 
 /* ---------- drawing ---------- */
@@ -725,6 +733,47 @@ function label(txt, x, y, align, size, color, glow = true) {
     ctx.strokeText(txt, x, y);
   }
   ctx.fillStyle = color; ctx.fillText(txt, x, y);
+}
+function pickScaleGaugeRate(S) {
+  const minimumRate = SCALE_GAUGE_TARGET[0] / (BIN * S);
+  const unit = 10 ** Math.floor(Math.log10(minimumRate));
+  const rung =
+    SCALE_GAUGE_LADDER.find(rung => rung * unit >= minimumRate) ?? 10;
+  return rung * unit;
+}
+function drawScaleGauge(S, forcePick) {
+  if (scaleEMA === null || !Number.isFinite(S) || S <= 0) return;
+  let length = scaleGaugeRate === null ? 0 : scaleGaugeRate * BIN * S;
+  if (
+    forcePick || scaleGaugeRate === null
+    || length < SCALE_GAUGE_HYSTERESIS[0]
+    || length > SCALE_GAUGE_HYSTERESIS[1]
+  ) {
+    scaleGaugeRate = pickScaleGaugeRate(S);
+    length = scaleGaugeRate * BIN * S;
+  }
+
+  const x = PAD_X, bottom = H - PAD_Y, top = bottom - length;
+  ctx.save();
+  ctx.lineWidth = 1;
+  ctx.strokeStyle = TH.muted;
+  ctx.globalAlpha = 0.6;
+  ctx.beginPath();
+  ctx.moveTo(x, top); ctx.lineTo(x, bottom);
+  ctx.moveTo(x, top); ctx.lineTo(x + 5, top);
+  ctx.moveTo(x, bottom); ctx.lineTo(x + 5, bottom);
+  ctx.stroke();
+
+  const mass = scaleGaugeRate * BIN;
+  const text = metric === "b"
+    ? fmtB(mass / BIN) + "/s"
+    : fmtN(mass / BIN) + "/s";
+  ctx.globalAlpha = 1;
+  ctx.fillStyle = TH.muted;
+  ctx.font = "9px ui-monospace, SFMono-Regular, Menlo, monospace";
+  ctx.textAlign = "left"; ctx.textBaseline = "middle";
+  ctx.fillText(text, x + 8, top + length / 2);
+  ctx.restore();
 }
 let geom = null;
 function draw() {
@@ -814,6 +863,7 @@ function draw() {
   bars(SRC, g.sVal, g.L, xL, "L");
   bars(DST, g.dVal, g.R, xR, "R");
   if (mode === 3) bars(SVC, g.vVal, g.Mid, xM, "M");
+  drawScaleGauge(g.S, g.repickScaleGauge);
 
   ctx.save();
   ctx.globalAlpha = 0.72;

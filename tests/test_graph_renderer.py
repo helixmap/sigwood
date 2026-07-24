@@ -410,6 +410,83 @@ def test_player_round_two_controls_and_draw_contracts_stay_coordinated() -> None
     assert 'seg("breathe", b => { breathe = +b.dataset.breathe; snapScale = true; });' in template
 
 
+def test_player_scale_gauge_uses_the_shared_ribbon_scale_and_rate_units() -> None:
+    """The canvas gauge measures height without creating a parallel scale."""
+    template = _player_template()
+
+    assert "const SCALE_GAUGE_LADDER = [1, 2, 5];" in template
+    assert "const SCALE_GAUGE_TARGET = [48, 120];" in template
+    assert "const SCALE_GAUGE_HYSTERESIS = [40, 132];" in template
+    assert "let scaleGaugeRate = null;" in template
+
+    layout = template.split("function layout(tt) {", 1)[1].split(
+        "/* ---------- drawing ---------- */", 1,
+    )[0]
+    assert "const repickScaleGauge = snapScale || scaleEMA === null;" in layout
+    assert (
+        "if (repickScaleGauge) { scaleEMA = sTarget; snapScale = false; }"
+        in layout
+    )
+    assert "S, repickScaleGauge," in layout
+
+    selector = template.split("function pickScaleGaugeRate(S) {", 1)[1].split(
+        "function drawScaleGauge", 1,
+    )[0]
+    assert (
+        "const minimumRate = SCALE_GAUGE_TARGET[0] / (BIN * S);"
+        in selector
+    )
+    assert "const unit = 10 ** Math.floor(Math.log10(minimumRate));" in selector
+    assert (
+        "SCALE_GAUGE_LADDER.find(rung => rung * unit >= minimumRate) ?? 10"
+        in selector
+    )
+
+    gauge = template.split("function drawScaleGauge(S, forcePick) {", 1)[1].split(
+        "function draw() {", 1,
+    )[0]
+    assert "if (scaleEMA === null || !Number.isFinite(S) || S <= 0) return;" in gauge
+    assert "let length = scaleGaugeRate === null ? 0 : scaleGaugeRate * BIN * S;" in gauge
+    assert "forcePick || scaleGaugeRate === null" in gauge
+    assert "length < SCALE_GAUGE_HYSTERESIS[0]" in gauge
+    assert "length > SCALE_GAUGE_HYSTERESIS[1]" in gauge
+    assert "length <= SCALE_GAUGE_HYSTERESIS[0]" not in gauge
+    assert "length >= SCALE_GAUGE_HYSTERESIS[1]" not in gauge
+    assert "length = scaleGaugeRate * BIN * S;" in gauge
+    assert "const x = PAD_X, bottom = H - PAD_Y, top = bottom - length;" in gauge
+    assert "ctx.moveTo(x, top); ctx.lineTo(x, bottom);" in gauge
+    assert "ctx.moveTo(x, top); ctx.lineTo(x + 5, top);" in gauge
+    assert "ctx.moveTo(x, bottom); ctx.lineTo(x + 5, bottom);" in gauge
+    assert "ctx.strokeStyle = TH.muted;" in gauge
+    assert "ctx.fillStyle = TH.muted;" in gauge
+    assert 'ctx.font = "9px ui-monospace, SFMono-Regular, Menlo, monospace";' in gauge
+    assert "const mass = scaleGaugeRate * BIN;" in gauge
+    assert 'fmtB(mass / BIN) + "/s"' in gauge
+    assert 'fmtN(mass / BIN) + "/s"' in gauge
+    assert "ctx.fillText(text, x + 8, top + length / 2);" in gauge
+    for forbidden in ("document.", "$(", "DATA.", "M.", "mode", "breathe"):
+        assert forbidden not in gauge
+
+    draw = template.split("function draw() {", 1)[1].split(
+        "/* ---------- timeline", 1,
+    )[0]
+    assert "drawScaleGauge(g.S, g.repickScaleGauge);" in draw
+    assert draw.index("drawScaleGauge(g.S, g.repickScaleGauge);") > draw.index(
+        'if (mode === 3) bars(SVC, g.vVal, g.Mid, xM, "M");'
+    )
+    assert draw.index("drawScaleGauge(g.S, g.repickScaleGauge);") < draw.index(
+        "ctx.fillText(M.generator"
+    )
+
+    timeline = template.split("function drawTimeline() {", 1)[1].split(
+        "/* ---------- formats ---------- */", 1,
+    )[0]
+    assert (
+        'metric === "b" ? fmtB(v / BIN) + "/s" : fmtN(v / BIN) + "/s"'
+        in timeline
+    )
+
+
 def test_player_is_self_contained_and_has_no_stale_poc_or_dash_residue() -> None:
     template = _player_template()
     for forbidden in (

@@ -3,6 +3,8 @@
   <img src="https://raw.githubusercontent.com/helixmap/sigwood/main/docs/img/sigwood-logo.png" width="300" alt="sigwood">
 </p>
 -->
+*between grep and a SIEM*
+
 [![CI](https://github.com/helixmap/sigwood/actions/workflows/ci.yml/badge.svg)](https://github.com/helixmap/sigwood/actions/workflows/ci.yml)
 
 sigwood is a local-first, command-line threat-hunting tool for self-hosters. Point it at
@@ -162,9 +164,11 @@ one.
 ## See your logs: `graph`
 
 ```bash
-sigwood graph /opt/zeek                       # a Zeek dir → a conn graph and a dns graph
+sigwood graph                                 # bare: one artifact per kind your config supports
+sigwood graph conn                            # just one kind by name (conn, dns, or pihole)
+sigwood graph /opt/zeek                       # narrow to a path - a conn graph and a dns graph
 sigwood graph /var/log/pihole/pihole.log      # a Pi-hole box → clients, domains, dispositions
-sigwood graph --pihole-dir=/var/log/pihole    # same, from your configured directory
+sigwood graph --pihole-dir=/var/log/pihole    # narrow to one configured source family
 sigwood graph dns.log --out=~/graphs/         # choose where the artifact lands
 ```
 

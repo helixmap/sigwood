@@ -70,7 +70,8 @@ grow into any of these:
 
 - No daemon, database, or agent - you install it, point it at logs, and get output.
 - No real-time streaming or alerting pipeline - it runs over logs you already have.
-- Not a SIEM, and not trying to be - it's a focused hunting tool that sits next to one.
+- Not a SIEM, and not trying to be - it sits between grep and a SIEM, a focused hunting
+  tool that lives next to one.
 
 ---
 

@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "sigwood"
 dynamic = ["version"]
-description = "Hunt for C2 beacons, DNS anomalies, and cloud-account weirdness in your own logs - no SIEM, no agents."
+description = "Hunt for C2 beacons, DNS anomalies, and cloud-account weirdness in your own logs - between grep and a SIEM."
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]

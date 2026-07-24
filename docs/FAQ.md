@@ -61,6 +61,7 @@ on its own to cluster it directly; details in
 
 ### How is this different from a SIEM? From an IDS?
 
+sigwood sits between grep and a SIEM - more structure than grep, none of the platform.
 A SIEM is an always-on platform: it ingests continuously, stores everything, and alerts in
 real time. sigwood is the opposite shape on purpose - it runs in batches, over logs at
 rest, when *you* run it. There's nothing to deploy and nothing running in the background.
@@ -86,8 +87,8 @@ is part of "what's in here.")
 
 ### What's the `graph` verb for?
 
-`graph` (`sigwood graph <path>`) is the third way to look at a log, alongside the hunt and
-`digest`. It writes a self-contained HTML file that *replays* the log's flows as an animated
+`graph` (`sigwood graph`, or `sigwood graph <path>` to narrow to one log) is the third way
+to look at a log, alongside the hunt and `digest`. It writes a self-contained HTML file that *replays* the log's flows as an animated
 Sankey - clients, the domains or services they reached, and, for Pi-hole, what happened to each
 query. Think of the three as orient, see, analyze: `digest` tells you what's in a file, `graph`
 lets you watch it move, and the hunt tells you what stands out.

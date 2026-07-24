@@ -19,6 +19,13 @@ All notable changes to sigwood are recorded here. The format follows
 
 ### Added
 
+- **The graph player shows byte flow as moving grain.** Ribbons carry small
+  particles drifting from source to destination - density and speed follow
+  each flow's current rate, inside the same frozen layout. On by default for
+  byte-active conn replays (where rate is a measured claim), off for
+  count-only graphs, always toggleable (`flow on|off`), and the default
+  respects reduced-motion preferences. Filter clicks now snap the scale
+  instantly instead of gliding.
 - **The graph player carries a scale gauge.** A small bottom-left bracket shows
   what a ribbon's height is worth (`200 B/s`, `5k/s`), reading the exact scale
   the ribbons are drawn with - so the gauge can never disagree with the

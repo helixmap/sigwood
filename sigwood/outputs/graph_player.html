@@ -302,6 +302,11 @@ input[type=range] { accent-color: var(--accent); width: 110px; }
       <button data-breathe="1">absolute</button>
     </span>
   </div>
+  <div class="grp"><span>flow</span>
+    <span class="seg" id="flow">
+      <button data-flow="on">on</button><button data-flow="off">off</button>
+    </span>
+  </div>
   <div class="sep"></div>
   <div class="grp"><button id="theme" title="theme">◐</button></div>
   <div class="spacer" style="flex:1"></div>
@@ -555,6 +560,7 @@ function rebuildMask() {
   $("rankclear").style.display = any ? "inline" : "none";
   clearTimeout(floorTimer);
   floorTimer = setTimeout(recomputeFloor, 200);
+  snapScale = true;
 }
 function advanceMask(dt) {
   const k = Math.min(1, dt * 7);
@@ -578,6 +584,17 @@ const SCALE_GAUGE_TARGET = [48, 120];
 const SCALE_GAUGE_HYSTERESIS = [40, 132];
 let scaleEMA = null, snapScale = true;
 let scaleGaugeRate = null;
+const PARTICLE_BUDGET = 500;
+const PARTICLE_V_MIN = 40;
+const PARTICLE_V_MAX = 220;
+const PARTICLE_DOT_RADIUS = 1.5;
+const PARTICLE_ALPHA = 0.42;
+let particlesEnabled = false;
+const particlePool = Array.from({ length: PARTICLE_BUDGET }, () => ({
+  live: false, key: "", u: 0, f: 0,
+}));
+const particleSegmentMap = new Map();
+const particleSegments = [];
 let rangeSet = false, loopA = 0, loopB = 0;   // loop range in bins
 
 /* ---------- theme ---------- */
@@ -734,6 +751,95 @@ function label(txt, x, y, align, size, color, glow = true) {
   }
   ctx.fillStyle = color; ctx.fillText(txt, x, y);
 }
+function clearParticles() {
+  for (const particle of particlePool) particle.live = false;
+}
+function updateAndDrawParticles(segments, dt, clearForSnap) {
+  if (clearForSnap) clearParticles();
+  if (!particlesEnabled) return;
+  if (!segments.length) { clearParticles(); return; }
+
+  let totalHeight = 0, frameMax = 0;
+  for (const r of segments) {
+    totalHeight += r.h; frameMax = Math.max(frameMax, r.value);
+  }
+  if (!(totalHeight > 0) || !(frameMax > 0)) {
+    clearParticles();
+    return;
+  }
+
+  particleSegmentMap.clear();
+  let cumulativeIdeal = 0, assigned = 0;
+  for (const r of segments) {
+    const ideal = PARTICLE_BUDGET * r.h / totalHeight;
+    cumulativeIdeal += ideal;
+    const cumulativeTarget = Math.round(cumulativeIdeal);
+    r.particleTarget = cumulativeTarget - assigned;
+    r.particleCount = 0;
+    assigned = cumulativeTarget;
+    particleSegmentMap.set(r.key, r);
+  }
+
+  for (const particle of particlePool) {
+    if (!particle.live) continue;
+    const r = particleSegmentMap.get(particle.key);
+    if (!r) { particle.live = false; continue; }
+    const velocity = PARTICLE_V_MIN + (PARTICLE_V_MAX - PARTICLE_V_MIN)
+      * (r.value / frameMax);
+    const chord = Math.max(1, Math.hypot(r.x1 - r.x0, r.y1 - r.y0));
+    particle.u += dt * velocity / chord;
+    if (particle.u >= 1) {
+      particle.live = false;
+      continue;
+    }
+    r.particleCount++;
+  }
+
+  for (const r of segments) {
+    let excess = r.particleCount - r.particleTarget;
+    if (excess <= 0) continue;
+    for (const particle of particlePool) {
+      if (!particle.live || particle.key !== r.key) continue;
+      particle.live = false;
+      r.particleCount--;
+      if (--excess === 0) break;
+    }
+  }
+
+  let cursor = 0;
+  for (const r of segments) {
+    while (r.particleCount < r.particleTarget) {
+      while (cursor < particlePool.length && particlePool[cursor].live) cursor++;
+      if (cursor >= particlePool.length) break;
+      const particle = particlePool[cursor++];
+      particle.live = true;
+      particle.key = r.key;
+      particle.u = 0;
+      particle.f = 0.15 + Math.random() * 0.70;
+      r.particleCount++;
+    }
+  }
+
+  ctx.save();
+  for (const particle of particlePool) {
+    if (!particle.live) continue;
+    const r = particleSegmentMap.get(particle.key);
+    if (!r) continue;
+    const cx = (r.x0 + r.x1) / 2, v = 1 - particle.u;
+    const x =
+      v*v*v*r.x0 + 3*v*v*particle.u*cx + 3*v*particle.u*particle.u*cx
+      + particle.u*particle.u*particle.u*r.x1;
+    const y =
+      v*v*v*r.y0 + 3*v*v*particle.u*r.y0 + 3*v*particle.u*particle.u*r.y1
+      + particle.u*particle.u*particle.u*r.y1 + particle.f * r.h;
+    ctx.globalAlpha = PARTICLE_ALPHA * r.alpha;
+    ctx.fillStyle = r.c1;
+    ctx.beginPath();
+    ctx.arc(x, y, PARTICLE_DOT_RADIUS, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.restore();
+}
 function pickScaleGaugeRate(S) {
   const minimumRate = SCALE_GAUGE_TARGET[0] / (BIN * S);
   const unit = 10 ** Math.floor(Math.log10(minimumRate));
@@ -776,10 +882,11 @@ function drawScaleGauge(S, forcePick) {
   ctx.restore();
 }
 let geom = null;
-function draw() {
+function draw(dt = 0) {
   const g = layout(t);
   geom = g;
   ctx.clearRect(0, 0, W, H);
+  particleSegments.length = 0;
   const xL = PAD_X, xR = W - PAD_X - NW, xM = (xL + xR + NW) / 2 - NW / 2;
   const MIN_DRAW = 0.4;
 
@@ -790,7 +897,10 @@ function draw() {
   function drawRibbons(x0, x1, list) {
     for (const r of list) {
       if (r.h < MIN_DRAW) continue;
-      ctx.globalAlpha = (hovSet ? (r.hot ? 0.85 : baseA) : baseA) * (r.dim || 1);
+      r.x0 = x0; r.x1 = x1; r.alpha =
+        (hovSet ? (r.hot ? 0.85 : baseA) : baseA) * (r.dim || 1);
+      particleSegments.push(r);
+      ctx.globalAlpha = r.alpha;
       if (ribbonStyle === "src") ctx.fillStyle = r.c0;
       else if (ribbonStyle === "dst") ctx.fillStyle = r.c1;
       else ctx.fillStyle = grad(x0, x1, r.c0, r.c1, r.key, ribbonStyle === "split");
@@ -807,7 +917,8 @@ function draw() {
       if (h < MIN_DRAW) continue;
       const f = FLOWS[i];
       list.push({
-        h, y0: g.L.ys[f.s] + g.offS[i], y1: g.R.ys[f.d] + g.offD[i],
+        h, value: g.fv[i],
+        y0: g.L.ys[f.s] + g.offS[i], y1: g.R.ys[f.d] + g.offD[i],
         c0: entColor(SRC[f.s]), c1: entColor(DST[f.d]),
         key: "2|" + i, hot: hovSet && hovSet.has(i),
         dim: SRC[f.s].id === OTHER || DST[f.d].id === OTHER ? OTHER_RIBBON_DIM : 1,
@@ -817,13 +928,15 @@ function draw() {
   } else {
     const lk = g.links;
     const left = svList.map((l, k) => ({
-      h: lk.lv[k] * g.S, y0: g.L.ys[l.s] + lk.offLs[k], y1: g.Mid.ys[l.v] + lk.offLv[k],
+      h: lk.lv[k] * g.S, value: lk.lv[k],
+      y0: g.L.ys[l.s] + lk.offLs[k], y1: g.Mid.ys[l.v] + lk.offLv[k],
       c0: entColor(SRC[l.s]), c1: svcColor(l.v, SVC[l.v]),
       key: "3L|" + k, hot: hovSet && l.idxs.some(i => hovSet.has(i)),
       dim: SRC[l.s].id === OTHER || SVC[l.v] === OTHER ? OTHER_RIBBON_DIM : 1,
     })).filter(r => r.h >= MIN_DRAW);
     const right = vdList.map((l, k) => ({
-      h: lk.rv[k] * g.S, y0: g.Mid.ys[l.v] + lk.offRv[k], y1: g.R.ys[l.d] + lk.offRd[k],
+      h: lk.rv[k] * g.S, value: lk.rv[k],
+      y0: g.Mid.ys[l.v] + lk.offRv[k], y1: g.R.ys[l.d] + lk.offRd[k],
       c0: svcColor(l.v, SVC[l.v]), c1: entColor(DST[l.d]),
       key: "3R|" + k, hot: hovSet && l.idxs.some(i => hovSet.has(i)),
       dim: SVC[l.v] === OTHER || DST[l.d].id === OTHER ? OTHER_RIBBON_DIM : 1,
@@ -831,6 +944,8 @@ function draw() {
     drawRibbons(xL + NW, xM, left);
     drawRibbons(xM + NW, xR, right);
   }
+
+  updateAndDrawParticles(particleSegments, dt, g.repickScaleGauge);
 
   function bars(nodes, colVals, col, x, side) {
     let lastLabelY = -1e9, lastLabelA = 0;
@@ -1385,7 +1500,7 @@ function tick(now) {
       else { t = end; setPlaying(false); }
     }
   }
-  draw();
+  draw(dt);
   drawTimeline();
   stats(now);
   updateRank(now);
@@ -1434,6 +1549,10 @@ seg("mode", b => { mode = +b.dataset.mode; gradCache.clear(); snapScale = true; 
 seg("yscale", b => { yLog = b.dataset.y === "log"; tlPath = null; });
 seg("fill", b => { ribbonStyle = b.dataset.f; });
 seg("breathe", b => { breathe = +b.dataset.breathe; snapScale = true; });
+seg("flow", button => {
+  particlesEnabled = button.dataset.flow === "on";
+  if (!particlesEnabled) clearParticles();
+});
 seg("group", b => {
   buildModel(+b.dataset.g);
   resmooth();
@@ -1459,6 +1578,15 @@ $("theme").addEventListener("click", () => {
   readTheme();
 });
 matchMedia("(prefers-color-scheme: dark)").addEventListener("change", readTheme);
+function initParticleDefault() {
+  const enabled = M.bands_active === true && !prefersReduced;
+  particlesEnabled = enabled;
+  const flow = $("flow");
+  flow.querySelectorAll("button").forEach(button => {
+    button.classList.toggle("on", (button.dataset.flow === "on") === enabled);
+  });
+}
+initParticleDefault();
 /* timeline: drag = scrub · shift-drag = loop range · double-click = clear.
    The range COMMITS at pointerup - during the gesture it is provisional
    (drawn, but playback unconstrained), so a zero-width range at pointerdown

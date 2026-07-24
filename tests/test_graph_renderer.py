@@ -443,7 +443,7 @@ def test_player_scale_gauge_uses_the_shared_ribbon_scale_and_rate_units() -> Non
     )
 
     gauge = template.split("function drawScaleGauge(S, forcePick) {", 1)[1].split(
-        "function draw() {", 1,
+        "function draw(dt = 0) {", 1,
     )[0]
     assert "if (scaleEMA === null || !Number.isFinite(S) || S <= 0) return;" in gauge
     assert "let length = scaleGaugeRate === null ? 0 : scaleGaugeRate * BIN * S;" in gauge
@@ -467,7 +467,7 @@ def test_player_scale_gauge_uses_the_shared_ribbon_scale_and_rate_units() -> Non
     for forbidden in ("document.", "$(", "DATA.", "M.", "mode", "breathe"):
         assert forbidden not in gauge
 
-    draw = template.split("function draw() {", 1)[1].split(
+    draw = template.split("function draw(dt = 0) {", 1)[1].split(
         "/* ---------- timeline", 1,
     )[0]
     assert "drawScaleGauge(g.S, g.repickScaleGauge);" in draw
@@ -485,6 +485,127 @@ def test_player_scale_gauge_uses_the_shared_ribbon_scale_and_rate_units() -> Non
         'metric === "b" ? fmtB(v / BIN) + "/s" : fmtN(v / BIN) + "/s"'
         in timeline
     )
+
+
+def test_player_flow_particles_are_bounded_and_boot_from_one_dynamic_default() -> None:
+    """Measured flow grain stays bounded, ephemeral, and user-overridable."""
+    template = _player_template()
+
+    for name in (
+        "PARTICLE_BUDGET",
+        "PARTICLE_V_MIN",
+        "PARTICLE_V_MAX",
+        "PARTICLE_DOT_RADIUS",
+        "PARTICLE_ALPHA",
+    ):
+        assert re.search(rf"const {name} = [^;\n]+;", template)
+
+    flow_segment = template.split('<span class="seg" id="flow">', 1)[1].split(
+        "</span>", 1,
+    )[0]
+    assert re.findall(r'<button data-flow="(on|off)"(?: class="([^"]*)")?>', flow_segment) == [
+        ("on", ""),
+        ("off", ""),
+    ]
+
+    assert (
+        "const particlePool = Array.from({ length: PARTICLE_BUDGET }, () => ({\n"
+        '  live: false, key: "", u: 0, f: 0,\n'
+        "}));"
+    ) in template
+    assert "const particleSegmentMap = new Map();" in template
+    assert "function clearParticles() {" in template
+    assert "for (const particle of particlePool) particle.live = false;" in template
+
+    updater = template.split(
+        "function updateAndDrawParticles(segments, dt, clearForSnap) {", 1,
+    )[1].split("function pickScaleGaugeRate", 1)[0]
+    assert "if (clearForSnap) clearParticles();" in updater
+    assert "let totalHeight = 0, frameMax = 0;" in updater
+    assert "totalHeight += r.h; frameMax = Math.max(frameMax, r.value);" in updater
+    assert "const ideal = PARTICLE_BUDGET * r.h / totalHeight;" in updater
+    assert "cumulativeIdeal += ideal;" in updater
+    assert "const cumulativeTarget = Math.round(cumulativeIdeal);" in updater
+    assert "r.particleTarget = cumulativeTarget - assigned;" in updater
+    assert (
+        "const velocity = PARTICLE_V_MIN + (PARTICLE_V_MAX - PARTICLE_V_MIN)"
+        in updater
+    )
+    assert " * (r.value / frameMax);" in updater
+    assert "Math.hypot(r.x1 - r.x0, r.y1 - r.y0)" in updater
+    assert "particle.u += dt * velocity / chord;" in updater
+    assert "if (particle.u >= 1) {" in updater
+    assert "particle.f = 0.15 + Math.random() * 0.70;" in updater
+    assert template.count("Math.random()") == 1
+    assert "const cx = (r.x0 + r.x1) / 2, v = 1 - particle.u;" in updater
+    assert (
+        "v*v*v*r.x0 + 3*v*v*particle.u*cx + "
+        "3*v*particle.u*particle.u*cx"
+    ) in updater
+    assert (
+        "v*v*v*r.y0 + 3*v*v*particle.u*r.y0 + "
+        "3*v*particle.u*particle.u*r.y1"
+    ) in updater
+    assert "+ particle.f * r.h;" in updater
+    assert "ctx.fillStyle = r.c1;" in updater
+    assert "ctx.globalAlpha = PARTICLE_ALPHA * r.alpha;" in updater
+    assert "ctx.arc(x, y, PARTICLE_DOT_RADIUS, 0, Math.PI * 2);" in updater
+    for allocator in ("Array.from", ".map(", ".filter(", ".reduce("):
+        assert allocator not in updater
+
+    draw = template.split("function draw(dt = 0) {", 1)[1].split(
+        "/* ---------- timeline", 1,
+    )[0]
+    particle_call = "updateAndDrawParticles(particleSegments, dt, g.repickScaleGauge);"
+    assert particle_call in draw
+    assert draw.index(particle_call) > draw.index("drawRibbons(xM + NW, xR, right);")
+    assert draw.index(particle_call) < draw.index(
+        "bars(SRC, g.sVal, g.L, xL, \"L\");"
+    )
+    assert "value: g.fv[i]" in draw
+    assert "value: lk.lv[k]" in draw
+    assert "value: lk.rv[k]" in draw
+    assert "r.x0 = x0; r.x1 = x1; r.alpha =" in draw
+
+    tick = template.split("function tick(now) {", 1)[1].split(
+        "/* ---------- controls ---------- */", 1,
+    )[0]
+    assert "draw(dt);" in tick
+    assert tick.index("draw(dt);") > tick.index("if (playing) {")
+    playing_end = tick.index("\n  }\n  draw(dt);")
+    assert playing_end > tick.index("if (playing) {")
+
+    rebuild = template.split("function rebuildMask() {", 1)[1].split(
+        "function advanceMask", 1,
+    )[0]
+    assert "snapScale = true;" in rebuild
+
+    boot = template.split("function initParticleDefault() {", 1)[1].split(
+        "/* timeline:", 1,
+    )[0]
+    assert "const enabled = M.bands_active === true && !prefersReduced;" in boot
+    assert "particlesEnabled = enabled;" in boot
+    assert 'const flow = $("flow");' in boot
+    assert (
+        'button.classList.toggle("on", '
+        '(button.dataset.flow === "on") === enabled);'
+    ) in boot
+    assert template.count("initParticleDefault();") == 1
+    assert template.index("const PRISTINE =") < template.index(
+        "initParticleDefault();"
+    )
+    assert (
+        'seg("flow", button => {\n'
+        '  particlesEnabled = button.dataset.flow === "on";\n'
+        "  if (!particlesEnabled) clearParticles();\n"
+        "});"
+    ) in template
+
+    clip_payload = template.split("const payload = {", 1)[1].split(
+        "const blob = JSON.stringify(payload)", 1,
+    )[0]
+    assert "particlesEnabled" not in clip_payload
+    assert "particle_" not in clip_payload
 
 
 def test_player_is_self_contained_and_has_no_stale_poc_or_dash_residue() -> None:

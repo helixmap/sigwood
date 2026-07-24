@@ -233,7 +233,8 @@ Pointed at a directory, an unqualified run looks back over the last `default_win
 out of the box), so a live log directory isn't read end-to-end every time; widen with
 `--since` / `--days` or read it all with `--all`. For rotated flat logs it peeks each
 rotation file's first timestamp and stops early instead of decompressing the whole archive.
-And it prompts before chewing through more than `warn_above` records (default 10,000,000).
+And it prompts before chewing through more than `warn_above` records (default 10,000,000;
+`warn_above = 0` turns the prompt off).
 Very large single pulls (tens of millions of CloudTrail events) are the current scaling
 edge.
 
@@ -271,24 +272,25 @@ different digits from the grouped row above it even in local mode.
 ### Can I run it on a schedule?
 
 Yes - it's batch, stateless, and built for unattended use. `-q` quiets the progress
-narration, `-y` auto-accepts the large-dataset prompt, and `--out=<dir>/` (or `report_dir` in
-config) writes a collision-safe named report. A hunt exits `0` whether or not it finds
+narration, `warn_above = 0` in config disables the large-dataset prompt for unattended runs
+(`-y` still answers it for a one-off run, and covers the CloudTrail egress prompt), and
+`--out=<dir>/` (or `report_dir` in config) writes a collision-safe named report. A hunt exits `0` whether or not it finds
 anything - a clean Unix contract, where nonzero means the *run itself* failed, not that a
 threat was found - so schedule it and inspect the JSON to decide whether to alert. That
 contract covers a detector that crashes mid-run too: the run continues past it, but the
 exit code goes nonzero and the JSON feed names it under `run_summary.detectors_failed`
 (empty `{}` on a clean run) - a crashed detector never reads as a quiet night. A nightly
-cron line:
+cron line (with `warn_above = 0` set in config):
 
 ```
-0 3 * * *  sigwood hunt -q -y --format=json --out=~/.sigwood/reports/
+0 3 * * *  sigwood hunt -q --format=json --out=~/.sigwood/reports/
 ```
 
 and, to page yourself when a run found something - or when a detector failed and the
 night's coverage is incomplete:
 
 ```
-sigwood hunt -q -y --format=json | jq -e '(.findings | length > 0) or (.run_summary.detectors_failed | length > 0)' && your-alert-here
+sigwood hunt -q --format=json | jq -e '(.findings | length > 0) or (.run_summary.detectors_failed | length > 0)' && your-alert-here
 ```
 
 No daemon and no state between runs - each run stands on its own.

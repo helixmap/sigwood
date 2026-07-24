@@ -312,6 +312,13 @@ def test_integer_warn_above_loads_cleanly(tmp_path: Path) -> None:
     assert config["sigwood"]["warn_above"] == 5
 
 
+def test_zero_warn_above_loads_cleanly(tmp_path: Path) -> None:
+    cfg_file = tmp_path / "sigwood.toml"
+    cfg_file.write_text("[sigwood]\nwarn_above = 0\n", encoding="utf-8")
+    config = cfg.load(cfg_file)
+    assert config["sigwood"]["warn_above"] == 0
+
+
 def test_negative_warn_above_raises_at_load(tmp_path: Path) -> None:
     cfg_file = tmp_path / "sigwood.toml"
     cfg_file.write_text("[sigwood]\nwarn_above = -1\n", encoding="utf-8")

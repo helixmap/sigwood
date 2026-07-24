@@ -1902,6 +1902,155 @@ def test_run_digest_large_dataset_prompt_temporarily_shows_cursor(
     assert fake.output.endswith(_CURSOR_SHOW)
 
 
+def test_confirm_large_dataset_prompts_above_threshold(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    prompts: list[str] = []
+
+    def _accept(prompt: str) -> str:
+        prompts.append(prompt)
+        return "y"
+
+    monkeypatch.setattr("builtins.input", _accept)
+    runner._confirm_large_dataset(
+        2, {"warn_above": 1}, skip_confirm=False,
+    )
+
+    assert prompts == [
+        "2 records found. This may take a while. Continue? [y/N] "
+    ]
+
+
+@pytest.mark.parametrize(
+    ("warn_above", "total_records", "skip_confirm"),
+    [
+        (0, 1, False),
+        (-1, 1, False),
+        (2, 2, False),
+        (1, 2, True),
+    ],
+)
+def test_confirm_large_dataset_skips_disabled_or_suppressed_gate(
+    warn_above: int,
+    total_records: int,
+    skip_confirm: bool,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _no_input(*_args: object, **_kwargs: object) -> str:
+        raise AssertionError("prompt must not fire")
+
+    monkeypatch.setattr("builtins.input", _no_input)
+    runner._confirm_large_dataset(
+        total_records,
+        {"warn_above": warn_above},
+        skip_confirm=skip_confirm,
+    )
+
+
+def test_confirm_large_dataset_eof_is_decline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from sigwood.common.errors import ExportAborted
+
+    def _eof(*_args: object, **_kwargs: object) -> str:
+        raise EOFError
+
+    monkeypatch.setattr("builtins.input", _eof)
+    with pytest.raises(ExportAborted) as exc_info:
+        runner._confirm_large_dataset(
+            2, {"warn_above": 1}, skip_confirm=False,
+        )
+
+    assert str(exc_info.value) == "sigwood: aborted by user"
+
+
+@pytest.mark.parametrize("answer", ["y", "yes"])
+def test_confirm_large_dataset_accepts_affirmative_answers(
+    answer: str, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("builtins.input", lambda *_args: answer)
+
+    runner._confirm_large_dataset(
+        2, {"warn_above": 1}, skip_confirm=False,
+    )
+
+
+def test_confirm_large_dataset_whole_config_uses_default_threshold(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from sigwood.common.errors import ExportAborted
+
+    monkeypatch.setattr("builtins.input", lambda *_args: "n")
+    with pytest.raises(ExportAborted) as exc_info:
+        runner._confirm_large_dataset(
+            10_000_001,
+            {"sigwood": {"warn_above": 0}},
+            skip_confirm=False,
+        )
+
+    assert str(exc_info.value) == "sigwood: aborted by user"
+
+
+def test_runner_warn_above_zero_disables_prompt(
+    tmp_path: Path, capture_summary, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    zeek_dir = _make_flat_zeek(tmp_path, [_conn(_TS_JAN1), _conn(_TS_JAN5)])
+    config = {
+        "sigwood": {
+            "detect": "beacon",
+            "warn_above": 0,
+            "default_window": "all",
+        }
+    }
+
+    def _no_input(*_args: object, **_kwargs: object) -> str:
+        raise AssertionError("prompt must not fire when warn_above=0")
+
+    monkeypatch.setattr("builtins.input", _no_input)
+    runner.run(config=config, zeek_dir=zeek_dir, skip_confirm=False)
+
+    assert capture_summary["summary"] is not None
+
+
+def test_run_digest_warn_above_zero_disables_prompt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    zeek_dir = _make_flat_zeek(tmp_path, [_conn(_TS_JAN1), _conn(_TS_JAN5)])
+    config = {"sigwood": {"warn_above": 0, "default_window": "all"}}
+
+    def _no_input(*_args: object, **_kwargs: object) -> str:
+        raise AssertionError("prompt must not fire when warn_above=0")
+
+    monkeypatch.setattr("builtins.input", _no_input)
+    runner.run_digest(
+        config=config,
+        zeek_dir=zeek_dir,
+        stream=io.StringIO(),
+        load_all=True,
+    )
+
+
+def test_runner_warn_above_equal_record_count_does_not_prompt(
+    tmp_path: Path, capture_summary, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    zeek_dir = _make_flat_zeek(tmp_path, [_conn(_TS_JAN1), _conn(_TS_JAN5)])
+    config = {
+        "sigwood": {
+            "detect": "beacon",
+            "warn_above": 2,
+            "default_window": "all",
+        }
+    }
+
+    def _no_input(*_args: object, **_kwargs: object) -> str:
+        raise AssertionError("prompt must not fire at the exact threshold")
+
+    monkeypatch.setattr("builtins.input", _no_input)
+    runner.run(config=config, zeek_dir=zeek_dir, skip_confirm=False)
+
+    assert capture_summary["summary"] is not None
+
+
 def test_quiet_analyze_and_digest_never_emit_cursor_bytes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:

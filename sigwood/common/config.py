@@ -56,7 +56,8 @@ def _validate_warn_above(config: dict[str, Any]) -> None:
     value = config.get("sigwood", {}).get("warn_above")
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
         raise ConfigError(
-            f"[sigwood].warn_above={value!r} must be a non-negative integer"
+            f"[sigwood].warn_above={value!r} must be a non-negative integer "
+            "(0 disables the prompt)"
         )
 
 

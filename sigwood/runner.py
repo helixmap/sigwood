@@ -175,9 +175,9 @@ def run(
     retired.
 
     ``skip_confirm`` bypasses the advisory large-dataset prompt (controlled by
-    ``[sigwood].warn_above``). Threaded from the CLI's ``--yes`` / ``-y`` flag.
-    Has no effect on safety-critical actions - there are none today; advisory
-    prompts only.
+    ``[sigwood].warn_above``); ``warn_above = 0`` disables the prompt. Threaded
+    from the CLI's ``--yes`` / ``-y`` flag. Has no effect on safety-critical
+    actions - there are none today; advisory prompts only.
 
     ``output_file`` is the be_like_water FILE verdict - an exact file path for
     the report, used as-is. When set it takes precedence over ``output_dir`` (the
@@ -470,20 +470,10 @@ def _run_analyze(
     if load_result.data_window is None:
         requested_span = None
 
-    # Large-dataset warning. Suppressed when skip_confirm is set (--yes / -y).
     total_records = sum(load_result.record_counts.values())
-    warn_above: int = cfg_sigwood.get("warn_above", 10_000_000)
-    if total_records > warn_above and not skip_confirm:
-        try:
-            with cursor_visible():
-                answer = input(
-                    f"{total_records:,} records found. This may take a while. "
-                    "Continue? [y/N] "
-                )
-        except (EOFError, KeyboardInterrupt):
-            answer = ""
-        if answer.strip().lower() not in ("y", "yes"):
-            raise ExportAborted("sigwood: aborted by user")
+    _confirm_large_dataset(
+        total_records, cfg_sigwood, skip_confirm=skip_confirm,
+    )
 
     # Build run summary and begin output before the detector loop so the banner
     # ("Data found:", "Records:", "Detectors:") appears before analysis starts.
@@ -1662,6 +1652,34 @@ def _dry_syslog_display(
     else:
         detail = "configured"
     return f"{base} ({detail})", None
+
+
+def _confirm_large_dataset(
+    total_records: int,
+    cfg_sigwood: dict[str, Any],
+    *,
+    skip_confirm: bool,
+) -> None:
+    """Apply the advisory large-dataset gate shared by analyze and digest.
+
+    The gate fires only when ``[sigwood].warn_above`` is positive, the record
+    count exceeds it, and the operator did not pass ``--yes``. A zero or
+    negative threshold disables the prompt. EOF or Ctrl-C is a decline.
+    Declines raise ``ExportAborted`` for the CLI to translate to exit 0.
+    """
+    warn_above: int = cfg_sigwood.get("warn_above", 10_000_000)
+    if warn_above <= 0 or total_records <= warn_above or skip_confirm:
+        return
+    try:
+        with cursor_visible():
+            answer = input(
+                f"{total_records:,} records found. This may take a while. "
+                "Continue? [y/N] "
+            )
+    except (EOFError, KeyboardInterrupt):
+        answer = ""
+    if answer.strip().lower() not in ("y", "yes"):
+        raise ExportAborted("sigwood: aborted by user")
 
 
 def _derive_data_sources(
@@ -3257,18 +3275,9 @@ def _run_digest(
         _estderr(f"{warning}")
 
     total_records = sum(load_result.record_counts.values())
-    warn_above: int = cfg_sigwood.get("warn_above", 10_000_000)
-    if total_records > warn_above and not skip_confirm:
-        try:
-            with cursor_visible():
-                answer = input(
-                    f"{total_records:,} records found. This may take a while. "
-                    "Continue? [y/N] "
-                )
-        except (EOFError, KeyboardInterrupt):
-            answer = ""
-        if answer.strip().lower() not in ("y", "yes"):
-            raise ExportAborted("sigwood: aborted by user")
+    _confirm_large_dataset(
+        total_records, cfg_sigwood, skip_confirm=skip_confirm,
+    )
 
     if load_result.data_window is not None:
         data_window = load_result.data_window

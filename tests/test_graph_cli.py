@@ -1280,9 +1280,12 @@ def test_run_graph_warn_above_never_prompts(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     source = tmp_path / "conn.log"
-    source.write_text(_CONN_LINE, encoding="utf-8")
+    second_line = _CONN_LINE.replace('"uid":"C1"', '"uid":"C2"').replace(
+        '"id.orig_h":"192.0.2.10"', '"id.orig_h":"192.0.2.11"',
+    )
+    source.write_text(_CONN_LINE + second_line, encoding="utf-8")
     config = _config()
-    config["sigwood"]["warn_above"] = 0
+    config["sigwood"]["warn_above"] = 1
     monkeypatch.setattr(
         "builtins.input",
         lambda *_args, **_kwargs: pytest.fail("graph must not prompt"),

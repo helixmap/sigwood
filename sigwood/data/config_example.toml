@@ -49,7 +49,7 @@ use_utc       = false
 # ── Analysis window ─────────────────────────────────────────────────
 # default_window: lookback for a directory with no --since/--days ("7d","24h";
 #   "" or "all" = whole archive; --all overrides one run).
-# warn_above: prompt before analyzing more than this many records.
+# warn_above: prompt before analyzing more than this many records (0 disables).
 default_window = "7d"
 warn_above     = 10_000_000
 

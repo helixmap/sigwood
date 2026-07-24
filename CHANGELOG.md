@@ -28,6 +28,11 @@ All notable changes to sigwood are recorded here. The format follows
   member record carries a `tier` key only when the member really is a family or
   burst rollup (a plain rare line omits it). Log content is never rewritten:
   whatever words an operator's own lines contain render verbatim.
+- **`warn_above = 0` now disables the large-dataset prompt.** Previously 0 meant
+  prompt before analyzing any amount of data; it now switches the advisory prompt
+  off entirely - the config-side equivalent of passing `-y` every run, suited to
+  cron and other unattended schedules. Set a small positive value to keep an
+  aggressive prompt.
 
 ### Fixed
 

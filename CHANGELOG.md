@@ -43,6 +43,12 @@ All notable changes to sigwood are recorded here. The format follows
   member record carries a `tier` key only when the member really is a family or
   burst rollup (a plain rare line omits it). Log content is never rewritten:
   whatever words an operator's own lines contain render verbatim.
+- **Graph artifacts open in the full three-column view.** The player's view
+  segment now lands with the middle tier on - services for conn, resolvers or
+  query types for dns, dispositions for Pi-hole - matching how the graph is
+  actually read; one click on `hosts` collapses it. The segment labels name the
+  view states plainly. Clips inherit the new default; previously saved artifacts
+  are unchanged (they are self-contained).
 - **`graph` windows a directory like the hunt does.** A bare `sigwood graph`
   against a Pi-hole (or any flat) directory now reads the last `default_window`
   of available data - peeking rotation files' first timestamps and skipping the

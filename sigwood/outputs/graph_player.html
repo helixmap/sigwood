@@ -276,7 +276,7 @@ input[type=range] { accent-color: var(--accent); width: 110px; }
   </div>
   <div class="grp"><span>view</span>
     <span class="seg" id="mode">
-      <button data-mode="2" class="on">hosts</button><button data-mode="3" id="modemid">+services</button>
+      <button data-mode="2">hosts</button><button data-mode="3" class="on" id="modemid">services</button>
     </span>
   </div>
   <div class="grp"><span>group</span>
@@ -568,7 +568,7 @@ let playing = !prefersReduced;
 let speedRate = 0;               // data-seconds per wall-second
 let loop = true;
 let metric = "b";
-let mode = 2;
+let mode = 3;
 let yLog = false;
 let ribbonStyle = "blend";
 let breathe = 0;
@@ -1500,7 +1500,7 @@ document.addEventListener("keydown", ev => {
   $("meta-kind").textContent = M.kind || "graph";
   $("meta-hunt-foot").hidden = !M.hunt_hint;
   if (M.mid_label) {
-    $("modemid").textContent = "+" + M.mid_label;
+    $("modemid").textContent = M.mid_label;
     $("ranktab-mid").textContent = M.mid_label;
     $("k-svc").textContent = "top " + (M.mid_singular || M.mid_label);
   }

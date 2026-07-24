@@ -193,6 +193,73 @@ def test_player_polish_tokens_cover_the_full_theme_and_speed_contract() -> None:
     assert "Math.abs(span / b - 240) < Math.abs(span / a - 240)" in template
 
 
+def test_player_mode_three_is_the_shipped_default_with_state_label() -> None:
+    """The landing view is three-column and its pressed label names the state."""
+    template = _player_template()
+    segment = template.split('<span class="seg" id="mode">', 1)[1].split(
+        "</span>", 1,
+    )[0]
+    buttons = {}
+    for attributes, label in re.findall(r"<button\b([^>]*)>([^<]+)</button>", segment):
+        match = re.search(r'\bdata-mode="(\d+)"', attributes)
+        assert match is not None
+        buttons[int(match.group(1))] = {
+            "on": re.search(r'\bclass="[^"]*\bon\b[^"]*"', attributes) is not None,
+            "label": label,
+        }
+
+    assert buttons == {
+        2: {"on": False, "label": "hosts"},
+        3: {"on": True, "label": "services"},
+    }
+    assert "let mode = 3;" in template
+    assert "let mode = 2;" not in template
+    assert '$("modemid").textContent = M.mid_label;' in template
+    assert '$("modemid").textContent = "+" + M.mid_label;' not in template
+
+
+def test_player_pressed_mode_and_initial_state_stay_in_parity() -> None:
+    """The segment cannot claim a different landing view than the JS state."""
+    template = _player_template()
+    segment = template.split('<span class="seg" id="mode">', 1)[1].split(
+        "</span>", 1,
+    )[0]
+    pressed_modes = []
+    for attributes in re.findall(r"<button\b([^>]*)>", segment):
+        if re.search(r'\bclass="[^"]*\bon\b[^"]*"', attributes) is None:
+            continue
+        match = re.search(r'\bdata-mode="(\d+)"', attributes)
+        assert match is not None
+        pressed_modes.append(int(match.group(1)))
+    state = re.search(r"\blet mode = (\d+);", template)
+
+    assert state is not None
+    assert pressed_modes == [int(state.group(1))]
+    assert (
+        'seg("mode", b => { mode = +b.dataset.mode; gradCache.clear(); '
+        "snapScale = true; hover = null; });"
+    ) in template
+
+
+def test_player_rank_tab_remains_hosts_first_and_mode_independent() -> None:
+    """The topology-view flip does not reallocate live rank-panel movement."""
+    template = _player_template()
+    rank_segment = template.split('<span class="seg" id="ranktab">', 1)[1].split(
+        "</span>", 1,
+    )[0]
+
+    assert (
+        '<button data-t="h" class="on">hosts</button>'
+        '<button data-t="s" id="ranktab-mid">services</button>'
+    ) in rank_segment
+    assert 'let rankTab = "h", lastRank = 0;' in template
+    assert '$("ranktab-mid").textContent = M.mid_label;' in template
+    assert (
+        '$("k-svc").textContent = "top " + '
+        "(M.mid_singular || M.mid_label);"
+    ) in template
+
+
 def test_player_radius_cap_uses_validated_numeric_sink_and_clips_keep_meta() -> None:
     template = _player_template()
 

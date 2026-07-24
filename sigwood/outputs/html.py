@@ -44,7 +44,8 @@ from sigwood.outputs._render_model import (
 from sigwood.outputs._sanitize import strip_control
 from sigwood.outputs._serialize import jsonable_to_human, to_jsonable
 
-_WORDMARK = "sigwood · threat hunt"
+_WORDMARK_BRAND = "sigwood"
+_WORDMARK_TAGLINE = " · threat hunt"
 
 
 # --------------------------------------------------------------------------- #
@@ -151,7 +152,8 @@ def _render_header(run_summary: "RunSummary | None") -> str:
 
     return (
         "<header>"
-        f'<div class="wordmark">{_esc(_WORDMARK)}</div>'
+        f'<div class="wordmark"><span class="brand">'
+        f"{_esc(_WORDMARK_BRAND)}</span>{_esc(_WORDMARK_TAGLINE)}</div>"
         f'<div class="meta">{"".join(rows)}</div>'
         "</header>"
     )
@@ -534,6 +536,7 @@ def _styles(landscape: bool) -> str:
   --sev-high: #c0392b; --sev-medium: #d98910; --sev-low: #2c81b8; --sev-info: #7a8493;
   --sev-high-ink: #ffffff; --sev-medium-ink: #0b0f14; --sev-low-ink: #0b0f14; --sev-info-ink: #0b0f14;
   --hl-ts: #9a6700; --hl-host: #0969da; --hl-prog: #8250df;
+  --wordmark: #8a5320;
 }
 @media (prefers-color-scheme: dark) {
   :root {
@@ -544,6 +547,7 @@ def _styles(landscape: bool) -> str:
     --sev-high: #e06a5c; --sev-medium: #e8a94a; --sev-low: #5aa6d8; --sev-info: #98a2b0;
     --sev-high-ink: #0b0f14; --sev-medium-ink: #0b0f14; --sev-low-ink: #0b0f14; --sev-info-ink: #0b0f14;
     --hl-ts: #ffd166; --hl-host: #70d6ff; --hl-prog: #c4a7e7;
+    --wordmark: #e38e30;
   }
 }
 * { box-sizing: border-box; }
@@ -554,6 +558,7 @@ body {
 }
 header { border-bottom: 2px solid var(--border); padding-bottom: 18px; margin-bottom: 24px; }
 .wordmark { font-size: 22px; font-weight: 700; letter-spacing: .2px; margin-bottom: 14px; }
+.wordmark .brand { font-family: Georgia, "Bookman Old Style", "Times New Roman", serif; color: var(--wordmark); }
 .meta-row { display: flex; align-items: baseline; margin: 3px 0; }
 .meta-label { color: var(--muted); width: 96px; flex: 0 0 96px; text-transform: lowercase; }
 .meta-value { color: var(--fg); }

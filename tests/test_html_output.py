@@ -6,6 +6,7 @@ import io
 import re
 import sys
 from datetime import datetime, timezone
+from importlib import resources
 from pathlib import Path
 
 import pytest
@@ -613,6 +614,41 @@ def test_html_syslog_highlight_palettes_keep_timestamp_brightest() -> None:
     assert ".hl-ts { color: var(--hl-ts); font-weight: 700; }" in out
     assert ".hl-host { color: var(--hl-host); font-weight: 600; }" in out
     assert ".hl-prog { color: var(--hl-prog); font-weight: 600; }" in out
+
+
+def test_html_wordmark_keeps_graph_brand_token_parity() -> None:
+    document = _render([_finding()])
+    style = document[
+        document.index("<style>") + len("<style>"):document.index("</style>")
+    ]
+    player = (
+        resources.files("sigwood.outputs")
+        .joinpath("graph_player.html")
+        .read_text(encoding="utf-8")
+    )
+    stack = (
+        'font-family: Georgia, "Bookman Old Style", "Times New Roman", serif;'
+    )
+    wordmark_pattern = r"--wordmark:\s*(#[0-9a-fA-F]{6});"
+
+    assert stack in style
+    assert stack in player
+    assert re.findall(wordmark_pattern, style) == ["#8a5320", "#e38e30"]
+    assert re.findall(wordmark_pattern, player) == [
+        "#8a5320",
+        "#e38e30",
+    ] * 2
+    assert (
+        '<div class="wordmark"><span class="brand">sigwood</span>'
+        " · threat hunt</div>"
+        in document
+    )
+    assert (
+        ".wordmark .brand { "
+        'font-family: Georgia, "Bookman Old Style", "Times New Roman", serif; '
+        "color: var(--wordmark); }"
+        in style
+    )
 
 
 def test_html_severity_pill_palettes_meet_wcag_contrast_floor() -> None:

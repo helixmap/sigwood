@@ -136,7 +136,8 @@ def test_renders_html_twin_and_writes_to_path(tmp_path, monkeypatch) -> None:
     _handler(target).end()
     # the PDF is rendered from the SAME html renderer as the html format,
     # and the returned bytes are written to the target file.
-    assert "sigwood · threat hunt" in recorded["html"]
+    assert '<span class="brand">sigwood</span>' in recorded["html"]
+    assert "threat hunt" in recorded["html"]
     assert "findings-table" in recorded["html"]      # the per-detector table
     # the beacon row via project_row: the score datum renders ONCE - bare in the
     # cell, labeled by its <th> header, never double-labeled `score=…` (D-8).

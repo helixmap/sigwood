@@ -33,6 +33,11 @@ All notable changes to sigwood are recorded here. The format follows
   off entirely - the config-side equivalent of passing `-y` every run, suited to
   cron and other unattended schedules. Set a small positive value to keep an
   aggressive prompt.
+- **The report wordmark matches the graph player's brand mark.** The `sigwood`
+  token in the HTML/PDF report header now renders in the same serif face and
+  light/dark color pair as the graph player's wordmark; the `· threat hunt`
+  tagline keeps its bold sans treatment. A parity test pins both artifacts to one
+  identical font stack and color pair so the two marks cannot drift apart.
 
 ### Fixed
 

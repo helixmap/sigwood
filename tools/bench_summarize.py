@@ -14,6 +14,7 @@ import sys
 import time
 import tomllib
 import traceback
+from datetime import datetime
 from pathlib import Path
 from typing import Any, NoReturn
 
@@ -38,6 +39,8 @@ RUN_SUMMARY_KEYS = frozenset({
     "data_sources",
     "detector_methods",
     "requested_span",
+    "invocation",
+    "generated_at",
     "suppression",
 })
 FINDING_KEYS = frozenset({
@@ -294,6 +297,28 @@ def _validate_payload(payload: object) -> dict[str, Any]:
     requested = run["requested_span"]
     if requested is not None and type(requested) not in (int, float):
         raise SummaryRefusal("run_summary.requested_span", "expected a number or null")
+
+    invocation = run["invocation"]
+    if invocation is not None:
+        _require_str(invocation, "run_summary.invocation")
+
+    generated_at = run["generated_at"]
+    if generated_at is not None:
+        generated_text = _require_str(
+            generated_at, "run_summary.generated_at"
+        )
+        try:
+            generated_dt = datetime.fromisoformat(generated_text)
+        except ValueError as exc:
+            raise SummaryRefusal(
+                "run_summary.generated_at",
+                "expected a timezone-bearing ISO timestamp or null",
+            ) from exc
+        if generated_dt.utcoffset() is None:
+            raise SummaryRefusal(
+                "run_summary.generated_at",
+                "expected a timezone-bearing ISO timestamp or null",
+            )
 
     findings = _require_list(top["findings"], "findings")
     for index, raw in enumerate(findings):

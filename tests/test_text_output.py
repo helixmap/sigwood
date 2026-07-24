@@ -5,6 +5,8 @@ from __future__ import annotations
 import io
 from datetime import datetime, timedelta, timezone
 
+import sigwood
+
 from sigwood.common.display import TEXT_RULE_WIDTH, fmt_compact_span
 from sigwood.common.finding import RunSummary
 from sigwood.outputs.text import (
@@ -394,8 +396,67 @@ def test_render_run_summary_detect_banner_snapshot() -> None:
         "detectors:     beacon (FFT)  ·  dns (HDBSCAN)\n"
         "skipped:       scan - no conn data\n"
         "note:          test note\n"
+        f"generated:     sigwood {sigwood.__version__}\n"
         "════════════════════════════════════════════════════════════════════════════════"
     )
+
+
+def test_render_run_summary_provenance_rows_are_last() -> None:
+    rs = RunSummary(
+        data_window=_WINDOW,
+        record_counts={},
+        data_size_bytes=0,
+        detectors_run=[],
+        detectors_skipped={},
+        notes=["test note"],
+        invocation="sigwood hunt --days=1-2",
+        generated_at=datetime(2026, 7, 23, 9, 14, tzinfo=timezone.utc),
+    )
+
+    lines = TextHandler(stream=io.StringIO())._render_run_summary(rs).splitlines()
+
+    assert lines[-3] == (
+        f"generated:     2026-07-23 09:14 local  ·  "
+        f"sigwood {sigwood.__version__}"
+    )
+    assert lines[-2] == "as:            sigwood hunt --days=1-2"
+    assert lines[-1] == "═" * TEXT_RULE_WIDTH
+
+
+def test_render_run_summary_optional_provenance_arms() -> None:
+    rs = RunSummary(
+        data_window=_WINDOW,
+        record_counts={},
+        data_size_bytes=0,
+        detectors_run=[],
+        detectors_skipped={},
+    )
+
+    rendered = TextHandler(stream=io.StringIO())._render_run_summary(rs)
+
+    assert f"generated:     sigwood {sigwood.__version__}" in rendered
+    assert "\nas:" not in rendered
+
+
+def test_render_run_summary_invocation_strips_full_control_class() -> None:
+    controls = "".join(
+        chr(cp) for cp in (*range(0x20), 0x7f, *range(0x80, 0xa0))
+    )
+    rs = RunSummary(
+        data_window=_WINDOW,
+        record_counts={},
+        data_size_bytes=0,
+        detectors_run=[],
+        detectors_skipped={},
+        invocation=f"LEFT{controls}RIGHT",
+    )
+
+    rendered = TextHandler(stream=io.StringIO())._render_run_summary(rs)
+
+    assert "as:            LEFTRIGHT" in rendered
+    for ch in controls:
+        if ch != "\n":
+            assert ch not in rendered
 
 
 def test_render_run_summary_detect_omits_optional_rows_when_empty() -> None:

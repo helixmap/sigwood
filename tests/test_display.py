@@ -5,6 +5,7 @@ from __future__ import annotations
 import sys
 import threading
 import time
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -19,12 +20,15 @@ from sigwood.common.display import (
     _stream_isatty,
     cursor_visible,
     default_window_advisory,
+    fmt_data_found,
+    fmt_generated,
     hidden_cursor,
     liveness,
     narration_active,
     phase_separator,
     progress,
     set_narration_enabled,
+    version_string,
 )
 
 
@@ -37,6 +41,39 @@ def test_default_window_advisory_exact_string() -> None:
     )
     # spec is interpolated, not hardcoded
     assert "last 7d of available data" in default_window_advisory("7d")
+
+
+@pytest.mark.parametrize(
+    ("data_span", "requested_span", "suffix"),
+    [
+        (timedelta(hours=18), timedelta(days=1), "(18h data span in 1d window)"),
+        (timedelta(hours=23), timedelta(days=1), "(23h data span in 1d window)"),
+        (timedelta(hours=23, minutes=30), timedelta(days=1), "(1d)"),
+        (timedelta(days=3), timedelta(days=1), "(3d)"),
+        (timedelta(hours=6), None, "(6h)"),
+        (timedelta(0), None, "(0m)"),
+    ],
+)
+def test_fmt_data_found_suffix_arms(
+    data_span: timedelta,
+    requested_span: timedelta | None,
+    suffix: str,
+) -> None:
+    start = datetime(2026, 6, 1, tzinfo=timezone.utc)
+
+    assert fmt_data_found(
+        (start, start + data_span),
+        requested_span,
+    ).endswith(suffix)
+
+
+def test_fmt_generated_arms() -> None:
+    assert fmt_generated(None) == version_string()
+    assert fmt_generated(
+        datetime(2026, 7, 23, 9, 14, tzinfo=timezone.utc)
+    ) == (
+        f"2026-07-23 09:14 local  ·  {version_string()}"
+    )
 
 
 class _FakeStream:

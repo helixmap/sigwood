@@ -5,12 +5,13 @@ from __future__ import annotations
 import io
 import re
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from importlib import resources
 from pathlib import Path
 
 import pytest
 
+import sigwood
 from sigwood.common.finding import Finding, MethodTag, RunSummary, Severity
 from sigwood.outputs.html import HtmlHandler, render_report_html
 
@@ -166,6 +167,92 @@ def test_header_uses_local_time_not_iso() -> None:
     out = _render([_finding()])
     assert "2026-06-01 12:00 → 2026-06-01 18:30 local" in out
     assert "2026-06-01T12:00:00+00:00" not in out
+
+
+def test_header_window_discloses_requested_span_underfill() -> None:
+    start = datetime(2026, 6, 1, 0, 0, tzinfo=timezone.utc)
+    out = render_report_html(
+        [],
+        _summary(
+            data_window=(start, start + timedelta(hours=18)),
+            requested_span=timedelta(days=1),
+        ),
+        verbose_level=0,
+        max_findings_per_detector=100,
+    )
+
+    assert "(18h data span in 1d window)" in out
+
+
+def test_header_window_includes_bare_data_span() -> None:
+    start = datetime(2026, 6, 1, 0, 0, tzinfo=timezone.utc)
+    out = render_report_html(
+        [],
+        _summary(
+            data_window=(start, start + timedelta(hours=6)),
+            requested_span=None,
+        ),
+        verbose_level=0,
+        max_findings_per_detector=100,
+    )
+
+    assert "(6h)" in out
+
+
+def test_header_provenance_rows_follow_detectors() -> None:
+    out = render_report_html(
+        [],
+        _summary(
+            invocation="sigwood hunt --days=1-2",
+            generated_at=datetime(
+                2026, 7, 23, 9, 14, tzinfo=timezone.utc,
+            ),
+        ),
+        verbose_level=0,
+        max_findings_per_detector=100,
+    )
+
+    detectors = out.index('<span class="meta-label">detectors</span>')
+    generated = out.index('<span class="meta-label">generated</span>')
+    invoked_as = out.index('<span class="meta-label">as</span>')
+    skipped = out.index('<div class="skip">')
+    assert detectors < generated < invoked_as < skipped
+    assert f"sigwood {sigwood.__version__}" in out
+    assert "2026-07-23 09:14 local" in out
+    assert "sigwood hunt --days=1-2" in out
+
+
+def test_header_optional_provenance_arms() -> None:
+    out = render_report_html(
+        [],
+        _summary(invocation=None, generated_at=None),
+        verbose_level=0,
+        max_findings_per_detector=100,
+    )
+
+    assert (
+        '<span class="meta-label">generated</span>'
+        f'<span class="meta-value">sigwood {sigwood.__version__}</span>'
+    ) in out
+    assert '<span class="meta-label">as</span>' not in out
+
+
+def test_header_invocation_escapes_markup_and_full_control_class() -> None:
+    controls = "".join(
+        chr(cp) for cp in (*range(0x20), 0x7f, *range(0x80, 0xa0))
+    )
+    out = render_report_html(
+        [],
+        _summary(invocation=f"LEFT{controls}RIGHT<script>alert(1)</script>"),
+        verbose_level=0,
+        max_findings_per_detector=100,
+    )
+
+    assert "LEFTRIGHT&lt;script&gt;alert(1)&lt;/script&gt;" in out
+    assert "<script>alert(1)</script>" not in out
+    for ch in controls:
+        if ch != "\n":
+            assert ch not in out
 
 
 def test_header_window_none_renders_none() -> None:

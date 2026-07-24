@@ -20,8 +20,9 @@ from typing import Any, TextIO
 
 from sigwood.common.display import (
     _tz_label,
+    fmt_data_found,
+    fmt_generated,
     fmt_suppression,
-    fmt_window,
     human_bytes,
     plural,
 )
@@ -122,7 +123,10 @@ def _render_header(run_summary: "RunSummary | None") -> str:
     if run_summary is not None:
         window_cell = (
             "none" if run_summary.data_window is None
-            else fmt_window(run_summary.data_window)
+            else fmt_data_found(
+                run_summary.data_window,
+                run_summary.requested_span,
+            )
         )
         rows.append(_meta_row("window", _esc(window_cell)))
         if run_summary.record_counts:
@@ -139,6 +143,12 @@ def _render_header(run_summary: "RunSummary | None") -> str:
                 for name in run_summary.detectors_run
             )
             rows.append(_meta_row("detectors", f'<span class="chips">{chips}</span>'))
+        rows.append(_meta_row(
+            "generated",
+            _esc(fmt_generated(run_summary.generated_at)),
+        ))
+        if run_summary.invocation is not None:
+            rows.append(_meta_row("as", _esc(run_summary.invocation)))
         for name, reason in run_summary.detectors_skipped.items():
             rows.append(f'<div class="skip">{_esc(name)} - {_esc(reason)}</div>')
         # Failed detectors (crashed during prep or run - recorded on the

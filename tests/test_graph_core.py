@@ -10,7 +10,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from sigwood.common.display import set_display_utc
+from sigwood.common.display import set_display_utc, version_string
 from sigwood.common.errors import GraphEmpty
 from sigwood.graph import _core
 from sigwood.graph._core import (
@@ -165,6 +165,7 @@ def test_conn_payload_keeps_null_metrics_as_zero_and_collapses_icmp() -> None:
         display_utc=True,
     )
 
+    assert payload["meta"]["generator"] == version_string()
     assert payload["meta"] | {"generated_utc": "ignored"} == {
         "source": "conn.log",
         "rows": 2,

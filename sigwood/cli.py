@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import os
 import re
+import shlex
 import stat
 import sys
 from dataclasses import dataclass
@@ -29,13 +30,13 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from sigwood import __version__
 from sigwood.common import config as cfg
 from sigwood.common.display import (
     compact_home,
     plural,
     set_display_utc,
     to_display_timezone,
+    version_string,
 )
 from sigwood.common.errors import (
     DigestEmpty,
@@ -281,7 +282,7 @@ def _main(argv: list[str] | None = None) -> int:
         return 0
 
     if args[0] in ("--version", "-V"):
-        print(f"sigwood {__version__}")
+        print(version_string())
         return 0
 
     cand = args[0]
@@ -321,8 +322,10 @@ def _main(argv: list[str] | None = None) -> int:
         print(_render_verb_help(verb), end="")
         return 0
 
+    invocation = shlex.join(["sigwood", *args])
+
     if verb in _SINGLE_DETECTOR_COMMANDS:
-        return _run_single_detector(verb, rest) or 0
+        return _run_single_detector(verb, rest, invocation=invocation) or 0
     elif verb == "digest":
         return _run_digest(rest) or 0
     elif verb == "graph":
@@ -335,7 +338,10 @@ def _main(argv: list[str] | None = None) -> int:
         _run_allowlist(rest)
     elif verb == "hunt":
         return _run_hunt(
-            rest, require_target=require_target, leading_flag=leading_flag,
+            rest,
+            require_target=require_target,
+            leading_flag=leading_flag,
+            invocation=invocation,
         ) or 0
     return 0
 
@@ -886,6 +892,7 @@ def _runner_kwargs(
     scope: frozenset[str] | None = None,
     source_buckets: dict[str, list[str]] | None = None,
     detector_selection: Any | None = None,
+    invocation: str | None = None,
 ) -> dict[str, Any]:
     """Build the kwargs dict for runner.run() from parsed CLI args and loaded config.
 
@@ -976,6 +983,7 @@ def _runner_kwargs(
         # CLI -q wins; else [sigwood].quiet (default false). No un-quiet flag.
         quiet=bool(parsed.get("quiet")) or bool(cfg_sigwood.get("quiet", False)),
         use_utc=use_utc,
+        invocation=invocation,
     )
     if "syslog_source" in parsed:
         kwargs["syslog_source"] = parsed["syslog_source"]
@@ -1088,8 +1096,13 @@ def _load_config(parsed: dict[str, Any]) -> dict[str, Any]:
     return config
 
 
-def _run_hunt(args: list[str], *, require_target: bool = False,
-              leading_flag: bool = False) -> int:
+def _run_hunt(
+    args: list[str],
+    *,
+    require_target: bool = False,
+    leading_flag: bool = False,
+    invocation: str | None = None,
+) -> int:
     """Parse args and invoke the runner for the default hunt.
 
     ``require_target`` rides only the IMPLICIT routes (a leading path or flag):
@@ -1163,11 +1176,16 @@ def _run_hunt(args: list[str], *, require_target: bool = False,
 
     return runner.run(**_runner_kwargs(
         parsed, config, scope=scope, source_buckets=buckets,
-        detector_selection=selection,
+        detector_selection=selection, invocation=invocation,
     ))
 
 
-def _run_single_detector(detector: str, args: list[str]) -> int:
+def _run_single_detector(
+    detector: str,
+    args: list[str],
+    *,
+    invocation: str | None = None,
+) -> int:
     """Parse args and invoke runner constrained to a single detector.
 
     Each positional in ``parsed["paths"]`` is sniff-classified into its source
@@ -1205,7 +1223,7 @@ def _run_single_detector(detector: str, args: list[str]) -> int:
 
     return runner.run(**_runner_kwargs(
         parsed, config, detect=detector, scope=scope, source_buckets=buckets,
-        detector_selection=selection,
+        detector_selection=selection, invocation=invocation,
     ))
 
 

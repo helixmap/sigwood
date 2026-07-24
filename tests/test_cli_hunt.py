@@ -8,6 +8,9 @@ code, and usage pointer (part of the contract) are exercised.
 
 from __future__ import annotations
 
+import json
+import shlex
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -387,6 +390,41 @@ def test_garbage_conn_log_json_null_window(
     ) is None
     payload = json.loads(capsys.readouterr().out)
     assert payload["run_summary"]["data_window"] is None
+
+
+@pytest.mark.parametrize("route", ["hunt", "detector", "implicit"])
+def test_real_cli_json_records_exact_full_invocation(
+    route: str,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """All three analysis entries preserve the full original argv spelling.
+
+    This drives the real runner and JSON file sink; only config discovery is
+    isolated from the developer environment.
+    """
+    monkeypatch.setattr(cfg, "SEARCH_PATHS", [])
+    source_dir = tmp_path / "source with space and ' quote"
+    source_dir.mkdir()
+    source = _garbage_conn(source_dir)
+    target = tmp_path / f"{route}.json"
+    common = ["--format=json", f"--out={target}", str(source)]
+    if route == "hunt":
+        argv = ["hunt", "--detect=beacon", *common]
+    elif route == "detector":
+        argv = ["beacon", *common]
+    else:
+        argv = [str(source), "--detect=beacon", *common[:-1]]
+
+    assert cli.main(argv) is None
+    capsys.readouterr()
+    summary = json.loads(target.read_text(encoding="utf-8"))["run_summary"]
+    invocation = summary["invocation"]
+
+    assert invocation == shlex.join(["sigwood", *argv])
+    assert shlex.split(invocation) == ["sigwood", *argv]
+    assert datetime.fromisoformat(summary["generated_at"]).utcoffset() is not None
 
 
 def test_garbage_conn_log_html_window_none(

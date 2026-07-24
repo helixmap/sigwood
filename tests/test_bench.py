@@ -220,6 +220,8 @@ def _payload(
                 name: None for name in (detectors_run or [])
             },
             "requested_span": requested_span,
+            "invocation": "sigwood hunt --format=json",
+            "generated_at": "2026-06-01T00:00:00+00:00",
             "suppression": None,
         },
         "findings": findings or [],
@@ -449,6 +451,8 @@ def test_projection_handles_nullable_shapes_span_and_absent_header() -> None:
     assert summary["default_visible"] == {"duration": 0}
     assert summary["cap_hidden"] == {"duration": 0}
     assert summary["level_hidden"] == {"duration": 1}
+    assert "invocation" not in summary
+    assert "generated_at" not in summary
 
 
 def test_payload_validation_accepts_exact_host_suppression_keys() -> None:
@@ -500,6 +504,43 @@ def test_payload_refuses_schema_bump_and_structural_key_drift() -> None:
     negative = _payload(record_counts={"conn*.log*": -1})
     with pytest.raises(bench_summarize.SummaryRefusal, match="expected non-negative"):
         bench_summarize._validate_payload(negative)
+
+
+def test_payload_validates_nullable_provenance_types_and_timezone() -> None:
+    nullable = _payload()
+    nullable["run_summary"]["invocation"] = None
+    nullable["run_summary"]["generated_at"] = None
+    assert bench_summarize._validate_payload(nullable)["run_summary"][
+        "generated_at"
+    ] is None
+
+    bad_invocation = _payload()
+    bad_invocation["run_summary"]["invocation"] = 7
+    with pytest.raises(
+        bench_summarize.SummaryRefusal,
+        match=r"run_summary\.invocation",
+    ):
+        bench_summarize._validate_payload(bad_invocation)
+
+    for bad_timestamp in ("not-an-instant", "2026-06-01T00:00:00"):
+        bad_generated = _payload()
+        bad_generated["run_summary"]["generated_at"] = bad_timestamp
+        with pytest.raises(
+            bench_summarize.SummaryRefusal,
+            match="timezone-bearing ISO",
+        ):
+            bench_summarize._validate_payload(bad_generated)
+
+
+def test_payload_refuses_missing_invocation_key() -> None:
+    missing = _payload()
+    del missing["run_summary"]["invocation"]
+
+    with pytest.raises(
+        bench_summarize.SummaryRefusal,
+        match="missing key 'invocation'",
+    ):
+        bench_summarize._validate_payload(missing)
 
 
 @pytest.mark.parametrize(

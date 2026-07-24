@@ -6,6 +6,15 @@ All notable changes to sigwood are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **The report says how it was made.** Text and HTML/PDF reports now carry a
+  provenance row - `generated: <timestamp>  ·  sigwood <version>` - and, for CLI
+  runs, `as: <the exact command line>` - so a saved report answers "which tool,
+  which version, when, invoked how" by itself. The JSON feed carries both facts
+  as `run_summary.generated_at` (ISO UTC) and `run_summary.invocation`
+  (additive; no schema bump).
+
 ### Changed
 
 - **Syslog review units roll up only when it pays.** Family and burst folding now
@@ -41,6 +50,11 @@ All notable changes to sigwood are recorded here. The format follows
 
 ### Fixed
 
+- **The HTML report now discloses an underfilled window like the text report.**
+  The HTML header's window row carries the same span parenthetical the text
+  banner always had - the bare data span normally, and the
+  `(Xh data span in Yd window)` disclosure when the loaded data underfills the
+  requested lookback. The two surfaces share one formatter so they cannot drift.
 - **Progress lines name the directory when file names repeat.** A dated Zeek archive
   loads several files that share one rotation name, and the load narration used to
   render identical `loaded conn.00:00:00-00:00:00.log.gz` lines for all of them. When

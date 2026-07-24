@@ -14,7 +14,6 @@ import sys
 import textwrap
 from collections import defaultdict
 from dataclasses import dataclass, field
-from datetime import timedelta
 from typing import Any, TextIO
 
 from sigwood.common.display import (
@@ -22,6 +21,8 @@ from sigwood.common.display import (
     TEXT_RULE_DOUBLE,
     TEXT_RULE_WIDTH,
     fmt_compact_span,
+    fmt_data_found,
+    fmt_generated,
     fmt_suppression,
     fmt_window,
     human_bytes,
@@ -52,10 +53,6 @@ _WIDTH = TEXT_RULE_WIDTH
 _SEP = TEXT_RULE
 _SEP_DOUBLE = TEXT_RULE_DOUBLE
 _SUMMARY_LABEL_WIDTH = 14
-
-# Minimum (requested_span − data_span) before the data-found line discloses an
-# underfilled window - below this the operator effectively got what they asked for.
-_UNDERFILL_TOLERANCE = timedelta(hours=1)
 
 
 def _fmt_window(window: tuple) -> str:
@@ -560,7 +557,11 @@ class TextHandler(OutputHandler):
             lines.extend(_summary_line("data found:", "none"))
         elif run_summary.data_window[0] and run_summary.data_window[1]:
             lines.extend(_summary_line(
-                "data found:", self._fmt_data_found(run_summary)
+                "data found:",
+                fmt_data_found(
+                    run_summary.data_window,
+                    run_summary.requested_span,
+                ),
             ))
 
         if run_summary.record_counts:
@@ -589,6 +590,13 @@ class TextHandler(OutputHandler):
         for note in run_summary.notes:
             lines.extend(_summary_line("note:", _sanitize(note)))
 
+        lines.extend(_summary_line(
+            "generated:",
+            _sanitize(fmt_generated(run_summary.generated_at)),
+        ))
+        if run_summary.invocation is not None:
+            lines.extend(_summary_line("as:", _sanitize(run_summary.invocation)))
+
         lines.append(_SEP_DOUBLE)
         return "\n".join(lines)
 
@@ -597,26 +605,6 @@ class TextHandler(OutputHandler):
         """The `allowlist:` banner value - delegates to the shared formatter so
         the text banner and HTML header never drift."""
         return fmt_suppression(s)
-
-    @staticmethod
-    def _fmt_data_found(run_summary: RunSummary) -> str:
-        """Render the data-found value.
-
-        Full / disjoint runs use ``_fmt_window`` UNCHANGED (the same helper feeds
-        the digest card and verbose finding tails - it must stay byte-identical).
-        Only an underfilled default/explicit window - data span short of the
-        requested span by at least ``_UNDERFILL_TOLERANCE`` - swaps in the
-        informative parenthetical (both spans via ``fmt_compact_span``).
-        """
-        s, e = run_summary.data_window
-        data_span = e - s
-        rs = run_summary.requested_span
-        if rs is not None and (rs - data_span) >= _UNDERFILL_TOLERANCE:
-            return (
-                f"{fmt_window(run_summary.data_window)}"
-                f"  ({fmt_compact_span(data_span)} data span in {fmt_compact_span(rs)} window)"
-            )
-        return _fmt_window(run_summary.data_window)
 
     def _render_detectors_value(self, run_summary: RunSummary) -> str:
         """Build the right-hand side of the Detectors: row.

@@ -10,8 +10,12 @@ from typing import Any, Literal
 import numpy as np
 import pandas as pd
 
-from sigwood import __version__
-from sigwood.common.display import fmt_timestamp, human_bytes, plural
+from sigwood.common.display import (
+    fmt_timestamp,
+    human_bytes,
+    plural,
+    version_string,
+)
 from sigwood.common.errors import GraphEmpty
 from sigwood.common.sanitize import strip_control
 
@@ -1302,7 +1306,7 @@ def build_payload(
         "distinct_hosts": int(hosts_first.size),
         "distinct_services": int(df["svc"].nunique()),
         "generated_utc": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
-        "generator": f"sigwood {__version__}",
+        "generator": version_string(),
         "display_utc": bool(payload_meta_extra.pop("display_utc", False)),
         "default_window_note": default_window_note,
         **payload_meta_extra,

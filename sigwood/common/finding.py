@@ -127,6 +127,12 @@ class RunSummary:
     # Failed names REMAIN in detectors_run (run = selected and attempted);
     # a failed detector contributed zero findings.
     detectors_failed: dict[str, str] = field(default_factory=dict)
+    # Exact CLI spelling for this analysis run (shell-quoted by the CLI).
+    # Programmatic callers and non-analysis verbs leave it absent.
+    invocation: str | None = None
+    # The runner's single captured UTC clock for provenance. Human renderers
+    # apply display-timezone policy; machine output keeps an ISO UTC instant.
+    generated_at: datetime | None = None
 
 
 @dataclass

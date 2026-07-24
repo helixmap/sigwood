@@ -90,6 +90,52 @@ def test_envelope_has_version_and_schema() -> None:
     assert payload["schema_version"] == 1
 
 
+def test_run_summary_provenance_populated_and_nullable() -> None:
+    summary = _run_summary()
+    summary.invocation = "sigwood hunt 'quoted path/conn.log'"
+    summary.generated_at = datetime(
+        2026, 6, 1, 7, 30, tzinfo=timezone(timedelta(hours=-5)),
+    )
+    buf = io.StringIO()
+    handler = JsonHandler(stream=buf)
+    handler.begin(summary)
+    handler.end()
+
+    payload = json.loads(buf.getvalue())
+    assert payload["schema_version"] == 1
+    assert payload["sigwood_version"] == sigwood.__version__
+    assert payload["run_summary"]["invocation"] == summary.invocation
+    assert payload["run_summary"]["generated_at"] == (
+        "2026-06-01T12:30:00+00:00"
+    )
+
+    nullable = _emit([])
+    assert nullable["run_summary"]["invocation"] is None
+    assert nullable["run_summary"]["generated_at"] is None
+
+
+def test_invocation_controls_are_logically_lossless_but_json_escaped() -> None:
+    controls = "".join(
+        chr(cp) for cp in (*range(0x20), 0x7f, *range(0x80, 0xa0))
+    )
+    invocation = f"LEFT{controls}RIGHT"
+    summary = _run_summary()
+    summary.invocation = invocation
+    buf = io.StringIO()
+    handler = JsonHandler(stream=buf)
+    handler.begin(summary)
+    handler.end()
+    source = buf.getvalue()
+
+    assert json.loads(source)["run_summary"]["invocation"] == invocation
+    assert "\\u001b" in source
+    assert "\\u007f" in source
+    assert "\\u009b" in source
+    for ch in controls:
+        if ch != "\n":
+            assert ch not in source
+
+
 def test_syslog_family_evidence_is_lossless_and_nullable() -> None:
     evidence = {
         "tier": "family",

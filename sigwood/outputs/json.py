@@ -121,6 +121,12 @@ class JsonHandler(OutputHandler):
                 if run_summary.requested_span is not None
                 else None
             ),
+            "invocation": run_summary.invocation,
+            "generated_at": (
+                _iso_utc(run_summary.generated_at)
+                if run_summary.generated_at is not None
+                else None
+            ),
             "suppression": (
                 {
                     "enabled": run_summary.suppression.enabled,

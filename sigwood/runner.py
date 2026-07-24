@@ -152,6 +152,7 @@ def run(
     use_utc: bool = False,
     syslog_source: object | None = None,
     _detector_selection: DetectorSelection | None = None,
+    invocation: str | None = None,
 ) -> int:
     """Main entry point for a detection run. Called by CLI dispatch functions.
 
@@ -209,6 +210,7 @@ def run(
             use_utc=use_utc,
             syslog_source=syslog_source,
             _detector_selection=_detector_selection,
+            invocation=invocation,
         )
 
 
@@ -234,6 +236,7 @@ def _run_analyze(
     use_utc: bool = False,
     syslog_source: object | None = None,
     _detector_selection: DetectorSelection | None = None,
+    invocation: str | None = None,
 ) -> int:
     cfg_sigwood = config.get("sigwood", {})
 
@@ -437,10 +440,10 @@ def _run_analyze(
     if permission_error is not None:
         raise ValueError(permission_error)
 
-    # ONE captured `now` for both the data-window fallback and requested_span,
-    # so they cannot drift across separate clock reads. The fallback window is
-    # for DetectorContext ONLY (detectors receive a real window by contract);
-    # the run summary carries the loader's window verbatim.
+    # ONE captured `now` for the data-window fallback, requested_span, and
+    # run-summary provenance so they cannot drift across separate clock reads.
+    # The fallback window is for DetectorContext ONLY (detectors receive a real
+    # window by contract); the run summary carries the loader's window verbatim.
     now = datetime.now(timezone.utc)
     if load_result.data_window is not None:
         data_window = load_result.data_window
@@ -556,6 +559,8 @@ def _run_analyze(
         data_sources=data_sources,
         detector_methods=detector_methods,
         requested_span=requested_span,
+        invocation=invocation,
+        generated_at=now,
     )
 
     # Resolve the allowlist plan ONCE and build the matcher HERE - the detector

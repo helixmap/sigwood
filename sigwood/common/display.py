@@ -18,6 +18,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Iterable, Iterator
 
+from sigwood import __version__
+
 if TYPE_CHECKING:
     from sigwood.common.finding import SuppressionSummary
 
@@ -26,6 +28,7 @@ from tqdm import tqdm
 TEXT_RULE_WIDTH = 80
 TEXT_RULE = "─" * TEXT_RULE_WIDTH
 TEXT_RULE_DOUBLE = "═" * TEXT_RULE_WIDTH
+_UNDERFILL_TOLERANCE = timedelta(hours=1)
 
 # Spinner frames cycle in this exact order. Only the horizontal frame upgrades
 # to the box-drawing bar (─) on capable terminals - the full box set (│ ╱ ╲)
@@ -412,6 +415,42 @@ def fmt_compact_span(td: timedelta) -> str:
     if abs(days - round(days)) < 1e-9:
         return f"{int(round(days))}d"
     return f"{days:.1f}d"
+
+
+def fmt_data_found(
+    window: tuple[datetime, datetime],
+    requested_span: timedelta | None,
+) -> str:
+    """Render an analysis data window with an honest compact-span suffix.
+
+    When the loaded span underfills the requested span by at least one hour,
+    disclose both spans. Otherwise render the ordinary data-span suffix.
+    """
+    start, end = window
+    data_span = end - start
+    if (
+        requested_span is not None
+        and (requested_span - data_span) >= _UNDERFILL_TOLERANCE
+    ):
+        suffix = (
+            f"{fmt_compact_span(data_span)} data span in "
+            f"{fmt_compact_span(requested_span)} window"
+        )
+    else:
+        suffix = fmt_compact_span(data_span)
+    return f"{fmt_window(window)}  ({suffix})"
+
+
+def version_string() -> str:
+    """Canonical human-facing sigwood version label."""
+    return f"sigwood {__version__}"
+
+
+def fmt_generated(generated_at: datetime | None) -> str:
+    """Human provenance label shared by the text and HTML report surfaces."""
+    if generated_at is None:
+        return version_string()
+    return f"{fmt_timestamp(generated_at)}  ·  {version_string()}"
 
 
 def default_window_advisory(spec: str) -> str:

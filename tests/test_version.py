@@ -18,6 +18,7 @@ import pytest
 import sigwood
 from sigwood import cli
 from sigwood.common import config as cfg
+from sigwood.common.display import version_string
 from sigwood.common.errors import UsageError
 
 _PYPROJECT = Path(__file__).resolve().parents[1] / "pyproject.toml"
@@ -30,6 +31,10 @@ def test_version_long(capsys):
     rc = cli._main(["--version"])
     assert rc == 0
     assert capsys.readouterr().out == f"sigwood {sigwood.__version__}\n"
+
+
+def test_version_string_is_canonical_human_label() -> None:
+    assert version_string() == f"sigwood {sigwood.__version__}"
 
 
 def test_version_short(capsys):

@@ -439,8 +439,11 @@ row plus its expansion costs as much space as the lines themselves, so one to th
 lines simply stand on their own. Family and
 burst rows show their first timestamp, `-v` includes up to three sampled lines, and an HTML
 report has a closed expansion for the full bounded sample. Long identifier-like hexadecimal
-runs (queue ids, session tokens) are normalized during template mining, so a message that
-differs only by such an identifier counts as repetition rather than a parade of one-offs.
+runs (queue ids, session tokens) and space-separated hex-byte dumps (a FIDO2 security-key
+debug dump at every login, a kernel `Code:` line) are normalized during template mining, so
+a message that differs only by such an identifier counts as repetition rather than a parade
+of one-offs. Ordinary short numbers, dates, and colon-joined MAC addresses are never
+normalized, and the raw log line is always displayed exactly as written.
 
 The shipped class is configuration, not a hidden rule. Copy the commented
 `privileged_programs = [...]` block under `[detectors.syslog]` from

@@ -82,6 +82,11 @@ MASK_SPECS = (
         r"(?<![0-9A-Fa-f])[0-9A-Fa-f]{8,}(?![0-9A-Fa-f])",
     ),
     MaskSpec(
+        "hex_pairs",
+        r"(?<![0-9A-Fa-f])(?:[0-9A-Fa-f]{2} ){3,}"
+        r"[0-9A-Fa-f]{2}(?![0-9A-Fa-f])",
+    ),
+    MaskSpec(
         "number_with_unit",
         r"(?<![A-Za-z0-9_.])[0-9]+(?:\.[0-9]+)?"
         r"(?:ms|s|kB|KiB|MB|MiB|GB)(?![A-Za-z0-9_])",

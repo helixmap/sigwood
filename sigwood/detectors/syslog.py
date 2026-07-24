@@ -101,6 +101,11 @@ UPDATE_RUN_MIN_ANCHORS = 2
 # this detector never imports optional runtime objects or compiles their regexes.
 LONG_HEX_MASK_PATTERN = r"(?<![0-9A-Fa-f])[0-9A-Fa-f]{8,}(?![0-9A-Fa-f])"
 LONG_HEX_MASK_NAME = "LONG_HEX"
+HEX_PAIRS_MASK_PATTERN = (
+    r"(?<![0-9A-Fa-f])(?:[0-9A-Fa-f]{2} ){3,}"
+    r"[0-9A-Fa-f]{2}(?![0-9A-Fa-f])"
+)
+HEX_PAIRS_MASK_NAME = "HEX_PAIRS"
 
 _LONG_HEX_MASK_RE = re.compile(LONG_HEX_MASK_PATTERN)
 _HEX_LETTER_RE = re.compile(r"[A-Fa-f]")
@@ -452,7 +457,8 @@ def _run_drain3(
         depth=depth,
         parametrize_numeric=parametrize_numeric,
         masking_instructions=[
-            MaskingInstruction(LONG_HEX_MASK_PATTERN, LONG_HEX_MASK_NAME)
+            MaskingInstruction(LONG_HEX_MASK_PATTERN, LONG_HEX_MASK_NAME),
+            MaskingInstruction(HEX_PAIRS_MASK_PATTERN, HEX_PAIRS_MASK_NAME),
         ],
     )
 

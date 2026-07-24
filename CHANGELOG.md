@@ -23,6 +23,15 @@ All notable changes to sigwood are recorded here. The format follows
 
 ### Changed
 
+- **Hardware-key logins and kernel dumps no longer flood the syslog report.**
+  A second calibrated drain3 mask recognizes space-separated hex-pair runs (four
+  or more pairs - FIDO2/CBOR debug dumps, kernel oops `Code:` lines), so a dump
+  that repeats at every login shares one template instead of minting a fresh
+  "rare" burst each time. Measured on a month of real fleet logs: the per-login
+  burst class disappears while every MEDIUM finding and every genuinely
+  once-ever event is preserved. Colon-joined MAC addresses and ordinary
+  two-pair text (dates, `port 22 80`) are never masked; raw log lines are
+  displayed byte-for-byte as always.
 - **Syslog rows share one grammar.** Burst spans render through the same compact form
   as family and transaction rows (with a new honest seconds tier below one minute -
   `45s`, not `0m`), burst counts pluralize properly, and a transaction row now leads

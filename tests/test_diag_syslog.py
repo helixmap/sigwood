@@ -105,6 +105,12 @@ def test_shipped_long_hex_mask_matches_diagnostic_spec() -> None:
     assert diag.detector.LONG_HEX_MASK_NAME == "LONG_HEX"
 
 
+def test_shipped_hex_pairs_mask_matches_diagnostic_spec() -> None:
+    hex_pairs = next(spec for spec in diag.MASK_SPECS if spec.name == "hex_pairs")
+    assert diag.detector.HEX_PAIRS_MASK_PATTERN == hex_pairs.pattern
+    assert diag.detector.HEX_PAIRS_MASK_NAME == "HEX_PAIRS"
+
+
 def test_shipped_long_hex_mask_token_and_message_bytes() -> None:
     messages = [
         "svc: transaction ABCDEF123456 completed",
@@ -119,6 +125,120 @@ def test_shipped_long_hex_mask_token_and_message_bytes() -> None:
     assert result["template_str"].tolist() == [
         "svc: transaction <LONG_HEX> completed",
         "svc: transaction <LONG_HEX> completed",
+    ]
+
+
+def test_shipped_hex_pairs_mask_token_and_message_bytes() -> None:
+    messages = [
+        "fido: 0016: 58 20 a1 ff 03 c2 9d 44",
+        "kernel: Code: 48 89 e5 90 5d c3",
+    ]
+    frame = _frame(messages)
+    result = diag.detector._run_drain3(
+        frame, sim_thresh=0.5, depth=4, parametrize_numeric=True
+    )
+
+    assert result["message"].tolist() == messages
+    assert all("<HEX_PAIRS>" in value for value in result["template_str"])
+
+
+def test_repeated_hex_pair_dumps_share_one_non_rare_template() -> None:
+    messages = [
+        "fido: 0016: 58 20 a1 ff 03 c2 9d 44",
+        "fido: 0024: de ad be ef ca fe ba be",
+        "fido: 0032: fa ce b0 0c d1 ce f0 0d",
+        "fido: 0040: ac ed da 7a fe ed c0 de",
+    ]
+    frame = _frame(messages)
+    mined = diag.detector._run_drain3(
+        frame, sim_thresh=0.5, depth=4, parametrize_numeric=True
+    )
+
+    assert mined["message"].tolist() == messages
+    assert mined["template_id"].nunique() == 1
+    assert all("<HEX_PAIRS>" in value for value in mined["template_str"])
+
+    window = (
+        datetime.fromtimestamp(0, timezone.utc),
+        datetime.fromtimestamp(float(len(messages) - 1), timezone.utc),
+    )
+    findings = diag.detector.run(DetectorContext(
+        logs={"*.log*": frame},
+        config={"max_count": 1},
+        allowlist=None,
+        data_window=window,
+    ))
+
+    assert findings == []
+    assert frame["message"].tolist() == messages
+
+
+def test_once_ever_hex_pair_dump_remains_rare() -> None:
+    once = "fido: 0064: 58 20 a1 ff 03 c2 9d 44"
+    messages = ["daemon: routine health check"] * 20 + [once]
+    frame = _frame(messages)
+    window = (
+        datetime.fromtimestamp(0, timezone.utc),
+        datetime.fromtimestamp(float(len(messages) - 1), timezone.utc),
+    )
+
+    findings = diag.detector.run(DetectorContext(
+        logs={"*.log*": frame},
+        config={"max_count": 1, "rarity_pct": 10},
+        allowlist=None,
+        data_window=window,
+    ))
+
+    assert len(findings) == 1
+    assert findings[0].title == once
+    assert findings[0].evidence.get("tier") is None
+    assert "<HEX_PAIRS>" in findings[0].evidence["template_str"]
+    assert frame["message"].tolist() == messages
+
+
+@pytest.mark.parametrize("message", [
+    "kernel: tail 48 89 e5",
+    "net: peer aa:bb:cc:dd:ee:ff",
+    "svc: port 22 80",
+    "kernel: Code: f48 89 e5 90a",
+])
+def test_hex_pairs_mask_spares_non_matching_shapes(message: str) -> None:
+    result = diag.detector._run_drain3(
+        _frame([message]), sim_thresh=0.5, depth=4, parametrize_numeric=True
+    )
+
+    assert result["template_str"].tolist() == [message]
+
+
+def test_run_drain3_uses_shipped_masks_in_declaration_order(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: list[MaskingInstruction] = []
+    real_mine_templates = diag.detector.mine_templates
+
+    def capture(messages, **kwargs):
+        captured.extend(kwargs["masking_instructions"])
+        kwargs["show_progress"] = False
+        return real_mine_templates(messages, **kwargs)
+
+    monkeypatch.setattr(diag.detector, "mine_templates", capture)
+    diag.detector._run_drain3(
+        _frame(["svc: event"]), sim_thresh=0.5, depth=4,
+        parametrize_numeric=True,
+    )
+
+    assert [
+        (instruction.pattern, instruction.mask_with)
+        for instruction in captured
+    ] == [
+        (
+            diag.detector.LONG_HEX_MASK_PATTERN,
+            diag.detector.LONG_HEX_MASK_NAME,
+        ),
+        (
+            diag.detector.HEX_PAIRS_MASK_PATTERN,
+            diag.detector.HEX_PAIRS_MASK_NAME,
+        ),
     ]
 
 
@@ -234,7 +354,7 @@ def test_final_cluster_template_is_measurement_identity() -> None:
 def test_mask_set_and_order_are_pinned() -> None:
     assert diag.MASK_NAMES == (
         "uuid", "mac", "ipv6", "ipv4", "ring_stamp", "long_hex",
-        "number_with_unit",
+        "hex_pairs", "number_with_unit",
     )
     clock_and_mac = "at 12:34:56 from aa:bb:cc:dd:ee:ff"
     masked = diag._apply_masks(clock_and_mac, diag.MASK_SPECS)
@@ -244,12 +364,13 @@ def test_mask_set_and_order_are_pinned() -> None:
     all_classes = diag._apply_masks(
         "id 123e4567-e89b-12d3-a456-426614174000 "
         "mac aa:bb:cc:dd:ee:ff ip6 2001:db8:abcd:1:2:3:4:5 "
-        "ip4 192.0.2.10 ring [ 1234.567890] hex deadbeefcafebabe size 12KiB",
+        "ip4 192.0.2.10 ring [ 1234.567890] hex deadbeefcafebabe "
+        "pairs 58 20 a1 ff 03 c2 9d 44 size 12KiB",
         diag.MASK_SPECS,
     )
     for marker in (
         "<UUID>", "<MAC>", "<IPV6>", "<IPV4>", "<RING_STAMP>",
-        "<LONG_HEX>", "<NUMBER_WITH_UNIT>",
+        "<LONG_HEX>", "<HEX_PAIRS>", "<NUMBER_WITH_UNIT>",
     ):
         assert marker in all_classes
 
@@ -363,7 +484,9 @@ def test_adjacency_and_wildcard_ceiling_known_answers() -> None:
     }
 
 
-def test_masked_pass_invokes_nine_total_mines(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_masked_pass_invokes_baseline_per_mask_and_combined_mines(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     frame = _frame(["svc: event alpha", "svc: event beta"])
     calls = 0
     real = diag.detector.mine_templates
@@ -376,7 +499,7 @@ def test_masked_pass_invokes_nine_total_mines(monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setattr(diag.detector, "mine_templates", counted)
     diag._measure(frame, ("masked",), None, None, {"flat": 2, "zeek": 0})
 
-    assert calls == 9
+    assert calls == 10
 
 
 def test_order_single_feed_discloses_skipped_variant() -> None:

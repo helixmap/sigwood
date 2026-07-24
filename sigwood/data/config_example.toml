@@ -182,8 +182,8 @@ allowlist_dir    = "allowlist.d/"
 # rarity_pct        = 10     # bottom-N percentile of GLOBAL template count; inert at max_count=1
 # max_count         = 1      # rare iff count ≤ min(percentile, max_count); at 1 ⇒ singletons only
 # burst_gap_seconds = 60     # rare lines on a host closer than this = one burst
-# burst_min_size    = 3      # min rare lines in a window to collapse to a burst
-# family_min_size   = 2      # min isolated lines from one host/program to group for review
+# burst_min_size    = 4      # below four, raw needles cost the same ink as a burst capsule
+# family_min_size   = 4      # below four, raw needles cost the same ink as a family capsule
 # privileged_programs = [
 #   # auth/session
 #   "sshd", "sshd-session", "sshd-auth", "login", "sulogin",

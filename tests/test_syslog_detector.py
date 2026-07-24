@@ -26,9 +26,10 @@ import pandas as pd
 
 from sigwood.common.finding import DetectorContext, Finding, Severity
 from sigwood.detectors.syslog import (
+    BURST_MIN_SIZE,
     DEFAULT_CONFIG,
     DETECTOR_NAME,
-    _FRAGMENT_LIMIT,
+    FAMILY_MIN_SIZE,
     _FRAGMENT_TEMPLATE_SCAN_LIMIT,
     LINE_TRIM_LIMIT,
     PRIVILEGED_PROGRAMS,
@@ -37,6 +38,7 @@ from sigwood.detectors.syslog import (
     ADMIN_SESSION_CLUSTER_SECONDS,
     UPDATE_RUN_CLUSTER_SECONDS,
     TRANSACTION_LEAD_TOLERANCE_SECONDS,
+    TRANSACTION_MIN_MEMBER_FINDINGS,
     TRANSACTION_TAIL_TOLERANCE_SECONDS,
     _BootEvent,
     _TransactionEvent,
@@ -56,10 +58,10 @@ from sigwood.detectors.syslog import (
     _reconcile,
     _reconcile_transactions,
     _run_drain3,
-    _truncate_fragment,
+    _transaction_finding,
     run,
 )
-from sigwood.parsers.syslog import REBOOT_SIGNALS_RE, is_reboot_signal, strip_program
+from sigwood.parsers.syslog import REBOOT_SIGNALS_RE, is_reboot_signal
 from sigwood.parsers.journal import parse_record as parse_journal_record
 from sigwood.outputs._render_model import Section as _Section
 
@@ -74,41 +76,6 @@ _WINDOW = (_NOW, _NOW)
 # Fixed unix epoch used across fixtures (2026-05-30 00:00:00 UTC)
 _BASE_TS = 1_748_563_200.0
 _Member = namedtuple("_Member", "template_id message")
-
-
-def _case_two_fragment_reference(rows) -> list[str]:
-    """Reference the interleaved scan semantics used by fallback fragments."""
-    seen_templates: set[object] = set()
-    seen_fragments: set[str] = set()
-    fragments: list[str] = []
-    for row in rows:
-        template_id = getattr(row, "template_id", None)
-        message = getattr(row, "message", None)
-        if template_id is None or message is None:
-            continue
-        if pd.isna(template_id) or pd.isna(message):
-            continue
-        if template_id in seen_templates:
-            continue
-        if len(seen_templates) >= _FRAGMENT_TEMPLATE_SCAN_LIMIT:
-            break
-        seen_templates.add(template_id)
-        kept = [
-            token
-            for token in strip_program(str(message)).split()
-            if _keep_fragment_token(token)
-        ]
-        distilled = " ".join(kept).strip()
-        if not distilled:
-            continue
-        rendered = _truncate_fragment(distilled)
-        if rendered in seen_fragments:
-            continue
-        seen_fragments.add(rendered)
-        fragments.append(rendered)
-        if len(fragments) >= _FRAGMENT_LIMIT:
-            break
-    return fragments
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -169,7 +136,7 @@ def _rare_df(rows: list[dict]) -> pd.DataFrame:
     )
 
 
-def _collapse_parts(rows, *, gap=60, size=3):
+def _collapse_parts(rows, *, gap=60, size=BURST_MIN_SIZE):
     """Run the burst-only seam and expose both committed return members."""
     df = _rare_df(rows)
     pairs, remainder = _collapse_bursts(
@@ -179,7 +146,7 @@ def _collapse_parts(rows, *, gap=60, size=3):
     return [f for _, f in pairs], remainder
 
 
-def _collapse(rows, *, gap=60, size=3):
+def _collapse(rows, *, gap=60, size=BURST_MIN_SIZE):
     """Unwrap only burst Findings for burst-evidence characterization tests."""
     return _collapse_parts(rows, gap=gap, size=size)[0]
 
@@ -187,7 +154,7 @@ def _collapse(rows, *, gap=60, size=3):
 def _family_fold(
     df: pd.DataFrame,
     *,
-    min_size=2,
+    min_size=FAMILY_MIN_SIZE,
     threshold=1,
     severity: Severity = Severity.LOW,
     privileged: bool = False,
@@ -274,7 +241,7 @@ def _make_burst_pair(host: str, start: float, end: float) -> tuple[float, Findin
     f = Finding(
         detector="syslog", severity=Severity.INFO, title=host, description="",
         evidence={"tier": "burst", "start_ts": start, "end_ts": end,
-                  "line_count": 3, "label": None},
+                  "line_count": 4, "label": None},
         next_steps=[], ts_generated=_NOW, data_window=_WINDOW,
     )
     return (start, f)
@@ -289,6 +256,11 @@ class SyslogDetectorTests(unittest.TestCase):
     def test_status_and_name_constants(self) -> None:
         self.assertEqual(STATUS, "available")
         self.assertEqual(DETECTOR_NAME, "syslog")
+        self.assertEqual(BURST_MIN_SIZE, 4)
+        self.assertEqual(FAMILY_MIN_SIZE, 4)
+        self.assertEqual(DEFAULT_CONFIG["burst_min_size"], 4)
+        self.assertEqual(DEFAULT_CONFIG["family_min_size"], 4)
+        self.assertEqual(TRANSACTION_MIN_MEMBER_FINDINGS, 2)
 
     def test_privileged_roster_exact_and_default_is_fresh_copy(self) -> None:
         self.assertEqual(len(PRIVILEGED_PROGRAMS), 31)
@@ -305,31 +277,36 @@ class SyslogDetectorTests(unittest.TestCase):
 
     # ── Capsule member fragments ──────────────────────────────────────────────
 
-    def test_overflow_case_backfills_after_rendered_fragment_collisions(self) -> None:
-        shared = "q" * 199
+    def test_diverse_family_meat_is_at_most_two_token_lines(self) -> None:
         rows = [
-            _Member(1, f"prog: {shared}AX"),
-            _Member(2, f"prog: {shared}BY"),
-            _Member(3, "prog: deadbeefcafe"),
-            _Member(4, "sshd[*]: accepted from 192.0.2.9"),
-            _Member(5, "kernel: oops"),
-            _Member(6, "postfix: connect"),
-            _Member(7, "prog: must-not-enter-fallback"),
+            _rare_row(
+                _BASE_TS + (i * 120),
+                "h",
+                f"raw-{i}",
+                template_id=i,
+                message=f"prog: word-{i}-" + ("q" * 60),
+            )
+            for i in range(1, 8)
+        ]
+        family = _family_fold(_rare_df(rows))[0][1]
+        lines = family.evidence["member_fragments"]
+        self.assertEqual(len(lines), 2)
+        self.assertTrue(lines[0].startswith("tokens: "))
+        self.assertFalse(lines[1].startswith("tokens: "))
+        self.assertTrue(all(len(line) <= 200 for line in lines))
+        self.assertIn("word-1-", lines[0])
+        self.assertIn("word-4-", lines[1])
+        self.assertNotIn("word-7-", " ".join(lines))
+
+    def test_distillation_scans_at_most_six_distinct_templates(self) -> None:
+        rows = [
+            _Member(i, f"prog: token-{i}")
+            for i in range(1, _FRAGMENT_TEMPLATE_SCAN_LIMIT + 2)
         ]
         self.assertEqual(
             _distill_member_fragments(rows),
-            [shared + "…", "accepted from 192.0.2.9", "oops"],
+            ["tokens: token-1 token-2 token-3 token-4 token-5 token-6"],
         )
-        self.assertNotIn("must-not-enter-fallback", " ".join(_distill_member_fragments(rows)))
-
-    def test_overflow_case_preserves_interleaved_fragment_output(self) -> None:
-        rows = [
-            _Member(i, f"prog: fragment-{i}") for i in range(1, 8)
-        ]
-        expected = _case_two_fragment_reference(rows)
-        self.assertEqual(expected, ["fragment-1", "fragment-2", "fragment-3"])
-        self.assertEqual(_distill_member_fragments(rows), expected)
-        self.assertFalse(_distill_member_fragments(rows)[0].startswith("tokens: "))
 
     def test_fragment_uses_first_usable_row_per_template(self) -> None:
         rows = [
@@ -412,21 +389,62 @@ class SyslogDetectorTests(unittest.TestCase):
             [],
         )
 
-    def test_fragment_length_budget_prefers_boundary_then_hard_cuts(self) -> None:
-        boundary = "a " + ("q" * 198) + " tail"
-        self.assertEqual(_truncate_fragment(boundary), "a…")
-        overlong = "q" * 201
-        self.assertEqual(_truncate_fragment(overlong), ("q" * 199) + "…")
-        self.assertEqual(len(_truncate_fragment(overlong)), 200)
+    def test_token_lines_greedily_pack_prefix_continuation_and_cutoff(self) -> None:
+        first = "q" * 192
+        second = "r" * 201
+        rows = [_Member(1, f"prog: {first} {second} omitted")]
+        lines = _distill_member_fragments(rows)
+        self.assertEqual(lines[0], "tokens: " + first)
+        self.assertEqual(lines[1], ("r" * 199) + "…")
+        self.assertEqual([len(line) for line in lines], [200, 200])
+        self.assertNotIn("omitted", " ".join(lines))
 
-    def test_complete_tokens_line_uses_full_prefixed_length_discriminator(self) -> None:
-        fits = _distill_member_fragments([_Member(1, "prog: " + ("q" * 192))])
-        self.assertEqual(fits, ["tokens: " + ("q" * 192)])
-        self.assertEqual(len(fits[0]), 200)
+    def test_token_moves_whole_to_bare_second_line_at_prefix_boundary(self) -> None:
+        first = "q" * 191
+        lines = _distill_member_fragments(
+            [_Member(1, f"prog: {first} ok")]
+        )
+        self.assertEqual(lines, ["tokens: " + first, "ok"])
 
-        over = _distill_member_fragments([_Member(1, "prog: " + ("q" * 193))])
-        self.assertEqual(over, [("q" * 193)])
-        self.assertFalse(over[0].startswith("tokens: "))
+    def test_rsyslog_whitespace_escapes_are_exact_and_meat_only(self) -> None:
+        raw = "prog: alpha#012beta#011gamma#015delta#014literal"
+        self.assertEqual(
+            _distill_member_fragments([_Member(1, raw)]),
+            ["tokens: alpha beta gamma delta#014literal"],
+        )
+
+        family_rows = [
+            _rare_row(
+                _BASE_TS + i,
+                "h",
+                raw,
+                template_id=i,
+                message=raw,
+            )
+            for i in range(4)
+        ]
+        family = _family_fold(_rare_df(family_rows))[0][1]
+        self.assertEqual(family.evidence["sample_raw"], [raw] * 4)
+        self.assertEqual(
+            family.evidence["member_fragments"],
+            ["tokens: alpha beta gamma delta#014literal"],
+        )
+
+        needle = _family_fold(_rare_df(family_rows[:1]))[0][1]
+        self.assertEqual(needle.title, raw)
+
+        burst_rows = [
+            _rare_row(
+                _BASE_TS + i,
+                "b",
+                raw,
+                template_id=i,
+                message=raw,
+            )
+            for i in range(4)
+        ]
+        burst = _collapse(burst_rows)[0]
+        self.assertEqual(burst.evidence["sample_raw"], [raw] * 4)
 
     # ── Empty input ───────────────────────────────────────────────────────────
 
@@ -537,13 +555,32 @@ class SyslogDetectorTests(unittest.TestCase):
                 template_id=2,
                 message="kernel: " + ("r" * 70),
             ),
+            _rare_row(
+                _BASE_TS + 240.0,
+                "192.0.2.2",
+                "raw-c",
+                program="kernel",
+                template_id=3,
+                message="kernel: " + ("s" * 70),
+            ),
+            _rare_row(
+                _BASE_TS + 360.0,
+                "192.0.2.2",
+                "raw-d",
+                program="kernel",
+                template_id=4,
+                message="kernel: " + ("t" * 70),
+            ),
         ])
 
         pairs = _family_fold(rows, line_trim_limit=10)
 
         self.assertEqual(len(pairs), 1)
         fragments = pairs[0][1].evidence["member_fragments"]
-        self.assertEqual(fragments, ["tokens: " + ("q" * 70) + " " + ("r" * 70)])
+        self.assertEqual(fragments, [
+            "tokens: " + ("q" * 70) + " " + ("r" * 70),
+            ("s" * 70) + " " + ("t" * 70),
+        ])
         self.assertTrue(all(len(fragment) > 10 for fragment in fragments))
 
     def test_rarity_pct_is_inert_at_max_count_1(self) -> None:
@@ -629,14 +666,14 @@ class SyslogDetectorTests(unittest.TestCase):
 
     def test_collapse_groups_per_host_not_cross_host(self) -> None:
         rows = (
-            [_rare_row(_BASE_TS + i, "host-a", f"a{i}", template_id=i) for i in range(3)]
-            + [_rare_row(_BASE_TS + i, "host-b", f"b{i}", template_id=10 + i) for i in range(3)]
+            [_rare_row(_BASE_TS + i, "host-a", f"a{i}", template_id=i) for i in range(4)]
+            + [_rare_row(_BASE_TS + i, "host-b", f"b{i}", template_id=10 + i) for i in range(4)]
         )
         bursts, remainder = _collapse_parts(rows)
         self.assertEqual(len(bursts), 2)
         self.assertTrue(remainder.empty)
         self.assertEqual({f.title for f in bursts}, {"host-a", "host-b"})
-        self.assertTrue(all(f.evidence["line_count"] == 3 for f in bursts))
+        self.assertTrue(all(f.evidence["line_count"] == 4 for f in bursts))
 
     def test_collapse_gap_exactly_equal_splits(self) -> None:
         # Neighbour gaps of EXACTLY gap_seconds split → three singletons, no burst.
@@ -652,15 +689,15 @@ class SyslogDetectorTests(unittest.TestCase):
         self.assertTrue(remainder.empty)
         self.assertEqual(bursts[0].evidence["line_count"], 3)
 
-    def test_collapse_size_boundary_two_isolated_three_burst(self) -> None:
-        two = [_rare_row(_BASE_TS + i, "h", f"r{i}", template_id=i) for i in range(2)]
-        f2, r2 = _collapse_parts(two, gap=60, size=3)
-        self.assertEqual(f2, [])
-        self.assertEqual(r2["raw"].tolist(), ["r0", "r1"])
+    def test_collapse_size_boundary_three_isolated_four_burst(self) -> None:
         three = [_rare_row(_BASE_TS + i, "h", f"r{i}", template_id=i) for i in range(3)]
-        f3, r3 = _collapse_parts(three, gap=60, size=3)
-        self.assertEqual(len(f3), 1)
-        self.assertTrue(r3.empty)
+        f3, r3 = _collapse_parts(three)
+        self.assertEqual(f3, [])
+        self.assertEqual(r3["raw"].tolist(), ["r0", "r1", "r2"])
+        four = [_rare_row(_BASE_TS + i, "h", f"r{i}", template_id=i) for i in range(4)]
+        f4, r4 = _collapse_parts(four)
+        self.assertEqual(len(f4), 1)
+        self.assertTrue(r4.empty)
 
     def test_collapse_nan_ts_never_bursts(self) -> None:
         rows = [_rare_row(float("nan"), "h", f"n{i}", template_id=i) for i in range(5)]
@@ -677,10 +714,11 @@ class SyslogDetectorTests(unittest.TestCase):
         # contemporaneous with the burst (within burst_gap_seconds), emitting no
         # standalone for the labeled event.
         rows = [_rare_row(_BASE_TS + i, "h", f"r{i}", program="cron", template_id=i)
-                for i in range(3)]
+                for i in range(4)]
         burst_pairs, remainder = _collapse_bursts(
             _rare_df(rows),
-            gap_seconds=60, min_size=3, now=_NOW, data_window=_WINDOW,
+            gap_seconds=60, min_size=BURST_MIN_SIZE,
+            now=_NOW, data_window=_WINDOW,
         )
         self.assertEqual(len(burst_pairs), 1)
         self.assertTrue(remainder.empty)
@@ -695,7 +733,7 @@ class SyslogDetectorTests(unittest.TestCase):
 
     def test_collapse_burst_without_reboot_label_none_key_present(self) -> None:
         rows = [_rare_row(_BASE_TS + i, "h", f"r{i}", program="cron", template_id=i)
-                for i in range(3)]
+                for i in range(4)]
         b = [f for f in _collapse(rows)
              if f.evidence.get("tier") == "burst"][0]
         self.assertIsNone(b.evidence["label"])
@@ -794,25 +832,27 @@ class SyslogDetectorTests(unittest.TestCase):
         # program coerces to the "unknown" sentinel (govern-don't-grep robustness).
         df = pd.DataFrame(
             [{"ts": _BASE_TS + i, "host": "h", "raw": f"r{i}", "message": "m",
-              "template_id": i, "template_str": "t"} for i in range(3)]
+              "template_id": i, "template_str": "t"} for i in range(4)]
         )
         pairs, remainder = _collapse_bursts(
-            df, gap_seconds=60, min_size=3, now=_NOW, data_window=_WINDOW,
+            df, gap_seconds=60, min_size=BURST_MIN_SIZE,
+            now=_NOW, data_window=_WINDOW,
         )
         bursts = [f for _, f in pairs if f.evidence.get("tier") == "burst"]
         self.assertEqual(len(bursts), 1)
         self.assertTrue(remainder.empty)
-        self.assertEqual(bursts[0].evidence["program_mix"], [["unknown", 3]])
+        self.assertEqual(bursts[0].evidence["program_mix"], [["unknown", 4]])
 
     def test_collapse_missing_fragment_columns_is_contained(self) -> None:
         df = pd.DataFrame(
             [
                 {"ts": _BASE_TS + i, "host": "h", "raw": f"r{i}", "program": "p"}
-                for i in range(3)
+                for i in range(4)
             ]
         )
         pairs, remainder = _collapse_bursts(
-            df, gap_seconds=60, min_size=3, now=_NOW, data_window=_WINDOW,
+            df, gap_seconds=60, min_size=BURST_MIN_SIZE,
+            now=_NOW, data_window=_WINDOW,
         )
         self.assertTrue(remainder.empty)
         self.assertEqual(pairs[0][1].evidence["member_fragments"], [])
@@ -823,7 +863,7 @@ class SyslogDetectorTests(unittest.TestCase):
                 _BASE_TS + i, "h", f"raw-{i}", template_id=7,
                 message="kernel: repeated message",
             )
-            for i in range(3)
+            for i in range(4)
         ]
         burst = _collapse(rows)[0]
         self.assertEqual(
@@ -852,11 +892,12 @@ class SyslogDetectorTests(unittest.TestCase):
         # the bulky/structural keys stay out of the worklist.
         storm = [
             _rare_row(_BASE_TS + i, "h", f"s{i}", program="systemd", template_id=2 + i)
-            for i in range(3)
+            for i in range(4)
         ]
         burst_pairs, remainder = _collapse_bursts(
             _rare_df(storm),
-            gap_seconds=60, min_size=3, now=_NOW, data_window=_WINDOW,
+            gap_seconds=60, min_size=BURST_MIN_SIZE,
+            now=_NOW, data_window=_WINDOW,
         )
         self.assertTrue(remainder.empty)
         out = _reconcile([_BootEvent("h", _BASE_TS, _BASE_TS, 1)], burst_pairs,
@@ -873,7 +914,7 @@ class SyslogDetectorTests(unittest.TestCase):
         from sigwood.outputs._serialize import to_jsonable
         rows = [_rare_row(_BASE_TS + i, "h", f"r{i}",
                           program="prog-a" if i < 2 else "prog-b", template_id=i)
-                for i in range(3)]
+                for i in range(4)]
         b = [f for f in _collapse(rows)
              if f.evidence.get("tier") == "burst"][0]
         pm = to_jsonable(b.evidence["program_mix"])
@@ -887,8 +928,10 @@ class SyslogDetectorTests(unittest.TestCase):
         rows = [
             _rare_row(_BASE_TS, "host-a", "a0", program="sshd", template_id=1),
             _rare_row(_BASE_TS + 120, "host-a", "a1", program="sshd", template_id=2),
-            _rare_row(_BASE_TS + 240, "host-a", "a2", program="kernel", template_id=3),
-            _rare_row(_BASE_TS + 360, "host-b", "b0", program="sshd", template_id=4),
+            _rare_row(_BASE_TS + 240, "host-a", "a2", program="sshd", template_id=3),
+            _rare_row(_BASE_TS + 360, "host-a", "a3", program="sshd", template_id=4),
+            _rare_row(_BASE_TS + 480, "host-a", "a4", program="kernel", template_id=5),
+            _rare_row(_BASE_TS + 600, "host-b", "b0", program="sshd", template_id=6),
         ]
         pairs = _family_fold(_rare_df(rows))
         families = [f for _, f in pairs if f.evidence.get("tier") == "family"]
@@ -903,13 +946,13 @@ class SyslogDetectorTests(unittest.TestCase):
             "tier": "family",
             "host": "host-a",
             "program": "sshd",
-            "line_count": 2,
-            "program_total": 2,
+            "line_count": 4,
+            "program_total": 4,
             "start_ts": _BASE_TS,
-            "end_ts": _BASE_TS + 120,
+            "end_ts": _BASE_TS + 360,
             "first_seen": datetime.fromtimestamp(_BASE_TS, timezone.utc).isoformat(),
-            "span_seconds": 120.0,
-            "sample_raw": ["a0", "a1"],
+            "span_seconds": 360.0,
+            "sample_raw": ["a0", "a1", "a2", "a3"],
             "member_fragments": ["tokens: m"],
             "label": None,
         })
@@ -928,7 +971,7 @@ class SyslogDetectorTests(unittest.TestCase):
         family_rows = [
             _rare_row(_BASE_TS + i * 120, "h", f"f-{i}", template_id=i,
                       message="prog: deadbeefcafe")
-            for i in range(2)
+            for i in range(4)
         ]
         family = _family_fold(_rare_df(family_rows))[0][1]
         self.assertEqual(family.evidence["member_fragments"], [])
@@ -936,12 +979,12 @@ class SyslogDetectorTests(unittest.TestCase):
         burst_rows = [
             _rare_row(_BASE_TS + i, "b", f"b-{i}", template_id=i,
                       message=f"prog: burst fragment {i}")
-            for i in range(3)
+            for i in range(4)
         ]
         burst = _collapse(burst_rows)[0]
         self.assertEqual(
             burst.evidence["member_fragments"],
-            ["tokens: burst fragment 0 1 2"],
+            ["tokens: burst fragment 0 1 2 3"],
         )
 
         needle = _family_fold(_rare_df([
@@ -977,6 +1020,8 @@ class SyslogDetectorTests(unittest.TestCase):
         rows = [
             _rare_row(float("nan"), "h", "first", program="p", template_id=1),
             _rare_row(float("nan"), "h", "second", program="p", template_id=2),
+            _rare_row(float("nan"), "h", "third", program="p", template_id=3),
+            _rare_row(float("nan"), "h", "fourth", program="p", template_id=4),
         ]
         sort_ts, family = _family_fold(_rare_df(rows))[0]
         self.assertEqual(sort_ts, float("inf"))
@@ -984,17 +1029,22 @@ class SyslogDetectorTests(unittest.TestCase):
         self.assertIsNone(family.evidence["end_ts"])
         self.assertIsNone(family.evidence["span_seconds"])
         self.assertIsNone(family.evidence["first_seen"])
-        self.assertEqual(family.evidence["sample_raw"], ["first", "second"])
+        self.assertEqual(
+            family.evidence["sample_raw"],
+            ["first", "second", "third", "fourth"],
+        )
 
     def test_family_mixed_timestamps_sample_nan_last(self) -> None:
         rows = [
             _rare_row(float("nan"), "h", "undated", program="p", template_id=1),
             _rare_row(_BASE_TS + 20, "h", "later", program="p", template_id=2),
             _rare_row(_BASE_TS + 10, "h", "earlier", program="p", template_id=3),
+            _rare_row(_BASE_TS + 15, "h", "middle", program="p", template_id=4),
         ]
         _, family = _family_fold(_rare_df(rows))[0]
         self.assertEqual(
-            family.evidence["sample_raw"], ["earlier", "later", "undated"]
+            family.evidence["sample_raw"],
+            ["earlier", "middle", "later", "undated"],
         )
         self.assertEqual(family.evidence["start_ts"], _BASE_TS + 10)
         self.assertEqual(family.evidence["end_ts"], _BASE_TS + 20)
@@ -1011,8 +1061,11 @@ class SyslogDetectorTests(unittest.TestCase):
         rows = [
             _rare_row(0.0, "h", "zero", program="p", template_id=1),
             _rare_row(1.0, "h", "one", program="p", template_id=2),
+            _rare_row(2.0, "h", "two", program="p", template_id=3),
+            _rare_row(3.0, "h", "three", program="p", template_id=4),
         ]
         _, family = _family_fold(_rare_df(rows))[0]
+        self.assertEqual(family.evidence["tier"], "family")
         self.assertEqual(family.evidence["first_seen"], "1970-01-01T00:00:00+00:00")
 
     def test_family_of_one_is_low_needle_with_program_total(self) -> None:
@@ -1022,6 +1075,25 @@ class SyslogDetectorTests(unittest.TestCase):
         self.assertEqual(finding.evidence["program"], "sshd")
         self.assertEqual(finding.evidence["program_total"], 1)
         self.assertNotIn("privileged", finding.evidence)
+
+    def test_family_of_three_remains_three_needles_at_shipped_threshold(self) -> None:
+        rows = [
+            _rare_row(
+                _BASE_TS + i,
+                "h",
+                f"raw-{i}",
+                program="cron",
+                template_id=i,
+            )
+            for i in range(3)
+        ]
+        findings = [finding for _, finding in _family_fold(_rare_df(rows))]
+        self.assertEqual([finding.title for finding in findings], [
+            "raw-0", "raw-1", "raw-2",
+        ])
+        self.assertTrue(
+            all(finding.evidence.get("tier") is None for finding in findings)
+        )
 
     def test_needles_pin_stamp_evidence_on_both_membership_channels(self) -> None:
         flat = _rare_row(
@@ -1079,12 +1151,12 @@ class SyslogDetectorTests(unittest.TestCase):
     def test_family_pipeline_represents_every_row_exactly_once_with_program_defenses(self) -> None:
         base_rows = (
             [_rare_row(_BASE_TS + i, "burst-host", f"burst-{i}", template_id=i)
-             for i in range(3)]
+             for i in range(4)]
             + [_rare_row(_BASE_TS + i * 120, "family-host", f"family-{i}", template_id=10 + i)
-               for i in range(2)]
+               for i in range(4)]
             + [_rare_row(_BASE_TS + 500, "needle-host", "needle", template_id=20)]
             + [_rare_row(float("nan"), "nan-host", f"nan-{i}", template_id=30 + i)
-               for i in range(2)]
+               for i in range(4)]
         )
         frames = [
             _rare_df(base_rows).drop(columns=["program"]),
@@ -1097,7 +1169,7 @@ class SyslogDetectorTests(unittest.TestCase):
 
         for frame in frames:
             burst_pairs, remainder = _collapse_bursts(
-                frame, gap_seconds=60, min_size=3,
+                frame, gap_seconds=60, min_size=BURST_MIN_SIZE,
                 now=_NOW, data_window=_WINDOW,
             )
             family_pairs = _family_fold(remainder)
@@ -1116,13 +1188,13 @@ class SyslogDetectorTests(unittest.TestCase):
     def test_two_channel_pipeline_conserves_every_unique_member_once(self) -> None:
         rows = (
             [_rare_row(_BASE_TS + i, "burst", f"sieve-burst-{i}",
-                       program="cron", template_id=10 + i) for i in range(3)]
+                       program="cron", template_id=10 + i) for i in range(4)]
             + [_rare_row(_BASE_TS + i * 120, "sfam", f"sieve-family-{i}",
-                         program="kernel", template_id=20 + i) for i in range(2)]
+                         program="kernel", template_id=20 + i) for i in range(4)]
             + [_rare_row(_BASE_TS + 500, "sneedle", "sieve-needle",
                          program="cron", template_id=30)]
             + [_rare_row(_BASE_TS + i * 120, "mfam", f"member-family-{i}",
-                         program="useradd", template_id=40 + i) for i in range(2)]
+                         program="useradd", template_id=40 + i) for i in range(4)]
             + [_rare_row(_BASE_TS + 500, "mneedle", "member-needle",
                          program="sshd", template_id=50)]
             + [_rare_row(float("nan"), "mnan", "member-nan",
@@ -1140,14 +1212,17 @@ class SyslogDetectorTests(unittest.TestCase):
         }
         freq = {int(t): 1 for t in work["template_id"]}
         bursts, sieve_remainder = _collapse_bursts(
-            sieve, gap_seconds=60, min_size=3, now=_NOW, data_window=_WINDOW,
+            sieve, gap_seconds=60, min_size=BURST_MIN_SIZE,
+            now=_NOW, data_window=_WINDOW,
         )
         sieve_pairs = _collapse_families(
-            sieve_remainder, freq, 1, min_size=2, now=_NOW, data_window=_WINDOW,
+            sieve_remainder, freq, 1, min_size=FAMILY_MIN_SIZE,
+            now=_NOW, data_window=_WINDOW,
             severity=Severity.LOW, privileged=False, program_totals=totals,
         )
         member_pairs = _collapse_families(
-            members, freq, 1, min_size=2, now=_NOW, data_window=_WINDOW,
+            members, freq, 1, min_size=FAMILY_MIN_SIZE,
+            now=_NOW, data_window=_WINDOW,
             severity=Severity.MEDIUM, privileged=True, program_totals=totals,
         )
 
@@ -1170,6 +1245,8 @@ class SyslogDetectorTests(unittest.TestCase):
         rows = [
             _rare_row(_BASE_TS, "h", "f0", program="p", template_id=1),
             _rare_row(_BASE_TS + 120, "h", "f1", program="p", template_id=2),
+            _rare_row(_BASE_TS + 240, "h", "f2", program="p", template_id=3),
+            _rare_row(_BASE_TS + 360, "h", "f3", program="p", template_id=4),
         ]
         family_pair = _family_fold(_rare_df(rows))[0]
         out = _reconcile(
@@ -1193,17 +1270,18 @@ class SyslogDetectorTests(unittest.TestCase):
                 ("systemd", "systemd: Starting service"),
                 ("kernel", "kernel: ACPI subsystem"),
                 ("NetworkManager", "NetworkManager: device up"),
+                ("chronyd", "chronyd: clock synchronized"),
             ])
         ]
-        ids  = [1] * 50 + [2, 3, 4, 5]
-        strs = ["common"] * 50 + ["b2", "b3", "b4", "b5"]
+        ids  = [1] * 50 + [2, 3, 4, 5, 6]
+        strs = ["common"] * 50 + ["b2", "b3", "b4", "b5", "b6"]
         result = _run_with(common + storm, ids, strs)
         bursts = [f for f in result if f.evidence.get("tier") == "burst"]
         self.assertEqual(len(bursts), 1)
         self.assertEqual(bursts[0].severity, Severity.INFO)
-        # line_count is 3, NOT 4: the kernel banner leaves rare_df via ~reboot_mask,
+        # line_count is 4, NOT 5: the kernel banner leaves rare_df via ~reboot_mask,
         # so the burst counts the non-reboot rare rows only.
-        self.assertEqual(bursts[0].evidence["line_count"], 3)
+        self.assertEqual(bursts[0].evidence["line_count"], 4)
         self.assertEqual(bursts[0].evidence["label"], "rebooted")  # labeled by _reconcile
         # Exactly ONE representation: the labeled burst, no separate standalone reboot.
         self.assertFalse([f for f in result if f.evidence.get("tier") == "reboot"])
@@ -1230,19 +1308,35 @@ class SyslogDetectorTests(unittest.TestCase):
              "raw": "sshd: privileged login sentinel", "message": "privileged login sentinel"},
             {"ts": _BASE_TS + 101_000, "host": "192.0.2.7", "program": "sshd",
              "raw": "sshd: persistence sentinel", "message": "persistence sentinel"},
+            {"ts": _BASE_TS + 102_000, "host": "192.0.2.7", "program": "sshd",
+             "raw": "sshd: account sentinel", "message": "account sentinel"},
+            {"ts": _BASE_TS + 103_000, "host": "192.0.2.7", "program": "sshd",
+             "raw": "sshd: policy sentinel", "message": "policy sentinel"},
         ]
-        ids = [1] * 50 + [2, 3]
-        strs = ["common"] * 50 + ["privileged login sentinel", "persistence sentinel"]
+        ids = [1] * 50 + [2, 3, 4, 5]
+        strs = [
+            "common",
+        ] * 50 + [
+            "privileged login sentinel",
+            "persistence sentinel",
+            "account sentinel",
+            "policy sentinel",
+        ]
 
         result = _run_with(common + seeded, ids, strs)
         families = [f for f in result if f.evidence.get("tier") == "family"]
         self.assertEqual(len(families), 1)
         self.assertEqual(families[0].severity, Severity.MEDIUM)
         self.assertIs(families[0].evidence["privileged"], True)
-        self.assertEqual(families[0].evidence["line_count"], 2)
+        self.assertEqual(families[0].evidence["line_count"], 4)
         self.assertEqual(
             families[0].evidence["sample_raw"],
-            ["sshd: privileged login sentinel", "sshd: persistence sentinel"],
+            [
+                "sshd: privileged login sentinel",
+                "sshd: persistence sentinel",
+                "sshd: account sentinel",
+                "sshd: policy sentinel",
+            ],
         )
         self.assertFalse([f for f in result if f.evidence.get("tier") is None])
 
@@ -1305,18 +1399,21 @@ class SyslogDetectorTests(unittest.TestCase):
             *[
                 {"ts": _BASE_TS + 100_001 + i, "host": "h", "program": "cron",
                  "raw": f"sieve-{i}", "message": f"sieve-{i}"}
-                for i in range(3)
+                for i in range(4)
             ],
         ]
-        ids = [1] * len(common) + [2, 3, 4, 5]
-        strs = ["common"] * len(common) + ["member", "s0", "s1", "s2"]
+        ids = [1] * len(common) + [2, 3, 4, 5, 6]
+        strs = ["common"] * len(common) + ["member", "s0", "s1", "s2", "s3"]
         findings = _run_with(common + rare, ids, strs)
         member = next(f for f in findings if f.title == "member")
         burst = next(f for f in findings if f.evidence.get("tier") == "burst")
         self.assertEqual(member.severity, Severity.MEDIUM)
         self.assertIs(member.evidence["privileged"], True)
         self.assertEqual(burst.severity, Severity.INFO)
-        self.assertEqual(burst.evidence["sample_raw"], ["sieve-0", "sieve-1", "sieve-2"])
+        self.assertEqual(
+            burst.evidence["sample_raw"],
+            ["sieve-0", "sieve-1", "sieve-2", "sieve-3"],
+        )
 
     def test_member_nan_timestamp_survives_as_medium(self) -> None:
         common = [_common_row(i) for i in range(20)]
@@ -1341,9 +1438,10 @@ class SyslogDetectorTests(unittest.TestCase):
 
     def test_burst_first_seen_decorator_preserves_identity_and_reconcile_claim(self) -> None:
         rows = [_rare_row(_BASE_TS + i, "h", f"r{i}", program="cron", template_id=i)
-                for i in range(3)]
+                for i in range(4)]
         burst_pairs, remainder = _collapse_bursts(
-            _rare_df(rows), gap_seconds=60, min_size=3, now=_NOW, data_window=_WINDOW,
+            _rare_df(rows), gap_seconds=60, min_size=BURST_MIN_SIZE,
+            now=_NOW, data_window=_WINDOW,
         )
         self.assertTrue(remainder.empty)
         stored = burst_pairs[0][1]
@@ -1602,7 +1700,9 @@ class SyslogDetectorTests(unittest.TestCase):
                 "tier": tier, "host": "h", "program": program,
                 "line_count": count, "start_ts": start, "end_ts": end,
                 "first_seen": datetime.fromtimestamp(start, timezone.utc).isoformat(),
-                "program_mix": [[program, count]], "label": None,
+                "program_mix": [[program, count]],
+                "sample_raw": [f"{program}-raw-{index}" for index in range(count)],
+                "label": None,
             }
             if privileged:
                 evidence["privileged"] = True
@@ -1620,13 +1720,13 @@ class SyslogDetectorTests(unittest.TestCase):
             _BASE_TS, _BASE_TS + 300, (_BASE_TS + 100, _BASE_TS + 200),
         )
         shapes = [
-            aggregate("family", "h", _BASE_TS + 110, _BASE_TS + 120, 2,
+            aggregate("family", "h", _BASE_TS + 110, _BASE_TS + 120, 4,
                       program="useradd", privileged=True),
             _stored_needle(_BASE_TS + 130, "h", "member-needle",
                            program="sshd", privileged=True),
-            aggregate("burst", "h", _BASE_TS + 140, _BASE_TS + 150, 3,
+            aggregate("burst", "h", _BASE_TS + 140, _BASE_TS + 150, 4,
                       program="cron"),
-            aggregate("family", "h", _BASE_TS + 160, _BASE_TS + 170, 2,
+            aggregate("family", "h", _BASE_TS + 160, _BASE_TS + 170, 4,
                       program="kernel"),
             _stored_needle(_BASE_TS + 180, "h", "sieve-needle", program="cron"),
         ]
@@ -1646,15 +1746,115 @@ class SyslogDetectorTests(unittest.TestCase):
         self.assertEqual(len(transactions), 1)
         transaction = transactions[0]
         self.assertEqual(transaction.evidence["member_count"], 5)
-        self.assertEqual(transaction.evidence["represented_line_count"], 9)
+        self.assertEqual(transaction.evidence["represented_line_count"], 14)
         self.assertEqual(len(transaction.evidence["members"]), 5)
         self.assertEqual(sum(
             member["represented_line_count"]
             for member in transaction.evidence["members"]
-        ), 9)
+        ), 14)
+        self.assertEqual(
+            [member.get("tier") for member in transaction.evidence["members"]],
+            ["family", None, "burst", "family", None],
+        )
+        aggregate_members = [
+            member for member in transaction.evidence["members"]
+            if member.get("tier") in ("family", "burst")
+        ]
+        self.assertEqual(
+            [len(member["sample_raw"]) for member in aggregate_members],
+            [4, 4, 4],
+        )
+        self.assertTrue(all(
+            "sample_raw" not in member
+            for member in transaction.evidence["members"]
+            if "tier" not in member
+        ))
         self.assertTrue(any(finding is nan_member[1] for _, finding in result))
         self.assertTrue(any(finding is reboot[1] for _, finding in result))
         self.assertEqual(len(result), 3)
+
+    def test_transaction_builder_sorts_members_and_projects_raw_capsules(self) -> None:
+        def member(
+            tier: str | None,
+            title: str,
+            first_seen: str | None,
+            count: int,
+            *,
+            sample_raw: list[str] | None = None,
+        ) -> Finding:
+            evidence: dict[str, object] = {
+                "program": title,
+                "line_count": count,
+                "first_seen": first_seen,
+            }
+            if tier is not None:
+                evidence["tier"] = tier
+            if sample_raw is not None:
+                evidence["sample_raw"] = sample_raw
+            return Finding(
+                detector="syslog",
+                severity=Severity.INFO if tier == "burst" else Severity.LOW,
+                title=title,
+                description="stored review unit",
+                evidence=evidence,
+                next_steps=[],
+                ts_generated=_NOW,
+                data_window=_WINDOW,
+            )
+
+        early_stamp = datetime.fromtimestamp(
+            _BASE_TS + 10, timezone.utc
+        ).isoformat()
+        middle_stamp = datetime.fromtimestamp(
+            _BASE_TS + 20, timezone.utc
+        ).isoformat()
+        late_stamp = datetime.fromtimestamp(
+            _BASE_TS + 30, timezone.utc
+        ).isoformat()
+        early = member(
+            "family", "family", early_stamp, 4,
+            sample_raw=["family-raw-1", "family-raw-2"],
+        )
+        middle = member(None, "needle", middle_stamp, 1)
+        late = member(
+            "burst", "burst", late_stamp, 4,
+            sample_raw=["burst-raw-1", "burst-raw-2"],
+        )
+        undated = member(None, "undated", None, 1)
+        event = _TransactionEvent(
+            "update run", "h", _BASE_TS, _BASE_TS + 60,
+            _BASE_TS - 60, _BASE_TS + 180, (_BASE_TS,),
+        )
+
+        _, transaction = _transaction_finding(
+            event,
+            [late, undated, middle, early],
+            _NOW,
+            _WINDOW,
+        )
+
+        projected = transaction.evidence["members"]
+        self.assertEqual(
+            [item["title"] for item in projected],
+            ["family", "needle", "burst", "undated"],
+        )
+        self.assertEqual(projected[0]["sample_raw"], [
+            "family-raw-1", "family-raw-2",
+        ])
+        self.assertEqual(projected[2]["sample_raw"], [
+            "burst-raw-1", "burst-raw-2",
+        ])
+        self.assertEqual(
+            [item.get("tier") for item in projected],
+            ["family", None, "burst", None],
+        )
+        self.assertNotIn("tier", projected[1])
+        self.assertNotIn("tier", projected[3])
+        self.assertNotIn("sample_raw", projected[1])
+        self.assertNotIn("sample_raw", projected[3])
+        self.assertIsNone(projected[-1]["first_seen"])
+        self.assertEqual(transaction.evidence["member_count"], 4)
+        self.assertEqual(transaction.evidence["represented_line_count"], 10)
 
     def test_transaction_reconciliation_degrades_without_claimable_host(self) -> None:
         event = _TransactionEvent(
@@ -1723,9 +1923,9 @@ class SyslogDetectorTests(unittest.TestCase):
         # Two distinct boot events: only the contemporaneous one claims the burst;
         # the far event stands alone. A burst is claimed at most once.
         burst_rows = [_rare_row(_BASE_TS + i, "h", f"r{i}", program="p", template_id=i)
-                      for i in range(3)]
+                      for i in range(4)]
         burst_pairs, remainder = _collapse_bursts(
-            _rare_df(burst_rows), gap_seconds=60, min_size=3,
+            _rare_df(burst_rows), gap_seconds=60, min_size=BURST_MIN_SIZE,
             now=_NOW, data_window=_WINDOW,
         )
         self.assertTrue(remainder.empty)
@@ -1900,10 +2100,10 @@ class SyslogDetectorTests(unittest.TestCase):
                 "span_seconds": 120.0, "program_mix": [["useradd", 2], ["cron", 1]],
                 "members": [
                     {"severity": "medium", "tier": "family",
-                     "represented_line_count": 2, "program": "useradd",
+                     "represented_line_count": 2,
+                     "program": "useradd\x9b<script>sep</script>",
                      "title": "safe\x1b<script>member</script>", "privileged": True},
-                    {"severity": "low", "tier": "needle",
-                     "represented_line_count": 1, "program": "cron",
+                    {"severity": "low", "represented_line_count": 1, "program": "cron",
                      "title": "second-member"},
                 ],
                 "privileged": True,
@@ -1930,11 +2130,15 @@ class SyslogDetectorTests(unittest.TestCase):
                 TextHandler(verbose_level=level)._render_syslog_group(sections)
             )
             self.assertEqual(rendered.count("members:"), 1)
-            self.assertIn("[M] · useradd · family · 2 rare lines", rendered)
+            self.assertIn(
+                "[M] · useradd<script>sep</script> · 2 rare lines", rendered
+            )
             self.assertIn("safe<script>member</script>", rendered)
-            self.assertIn("[L] · cron · needle · 1 rare line", rendered)
+            self.assertIn("[L] · cron · 1 rare line", rendered)
+            self.assertNotIn("needle", rendered)
             self.assertNotIn("{'severity'", rendered)
             self.assertNotIn("\x1b", rendered)
+            self.assertNotIn("\x9b", rendered)
 
     def test_text_renderer_member_fragments_once_at_every_level(self) -> None:
         from sigwood.outputs.text import TextHandler
@@ -2368,10 +2572,11 @@ def test_unlabeled_burst_description_never_claims_boot() -> None:
     """An unlabeled burst must not be narrated as a boot the detector never
     observed; the reboot wording appears only after _reconcile labels it."""
     rows = [_rare_row(_BASE_TS + i, "h", f"r{i}", program="cron", template_id=i)
-            for i in range(3)]
+            for i in range(4)]
     burst_pairs, remainder = _collapse_bursts(
         _rare_df(rows),
-        gap_seconds=60, min_size=3, now=_NOW, data_window=_WINDOW,
+        gap_seconds=60, min_size=BURST_MIN_SIZE,
+        now=_NOW, data_window=_WINDOW,
     )
     assert remainder.empty
     assert len(burst_pairs) == 1

@@ -85,8 +85,9 @@ DRAIN_SIM_THRESH          = 0.5
 DRAIN_DEPTH               = 4
 DRAIN_PARAMETRIZE_NUMERIC = True
 BURST_GAP_SECONDS         = 60   # rare rows on a host closer than this = one burst
-BURST_MIN_SIZE            = 3    # min rare rows in a window to collapse to a burst
-FAMILY_MIN_SIZE           = 2    # min isolated rows for one host/program review unit
+# Below four rows, raw needles cost the same ink without capsule indirection.
+BURST_MIN_SIZE            = 4    # min rare rows in a window to collapse to a burst
+FAMILY_MIN_SIZE           = 4    # min isolated rows for one host/program review unit
 LINE_TRIM_LIMIT           = 200  # max finding trim length
 REBOOT_CLUSTER_SECONDS    = 600  # reboot signals on a host closer than this = one boot event
 ADMIN_SESSION_CLUSTER_SECONDS = 2700
@@ -106,8 +107,10 @@ _HEX_LETTER_RE = re.compile(r"[A-Fa-f]")
 _IP_TOKEN_TRIM = "()[]{}<>.,;:'\""
 _IP_COMPOUND_TRIM = "(){}<>.,;:'\""
 _FRAGMENT_TEMPLATE_SCAN_LIMIT = 6
-_FRAGMENT_LIMIT = 3
 _FRAGMENT_LENGTH = 200
+_TOKEN_LINE_LIMIT = 2
+# Rsyslog's exact whitespace escapes are separators only while distilling meat.
+_RSYSLOG_WS_ESCAPES = ("#011", "#012", "#015")
 
 # Security-critical program identities. Membership is exact, case-sensitive
 # equality against the canonical ``program`` column - never message matching.
@@ -208,27 +211,10 @@ def _keep_fragment_token(token: str) -> bool:
     return not (_contains_opaque_hex(token) or _is_decimal_composite(token))
 
 
-def _truncate_fragment(fragment: str) -> str:
-    """Fit a fragment to the shared meat-line ceiling, including an ellipsis."""
-    if len(fragment) <= _FRAGMENT_LENGTH:
-        return fragment
-
-    kept: list[str] = []
-    for token in fragment.split():
-        candidate = " ".join([*kept, token])
-        if len(candidate) > _FRAGMENT_LENGTH - 1:
-            break
-        kept.append(token)
-    if kept:
-        return " ".join(kept) + "…"
-    return fragment[:_FRAGMENT_LENGTH - 1] + "…"
-
-
 def _distill_member_fragments(rows: Iterable[object]) -> list[str]:
-    """Return one complete token line or bounded per-template fragments."""
+    """Return up to two bounded token lines distilled from distinct templates."""
     seen_templates: set[object] = set()
     collected: list[str] = []
-    overflow = False
 
     for row in rows:
         template_id = getattr(row, "template_id", None)
@@ -240,24 +226,19 @@ def _distill_member_fragments(rows: Iterable[object]) -> list[str]:
         if template_id in seen_templates:
             continue
         if len(seen_templates) >= _FRAGMENT_TEMPLATE_SCAN_LIMIT:
-            overflow = True
             break
         seen_templates.add(template_id)
         collected.append(str(message))
 
-    token_rows = [
-        [
-            token
-            for token in strip_program(message).split()
-            if _keep_fragment_token(token)
-        ]
-        for message in collected
-    ]
-
     seen_tokens: set[str] = set()
     tokens: list[str] = []
-    for kept in token_rows:
-        for token in kept:
+    for message in collected:
+        token_input = message
+        for escaped_ws in _RSYSLOG_WS_ESCAPES:
+            token_input = token_input.replace(escaped_ws, " ")
+        for token in strip_program(token_input).split():
+            if not _keep_fragment_token(token):
+                continue
             key = token.strip(_IP_TOKEN_TRIM)
             if key in seen_tokens:
                 continue
@@ -267,24 +248,39 @@ def _distill_member_fragments(rows: Iterable[object]) -> list[str]:
     if not tokens:
         return []
 
-    token_line = "tokens: " + " ".join(tokens)
-    if not overflow and len(token_line) <= _FRAGMENT_LENGTH:
-        return [token_line]
+    lines: list[str] = []
+    line = "tokens: "
+    has_token = False
+    for token in tokens:
+        separator = " " if has_token else ""
+        if len(line) + len(separator) + len(token) <= _FRAGMENT_LENGTH:
+            line += separator + token
+            has_token = True
+            continue
 
-    seen_fragments: set[str] = set()
-    fragments: list[str] = []
-    for kept in token_rows:
-        distilled = " ".join(kept).strip()
-        if not distilled:
+        if has_token:
+            lines.append(line)
+            if len(lines) >= _TOKEN_LINE_LIMIT:
+                break
+            line = ""
+            has_token = False
+
+        available = _FRAGMENT_LENGTH - len(line)
+        if len(token) > available:
+            line += token[:available - 1] + "…"
+            lines.append(line)
+            if len(lines) >= _TOKEN_LINE_LIMIT:
+                break
+            line = ""
+            has_token = False
             continue
-        rendered = _truncate_fragment(distilled)
-        if rendered in seen_fragments:
-            continue
-        seen_fragments.add(rendered)
-        fragments.append(rendered)
-        if len(fragments) >= _FRAGMENT_LIMIT:
-            break
-    return fragments
+
+        line += token
+        has_token = True
+
+    if has_token and len(lines) < _TOKEN_LINE_LIMIT:
+        lines.append(line)
+    return lines
 
 
 class _BootEvent(NamedTuple):
@@ -775,16 +771,17 @@ def _represented_line_count(finding: Finding) -> int:
 def _transaction_member(finding: Finding) -> dict[str, object]:
     """Project one claimed Finding into JSON-native conserved member evidence."""
     evidence = finding.evidence
-    tier = str(evidence.get("tier") or "needle")
+    tier = evidence.get("tier")
     member: dict[str, object] = {
         "severity": finding.severity.name.lower(),
-        "tier": tier,
         "represented_line_count": _represented_line_count(finding),
         "title": finding.title,
         "first_seen": evidence.get("first_seen") or _iso_utc(
             evidence.get("start_ts")
         ),
     }
+    if tier is not None:
+        member["tier"] = str(tier)
     program = evidence.get("program")
     if program is not None:
         member["program"] = str(program)
@@ -796,6 +793,9 @@ def _transaction_member(finding: Finding) -> dict[str, object]:
         member["label"] = str(label)
     if evidence.get("privileged") is True:
         member["privileged"] = True
+    sample_raw = evidence.get("sample_raw")
+    if tier in ("family", "burst") and isinstance(sample_raw, (list, tuple)) and sample_raw:
+        member["sample_raw"] = list(sample_raw)
     return member
 
 
@@ -831,8 +831,15 @@ def _transaction_finding(
     data_window: tuple[datetime, datetime],
 ) -> tuple[float, Finding]:
     """Build one recognized transaction review unit from stored members."""
+    ordered_members = sorted(
+        members,
+        key=lambda member: (
+            member.evidence.get("first_seen") is None,
+            str(member.evidence.get("first_seen") or ""),
+        ),
+    )
     privileged = any(
-        member.evidence.get("privileged") is True for member in members
+        member.evidence.get("privileged") is True for member in ordered_members
     )
     if event.label == "admin session":
         description = (
@@ -850,16 +857,16 @@ def _transaction_finding(
         "tier": "transaction",
         "label": event.label,
         "host": event.host,
-        "member_count": len(members),
+        "member_count": len(ordered_members),
         "represented_line_count": sum(
-            _represented_line_count(member) for member in members
+            _represented_line_count(member) for member in ordered_members
         ),
         "start_ts": event.start_ts,
         "end_ts": event.end_ts,
         "first_seen": _iso_utc(event.start_ts),
         "span_seconds": event.end_ts - event.start_ts,
-        "program_mix": _transaction_program_mix(members),
-        "members": [_transaction_member(member) for member in members],
+        "program_mix": _transaction_program_mix(ordered_members),
+        "members": [_transaction_member(member) for member in ordered_members],
     }
     if privileged:
         evidence["privileged"] = True

@@ -93,7 +93,7 @@ findings come entirely from the per-label suspicion score, not from cluster shap
 `dns (fast-HDBSCAN)` method label names the clustering backend that ran even when it formed no
 clusters, so on a small capture the lexical score is doing the work.
 
-**A fast sequence of unprivileged rare events folds into one informational burst.** Three or
+**A fast sequence of unprivileged rare events folds into one informational burst.** Four or
 more rare log lines outside the privileged program class within about a minute on one host
 collapse into a single INFO "burst" finding rather than individual LOW findings - that
 grouping catches boot storms and

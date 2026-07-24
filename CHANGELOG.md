@@ -6,6 +6,29 @@ All notable changes to sigwood are recorded here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- **Syslog review units roll up only when it pays.** Family and burst folding now
+  starts at four rare lines (previously two and three): below that, a summary row plus
+  its expansion costs as much space as the lines themselves, so one to three rare
+  lines surface individually. Recognized transactions still group from two findings -
+  their label carries meaning beyond compression. Tunable as before via
+  `family_min_size` / `burst_min_size` under `[detectors.syslog]`.
+- **Capsule summaries are tokens-only.** The per-template digest lines inside family
+  and burst rows are gone; the `tokens:` scent line may now span up to two lines, and
+  opening a row's sample always reveals something new (the raw lines). rsyslog's
+  `#011`/`#012`/`#015` whitespace escapes read as separators while distilling tokens,
+  so multi-line commands no longer render as glued tokens; raw lines stay verbatim.
+- **Transaction rows in HTML expand straight to their raw log lines.** The
+  severity-pill toggle on an admin-session or update-run row now opens the members'
+  sampled raw lines under thin per-member separators instead of one-line member
+  summaries; JSON member records additively carry the same bounded samples, in
+  chronological member order. Separators name severity, program, and line count
+  only - internal grouping vocabulary no longer appears in any output - and a JSON
+  member record carries a `tier` key only when the member really is a family or
+  burst rollup (a plain rare line omits it). Log content is never rewritten:
+  whatever words an operator's own lines contain render verbatim.
+
 ## [0.2.7] - 2026-07-21
 
 ### Added

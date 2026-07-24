@@ -137,8 +137,8 @@ def test_syslog_transaction_evidence_is_additive_without_schema_bump() -> None:
         "members": [
             {"severity": "low", "tier": "family", "represented_line_count": 3,
              "title": "host-a", "first_seen": "1970-01-01T00:00:02+00:00",
-             "program": "dnf"},
-            {"severity": "low", "tier": "needle", "represented_line_count": 1,
+             "program": "dnf", "sample_raw": ["dnf-raw-a", "dnf-raw-b"]},
+            {"severity": "low", "represented_line_count": 1,
              "title": "kernel: package event",
              "first_seen": "1970-01-01T00:00:03+00:00", "program": "kernel"},
         ],
@@ -155,6 +155,13 @@ def test_syslog_transaction_evidence_is_additive_without_schema_bump() -> None:
 
     assert payload["schema_version"] == 1
     assert payload["findings"][0]["evidence"] == evidence
+    members = payload["findings"][0]["evidence"]["members"]
+    assert [member["title"] for member in members] == [
+        "host-a", "kernel: package event",
+    ]
+    assert members[0]["sample_raw"] == ["dnf-raw-a", "dnf-raw-b"]
+    assert "tier" not in members[1]
+    assert "sample_raw" not in members[1]
 
 
 def test_syslog_needle_stamp_evidence_is_lossless_without_schema_bump() -> None:

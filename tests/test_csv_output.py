@@ -237,8 +237,8 @@ def test_syslog_transaction_signals_are_curated_without_nested_members() -> None
             "members": [
                 {"severity": "low", "tier": "family",
                  "represented_line_count": 3, "title": "host-a", "program": "dnf"},
-                {"severity": "low", "tier": "needle",
-                 "represented_line_count": 1, "title": "kernel event",
+                {"severity": "low", "represented_line_count": 1,
+                 "title": "kernel event",
                  "program": "kernel"},
             ],
         },

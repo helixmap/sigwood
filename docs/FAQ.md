@@ -429,9 +429,11 @@ never inferred from message text. Privileged rows also stay out of INFO burst co
 a lone `useradd` cannot vanish into nearby routine chatter.
 
 Within either rarity channel, isolated lines that share one host and one program fold into
-a single review unit - `Jul  1 03:12:47 · webhost · sshd · 2 rare lines · 1h` -
+a single review unit - `Jul  1 03:12:47 · webhost · sshd · 4 rare lines · 1h` -
 because "this program produced
-N one-offs" is one decision, not N; a lone rare line still stands on its own. Family and
+N one-offs" is one decision, not N. The fold starts at four lines: below that, a summary
+row plus its expansion costs as much space as the lines themselves, so one to three rare
+lines simply stand on their own. Family and
 burst rows show their first timestamp, `-v` includes up to three sampled lines, and an HTML
 report has a closed expansion for the full bounded sample. Long identifier-like hexadecimal
 runs (queue ids, session tokens) are normalized during template mining, so a message that
@@ -449,8 +451,8 @@ open/close lines the system itself writes) and an **update run** (package-manage
 kernel-module, and policy-reload activity). When several findings on one host fall inside
 one recognized transaction, they fold into a single labeled review unit - `Jul 12
 22:11:11 · webhost · update run · 4 member findings · 1m · mostly kernel, systemd` - with
-every member preserved behind it (`-v` in text, an expandable row in HTML, complete in
-JSON). One admin doing one system update reads as one line, not nineteen. Recognition only
+every member preserved behind it (`-v` in text, complete in JSON; in HTML the row expands
+straight to the members' raw log lines, grouped under thin per-member separators). One admin doing one system update reads as one line, not nineteen. Recognition only
 groups; it never decides severity - a unit is MEDIUM exactly when one of its members is
 from the privileged class, and a rare line that matches no transaction is left exactly as
 it was. If the pattern isn't there - an unfamiliar distro, a log that rotates mid-session -

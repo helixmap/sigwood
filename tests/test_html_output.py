@@ -336,21 +336,34 @@ def test_html_syslog_sample_details_real_path_is_closed_escaped_and_print_hidden
 
 
 def test_html_syslog_transaction_summary_and_member_drilldown_are_safe() -> None:
+    aggregate_hostile = (
+        'Jul 12 21:57:33 host-a useradd: safe\x1b<script>raw</script>"</div>'
+    )
+    plain_hostile = (
+        'Jul 12 21:57:35 host-a cron: single\x07<img src=x>"</details>'
+    )
     finding = _finding(
         detector="syslog", severity=Severity.MEDIUM, title="host-a",
         evidence={
             "tier": "transaction", "label": "admin session", "host": "host-a",
-            "member_count": 2, "represented_line_count": 3,
+            "member_count": 3, "represented_line_count": 7,
             "start_ts": 1.0, "end_ts": 121.0,
             "first_seen": "1970-01-01T00:00:01+00:00", "span_seconds": 120.0,
-            "program_mix": [["useradd", 2], ["cron", 1]],
+            "program_mix": [["useradd", 4], ["kernel", 2], ["cron", 1]],
             "members": [
                 {"severity": "medium", "tier": "family",
-                 "represented_line_count": 2, "program": "useradd",
-                 "title": "safe\x1b<script>member</script>", "privileged": True},
-                {"severity": "low", "tier": "needle",
-                 "represented_line_count": 1, "program": "cron",
-                 "title": "second-member"},
+                 "represented_line_count": 4,
+                 "program": "useradd\x9b<script>sep</script>",
+                 "title": "family-title-must-not-repeat",
+                 "sample_raw": [aggregate_hostile, "family-raw-second"],
+                 "privileged": True},
+                {"severity": "info", "tier": "burst",
+                 "represented_line_count": 2,
+                 "program_mix": [["kernel", 2]],
+                 "title": "burst-title-must-not-repeat",
+                 "sample_raw": ["burst-raw-first", "burst-raw-second"]},
+                {"severity": "low", "represented_line_count": 1,
+                 "program": "cron", "title": plain_hostile},
             ],
             "privileged": True,
         },
@@ -362,19 +375,70 @@ def test_html_syslog_transaction_summary_and_member_drilldown_are_safe() -> None
     assert "privileged (1)" in out
     assert "bursts (" not in out
     assert (
-        "host-a · admin session · 2 member findings · 2m · "
-        "mostly useradd, cron"
+        "host-a · admin session · 3 member findings · 2m · "
+        "mostly useradd, kernel, cron"
     ) in out
     assert (
         '<details class="row-toggle"><summary><span class="pill sev-medium">'
         '[M]</span></summary></details>'
     ) in out
-    assert "[M] · useradd · family · 2 rare lines · " in out
-    assert "safe&lt;script&gt;member&lt;/script&gt;" in out
-    assert "[L] · cron · needle · 1 rare line · second-member" in out
-    assert "<script>member</script>" not in out
+    family_separator = (
+        "[M] · useradd&lt;script&gt;sep&lt;/script&gt; · 4 rare lines"
+    )
+    burst_separator = "[I] · kernel · 2 rare lines"
+    plain_separator = "[L] · cron · 1 rare line"
+    assert family_separator in out
+    assert burst_separator in out
+    assert plain_separator in out
+    assert "needle" not in out
+    assert "family-title-must-not-repeat" not in out
+    assert "burst-title-must-not-repeat" not in out
+    assert (
+        out.index(family_separator)
+        < out.index("safe&lt;script&gt;raw&lt;/script&gt;&quot;&lt;/div&gt;")
+        < out.index("family-raw-second")
+        < out.index(burst_separator)
+        < out.index("burst-raw-first")
+        < out.index("burst-raw-second")
+        < out.index(plain_separator)
+        < out.index("single&lt;img src=x&gt;&quot;&lt;/details&gt;")
+    )
+    assert "<script>raw</script>" not in out
+    assert "<script>sep</script>" not in out
+    assert "<img src=x>" not in out
+    assert (
+        ".sample-detail-body .transaction-member {\n"
+        "  border-top: 1px solid var(--muted);"
+    ) in out
+    assert (
+        ".sample-detail-body .transaction-member:first-child { margin-top: 0; }"
+    ) in out
     assert '<td class="k">members</td>' not in out
     assert ".findings-table tr.sample-detail { display: none; }" in out[out.index("@media print"):]
+
+
+def test_html_syslog_transaction_preserves_needle_in_operator_sample_data() -> None:
+    raw = 'Jul 12 21:57:35 host-a cron: operator needle <script>x</script>'
+    finding = _finding(
+        detector="syslog", severity=Severity.INFO, title="host-a",
+        evidence={
+            "tier": "transaction", "label": "update run", "host": "host-a",
+            "member_count": 1, "represented_line_count": 4,
+            "start_ts": 1.0, "end_ts": 2.0,
+            "first_seen": "1970-01-01T00:00:01+00:00", "span_seconds": 1.0,
+            "program_mix": [["cron", 4]],
+            "members": [
+                {"severity": "low", "tier": "family",
+                 "represented_line_count": 4, "program": "cron",
+                 "title": "host-a", "sample_raw": [raw]},
+            ],
+        },
+    )
+
+    out = _render([finding])
+
+    assert "operator needle &lt;script&gt;x&lt;/script&gt;" in out
+    assert "<script>x</script>" not in out
 
 
 def test_html_syslog_sample_highlight_uses_exact_parser_split_and_safe_fallback() -> None:

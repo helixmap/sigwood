@@ -272,7 +272,7 @@ def _syslog_transaction_members(
 
 
 def _render_transaction_member_line(member: object) -> str:
-    """Render one transaction member summary through the HTML choke point."""
+    """Render one flat transaction separator and its raw-line body."""
     if not isinstance(member, dict):
         return f'<div class="sample-line transaction-member">{_esc(member)}</div>'
     severity = str(member.get("severity", "info"))[:1].upper() or "I"
@@ -289,14 +289,20 @@ def _render_transaction_member_line(member: object) -> str:
         count = int(member.get("represented_line_count", 1))
     except (TypeError, ValueError):
         count = 1
-    line = " · ".join([
+    separator = " · ".join([
         f"[{severity}]",
         str(program or "unknown"),
-        str(member.get("tier", "needle")),
         f"{count} {plural(count, 'rare line')}",
-        str(member.get("title", "")),
     ])
-    return f'<div class="sample-line transaction-member">{_esc(line)}</div>'
+    samples = member.get("sample_raw")
+    if isinstance(samples, (list, tuple)) and samples:
+        body = "".join(_render_sample_line(line) for line in samples)
+    else:
+        body = _render_sample_line(member.get("title", ""))
+    return (
+        f'<div class="sample-line transaction-member">{_esc(separator)}</div>'
+        f"{body}"
+    )
 
 
 def _render_sample_line(line: object) -> str:
@@ -604,6 +610,13 @@ header { border-bottom: 2px solid var(--border); padding-bottom: 18px; margin-bo
 .row-toggle summary::marker { content: ""; }
 .sample-detail-body { margin: 2px 0; }
 .sample-line { white-space: pre-wrap; overflow-wrap: anywhere; }
+.sample-detail-body .transaction-member {
+  border-top: 1px solid var(--muted);
+  color: var(--muted);
+  margin-top: 6px;
+  padding-top: 3px;
+}
+.sample-detail-body .transaction-member:first-child { margin-top: 0; }
 .hl-ts { color: var(--hl-ts); font-weight: 700; }
 .hl-host { color: var(--hl-host); font-weight: 600; }
 .hl-prog { color: var(--hl-prog); font-weight: 600; }

@@ -398,7 +398,6 @@ def _transaction_member_lines(finding: Finding, indent: str) -> list[str]:
         parts = [
             f"[{severity}]",
             str(program or "unknown"),
-            str(member.get("tier", "needle")),
             f"{count} {plural(count, 'rare line')}",
             str(member.get("title", "")),
         ]

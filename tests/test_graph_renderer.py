@@ -495,10 +495,19 @@ def test_player_flow_particles_are_bounded_and_boot_from_one_dynamic_default() -
         "PARTICLE_BUDGET",
         "PARTICLE_V_MIN",
         "PARTICLE_V_MAX",
-        "PARTICLE_DOT_RADIUS",
         "PARTICLE_ALPHA",
+        "PARTICLE_STREAK_SECONDS",
+        "PARTICLE_STREAK_MIN",
+        "PARTICLE_STREAK_MAX",
+        "PARTICLE_STREAK_WIDTH",
+        "PARTICLE_TWINKLE_HZ",
+        "PARTICLE_TWINKLE_DEPTH",
+        "PARTICLE_WHITE_MIX",
     ):
         assert re.search(rf"const {name} = [^;\n]+;", template)
+    assert "let particleClock = 0;" in template
+    assert "const particleColorCache = new Map();" in template
+    assert "function lightenColor(hex, mix) {" in template
 
     flow_segment = template.split('<span class="seg" id="flow">', 1)[1].split(
         "</span>", 1,
@@ -510,7 +519,7 @@ def test_player_flow_particles_are_bounded_and_boot_from_one_dynamic_default() -
 
     assert (
         "const particlePool = Array.from({ length: PARTICLE_BUDGET }, () => ({\n"
-        '  live: false, key: "", u: 0, f: 0,\n'
+        '  live: false, key: "", u: 0, f: 0, j: 1, phase: 0,\n'
         "}));"
     ) in template
     assert "const particleSegmentMap = new Map();" in template
@@ -521,6 +530,7 @@ def test_player_flow_particles_are_bounded_and_boot_from_one_dynamic_default() -
         "function updateAndDrawParticles(segments, dt, clearForSnap) {", 1,
     )[1].split("function pickScaleGaugeRate", 1)[0]
     assert "if (clearForSnap) clearParticles();" in updater
+    assert "particleClock += dt;" in updater
     assert "let totalHeight = 0, frameMax = 0;" in updater
     assert "totalHeight += r.h; frameMax = Math.max(frameMax, r.value);" in updater
     assert "const ideal = PARTICLE_BUDGET * r.h / totalHeight;" in updater
@@ -533,10 +543,19 @@ def test_player_flow_particles_are_bounded_and_boot_from_one_dynamic_default() -
     )
     assert " * (r.value / frameMax);" in updater
     assert "Math.hypot(r.x1 - r.x0, r.y1 - r.y0)" in updater
-    assert "particle.u += dt * velocity / chord;" in updater
+    assert "particle.u += dt * velocity * particle.j / chord;" in updater
     assert "if (particle.u >= 1) {" in updater
-    assert "particle.f = 0.15 + Math.random() * 0.70;" in updater
-    assert template.count("Math.random()") == 1
+    refill = updater.split("let cursor = 0;", 1)[1].split("ctx.save();", 1)[0]
+    assert "const pipeFill = r.particleCount === 0;" in refill
+    assert refill.index("const pipeFill = r.particleCount === 0;") < refill.index(
+        "while (r.particleCount < r.particleTarget) {"
+    )
+    assert "particle.u = pipeFill ? Math.random() : 0;" in refill
+    assert "particle.f = 0.15 + Math.random() * 0.70;" in refill
+    assert "particle.j = 0.75 + Math.random() * 0.5;" in refill
+    assert "particle.phase = Math.random() * 2 * Math.PI;" in refill
+    assert refill.count("Math.random()") == 4
+    assert template.count("Math.random()") == 4
     assert "const cx = (r.x0 + r.x1) / 2, v = 1 - particle.u;" in updater
     assert (
         "v*v*v*r.x0 + 3*v*v*particle.u*cx + "
@@ -546,12 +565,46 @@ def test_player_flow_particles_are_bounded_and_boot_from_one_dynamic_default() -
         "v*v*v*r.y0 + 3*v*v*particle.u*r.y0 + "
         "3*v*particle.u*particle.u*r.y1"
     ) in updater
-    assert "+ particle.f * r.h;" in updater
-    assert "ctx.fillStyle = r.c1;" in updater
-    assert "ctx.globalAlpha = PARTICLE_ALPHA * r.alpha;" in updater
-    assert "ctx.arc(x, y, PARTICLE_DOT_RADIUS, 0, Math.PI * 2);" in updater
+    assert updater.count("+ particle.f * r.h;") == 2
+    assert "const lengthPx = Math.min(" in updater
+    assert "PARTICLE_STREAK_MAX," in updater
+    assert "Math.max(" in updater
+    assert "PARTICLE_STREAK_MIN," in updater
+    assert "velocity * particle.j * PARTICLE_STREAK_SECONDS" in updater
+    assert "const u2 = Math.min(1, particle.u + lengthPx / chord);" in updater
+    assert "const v2 = 1 - u2;" in updater
+    assert (
+        "v2*v2*v2*r.x0 + 3*v2*v2*u2*cx + 3*v2*u2*u2*cx"
+        in updater
+    )
+    assert (
+        "v2*v2*v2*r.y0 + 3*v2*v2*u2*r.y0 + 3*v2*u2*u2*r.y1"
+        in updater
+    )
+    assert "ctx.lineCap = \"round\";" in updater
+    assert "ctx.lineWidth = PARTICLE_STREAK_WIDTH;" in updater
+    assert "ctx.strokeStyle = lightenColor(r.c1, PARTICLE_WHITE_MIX);" in updater
+    assert "ctx.globalAlpha = PARTICLE_ALPHA * r.alpha * (" in updater
+    assert re.search(
+        r"Math\.sin\(\s*particleClock \* PARTICLE_TWINKLE_HZ \* 2 "
+        r"\* Math\.PI \+ particle\.phase\s*\)",
+        updater,
+    )
+    assert "ctx.moveTo(x, y); ctx.lineTo(x2, y2);" in updater
+    assert "ctx.stroke();" in updater
+    assert "ctx.arc(" not in updater
+    assert "ctx.fill();" not in updater
+    assert "globalCompositeOperation" not in updater
+    assert '"lighter"' not in updater
     for allocator in ("Array.from", ".map(", ".filter(", ".reduce("):
         assert allocator not in updater
+
+    color_helper = template.split("function lightenColor(hex, mix) {", 1)[1].split(
+        "function entColor", 1,
+    )[0]
+    assert "particleColorCache.get(hex)" in color_helper
+    assert "particleColorCache.set(hex, mixed);" in color_helper
+    assert "Number.parseInt(hex.slice(1), 16)" in color_helper
 
     draw = template.split("function draw(dt = 0) {", 1)[1].split(
         "/* ---------- timeline", 1,

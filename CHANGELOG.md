@@ -127,6 +127,14 @@ All notable changes to sigwood are recorded here. The format follows
 
 ### Fixed
 
+- **Graph flow particles read as streams, not stripes.** Same-moment spawns used
+  to move in lockstep and bunch into vertical bands that marched across a
+  ribbon, most visibly after a filter click. Each particle now carries its own
+  slight speed variation, a restarting ribbon fills uniformly along its length,
+  and the round dots are replaced by short motion streaks that follow the
+  ribbon's curve - longer for faster flow - with a gentle brightness shimmer
+  lifted off the ribbon color. Flow direction, the toggle and its defaults,
+  and saved artifacts are unchanged.
 - **The graph header now counts the files that fed the graph, not the archive it
   scanned.** The source cell used to report every file discovered under the
   source directory (`+ 294 others` on a large rotation archive) even when the

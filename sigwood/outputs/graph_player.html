@@ -587,13 +587,21 @@ let scaleGaugeRate = null;
 const PARTICLE_BUDGET = 500;
 const PARTICLE_V_MIN = 40;
 const PARTICLE_V_MAX = 220;
-const PARTICLE_DOT_RADIUS = 1.5;
 const PARTICLE_ALPHA = 0.42;
+const PARTICLE_STREAK_SECONDS = 0.05;
+const PARTICLE_STREAK_MIN = 3;
+const PARTICLE_STREAK_MAX = 10;
+const PARTICLE_STREAK_WIDTH = 1.6;
+const PARTICLE_TWINKLE_HZ = 0.8;
+const PARTICLE_TWINKLE_DEPTH = 0.5;
+const PARTICLE_WHITE_MIX = 0.3;
 let particlesEnabled = false;
+let particleClock = 0;
 const particlePool = Array.from({ length: PARTICLE_BUDGET }, () => ({
-  live: false, key: "", u: 0, f: 0,
+  live: false, key: "", u: 0, f: 0, j: 1, phase: 0,
 }));
 const particleSegmentMap = new Map();
+const particleColorCache = new Map();
 const particleSegments = [];
 let rangeSet = false, loopA = 0, loopB = 0;   // loop range in bins
 
@@ -610,6 +618,19 @@ function readTheme() {
     extra: [v("--sx1"), v("--sx2")],
   };
   gradCache.clear(); tlPath = null;
+}
+function lightenColor(hex, mix) {
+  const cached = particleColorCache.get(hex);
+  if (cached !== undefined) return cached;
+  const value = Number.parseInt(hex.slice(1), 16);
+  const red = Math.round(((value >> 16) & 255) * (1 - mix) + 255 * mix);
+  const green = Math.round(((value >> 8) & 255) * (1 - mix) + 255 * mix);
+  const blue = Math.round((value & 255) * (1 - mix) + 255 * mix);
+  const mixed = "#" + (
+    (1 << 24) + (red << 16) + (green << 8) + blue
+  ).toString(16).slice(1);
+  particleColorCache.set(hex, mixed);
+  return mixed;
 }
 function entColor(node) {
   if (node.id === OTHER) return TH.other;
@@ -756,6 +777,7 @@ function clearParticles() {
 }
 function updateAndDrawParticles(segments, dt, clearForSnap) {
   if (clearForSnap) clearParticles();
+  particleClock += dt;
   if (!particlesEnabled) return;
   if (!segments.length) { clearParticles(); return; }
 
@@ -787,7 +809,7 @@ function updateAndDrawParticles(segments, dt, clearForSnap) {
     const velocity = PARTICLE_V_MIN + (PARTICLE_V_MAX - PARTICLE_V_MIN)
       * (r.value / frameMax);
     const chord = Math.max(1, Math.hypot(r.x1 - r.x0, r.y1 - r.y0));
-    particle.u += dt * velocity / chord;
+    particle.u += dt * velocity * particle.j / chord;
     if (particle.u >= 1) {
       particle.live = false;
       continue;
@@ -808,35 +830,65 @@ function updateAndDrawParticles(segments, dt, clearForSnap) {
 
   let cursor = 0;
   for (const r of segments) {
+    const pipeFill = r.particleCount === 0;
     while (r.particleCount < r.particleTarget) {
       while (cursor < particlePool.length && particlePool[cursor].live) cursor++;
       if (cursor >= particlePool.length) break;
       const particle = particlePool[cursor++];
       particle.live = true;
       particle.key = r.key;
-      particle.u = 0;
+      particle.u = pipeFill ? Math.random() : 0;
       particle.f = 0.15 + Math.random() * 0.70;
+      particle.j = 0.75 + Math.random() * 0.5;
+      particle.phase = Math.random() * 2 * Math.PI;
       r.particleCount++;
     }
   }
 
   ctx.save();
+  ctx.lineCap = "round";
+  ctx.lineWidth = PARTICLE_STREAK_WIDTH;
   for (const particle of particlePool) {
     if (!particle.live) continue;
     const r = particleSegmentMap.get(particle.key);
     if (!r) continue;
+    const velocity = PARTICLE_V_MIN + (PARTICLE_V_MAX - PARTICLE_V_MIN)
+      * (r.value / frameMax);
+    const chord = Math.max(1, Math.hypot(r.x1 - r.x0, r.y1 - r.y0));
+    const lengthPx = Math.min(
+      PARTICLE_STREAK_MAX,
+      Math.max(
+        PARTICLE_STREAK_MIN,
+        velocity * particle.j * PARTICLE_STREAK_SECONDS,
+      ),
+    );
+    const u2 = Math.min(1, particle.u + lengthPx / chord);
     const cx = (r.x0 + r.x1) / 2, v = 1 - particle.u;
+    const v2 = 1 - u2;
     const x =
       v*v*v*r.x0 + 3*v*v*particle.u*cx + 3*v*particle.u*particle.u*cx
       + particle.u*particle.u*particle.u*r.x1;
     const y =
       v*v*v*r.y0 + 3*v*v*particle.u*r.y0 + 3*v*particle.u*particle.u*r.y1
       + particle.u*particle.u*particle.u*r.y1 + particle.f * r.h;
-    ctx.globalAlpha = PARTICLE_ALPHA * r.alpha;
-    ctx.fillStyle = r.c1;
+    const x2 =
+      v2*v2*v2*r.x0 + 3*v2*v2*u2*cx + 3*v2*u2*u2*cx
+      + u2*u2*u2*r.x1;
+    const y2 =
+      v2*v2*v2*r.y0 + 3*v2*v2*u2*r.y0 + 3*v2*u2*u2*r.y1
+      + u2*u2*u2*r.y1 + particle.f * r.h;
+    ctx.globalAlpha = PARTICLE_ALPHA * r.alpha * (
+      1 - PARTICLE_TWINKLE_DEPTH
+      + PARTICLE_TWINKLE_DEPTH * (
+        0.5 + 0.5 * Math.sin(
+          particleClock * PARTICLE_TWINKLE_HZ * 2 * Math.PI + particle.phase
+        )
+      )
+    );
+    ctx.strokeStyle = lightenColor(r.c1, PARTICLE_WHITE_MIX);
     ctx.beginPath();
-    ctx.arc(x, y, PARTICLE_DOT_RADIUS, 0, Math.PI * 2);
-    ctx.fill();
+    ctx.moveTo(x, y); ctx.lineTo(x2, y2);
+    ctx.stroke();
   }
   ctx.restore();
 }

@@ -6,16 +6,7 @@ All notable changes to sigwood are recorded here. The format follows
 
 ## [Unreleased]
 
-### Fixed
-
-- **A reboot is never mislabeled an "update run", and its `rebooted` marker can
-  no longer vanish from the report.** On RHEL-family hosts a normal boot emits
-  lines that satisfy the update-run grammar (dracut, the auditd stop/start pair,
-  SELinux policy load), so a routine reboot could form a medium "update run"
-  review unit that swallowed the reboot itself. Update-run recognition now
-  ignores anchors inside a detected boot window (measured bounds), and a
-  `rebooted` burst is never claimed by any review unit - the reboot always
-  stays a visible row, including after a genuine update-then-reboot.
+## [0.2.8] - 2026-07-24
 
 ### Added
 
@@ -137,6 +128,14 @@ All notable changes to sigwood are recorded here. The format follows
 
 ### Fixed
 
+- **A reboot is never mislabeled an "update run", and its `rebooted` marker can
+  no longer vanish from the report.** On RHEL-family hosts a normal boot emits
+  lines that satisfy the update-run grammar (dracut, the auditd stop/start pair,
+  SELinux policy load), so a routine reboot could form a medium "update run"
+  review unit that swallowed the reboot itself. Update-run recognition now
+  ignores anchors inside a detected boot window (measured bounds), and a
+  `rebooted` burst is never claimed by any review unit - the reboot always
+  stays a visible row, including after a genuine update-then-reboot.
 - **Graph flow particles read as streams, not stripes.** Same-moment spawns used
   to move in lockstep and bunch into vertical bands that marched across a
   ribbon, most visibly after a filter click. Each particle now carries its own
@@ -540,7 +539,8 @@ agent, no account.
 - Analysis-window controls (`--since`/`--until`/`--days`/`--all`), a per-source default
   lookback window, and local-or-UTC time rendering.
 
-[Unreleased]: https://github.com/helixmap/sigwood/compare/v0.2.7...HEAD
+[Unreleased]: https://github.com/helixmap/sigwood/compare/v0.2.8...HEAD
+[0.2.8]: https://github.com/helixmap/sigwood/compare/v0.2.7...v0.2.8
 [0.2.7]: https://github.com/helixmap/sigwood/compare/v0.2.6...v0.2.7
 [0.2.6]: https://github.com/helixmap/sigwood/compare/v0.2.5...v0.2.6
 [0.2.5]: https://github.com/helixmap/sigwood/compare/v0.2.4...v0.2.5

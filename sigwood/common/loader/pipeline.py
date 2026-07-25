@@ -58,6 +58,7 @@ from sigwood.common.loader.types import (
     _PIHOLE_COLUMNS,
     _SYSLOG_COLUMNS,
     CoverageTracker,
+    FileSpan,
     LoadResult,
     PermissionSkipInfo,
     RotationSkipInfo,
@@ -123,6 +124,9 @@ class SourceLoader:
         windowing of discovered candidates - the loader keeps today's behavior
         verbatim. Defaulted so non-flat registry entries and programmatic
         constructions do not churn.
+      - ``records_file_spans``: whether kept finite timestamp extrema may expose
+        this source's file path through ``LoadResult.file_spans``. Journal opts
+        out because its private capture path must never leave the loader.
     """
 
     discover: Callable[[Path, str, datetime | None, datetime | None], list[Path]]
@@ -163,6 +167,9 @@ class SourceLoader:
     # classify its private capture I/O without entering file-permission metadata;
     # ordinary file families retain the generic warning/skip behavior.
     read_error_factory: Callable[[BaseException], BaseException] | None = None
+    # Whether this strategy may publish file-path timestamp spans in LoadResult.
+    # Trailing/defaulted keeps ordinary file strategies and test constructions on.
+    records_file_spans: bool = True
 
 
 def _zeek_records_from_lines(line_iter: Any) -> list[dict[str, Any]]:
@@ -591,6 +598,7 @@ def run_load(
     _warnings: list[str] | None = None,
     _coverage: dict | None = None,
     _permission_skips: dict[str, PermissionSkipInfo] | None = None,
+    _file_spans: list[FileSpan] | None = None,
 ) -> pd.DataFrame:
     """The uniform load pipeline. Owns progress wrap, coverage tracking,
     windowing, corruption rail, verbose-gated wrong-family skip.
@@ -650,6 +658,9 @@ def run_load(
 
     for path in files:
         file_rows: list[dict] = []
+        file_first_ts: float | None = None
+        file_last_ts: float | None = None
+        file_span: FileSpan | None = None
         attempted_this_file = False
         try:
             # warn_skip (flat binary/undecodable) runs BEFORE should_skip, inside
@@ -697,6 +708,7 @@ def run_load(
                     for row in strategy.parse(
                         line_iter, path=path, warnings=_warnings
                     ):
+                        kept_ts: float | None = None
                         ts = row["ts"]
                         if _is_infinite_ts(ts):
                             # Infinity is invalid at every policy boundary. It
@@ -721,7 +733,13 @@ def run_load(
                                 continue
                             if until_ts is not None and normalized_ts > until_ts:
                                 continue
+                            kept_ts = normalized_ts
                         file_rows.append(row)
+                        if strategy.records_file_spans and kept_ts is not None:
+                            if file_first_ts is None or kept_ts < file_first_ts:
+                                file_first_ts = kept_ts
+                            if file_last_ts is None or kept_ts > file_last_ts:
+                                file_last_ts = kept_ts
                         tracker.mark_kept()
                 else:  # frame mode
                     try:
@@ -740,6 +758,12 @@ def run_load(
                     post = _apply_ts_filter(pre, since, until)
                     if not post.empty:
                         frames.append(post)
+                        if strategy.records_file_spans:
+                            file_span = FileSpan(
+                                path,
+                                float(post["ts"].min()),
+                                float(post["ts"].max()),
+                            )
                         tracker.mark_kept()
         except PermissionError as exc:
             if strategy.read_error_factory is not None:
@@ -769,7 +793,15 @@ def run_load(
                 )
             continue
         if strategy.mode == "stream":
+            if (
+                strategy.records_file_spans
+                and file_first_ts is not None
+                and file_last_ts is not None
+            ):
+                file_span = FileSpan(path, file_first_ts, file_last_ts)
             rows.extend(file_rows)
+        if _file_spans is not None and file_span is not None:
+            _file_spans.append(file_span)
 
     if _permission_skips is not None and permission_paths:
         _permission_skips[pattern] = PermissionSkipInfo(
@@ -876,6 +908,7 @@ _SOURCE_LOADERS: dict[str, SourceLoader] = {
         normalize=None,
         display_label="system journal",
         read_error_factory=_journal_read_error,
+        records_file_spans=False,
     ),
 }
 
@@ -1074,6 +1107,7 @@ def load_required_logs(
     coverage: dict[str, SourceCoverage] = {}
     rotation_skips: dict[str, RotationSkipInfo] = {}
     permission_skips: dict[str, PermissionSkipInfo] = {}
+    file_spans: dict[str, tuple[FileSpan, ...]] = {}
     source_windows = source_windows or {}
     file_select_windows = file_select_windows or {}
     trusted_files = trusted_files or {}
@@ -1180,12 +1214,16 @@ def load_required_logs(
                 continue
 
         cov_dict: dict = {}
+        pattern_spans: list[FileSpan] = []
         df = run_load(
             strategy, files, pattern, s_since, s_until,
             show_progress=show_progress, verbose=verbose,
             _warnings=warnings, _coverage=cov_dict,
             _permission_skips=permission_skips,
+            _file_spans=pattern_spans,
         )
+        if pattern_spans:
+            file_spans[pattern] = tuple(pattern_spans)
 
         if skip_info is not None:
             rotation_skips[pattern] = skip_info
@@ -1210,6 +1248,7 @@ def load_required_logs(
         coverage=coverage,
         rotation_skips=rotation_skips,
         permission_skips=permission_skips,
+        file_spans=file_spans,
     )
 
 

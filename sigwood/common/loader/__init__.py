@@ -50,6 +50,7 @@ from sigwood.common.loader.types import (
     _PIHOLE_COLUMNS,
     _SYSLOG_COLUMNS,
     CoverageTracker,
+    FileSpan,
     LoadResult,
     PermissionSkipInfo,
     RotationSkipInfo,

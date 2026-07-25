@@ -243,6 +243,15 @@ class PermissionSkipInfo:
     paths: tuple[Path, ...] = ()
 
 
+@dataclass(frozen=True)
+class FileSpan:
+    """Finite timestamp extrema of one file's kept rows."""
+
+    path: Path
+    first_ts: float
+    last_ts: float
+
+
 @dataclass
 class LoadResult:
     """Loaded log data and metadata needed by the runner."""
@@ -255,6 +264,7 @@ class LoadResult:
     coverage: dict[str, SourceCoverage] = field(default_factory=dict)
     rotation_skips: dict[str, RotationSkipInfo] = field(default_factory=dict)
     permission_skips: dict[str, PermissionSkipInfo] = field(default_factory=dict)
+    file_spans: dict[str, tuple[FileSpan, ...]] = field(default_factory=dict)
 
 
 def _data_window(logs: dict[str, pd.DataFrame]) -> tuple[datetime, datetime] | None:

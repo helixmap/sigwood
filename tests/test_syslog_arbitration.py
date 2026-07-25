@@ -458,6 +458,8 @@ def test_cross_feed_arbitration_empty_result_retains_columns() -> None:
 
 
 def test_cross_feed_arbitration_replace_preserves_loader_metadata() -> None:
+    from sigwood.common import loader
+
     window = (_EVENT_DT, _EVENT_DT)
     record_counts = {"*.log*": 1, "syslog*.log*": 1}
     warnings = ["placeholder warning"]
@@ -468,6 +470,10 @@ def test_cross_feed_arbitration_replace_preserves_loader_metadata() -> None:
     permission_skips = {
         "*.log*": PermissionSkipInfo(discovered=2, denied=1)
     }
+    FileSpan = getattr(loader, "FileSpan")
+    file_spans = {
+        "*.log*": (FileSpan(Path("auth.log"), _EVENT_TS, _EVENT_TS),)
+    }
     load_result = LoadResult(
         logs={"*.log*": _frame(["router"]), "syslog*.log*": _frame(["router"])},
         record_counts=record_counts,
@@ -477,6 +483,7 @@ def test_cross_feed_arbitration_replace_preserves_loader_metadata() -> None:
         coverage=coverage,
         rotation_skips=rotation_skips,
         permission_skips=permission_skips,
+        file_spans=file_spans,
     )
 
     arbitrated, facts = runner._arbitrate_cross_feed_syslog(load_result)
@@ -489,6 +496,7 @@ def test_cross_feed_arbitration_replace_preserves_loader_metadata() -> None:
     assert arbitrated.coverage is coverage
     assert arbitrated.rotation_skips is rotation_skips
     assert arbitrated.permission_skips is permission_skips
+    assert arbitrated.file_spans is file_spans
 
 
 def _syslog_line(

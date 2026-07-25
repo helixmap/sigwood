@@ -59,7 +59,7 @@ from sigwood.common.errors import (
 )
 from sigwood.common.finding import DetectorContext, Finding, RunSummary
 from sigwood.common.journal_probe import probe_journal
-from sigwood.common.loader import JournalCaptureOutcome
+from sigwood.common.loader import FileSpan, JournalCaptureOutcome
 from sigwood.common.output import OutputHandler, Reporter
 from sigwood.common.paths import (
     private_mkdir,
@@ -2605,38 +2605,25 @@ def _graph_source_label(paths: Sequence[Path]) -> str:
     return ", ".join(strip_control(path.name) for path in paths)
 
 
-def _graph_discovered_file_meta(
-    spec: GraphKindSpec,
-    source_inputs: Sequence[Path],
-    *,
-    trusted_files: Sequence[Path],
+def _graph_contributing_file_meta(
+    spans: Sequence[FileSpan],
+    t0: float,
+    t1: float,
 ) -> dict[str, str | int]:
-    """Return graph provenance from the loader's discovery candidate universe."""
-    from sigwood.common import loader
-
-    trusted_resolved = {loader._safe_resolve(path) for path in trusted_files}
-    per_input: list[list[Path]] = []
-    for path in source_inputs:
-        if loader._safe_resolve(path) in trusted_resolved:
-            per_input.append([path])
-            continue
-        try:
-            per_input.append(
-                loader.discover_for_source_key(
-                    spec.source_key, path, spec.pattern,
-                )
-            )
-        except OSError:
-            per_input.append([])
-
-    discovered = sorted(
-        loader._union_dedupe(per_input),
+    """Return source provenance for files overlapping the final graph window."""
+    contributing = [
+        span for span in spans
+        if span.last_ts >= t0 and span.first_ts <= t1
+    ]
+    selected = contributing or list(spans)
+    paths = sorted(
+        (span.path for span in selected),
         key=lambda path: os.path.abspath(path),
     )
-    if not discovered:
+    if not paths:
         return {"file_sample": "", "file_count": 0, "common_dir": ""}
 
-    absolute = [os.path.abspath(path) for path in discovered]
+    absolute = [os.path.abspath(path) for path in paths]
     sample = strip_control(Path(absolute[0]).name)
     try:
         common = (
@@ -2648,7 +2635,7 @@ def _graph_discovered_file_meta(
         common = ""
     return {
         "file_sample": sample,
-        "file_count": len(discovered),
+        "file_count": len(paths),
         "common_dir": strip_control(common),
     }
 
@@ -2965,11 +2952,12 @@ def _run_graph(
             note = payload["meta"].get(note_key)
             if note:
                 _estderr(str(note))
-    payload["meta"].update(
-        _graph_discovered_file_meta(
-            spec, source_inputs, trusted_files=trusted_files,
-        )
-    )
+    graph_meta = payload["meta"]
+    graph_meta.update(_graph_contributing_file_meta(
+        load_result.file_spans.get(spec.pattern, ()),
+        float(graph_meta["t0"]),
+        float(graph_meta["t1"]),
+    ))
     attach_hunt_hint(
         payload,
         _graph_hunt_hint(

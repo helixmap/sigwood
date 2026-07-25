@@ -111,6 +111,7 @@ else:
         assert result.data_size_bytes == capture_path.stat().st_size
         assert result.rotation_skips == {}
         assert result.permission_skips == {}
+        assert result.file_spans == {}
         assert descriptions == ["loaded system journal"]
         assert resolve_calls == 1
     assert not capture_path.exists()

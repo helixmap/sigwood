@@ -1632,11 +1632,16 @@ def test_apply_default_window_keep_null_and_metadata(tmp_path):
     / coverage are rebuilt)."""
     import math
     import pandas as pd
+    from sigwood.common import loader
     from sigwood.common.loader import LoadResult, RotationSkipInfo
     from sigwood.common.loader import apply_default_window
 
     base = datetime(2026, 6, 5, 12, 0, tzinfo=timezone.utc).timestamp()
     skips = {"*.log*": RotationSkipInfo(loaded=2, skipped=3, fallback=False)}
+    FileSpan = getattr(loader, "FileSpan")
+    file_spans = {
+        "*.log*": (FileSpan(tmp_path / "auth.log", base - 5 * 86400, base),)
+    }
 
     def _mk() -> LoadResult:
         df = pd.DataFrame([
@@ -1651,6 +1656,7 @@ def test_apply_default_window_keep_null_and_metadata(tmp_path):
             warnings=["a soft warning"],
             data_size_bytes=4242,
             rotation_skips=skips,
+            file_spans=file_spans,
         )
 
     src = _mk()
@@ -1667,6 +1673,7 @@ def test_apply_default_window_keep_null_and_metadata(tmp_path):
     assert kept.warnings == ["a soft warning"]
     assert kept.data_size_bytes == 4242
     assert kept.rotation_skips is skips
+    assert kept.file_spans is file_spans
 
     dropped = apply_default_window(
         _mk(), ["*.log*"], timedelta(days=1), keep_null=False

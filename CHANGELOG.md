@@ -127,6 +127,13 @@ All notable changes to sigwood are recorded here. The format follows
 
 ### Fixed
 
+- **The graph header now counts the files that fed the graph, not the archive it
+  scanned.** The source cell used to report every file discovered under the
+  source directory (`+ 294 others` on a large rotation archive) even when the
+  rendered window drew from a handful of them. The loader now records each
+  file's kept time span and the header names only the files whose data
+  overlaps the final rendered window; saved clips keep the parent artifact's
+  set. The live system journal never records file paths.
 - **The HTML report now discloses an underfilled window like the text report.**
   The HTML header's window row carries the same span parenthetical the text
   banner always had - the bare data span normally, and the

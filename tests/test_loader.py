@@ -20,6 +20,7 @@ from types import SimpleNamespace
 import pandas as pd
 import pytest
 
+import sigwood.common.loader as loader_module
 from datetime import date, timedelta
 
 from sigwood.common.loader import (
@@ -157,6 +158,95 @@ def test_load_required_logs_normalizes_conn_and_reports_window(tmp_path: Path) -
         datetime.fromtimestamp(1_779_753_600.0, tz=timezone.utc),
     )
     assert result.warnings == []
+
+
+def test_load_required_logs_records_frame_file_spans_per_file(
+    tmp_path: Path,
+) -> None:
+    """Frame-mode spans retain each file's own kept timestamp extrema."""
+    zeek_dir = tmp_path / "zeek"
+    zeek_dir.mkdir()
+    first = zeek_dir / "conn.a.log"
+    second = zeek_dir / "conn.b.log"
+    _write_ndjson(first, [
+        {
+            "ts": 100.0,
+            "id.orig_h": "192.0.2.10",
+            "id.resp_h": "198.51.100.10",
+            "id.resp_p": 443,
+            "proto": "tcp",
+        },
+        {
+            "ts": 110.0,
+            "id.orig_h": "192.0.2.11",
+            "id.resp_h": "198.51.100.11",
+            "id.resp_p": 443,
+            "proto": "tcp",
+        },
+    ])
+    _write_ndjson(second, [
+        {
+            "ts": 200.0,
+            "id.orig_h": "192.0.2.20",
+            "id.resp_h": "198.51.100.20",
+            "id.resp_p": 53,
+            "proto": "udp",
+        },
+        {
+            "ts": 220.0,
+            "id.orig_h": "192.0.2.21",
+            "id.resp_h": "198.51.100.21",
+            "id.resp_p": 53,
+            "proto": "udp",
+        },
+    ])
+
+    result = load_required_logs(
+        {"conn*.log*": "zeek_dir"},
+        {"zeek_dir": [zeek_dir]},
+    )
+
+    FileSpan = getattr(loader_module, "FileSpan")
+    assert result.file_spans == {
+        "conn*.log*": (
+            FileSpan(first, 100.0, 110.0),
+            FileSpan(second, 200.0, 220.0),
+        )
+    }
+
+
+def test_frame_file_spans_follow_kept_window_and_omit_excluded_file(
+    tmp_path: Path,
+) -> None:
+    """The ledger records post-window extrema and no zero-kept entry."""
+    zeek_dir = tmp_path / "zeek"
+    zeek_dir.mkdir()
+    partial = zeek_dir / "conn.partial.log"
+    excluded = zeek_dir / "conn.excluded.log"
+    common = {
+        "id.orig_h": "192.0.2.10",
+        "id.resp_h": "198.51.100.10",
+        "id.resp_p": 443,
+        "proto": "tcp",
+    }
+    _write_ndjson(partial, [
+        {"ts": 100.0, **common},
+        {"ts": 200.0, **common},
+        {"ts": 300.0, **common},
+    ])
+    _write_ndjson(excluded, [{"ts": 125.0, **common}])
+
+    result = load_required_logs(
+        {"conn*.log*": "zeek_dir"},
+        {"zeek_dir": [zeek_dir]},
+        since=datetime.fromtimestamp(150.0, tz=timezone.utc),
+        until=datetime.fromtimestamp(250.0, tz=timezone.utc),
+    )
+
+    FileSpan = getattr(loader_module, "FileSpan")
+    assert result.file_spans == {
+        "conn*.log*": (FileSpan(partial, 200.0, 200.0),)
+    }
 
 
 def test_load_required_logs_warns_on_missing_canonical_fields(tmp_path: Path) -> None:
@@ -824,6 +914,42 @@ def test_load_pihole_timefilter_keeps_nan_ts(tmp_path: Path) -> None:
     assert len(df) == 2
     import math
     assert math.isnan(df.loc[df["query"] == "other.test", "ts"].iloc[0])
+
+
+def test_pihole_file_span_excludes_kept_nan_timestamp_rows(
+    tmp_path: Path,
+) -> None:
+    """Keep-policy NaN rows survive the frame but never enter a file span."""
+    pihole_dir = tmp_path / "pihole"
+    pihole_dir.mkdir()
+    source = pihole_dir / "pihole.log"
+    nan_ts_line = (
+        "Xxx  1 12:00:00 dnsmasq[1]: "
+        "query[A] other.test from 192.0.2.2"
+    )
+    source.write_text(
+        f"{_PIHOLE_LINE_QUERY}\n{nan_ts_line}\n",
+        encoding="utf-8",
+    )
+    year = datetime.now(timezone.utc).year
+    since = datetime(year, 6, 1, 11, 0, 0, tzinfo=timezone.utc)
+    until = datetime(year, 6, 1, 13, 0, 0, tzinfo=timezone.utc)
+
+    result = load_required_logs(
+        {"pihole*.log*": "pihole_dir"},
+        {"pihole_dir": [pihole_dir]},
+        since=since,
+        until=until,
+    )
+
+    finite_ts = result.logs["pihole*.log*"]["ts"].dropna().tolist()
+    assert len(finite_ts) == 1
+    FileSpan = getattr(loader_module, "FileSpan")
+    assert result.file_spans == {
+        "pihole*.log*": (
+            FileSpan(source, finite_ts[0], finite_ts[0]),
+        )
+    }
 
 
 def test_schema_warning_no_ops_for_pihole_pattern(tmp_path: Path) -> None:
@@ -1759,6 +1885,12 @@ def test_load_required_logs_warns_and_skips_truncated_zeek_gzip(
         and "compressed file is incomplete or corrupt" in warning
         for warning in result.warnings
     )
+    FileSpan = getattr(loader_module, "FileSpan")
+    assert result.file_spans == {
+        "conn*.log*": (
+            FileSpan(zeek_dir / "conn.log", _TS_JAN2, _TS_JAN2),
+        )
+    }
 
 
 def test_load_logs_dated_layout_ignores_root_level_files(tmp_path: Path) -> None:
@@ -3888,6 +4020,53 @@ def test_run_load_fake_strategy_exercises_pipeline_mechanics(
     assert df3.empty
     assert list(df3.columns) == ["ts", "host", "raw"]
     assert coverage3.get("coverage") == SourceCoverage(None, None)
+
+
+def test_run_load_stream_publishes_span_only_after_complete_file(
+    tmp_path: Path,
+) -> None:
+    """A late stream read failure discards both buffered rows and provenance."""
+    from sigwood.common import loader as loader_mod
+
+    def fake_parse(line_iter, *, path, warnings):  # noqa: ARG001
+        for line in line_iter:
+            ts_token, host = line.rstrip("\n").split("\t", 1)
+            yield {"ts": float(ts_token), "host": host, "raw": line.rstrip("\n")}
+        if path.name == "truncated.log":
+            raise EOFError("missing trailer")
+
+    strategy = loader_mod.SourceLoader(
+        discover=lambda p, pat, s, u: [p],  # noqa: ARG005
+        mode="stream",
+        parse=fake_parse,
+        ts_policy="drop",
+        columns=["ts", "host", "raw"],
+        should_skip=None,
+        normalize=None,
+    )
+    complete = tmp_path / "complete.log"
+    truncated = tmp_path / "truncated.log"
+    complete.write_text("10\tcomplete\n", encoding="utf-8")
+    truncated.write_text("20\ttruncated\n", encoding="utf-8")
+    warnings: list[str] = []
+    spans: list = []
+
+    df = loader_mod.run_load(
+        strategy,
+        [complete, truncated],
+        pattern="",
+        since=None,
+        until=None,
+        show_progress=False,
+        verbose=False,
+        _warnings=warnings,
+        _file_spans=spans,
+    )
+
+    FileSpan = getattr(loader_mod, "FileSpan")
+    assert df["host"].tolist() == ["complete"]
+    assert spans == [FileSpan(complete, 10.0, 10.0)]
+    assert any("truncated.log" in warning for warning in warnings)
 
 
 def test_run_load_drop_policy_discards_nan_ts(

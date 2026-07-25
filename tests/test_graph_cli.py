@@ -98,6 +98,22 @@ def _pihole_rotation_directory(tmp_path: Path) -> Path:
     return source
 
 
+def _write_conn_gz(path: Path, ts: float, uid: str) -> None:
+    record = {
+        "_path": "conn",
+        "ts": ts,
+        "uid": uid,
+        "id.orig_h": "192.0.2.10",
+        "id.resp_h": "198.51.100.20",
+        "id.resp_p": 443,
+        "proto": "tcp",
+        "duration": 1.0,
+        "orig_bytes": 128,
+    }
+    with gzip.open(path, "wt", encoding="utf-8") as handle:
+        handle.write(json.dumps(record) + "\n")
+
+
 class _CursorTTY(io.StringIO):
     def isatty(self) -> bool:
         return True
@@ -600,37 +616,41 @@ def test_graph_hunt_hint_quotes_inputs_and_gates_unrediscoverable_zeek_files(
     ) is not None
 
 
-def test_graph_discovered_file_meta_uses_deduped_loader_candidates(
+def test_graph_contributing_file_meta_intersects_the_final_window(
     tmp_path: Path,
 ) -> None:
+    FileSpan = getattr(loader, "FileSpan")
     source = tmp_path / "zeek"
-    source.mkdir()
     primary = source / "conn.log"
     rotation = source / "conn.log.1"
-    primary.write_text(_CONN_LINE, encoding="utf-8")
-    rotation.write_text(_CONN_LINE, encoding="utf-8")
 
-    meta = runner._graph_discovered_file_meta(
-        graph_kind_spec("conn"), [source, primary], trusted_files=[],
+    meta = runner._graph_contributing_file_meta(
+        (
+            FileSpan(primary, 100.0, 110.0),
+            FileSpan(rotation, 200.0, 210.0),
+        ),
+        150.0,
+        250.0,
     )
 
     assert meta == {
-        "file_sample": "conn.log",
-        "file_count": 2,
+        "file_sample": "conn.log.1",
+        "file_count": 1,
         "common_dir": str(source.absolute()),
     }
 
 
-def test_graph_discovered_file_meta_cleans_trusted_file_provenance(
+def test_graph_contributing_file_meta_cleans_selected_provenance(
     tmp_path: Path,
 ) -> None:
+    FileSpan = getattr(loader, "FileSpan")
     source = tmp_path / "odd\x1bdir"
-    source.mkdir()
     trusted = source / "captured\x1binput"
-    trusted.write_text(_CONN_LINE, encoding="utf-8")
 
-    meta = runner._graph_discovered_file_meta(
-        graph_kind_spec("conn"), [trusted], trusted_files=[trusted],
+    meta = runner._graph_contributing_file_meta(
+        (FileSpan(trusted, 100.0, 200.0),),
+        100.0,
+        200.0,
     )
 
     assert meta["file_sample"] == "capturedinput"
@@ -639,28 +659,95 @@ def test_graph_discovered_file_meta_cleans_trusted_file_provenance(
     assert "\x1b" not in "".join(str(value) for value in meta.values())
 
 
-def test_graph_discovered_file_meta_omits_cross_root_common_dir(
+def test_graph_contributing_file_meta_omits_cross_root_common_dir(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    FileSpan = getattr(loader, "FileSpan")
     first = tmp_path / "one" / "conn.log"
     second = tmp_path / "two" / "conn.log"
-    monkeypatch.setattr(
-        loader,
-        "discover_for_source_key",
-        lambda *_args, **_kwargs: [first, second],
-    )
     monkeypatch.setattr(
         os.path,
         "commonpath",
         lambda _paths: (_ for _ in ()).throw(ValueError("different drives")),
     )
 
-    meta = runner._graph_discovered_file_meta(
-        graph_kind_spec("conn"), [tmp_path], trusted_files=[],
+    meta = runner._graph_contributing_file_meta(
+        (
+            FileSpan(first, 100.0, 200.0),
+            FileSpan(second, 100.0, 200.0),
+        ),
+        100.0,
+        200.0,
     )
 
     assert meta["file_count"] == 2
     assert meta["common_dir"] == ""
+
+
+def test_graph_contributing_file_meta_defensive_fallbacks(
+    tmp_path: Path,
+) -> None:
+    """No overlap falls back to known spans; no spans keeps empty metadata."""
+    FileSpan = getattr(loader, "FileSpan")
+    first = tmp_path / "one" / "conn.log"
+    second = tmp_path / "two" / "conn.log"
+
+    fallback = runner._graph_contributing_file_meta(
+        (
+            FileSpan(first, 10.0, 20.0),
+            FileSpan(second, 30.0, 40.0),
+        ),
+        100.0,
+        200.0,
+    )
+    assert fallback["file_count"] == 2
+    assert runner._graph_contributing_file_meta((), 100.0, 200.0) == {
+        "file_sample": "",
+        "file_count": 0,
+        "common_dir": "",
+    }
+
+
+@pytest.mark.parametrize(
+    ("load_all", "expected_count", "expected_sample"),
+    [
+        (False, 1, "conn.20260525.log.gz"),
+        (True, 3, "conn.20260521.log.gz"),
+    ],
+)
+def test_run_graph_source_meta_counts_only_final_window_files(
+    tmp_path: Path,
+    restore_display_utc,
+    load_all: bool,
+    expected_count: int,
+    expected_sample: str,
+) -> None:
+    """A flat archive's source cell reports render-window contributors."""
+    source = tmp_path / "zeek"
+    source.mkdir()
+    for day, uid in ((21, "C1"), (23, "C2"), (25, "C3")):
+        ts = datetime(2026, 5, day, 12, tzinfo=timezone.utc).timestamp()
+        _write_conn_gz(source / f"conn.202605{day}.log.gz", ts, uid)
+    config = _config()
+    config["sigwood"]["default_window"] = "1d"
+    stream = io.StringIO()
+
+    runner.run_graph(
+        config,
+        kind="conn",
+        inputs=source,
+        stream=stream,
+        quiet=True,
+        use_utc=True,
+        load_all=load_all,
+    )
+
+    payload = json.loads(
+        stream.getvalue().split("const DATA = ", 1)[1].split(";</script>", 1)[0]
+    )
+    assert payload["meta"]["file_count"] == expected_count
+    assert payload["meta"]["file_sample"] == expected_sample
+    assert payload["meta"]["common_dir"] == str(source.absolute())
 
 
 def test_graph_pihole_dir_flag_and_bare_config_route_to_pihole(
@@ -1500,6 +1587,43 @@ def test_run_graph_date_directory_filters_real_zeek_rows_for_every_graph_kind(
     assert meta["default_window_note"] == expected_note
 
 
+def test_run_graph_date_directory_meta_omits_fully_excluded_file(
+    tmp_path: Path,
+    restore_display_utc,
+) -> None:
+    """The date-directory act exposes only files with kept in-day rows."""
+    source = tmp_path / "2026-05-25"
+    source.mkdir()
+    _write_conn_gz(
+        source / "conn.early.log.gz",
+        datetime(2026, 5, 24, 12, tzinfo=timezone.utc).timestamp(),
+        "C0",
+    )
+    _write_conn_gz(
+        source / "conn.current.log.gz",
+        datetime(2026, 5, 25, 12, tzinfo=timezone.utc).timestamp(),
+        "C1",
+    )
+    config = _config()
+    config["sigwood"]["default_window"] = "7d"
+    stream = io.StringIO()
+
+    runner.run_graph(
+        config,
+        kind="conn",
+        inputs=source,
+        stream=stream,
+        quiet=True,
+        use_utc=True,
+    )
+
+    payload = json.loads(
+        stream.getvalue().split("const DATA = ", 1)[1].split(";</script>", 1)[0]
+    )
+    assert payload["meta"]["file_count"] == 1
+    assert payload["meta"]["file_sample"] == "conn.current.log.gz"
+
+
 @pytest.mark.parametrize(
     ("default_window", "kwargs"),
     [
@@ -1588,6 +1712,8 @@ def test_run_graph_date_directory_empty_retries_the_full_source(
     assert payload["meta"]["rows"] == 1
     assert payload["meta"]["default_window_note"] is None
     assert payload["meta"]["date_window_widened"] is True
+    assert payload["meta"]["file_count"] == 1
+    assert payload["meta"]["file_sample"] == filename
     assert seen_trim_flags == [False]
     assert payload["meta"]["degrade_note"] == (
         f"date window held no {kind} rows that started that day; "

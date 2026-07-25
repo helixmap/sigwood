@@ -364,11 +364,17 @@ function expand(pairs) {
 const RAW = { SRC: DATA.srcNodes, DST: DATA.dstNodes, SVC: DATA.svcNodes, FLOWS: DATA.flows };
 const rawDenseB = RAW.FLOWS.map(f => expand(f.b));
 const rawDenseC = RAW.FLOWS.map(f => expand(f.c));
-const rawTotPerFlow = rawDenseB.map((a, i) => {
+const rawBytesPerFlow = rawDenseB.map(a => {
   let s = 0; for (let k = 0; k < B; k++) s += a[k];
+  return s;
+});
+const rawTotPerFlow = rawBytesPerFlow.map((s, i) => {
   let c = 0; const cc = rawDenseC[i]; for (let k = 0; k < B; k++) c += cc[k];
   return s + c;
 });
+function totalByteWeight(byteContribution, rr) {
+  return byteContribution / (1 - Math.min(rr || 0, 0.9999));
+}
 const totB = Float32Array.from(DATA.totB);
 const totC = Float32Array.from(DATA.totC);
 const cumB = new Float64Array(B + 1), cumC = new Float64Array(B + 1);
@@ -396,7 +402,9 @@ function buildModel(level) {
   SVC = RAW.SVC;
   if (level === 32) {
     SRC = RAW.SRC; DST = RAW.DST;
-    FLOWS = RAW.FLOWS.map(f => ({ s: f.s, d: f.d, v: f.v }));
+    FLOWS = RAW.FLOWS.map(f => ({
+      s: f.s, d: f.d, v: f.v, rr: f.rr || 0,
+    }));
     denseB = rawDenseB; denseC = rawDenseC;
     rawToModel = Int32Array.from(RAW.FLOWS, (_, i) => i);
   } else {
@@ -440,12 +448,18 @@ function buildModel(level) {
     for (const [k, idxs] of groups) {
       const kv = k % KD, kd = Math.floor(k / KD) % KD, ks = Math.floor(k / (KD * KD));
       const db = new Float32Array(B), dc = new Float32Array(B);
+      let rrNum = 0, rrDen = 0;
       for (const i of idxs) {
         const a = rawDenseB[i], c = rawDenseC[i];
         for (let x = 0; x < B; x++) { db[x] += a[x]; dc[x] += c[x]; }
+        const rr = RAW.FLOWS[i].rr || 0;
+        const weight = totalByteWeight(rawBytesPerFlow[i], rr);
+        rrNum += weight * rr; rrDen += weight;
         rawToModel[i] = FLOWS.length;
       }
-      FLOWS.push({ s: ks, d: kd, v: kv });
+      FLOWS.push({
+        s: ks, d: kd, v: kv, rr: rrDen > 0 ? rrNum / rrDen : 0,
+      });
       denseB.push(db); denseC.push(dc);
     }
   }
@@ -598,7 +612,7 @@ const PARTICLE_WHITE_MIX = 0.3;
 let particlesEnabled = false;
 let particleClock = 0;
 const particlePool = Array.from({ length: PARTICLE_BUDGET }, () => ({
-  live: false, key: "", u: 0, f: 0, j: 1, phase: 0,
+  live: false, key: "", u: 0, f: 0, j: 1, phase: 0, dir: 1,
 }));
 const particleSegmentMap = new Map();
 const particleColorCache = new Map();
@@ -671,7 +685,11 @@ const NW = 10, PAD_X = 26, PAD_Y = 18, GAP = 7;
 function layout(tt) {
   const series = metric === "b" ? smB : smC;
   const fv = new Float32Array(NF);
-  for (let i = 0; i < NF; i++) fv[i] = valAt(series[i], tt) * maskC[i];
+  const bv = new Float32Array(NF);
+  for (let i = 0; i < NF; i++) {
+    bv[i] = valAt(smB[i], tt) * maskC[i];
+    fv[i] = metric === "b" ? bv[i] : valAt(series[i], tt) * maskC[i];
+  }
 
   const sVal = new Float32Array(SRC.length), dVal = new Float32Array(DST.length),
         vVal = new Float32Array(SVC.length);
@@ -722,8 +740,24 @@ function layout(tt) {
 
   let links = null;
   if (mode === 3) {
-    const lv = svList.map(l => l.idxs.reduce((a, i) => a + fv[i], 0));
-    const rv = vdList.map(l => l.idxs.reduce((a, i) => a + fv[i], 0));
+    function aggregateLinks(list) {
+      const values = new Float32Array(list.length);
+      const ratios = new Float32Array(list.length);
+      list.forEach((link, k) => {
+        let rrNum = 0, rrDen = 0;
+        for (const i of link.idxs) {
+          values[k] += fv[i];
+          const rr = FLOWS[i].rr || 0;
+          const weight = totalByteWeight(bv[i], rr);
+          rrNum += weight * rr; rrDen += weight;
+        }
+        ratios[k] = rrDen > 0 ? rrNum / rrDen : 0;
+      });
+      return { values, ratios };
+    }
+    const left = aggregateLinks(svList), right = aggregateLinks(vdList);
+    const lv = left.values, rv = right.values;
+    const lrr = left.ratios, rrr = right.ratios;
     const accS = new Float32Array(SRC.length), accVin = new Float32Array(SVC.length),
           accVout = new Float32Array(SVC.length), accD = new Float32Array(DST.length);
     const offLs = new Float32Array(svList.length), offLv = new Float32Array(svList.length);
@@ -732,10 +766,10 @@ function layout(tt) {
     const offRv = new Float32Array(vdList.length), offRd = new Float32Array(vdList.length);
     vdList.forEach((l, k) => { offRv[k] = accVout[l.v]; accVout[l.v] += rv[k] * S;
                                offRd[k] = accD[l.d]; accD[l.d] += rv[k] * S; });
-    links = { lv, rv, offLs, offLv, offRv, offRd };
+    links = { lv, rv, lrr, rrr, offLs, offLv, offRv, offRd };
   }
   return {
-    fv, sVal, dVal, vVal, S, repickScaleGauge,
+    fv, bv, sVal, dVal, vVal, S, repickScaleGauge,
     L, R, Mid, offS, offD, links, total,
   };
 }
@@ -797,7 +831,9 @@ function updateAndDrawParticles(segments, dt, clearForSnap) {
     cumulativeIdeal += ideal;
     const cumulativeTarget = Math.round(cumulativeIdeal);
     r.particleTarget = cumulativeTarget - assigned;
-    r.particleCount = 0;
+    r.reverseTarget = Math.round(r.particleTarget * r.rr);
+    r.forwardTarget = r.particleTarget - r.reverseTarget;
+    r.forwardCount = 0; r.reverseCount = 0;
     assigned = cumulativeTarget;
     particleSegmentMap.set(r.key, r);
   }
@@ -809,39 +845,54 @@ function updateAndDrawParticles(segments, dt, clearForSnap) {
     const velocity = PARTICLE_V_MIN + (PARTICLE_V_MAX - PARTICLE_V_MIN)
       * (r.value / frameMax);
     const chord = Math.max(1, Math.hypot(r.x1 - r.x0, r.y1 - r.y0));
-    particle.u += dt * velocity * particle.j / chord;
-    if (particle.u >= 1) {
+    particle.u += particle.dir * dt * velocity * particle.j / chord;
+    if ((particle.dir > 0 && particle.u >= 1)
+        || (particle.dir < 0 && particle.u <= 0)) {
       particle.live = false;
       continue;
     }
-    r.particleCount++;
+    if (particle.dir > 0) r.forwardCount++;
+    else r.reverseCount++;
   }
 
   for (const r of segments) {
-    let excess = r.particleCount - r.particleTarget;
-    if (excess <= 0) continue;
-    for (const particle of particlePool) {
-      if (!particle.live || particle.key !== r.key) continue;
-      particle.live = false;
-      r.particleCount--;
-      if (--excess === 0) break;
+    for (let directionPass = 0; directionPass < 2; directionPass++) {
+      const dir = directionPass === 0 ? 1 : -1;
+      const countKey = dir > 0 ? "forwardCount" : "reverseCount";
+      const targetKey = dir > 0 ? "forwardTarget" : "reverseTarget";
+      let excess = r[countKey] - r[targetKey];
+      if (excess <= 0) continue;
+      for (const particle of particlePool) {
+        if (
+          !particle.live || particle.key !== r.key || particle.dir !== dir
+        ) continue;
+        particle.live = false;
+        r[countKey]--;
+        if (--excess === 0) break;
+      }
     }
   }
 
   let cursor = 0;
   for (const r of segments) {
-    const pipeFill = r.particleCount === 0;
-    while (r.particleCount < r.particleTarget) {
-      while (cursor < particlePool.length && particlePool[cursor].live) cursor++;
-      if (cursor >= particlePool.length) break;
-      const particle = particlePool[cursor++];
-      particle.live = true;
-      particle.key = r.key;
-      particle.u = pipeFill ? Math.random() : 0;
-      particle.f = 0.15 + Math.random() * 0.70;
-      particle.j = 0.75 + Math.random() * 0.5;
-      particle.phase = Math.random() * 2 * Math.PI;
-      r.particleCount++;
+    for (let directionPass = 0; directionPass < 2; directionPass++) {
+      const dir = directionPass === 0 ? 1 : -1;
+      const countKey = dir > 0 ? "forwardCount" : "reverseCount";
+      const targetKey = dir > 0 ? "forwardTarget" : "reverseTarget";
+      const pipeFill = r[countKey] === 0;
+      while (r[countKey] < r[targetKey]) {
+        while (cursor < particlePool.length && particlePool[cursor].live) cursor++;
+        if (cursor >= particlePool.length) break;
+        const particle = particlePool[cursor++];
+        particle.live = true;
+        particle.key = r.key;
+        particle.u = pipeFill ? Math.random() : (dir > 0 ? 0 : 1);
+        particle.f = 0.15 + Math.random() * 0.70;
+        particle.j = 0.75 + Math.random() * 0.5;
+        particle.phase = Math.random() * 2 * Math.PI;
+        particle.dir = dir;
+        r[countKey]++;
+      }
     }
   }
 
@@ -862,7 +913,9 @@ function updateAndDrawParticles(segments, dt, clearForSnap) {
         velocity * particle.j * PARTICLE_STREAK_SECONDS,
       ),
     );
-    const u2 = Math.min(1, particle.u + lengthPx / chord);
+    const u2 = Math.max(0, Math.min(
+      1, particle.u + particle.dir * lengthPx / chord,
+    ));
     const cx = (r.x0 + r.x1) / 2, v = 1 - particle.u;
     const v2 = 1 - u2;
     const x =
@@ -885,7 +938,9 @@ function updateAndDrawParticles(segments, dt, clearForSnap) {
         )
       )
     );
-    ctx.strokeStyle = lightenColor(r.c1, PARTICLE_WHITE_MIX);
+    ctx.strokeStyle = lightenColor(
+      particle.dir > 0 ? r.c1 : r.c0, PARTICLE_WHITE_MIX,
+    );
     ctx.beginPath();
     ctx.moveTo(x, y); ctx.lineTo(x2, y2);
     ctx.stroke();
@@ -969,7 +1024,7 @@ function draw(dt = 0) {
       if (h < MIN_DRAW) continue;
       const f = FLOWS[i];
       list.push({
-        h, value: g.fv[i],
+        h, value: g.fv[i], rr: g.bv[i] > 0 ? (f.rr || 0) : 0,
         y0: g.L.ys[f.s] + g.offS[i], y1: g.R.ys[f.d] + g.offD[i],
         c0: entColor(SRC[f.s]), c1: entColor(DST[f.d]),
         key: "2|" + i, hot: hovSet && hovSet.has(i),
@@ -980,14 +1035,14 @@ function draw(dt = 0) {
   } else {
     const lk = g.links;
     const left = svList.map((l, k) => ({
-      h: lk.lv[k] * g.S, value: lk.lv[k],
+      h: lk.lv[k] * g.S, value: lk.lv[k], rr: lk.lrr[k],
       y0: g.L.ys[l.s] + lk.offLs[k], y1: g.Mid.ys[l.v] + lk.offLv[k],
       c0: entColor(SRC[l.s]), c1: svcColor(l.v, SVC[l.v]),
       key: "3L|" + k, hot: hovSet && l.idxs.some(i => hovSet.has(i)),
       dim: SRC[l.s].id === OTHER || SVC[l.v] === OTHER ? OTHER_RIBBON_DIM : 1,
     })).filter(r => r.h >= MIN_DRAW);
     const right = vdList.map((l, k) => ({
-      h: lk.rv[k] * g.S, value: lk.rv[k],
+      h: lk.rv[k] * g.S, value: lk.rv[k], rr: lk.rrr[k],
       y0: g.Mid.ys[l.v] + lk.offRv[k], y1: g.R.ys[l.d] + lk.offRd[k],
       c0: svcColor(l.v, SVC[l.v]), c1: entColor(DST[l.d]),
       key: "3R|" + k, hot: hovSet && l.idxs.some(i => hovSet.has(i)),
@@ -997,7 +1052,7 @@ function draw(dt = 0) {
     drawRibbons(xM + NW, xR, right);
   }
 
-  updateAndDrawParticles(particleSegments, dt, g.repickScaleGauge);
+  updateAndDrawParticles(particleSegments, playing ? dt : 0, g.repickScaleGauge);
 
   function bars(nodes, colVals, col, x, side) {
     let lastLabelY = -1e9, lastLabelA = 0;
@@ -1350,7 +1405,10 @@ function downloadClip() {
       if (dc[x]) { pc.push(x - a, dc[x]); ntotC[x-a] += dc[x]; }
     }
     if (!pb.length && !pc.length) return;
-    flows.push({ s: f.s, d: f.d, v: f.v, b: pb, c: pc });
+    flows.push({
+      s: f.s, d: f.d, v: f.v, b: pb, c: pc,
+      ...(f.rr ? { rr: f.rr } : {}),
+    });
     usedS.add(f.s); usedD.add(f.d); usedV.add(f.v);
   });
   if (!flows.length) {

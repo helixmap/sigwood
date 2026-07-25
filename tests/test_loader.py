@@ -60,7 +60,11 @@ from sigwood.common.loader import (
 )
 from sigwood.exporters import _auto_filename
 from sigwood.parsers.syslog import parse_timestamp
-from sigwood.parsers.zeek import _normalize_dns_df
+from sigwood.parsers.zeek import (
+    _OPTIONAL_COLUMNS,
+    _normalize_conn_df,
+    _normalize_dns_df,
+)
 
 
 def _write_ndjson(path: Path, records: list[dict]) -> None:
@@ -340,6 +344,29 @@ def test_schema_warning_does_not_fire_for_missing_graph_enrichment() -> None:
         "ts": 1_779_750_000.0, "duration": 600.0,
     }])
     assert _schema_warning("conn*.log*", df) is None
+
+
+def test_conn_responder_bytes_are_optional_and_survive_normalization() -> None:
+    """Responder byte direction is enrichment, not part of the conn spine."""
+    assert "resp_bytes" in _OPTIONAL_COLUMNS["conn"]
+    absent = pd.DataFrame([{
+        "id.orig_h": "192.0.2.10",
+        "id.resp_h": "198.51.100.20",
+        "id.resp_p": 443,
+        "proto": "tcp",
+        "ts": 1_779_750_000.0,
+    }])
+    present = absent.assign(orig_bytes=128, resp_bytes=384)
+
+    normalized_absent = _normalize_conn_df(absent)
+    normalized_present = _normalize_conn_df(present)
+
+    assert _schema_warning("conn*.log*", normalized_absent) is None
+    assert "resp_bytes" not in normalized_absent
+    assert normalized_present[["bytes", "resp_bytes"]].iloc[0].tolist() == [
+        128,
+        384,
+    ]
 
 
 def test_schema_warning_fires_for_missing_required_conn_field() -> None:

@@ -179,6 +179,32 @@ def test_graph_arbitrary_named_sniffed_conn_file_writes_exact_html(
     assert "__SIGWOOD_GRAPH_DATA__" not in html
 
 
+def test_graph_conn_artifact_carries_exact_responder_share(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The real sniff -> loader -> builder -> artifact route preserves direction."""
+    conn = tmp_path / "asymmetric-capture"
+    conn.write_text(
+        _CONN_LINE.replace(
+            '"orig_bytes":128',
+            '"orig_bytes":128,"resp_bytes":384',
+        ),
+        encoding="utf-8",
+    )
+    target = tmp_path / "asymmetric.html"
+    _stub_config(monkeypatch, _config())
+
+    rc = cli._main(["graph", "--all", "-q", f"--out={target}", str(conn)])
+
+    assert rc == 0
+    html = target.read_text(encoding="utf-8")
+    payload = json.loads(
+        html.split("const DATA = ", 1)[1].split(";</script>", 1)[0]
+    )
+    assert payload["flows"][0]["rr"] == 0.75
+    assert json.loads(json.dumps(payload, allow_nan=False)) == payload
+
+
 def test_graph_cli_contains_an_oversized_optional_duration(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

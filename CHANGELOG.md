@@ -45,6 +45,16 @@ All notable changes to sigwood are recorded here. The format follows
   an exact `--out` file. Kind names and paths don't mix - a file literally named
   `conn` is reached as `./conn`. With kinds selected, only those families are
   probed, so a broken or unreadable unselected source no longer fails the run.
+- **Graph flow grain is bidirectional.** Byte-active conn replays now show
+  responder traffic as reverse grain - particles drifting destination-to-source
+  in the source's color - split from forward grain by each flow's true
+  responder-byte share (Zeek's `resp_bytes`, newly carried in the canonical
+  connection schema). Ratios are exact at every aggregation tier - server
+  folds and in-player rollups both sum bytes before dividing - so a
+  download-heavy flow honestly shows mostly reverse grain. Ribbon shapes,
+  counts, and saved-artifact geometry are unchanged; the optional direction
+  ratio travels with clips, and graphs without responder data simply show
+  forward grain as before.
 - **The report says how it was made.** Text and HTML/PDF reports now carry a
   provenance row - `generated: <timestamp>  ·  sigwood <version>` - and, for CLI
   runs, `as: <the exact command line>` - so a saved report answers "which tool,
@@ -133,8 +143,10 @@ All notable changes to sigwood are recorded here. The format follows
   slight speed variation, a restarting ribbon fills uniformly along its length,
   and the round dots are replaced by short motion streaks that follow the
   ribbon's curve - longer for faster flow - with a gentle brightness shimmer
-  lifted off the ribbon color. Flow direction, the toggle and its defaults,
-  and saved artifacts are unchanged.
+  lifted off the ribbon color. Particles now pause with playback: a paused
+  frame is fully still, and a filter click while paused recomposes the grain
+  without motion. Flow direction, the toggle and its defaults, and saved
+  artifacts are unchanged.
 - **The graph header now counts the files that fed the graph, not the archive it
   scanned.** The source cell used to report every file discovered under the
   source directory (`+ 294 others` on a large rotation archive) even when the

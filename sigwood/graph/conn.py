@@ -83,6 +83,8 @@ def build(
         "svc": service,
         "metric": metric,
     }
+    if not missing_bytes and "resp_bytes" in frame.columns:
+        prepared_data["resp"] = frame["resp_bytes"].map(_clean_nonnegative)
     if bands_active:
         prepared_data["dur"] = clean_duration
     prepared = pd.DataFrame(prepared_data)

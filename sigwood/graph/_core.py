@@ -586,6 +586,28 @@ def _build_raw_basis(
     )
 
 
+def _fold_identity_codes(
+    frame: pd.DataFrame,
+    *,
+    codebook: _Codebook,
+    host_limit: int,
+    service_limit: int,
+) -> dict[str, np.ndarray]:
+    """Map identity codes through the one canonical keep/other fold."""
+    keep = {
+        "sc": np.asarray(codebook.ranked_src[:host_limit], dtype=np.int32),
+        "dc": np.asarray(codebook.ranked_dst[:host_limit], dtype=np.int32),
+        "vc": np.asarray(codebook.ranked_svc[:service_limit], dtype=np.int32),
+    }
+    columns: dict[str, np.ndarray] = {}
+    for column in ("sc", "dc", "vc"):
+        data = frame[column].to_numpy(dtype=np.int32)
+        columns[column] = np.where(
+            np.isin(data, keep[column]), data, np.int32(-1),
+        ).astype(np.int32, copy=False)
+    return columns
+
+
 def _fold_basis(
     basis: _RawBasis,
     *,
@@ -594,19 +616,13 @@ def _fold_basis(
     service_limit: int,
 ) -> pd.DataFrame:
     """Fold current-width bases and return one ephemeral code-keyed grouping."""
-    keep = {
-        "sc": np.asarray(codebook.ranked_src[:host_limit], dtype=np.int32),
-        "dc": np.asarray(codebook.ranked_dst[:host_limit], dtype=np.int32),
-        "vc": np.asarray(codebook.ranked_svc[:service_limit], dtype=np.int32),
-    }
-
     def fold(raw: pd.DataFrame, values: dict[str, tuple[str, str]]) -> pd.DataFrame:
-        columns: dict[str, np.ndarray] = {}
-        for column in ("sc", "dc", "vc"):
-            data = raw[column].to_numpy(dtype=np.int32)
-            columns[column] = np.where(
-                np.isin(data, keep[column]), data, np.int32(-1),
-            ).astype(np.int32, copy=False)
+        columns = _fold_identity_codes(
+            raw,
+            codebook=codebook,
+            host_limit=host_limit,
+            service_limit=service_limit,
+        )
         columns["bin"] = raw["bin"].to_numpy(copy=False)
         for source, _aggregation in values.values():
             columns[source] = raw[source].to_numpy(copy=False)
@@ -1010,6 +1026,8 @@ def build_payload(
         coerced = df["metric"].map(_coerce_metric_with_flag)
         df["metric"] = coerced.map(lambda item: item[0])
         df["_metric_altered"] = coerced.map(lambda item: item[1])
+    if "resp" in df.columns:
+        df["resp"] = df["resp"].map(_coerce_metric)
     if "dur" in df.columns:
         df["dur"] = df["dur"].map(_coerce_duration)
     for column in ("src", "dst"):
@@ -1074,6 +1092,13 @@ def build_payload(
         for column in ("src", "dst", "svc")
     }
     coded, codebook = _factor_identities(df, rankings=rankings)
+    response_totals: pd.DataFrame | None = None
+    if "resp" in coded.columns:
+        response_totals = (
+            coded.groupby(["sc", "dc", "vc"], sort=False)
+            .agg(orig=("metric", "sum"), resp=("resp", "sum"))
+            .reset_index()
+        )
     basis = _build_raw_basis(
         coded,
         t0=t0,
@@ -1201,6 +1226,33 @@ def build_payload(
     grouped, altered_metric_cells = _saturate_grouped_metrics(
         grouped_labeled, count_by=count_by,
     )
+    response_shares: dict[tuple[str, str, str], float] = {}
+    if response_totals is not None:
+        response_columns = _fold_identity_codes(
+            response_totals,
+            codebook=codebook,
+            host_limit=host_limit,
+            service_limit=service_limit,
+        )
+        response_columns["orig"] = response_totals["orig"].to_numpy(copy=False)
+        response_columns["resp"] = response_totals["resp"].to_numpy(copy=False)
+        response_grouped = (
+            pd.DataFrame(response_columns, copy=False)
+            .groupby(["sc", "dc", "vc"], sort=False)
+            .agg(orig=("orig", "sum"), resp=("resp", "sum"))
+            .reset_index()
+        )
+        response_labeled = _label_grouped(response_grouped, codebook)
+        for row in response_labeled.itertuples(index=False):
+            denominator = float(row.orig) + float(row.resp)
+            if not math.isfinite(denominator) or denominator <= 0:
+                continue
+            share = float(row.resp) / denominator
+            if not math.isfinite(share):
+                continue
+            rounded = round(min(1.0, max(0.0, share)), 4)
+            if rounded > 0:
+                response_shares[(str(row.s), str(row.d), str(row.v))] = rounded
     totals_b = grouped.groupby("bin", sort=False)["b"].sum().reindex(
         range(bins), fill_value=0,
     )
@@ -1247,15 +1299,17 @@ def build_payload(
     flows: list[dict[str, Any]] = []
     preserve_fraction = count_by == "weight"
     for (src, dst, svc), group in grouped.groupby(["s", "d", "v"], sort=False):
-        flows.append(
-            {
-                "s": src_index[str(src)],
-                "d": dst_index[str(dst)],
-                "v": svc_index[str(svc)],
-                "b": _pairs(group, "b", preserve_fraction=preserve_fraction),
-                "c": _pairs(group, "c", preserve_fraction=preserve_fraction),
-            }
-        )
+        flow = {
+            "s": src_index[str(src)],
+            "d": dst_index[str(dst)],
+            "v": svc_index[str(svc)],
+            "b": _pairs(group, "b", preserve_fraction=preserve_fraction),
+            "c": _pairs(group, "c", preserve_fraction=preserve_fraction),
+        }
+        share = response_shares.get((str(src), str(dst), str(svc)))
+        if share is not None:
+            flow["rr"] = share
+        flows.append(flow)
     flows.sort(key=lambda flow: (-sum(flow["b"][1::2]), flow["s"], flow["d"], flow["v"]))
 
     first_src = df.groupby("s", sort=False)["bin"].min()

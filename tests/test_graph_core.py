@@ -42,6 +42,25 @@ def _conn_frame(**overrides: object) -> pd.DataFrame:
     return pd.DataFrame(columns)
 
 
+def _labeled_flow(
+    payload: dict[str, object],
+    src: str,
+    dst: str,
+    svc: str,
+) -> dict[str, object]:
+    src_nodes = payload["srcNodes"]
+    dst_nodes = payload["dstNodes"]
+    svc_nodes = payload["svcNodes"]
+    for flow in payload["flows"]:
+        if (
+            src_nodes[flow["s"]]["id"] == src
+            and dst_nodes[flow["d"]]["id"] == dst
+            and svc_nodes[flow["v"]] == svc
+        ):
+            return flow
+    raise AssertionError(f"flow not found: {src} -> {svc} -> {dst}")
+
+
 def _timestamp_frame(counts: dict[int, int]) -> pd.DataFrame:
     """Build a compact synthetic row population keyed by one-second bin."""
     return pd.DataFrame({
@@ -617,6 +636,96 @@ def test_clean_labels_coalesce_before_grouping_and_ranking() -> None:
     assert payload["flows"] == [{"s": 0, "d": 0, "v": 0, "b": [0, 3], "c": [0, 2]}]
 
 
+def test_conn_responder_share_is_asymmetric_width_independent_and_strict_json() -> None:
+    frame = _conn_frame(
+        ts=[0.0, 86_400.0],
+        bytes=[10, 20],
+        resp_bytes=[30, 80],
+    )
+
+    narrow = build_conn(
+        frame,
+        config=_config(target_bins=1),
+        source_label="conn.log",
+    )
+    wide = build_conn(
+        frame,
+        config=_config(target_bins=200),
+        source_label="conn.log",
+    )
+
+    for payload in (narrow, wide):
+        assert _labeled_flow(
+            payload, "192.0.2.10", "198.51.100.10", "443/tcp",
+        )["rr"] == 0.75
+        assert _labeled_flow(
+            payload, "192.0.2.11", "198.51.100.11", "53/udp",
+        )["rr"] == 0.8
+        assert json.loads(json.dumps(payload, allow_nan=False)) == payload
+
+
+def test_conn_responder_share_folds_sums_before_dividing() -> None:
+    payload = build_conn(
+        _conn_frame(
+            ts=[0.0, 1.0, 2.0],
+            src=["192.0.2.1", "192.0.2.2", "192.0.2.3"],
+            dst=["198.51.100.1", "198.51.100.2", "198.51.100.3"],
+            port=[443, 53, 22],
+            proto=["tcp", "udp", "tcp"],
+            bytes=[1_000, 100, 10],
+            resp_bytes=[0, 100, 90],
+        ),
+        config=_config(top_hosts=1, top_services=1),
+        source_label="conn.log",
+    )
+
+    folded = _labeled_flow(payload, "(other)", "(other)", "(other)")
+    assert folded["rr"] == 0.6333
+    assert folded["rr"] != round((0.5 + 0.9) / 2, 4)
+
+
+def test_conn_responder_share_saturates_each_byte_side_equally() -> None:
+    payload = build_conn(
+        _conn_frame(
+            bytes=[1e100, 1],
+            resp_bytes=[1e100, 0],
+        ),
+        config=_config(),
+        source_label="conn.log",
+    )
+
+    assert _labeled_flow(
+        payload, "192.0.2.10", "198.51.100.10", "443/tcp",
+    )["rr"] == 0.5
+
+
+def test_conn_responder_share_omits_absent_zero_and_count_only_cases() -> None:
+    payloads = [
+        build_conn(
+            _conn_frame(),
+            config=_config(),
+            source_label="conn.log",
+        ),
+        build_conn(
+            _conn_frame(bytes=[10, 0], resp_bytes=[0, 0]),
+            config=_config(),
+            source_label="conn.log",
+        ),
+        build_conn(
+            _conn_frame(bytes=[0, 0], resp_bytes=[100, 300]),
+            config=_config(),
+            source_label="conn.log",
+        ),
+    ]
+
+    assert payloads[2]["meta"]["missing_bytes"] is True
+    assert all(
+        "rr" not in flow
+        for payload in payloads
+        for flow in payload["flows"]
+    )
+
+
 def test_dns_uses_qtype_fallback_then_resolver_and_rolls_domains() -> None:
     qtype_payload = build_dns(
         pd.DataFrame(
@@ -638,6 +747,7 @@ def test_dns_uses_qtype_fallback_then_resolver_and_rolls_domains() -> None:
     assert [node["id"] for node in qtype_payload["dstNodes"]] == ["example.com"]
     assert qtype_payload["totB"] == [1, 1]
     assert qtype_payload["totC"] == [1, 1]
+    assert all("rr" not in flow for flow in qtype_payload["flows"])
 
     resolver_payload = build_dns(
         pd.DataFrame(

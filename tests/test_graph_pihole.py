@@ -57,6 +57,7 @@ def test_pihole_builder_deduplicates_raw_dispositions_and_weights_queries() -> N
     assert masses == pytest.approx({"cached": 1.2, "forwarded": 0.8, "(unattributed)": 1.0})
     assert sum(payload["totC"]) == pytest.approx(3.0)
     assert all(isinstance(value, float) for value in payload["totC"])
+    assert all("rr" not in flow for flow in payload["flows"])
 
 
 def test_pihole_disposition_taxonomy_stays_narrow() -> None:

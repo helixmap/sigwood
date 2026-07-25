@@ -309,6 +309,7 @@ def test_clip_export_reuses_the_data_script_escape_before_reembedding() -> None:
     assert "<" not in blob
     assert rebuilt.count("</script>") == 1
     assert json.loads(blob) == payload
+    assert "...(f.rr ? { rr: f.rr } : {})" in template
 
 
 def test_conn_band_labels_and_clip_loss_use_structured_semantics() -> None:
@@ -519,7 +520,7 @@ def test_player_flow_particles_are_bounded_and_boot_from_one_dynamic_default() -
 
     assert (
         "const particlePool = Array.from({ length: PARTICLE_BUDGET }, () => ({\n"
-        '  live: false, key: "", u: 0, f: 0, j: 1, phase: 0,\n'
+        '  live: false, key: "", u: 0, f: 0, j: 1, phase: 0, dir: 1,\n'
         "}));"
     ) in template
     assert "const particleSegmentMap = new Map();" in template
@@ -537,20 +538,30 @@ def test_player_flow_particles_are_bounded_and_boot_from_one_dynamic_default() -
     assert "cumulativeIdeal += ideal;" in updater
     assert "const cumulativeTarget = Math.round(cumulativeIdeal);" in updater
     assert "r.particleTarget = cumulativeTarget - assigned;" in updater
+    assert "r.reverseTarget = Math.round(r.particleTarget * r.rr);" in updater
+    assert "r.forwardTarget = r.particleTarget - r.reverseTarget;" in updater
+    assert "r.forwardCount = 0; r.reverseCount = 0;" in updater
     assert (
         "const velocity = PARTICLE_V_MIN + (PARTICLE_V_MAX - PARTICLE_V_MIN)"
         in updater
     )
     assert " * (r.value / frameMax);" in updater
     assert "Math.hypot(r.x1 - r.x0, r.y1 - r.y0)" in updater
-    assert "particle.u += dt * velocity * particle.j / chord;" in updater
-    assert "if (particle.u >= 1) {" in updater
+    assert "particle.u += particle.dir * dt * velocity * particle.j / chord;" in updater
+    assert (
+        "if ((particle.dir > 0 && particle.u >= 1)\n"
+        "        || (particle.dir < 0 && particle.u <= 0)) {"
+    ) in updater
     refill = updater.split("let cursor = 0;", 1)[1].split("ctx.save();", 1)[0]
-    assert "const pipeFill = r.particleCount === 0;" in refill
-    assert refill.index("const pipeFill = r.particleCount === 0;") < refill.index(
-        "while (r.particleCount < r.particleTarget) {"
+    assert "for (let directionPass = 0; directionPass < 2; directionPass++) {" in updater
+    assert 'const countKey = dir > 0 ? "forwardCount" : "reverseCount";' in updater
+    assert 'const targetKey = dir > 0 ? "forwardTarget" : "reverseTarget";' in updater
+    assert "const pipeFill = r[countKey] === 0;" in refill
+    assert refill.index("const pipeFill = r[countKey] === 0;") < refill.index(
+        "while (r[countKey] < r[targetKey]) {"
     )
-    assert "particle.u = pipeFill ? Math.random() : 0;" in refill
+    assert "particle.u = pipeFill ? Math.random() : (dir > 0 ? 0 : 1);" in refill
+    assert "particle.dir = dir;" in refill
     assert "particle.f = 0.15 + Math.random() * 0.70;" in refill
     assert "particle.j = 0.75 + Math.random() * 0.5;" in refill
     assert "particle.phase = Math.random() * 2 * Math.PI;" in refill
@@ -571,7 +582,11 @@ def test_player_flow_particles_are_bounded_and_boot_from_one_dynamic_default() -
     assert "Math.max(" in updater
     assert "PARTICLE_STREAK_MIN," in updater
     assert "velocity * particle.j * PARTICLE_STREAK_SECONDS" in updater
-    assert "const u2 = Math.min(1, particle.u + lengthPx / chord);" in updater
+    assert (
+        "const u2 = Math.max(0, Math.min(\n"
+        "      1, particle.u + particle.dir * lengthPx / chord,\n"
+        "    ));"
+    ) in updater
     assert "const v2 = 1 - u2;" in updater
     assert (
         "v2*v2*v2*r.x0 + 3*v2*v2*u2*cx + 3*v2*u2*u2*cx"
@@ -583,7 +598,11 @@ def test_player_flow_particles_are_bounded_and_boot_from_one_dynamic_default() -
     )
     assert "ctx.lineCap = \"round\";" in updater
     assert "ctx.lineWidth = PARTICLE_STREAK_WIDTH;" in updater
-    assert "ctx.strokeStyle = lightenColor(r.c1, PARTICLE_WHITE_MIX);" in updater
+    assert (
+        "ctx.strokeStyle = lightenColor(\n"
+        "      particle.dir > 0 ? r.c1 : r.c0, PARTICLE_WHITE_MIX,\n"
+        "    );"
+    ) in updater
     assert "ctx.globalAlpha = PARTICLE_ALPHA * r.alpha * (" in updater
     assert re.search(
         r"Math\.sin\(\s*particleClock \* PARTICLE_TWINKLE_HZ \* 2 "
@@ -609,8 +628,15 @@ def test_player_flow_particles_are_bounded_and_boot_from_one_dynamic_default() -
     draw = template.split("function draw(dt = 0) {", 1)[1].split(
         "/* ---------- timeline", 1,
     )[0]
-    particle_call = "updateAndDrawParticles(particleSegments, dt, g.repickScaleGauge);"
+    particle_call = (
+        "updateAndDrawParticles("
+        "particleSegments, playing ? dt : 0, g.repickScaleGauge);"
+    )
     assert particle_call in draw
+    assert (
+        "updateAndDrawParticles(particleSegments, dt, g.repickScaleGauge);"
+        not in draw
+    )
     assert draw.index(particle_call) > draw.index("drawRibbons(xM + NW, xR, right);")
     assert draw.index(particle_call) < draw.index(
         "bars(SRC, g.sVal, g.L, xL, \"L\");"
@@ -618,7 +644,30 @@ def test_player_flow_particles_are_bounded_and_boot_from_one_dynamic_default() -
     assert "value: g.fv[i]" in draw
     assert "value: lk.lv[k]" in draw
     assert "value: lk.rv[k]" in draw
+    assert "rr: g.bv[i] > 0 ? (f.rr || 0) : 0," in draw
+    assert "rr: lk.lrr[k]," in draw
+    assert "rr: lk.rrr[k]," in draw
     assert "r.x0 = x0; r.x1 = x1; r.alpha =" in draw
+
+    model = template.split("function buildModel(level) {", 1)[1].split(
+        "/* ---------- smoothing", 1,
+    )[0]
+    assert "const rawBytesPerFlow = rawDenseB.map(a => {" in template
+    assert "function totalByteWeight(byteContribution, rr) {" in template
+    assert "1 - Math.min(rr || 0, 0.9999)" in template
+    assert "const weight = totalByteWeight(rawBytesPerFlow[i], rr);" in model
+    assert "rrNum += weight * rr; rrDen += weight;" in model
+    assert template.count("1 - Math.min(rr || 0, 0.9999)") == 1
+    layout = template.split("function layout(tt) {", 1)[1].split(
+        "/* ---------- drawing", 1,
+    )[0]
+    assert "const bv = new Float32Array(NF);" in layout
+    assert (
+        "const left = aggregateLinks(svList), right = aggregateLinks(vdList);"
+        in layout
+    )
+    assert "const weight = totalByteWeight(bv[i], rr);" in layout
+    assert "ratios[k] = rrDen > 0 ? rrNum / rrDen : 0;" in layout
 
     tick = template.split("function tick(now) {", 1)[1].split(
         "/* ---------- controls ---------- */", 1,

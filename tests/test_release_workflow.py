@@ -1,4 +1,4 @@
-"""Protect the release workflow's privileged publishing boundary."""
+"""Guard workflow action pins and the release publishing boundary."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parents[1]
 _WORKFLOW = _ROOT / ".github" / "workflows" / "release.yml"
-_LINK_CHECK_WORKFLOW = _ROOT / ".github" / "workflows" / "link-check.yml"
+_WORKFLOW_DIR = _ROOT / ".github" / "workflows"
 _JOB_HEADER = re.compile(r"^  (?P<name>[A-Za-z0-9_-]+):\s*$")
 _USES = re.compile(
     r"^\s*(?:-\s+)?uses:\s+(?P<target>[^\s#]+)", re.MULTILINE
@@ -48,14 +48,26 @@ def _assert_actions_sha_pinned(workflow: str) -> None:
     assert unpinned == [], f"workflow actions must use full SHA pins: {unpinned}"
 
 
-def test_release_actions_are_sha_pinned() -> None:
-    _assert_actions_sha_pinned(_WORKFLOW.read_text(encoding="utf-8"))
+def test_all_workflow_actions_are_sha_pinned() -> None:
+    workflow_paths = sorted(
+        [*_WORKFLOW_DIR.glob("*.yml"), *_WORKFLOW_DIR.glob("*.yaml")]
+    )
+    # Empty discovery must fail instead of passing while protecting no workflows.
+    assert workflow_paths, "workflow discovery must find at least one workflow"
 
+    failures = []
+    for workflow_path in workflow_paths:
+        workflow = workflow_path.read_text(encoding="utf-8")
+        if not _action_targets(workflow):
+            continue
+        try:
+            _assert_actions_sha_pinned(workflow)
+        except AssertionError as exc:
+            failures.append(
+                f"{workflow_path.relative_to(_ROOT)}: {str(exc).splitlines()[0]}"
+            )
 
-def test_link_check_actions_are_sha_pinned() -> None:
-    # CI's existing tag pins remain a separate accepted policy; this guard owns
-    # the privileged release and the informational external-link workflows.
-    _assert_actions_sha_pinned(_LINK_CHECK_WORKFLOW.read_text(encoding="utf-8"))
+    assert failures == [], "\n".join(failures)
 
 
 def test_sha_pin_guard_covers_uses_after_step_metadata() -> None:

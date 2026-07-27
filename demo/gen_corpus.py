@@ -59,10 +59,16 @@ FLOW = {
     "bench_duration": 0x13,
     "bench_background": 0x14,
     "bench_bytes": 0x15,
+    "below_gate_parent": 0x16,
+    "below_gate_labels": 0x17,
+    "below_gate_timing": 0x18,
 }
 
 WINDOW_SECONDS = 86_400  # a 24h corpus
 PIHOLE_DGA_COUNT = 20    # below pihole min_cluster_size so the burst stays noise
+BELOW_GATE_SUBDOMAIN_COUNT = 8
+BELOW_GATE_QUIET_VOLUME = 40
+BELOW_GATE_LOUD_VOLUME = 4_000
 
 # Measurement-bench selectors and calibration pins. Tests import these values from
 # the live generator so the synthetic recipe has one owner.
@@ -76,6 +82,7 @@ BENCH_DURATION_SECONDS = 18_000.0
 # are a realistic DGA shape and clear the detector's entropy gates cleanly.
 DGA_ALPHABET = "0123456789bcdfghjklmnpqrstvwxyz"
 BASE36 = "0123456789abcdefghijklmnopqrstuvwxyz"
+LETTERS = "abcdefghijklmnopqrstuvwxyz"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -361,6 +368,13 @@ def _gen_dns(rows: list[dict], rng_for, epoch0: float) -> str:
                  [rb.choice([30, 45])],
                  [] if nx else [f"203.0.113.{rb.randint(10, 250)}"])
 
+    _gen_below_gate_dns(
+        rows,
+        rng_for,
+        epoch0,
+        volume=BELOW_GATE_QUIET_VOLUME,
+    )
+
     # Allowlist bite - a minority of queries the shipped domains_common list
     # suppresses before the detector runs (reverse-PTR .arpa, mDNS .local,
     # DNS-SD _service). Kept small so real background still dominates.
@@ -385,6 +399,50 @@ def _gen_dns(rows: list[dict], rng_for, epoch0: float) -> str:
 
     rows.sort(key=lambda r: r["ts"])
     return apex
+
+
+def _gen_below_gate_dns(
+    rows: list[dict],
+    rng_for,
+    epoch0: float,
+    *,
+    volume: int,
+) -> str:
+    """Add one seeded letter-only NXDOMAIN family at the requested volume."""
+    parent_rng = rng_for("below_gate_parent")
+    label_rng = rng_for("below_gate_labels")
+    timing_rng = rng_for("below_gate_timing")
+    parent_label = "".join(
+        parent_rng.choice(LETTERS) for _ in range(12)
+    )
+    parent = f"{parent_label}.xyz"
+
+    labels: list[str] = []
+    while len(labels) < BELOW_GATE_SUBDOMAIN_COUNT:
+        label = "".join(label_rng.choice(LETTERS) for _ in range(16))
+        if label not in labels:
+            labels.append(label)
+
+    # Alternating behavior modes are deterministic at every volume. The quiet
+    # cast stays below the clustering floor; at 4,000 rows the family forms two
+    # 2,000-row clusters, preserving the full-frame volume invariant.
+    start = epoch0 + 50_000
+    for index in range(volume):
+        mode = index % 2
+        ts = start + index * 0.5 + timing_rng.uniform(-0.1, 0.1)
+        query = f"{labels[index % len(labels)]}.{parent}"
+        _dns_row(
+            rows,
+            ts,
+            WEBHOST,
+            query,
+            1,
+            0.01 if mode == 0 else 1.0,
+            3,
+            [30 if mode == 0 else 3600],
+            [],
+        )
+    return parent
 
 
 # ---------------------------------------------------------------------------

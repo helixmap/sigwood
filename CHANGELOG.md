@@ -6,6 +6,19 @@ All notable changes to sigwood are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **Families of low-scoring names that mostly fail to resolve are now visible.** A single
+  odd-looking domain that scores below the detector's bar stays quiet, as before - but when
+  one parent domain carries several such names and nearly all of their lookups come back
+  NXDOMAIN, sigwood now reports the family as one INFO finding. That is the shape of a
+  rotating rendezvous or a subdomain generator whose infrastructure is dead, and it was
+  previously invisible no matter how many names were involved. It reads the whole log rather
+  than the clustered subset, so a busy family cannot hide by being big. Zeek only - Pi-hole
+  logs carry no response code, so the check stays silent there rather than guessing. Tunable
+  under `[detectors.dns]` (`promote_below_gate`, `promote_min_subdomains`,
+  `promote_min_nxdomain_fraction`), and off by one setting if you would rather not see them.
+
 ### Changed
 
 - **DNS severity is earned by behaviour now, not by the label score alone.** A

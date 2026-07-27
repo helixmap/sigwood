@@ -63,6 +63,12 @@ DEFAULT_CONFIG = {
     "min_cluster_size": 2000,
     "min_samples": 100,
     "threshold": 1.8,
+    # Below-gate group promotion (Zeek path only). Individually low-scoring
+    # names become visible as an INFO group only when a parent carries enough
+    # distinct subdomains and their lookups are overwhelmingly NXDOMAIN.
+    "promote_below_gate": True,
+    "promote_min_subdomains": 5,
+    "promote_min_nxdomain_fraction": 0.9,
     # thresh_high_entropy / scan_min_high_entropy_fraction gate the per-label
     # suspicion score (dns.entropy() - a weighted lexical heuristic, NOT Shannon
     # entropy), not an information-theoretic measure.
@@ -824,6 +830,127 @@ def _enrich_zeek_with_pihole(
     return dns_df
 
 
+def _make_below_gate_group_findings(
+    dns_df: pd.DataFrame,
+    *,
+    threshold: float,
+    min_subdomains: int,
+    min_nxdomain_fraction: float,
+    surfaced_parents: set[str],
+    now: datetime,
+    data_window: tuple[datetime, datetime],
+) -> list[Finding]:
+    """Promote resolution-dominated below-gate Zeek families from the full frame.
+
+    This pass deliberately does not consume ``candidate_df``. A high-volume
+    family can self-cluster, fail the dense high-score scan, and therefore be
+    absent from both the noise and surfaced-dense candidate sets. Reading the
+    full normalized frame keeps increased volume from making the family vanish.
+    """
+    if (
+        dns_df.empty
+        or "query" not in dns_df.columns
+        or "rcode" not in dns_df.columns
+    ):
+        return []
+
+    valid_query = dns_df["query"].notna() & dns_df["query"].apply(
+        lambda value: isinstance(value, str)
+    )
+    full = dns_df[valid_query].copy()
+    if full.empty:
+        return []
+
+    distinct = pd.DataFrame({"query": pd.unique(full["query"])})
+    distinct["_ext"] = distinct["query"].apply(_TLD_EXTRACT)
+    distinct["registrable_domain"] = distinct.apply(
+        lambda row: row["_ext"].top_domain_under_public_suffix or row["query"],
+        axis=1,
+    )
+    distinct["label_entropy"] = distinct.apply(
+        lambda row: _max_subdomain_entropy(row["query"], row["_ext"]),
+        axis=1,
+    )
+    # A registrable-domain apex is not a subdomain and cannot advance the
+    # distinct-name floor.
+    below = distinct[
+        (distinct["query"] != distinct["registrable_domain"])
+        & (distinct["label_entropy"] < threshold)
+    ].copy()
+    if below.empty:
+        return []
+
+    below_by_query = below.set_index("query")
+    full = full[full["query"].isin(below_by_query.index)].copy()
+    full["registrable_domain"] = full["query"].map(
+        below_by_query["registrable_domain"]
+    )
+    full_groups = full.groupby("registrable_domain", sort=False)
+
+    findings: list[Finding] = []
+    for reg_domain, query_shapes in below.groupby("registrable_domain", sort=True):
+        parent = str(reg_domain)
+        if parent in surfaced_parents or len(query_shapes) < min_subdomains:
+            continue
+
+        query_names = query_shapes["query"].tolist()
+        rows = full_groups.get_group(reg_domain)
+        rcode_stats = _nxdomain_stats(rows["rcode"].value_counts().to_dict())
+        if rcode_stats is None or rcode_stats[0] < min_nxdomain_fraction:
+            continue
+
+        sources: list[str] = []
+        if "src" in rows.columns:
+            sources = [
+                source
+                for source in rows["src"].dropna().unique().tolist()
+                if isinstance(source, str)
+            ]
+        label_scores = query_shapes["label_entropy"].astype(float)
+        # ``_severity_for`` remains the only severity-basis owner. Promotion is
+        # INFO because the mandatory lexical leg did not clear; the behavior
+        # that made it visible lives in tier + resolution evidence.
+        _, severity_basis = _severity_for(None, dense_origin=False)
+        fraction, nxdomain_count = rcode_stats
+        next_steps = [
+            f"Review the queried names under {parent}",
+            "Check whether the parent is expected in this environment",
+        ]
+        if sources:
+            next_steps.insert(
+                1, f"Pivot on querier IPs: {', '.join(sources[:5])}"
+            )
+        findings.append(Finding(
+            detector=DETECTOR_NAME,
+            severity=Severity.INFO,
+            title=parent,
+            description=(
+                f"Registrable domain {parent} has a family of names that mostly "
+                "fail to resolve. This pattern may resemble automated name generation."
+            ),
+            evidence={
+                "tier": "below_gate_group",
+                "source": "zeek",
+                "registrable_domain": parent,
+                "subdomain_count": int(len(query_shapes)),
+                "max_label_score": round(float(label_scores.max()), 4),
+                "min_label_score": round(float(label_scores.min()), 4),
+                "total_queries": int(len(rows)),
+                "unique_sources": len(sources),
+                "sample_domains": query_names[:5],
+                "querier_ips": sources,
+                "nxdomain_fraction": round(fraction, 4),
+                "nxdomain_count": nxdomain_count,
+                "severity_basis": severity_basis,
+            },
+            next_steps=next_steps,
+            ts_generated=now,
+            data_window=data_window,
+        ))
+
+    return findings
+
+
 # ---------------------------------------------------------------------------
 # Shared back half
 # ---------------------------------------------------------------------------
@@ -878,6 +1005,16 @@ def run(context: DetectorContext) -> list[Finding]:
     min_cluster_size: int  = cfg.get("min_cluster_size", DEFAULT_CONFIG["min_cluster_size"])
     min_samples: int       = cfg.get("min_samples",      DEFAULT_CONFIG["min_samples"])
     threshold: float       = cfg.get("threshold",        DEFAULT_CONFIG["threshold"])
+    promote_below_gate: bool = cfg.get(
+        "promote_below_gate", DEFAULT_CONFIG["promote_below_gate"]
+    )
+    promote_min_subdomains: int = cfg.get(
+        "promote_min_subdomains", DEFAULT_CONFIG["promote_min_subdomains"]
+    )
+    promote_min_nxdomain_fraction: float = cfg.get(
+        "promote_min_nxdomain_fraction",
+        DEFAULT_CONFIG["promote_min_nxdomain_fraction"],
+    )
     thresh_high: float     = cfg.get("thresh_high_entropy", DEFAULT_CONFIG["thresh_high_entropy"])
     pihole_cfg: dict       = {**DEFAULT_CONFIG["pihole"], **cfg.get("pihole", {})}
     scan_cfg: dict = {
@@ -901,31 +1038,54 @@ def run(context: DetectorContext) -> list[Finding]:
         return []
 
     now = datetime.now(timezone.utc)
+    zeek_full_df: pd.DataFrame | None = None
 
     if has_zeek and has_pihole:
         # Enrich Zeek frame with pihole block data BEFORE clustering (evidence-only;
         # was_blocked/block_ratio never enter the Zeek feature matrix).
         dns_df = _enrich_zeek_with_pihole(zeek_df.copy(), pihole_df)
+        zeek_full_df = dns_df
         candidate_df = _run_zeek_path(
             dns_df, min_cluster_size, min_samples, thresh_high=thresh_high, scan_cfg=scan_cfg,
         )
     elif has_zeek:
+        zeek_full_df = zeek_df
         candidate_df = _run_zeek_path(
             zeek_df, min_cluster_size, min_samples, thresh_high=thresh_high, scan_cfg=scan_cfg,
         )
     else:
         candidate_df = _run_pihole_path(pihole_df, pihole_cfg)
 
-    if candidate_df is None or candidate_df.empty:
-        return []
+    findings: list[Finding] = []
+    surfaced_parents: set[str] = set()
+    if candidate_df is not None and not candidate_df.empty:
+        findings = _shared_back_half(
+            candidate_df, threshold, now, context.data_window
+        )
+        surfaced = candidate_df[candidate_df["label_entropy"] >= threshold]
+        surfaced_parents = {
+            str(parent)
+            for parent in surfaced["registrable_domain"].dropna().tolist()
+        }
 
-    findings = _shared_back_half(candidate_df, threshold, now, context.data_window)
+        # Synthetic INFO disclosure when the dense-cluster scan produced findings -
+        # gated on the SAME threshold, so it never discloses more than the report shows.
+        summary = _make_scan_summary_finding(
+            candidate_df, threshold, now, context.data_window
+        )
+        if summary is not None:
+            findings.append(summary)
 
-    # Synthetic INFO disclosure when the dense-cluster scan produced findings -
-    # gated on the SAME threshold, so it never discloses more than the report shows.
-    summary = _make_scan_summary_finding(candidate_df, threshold, now, context.data_window)
-    if summary is not None:
-        findings.append(summary)
+    if promote_below_gate and zeek_full_df is not None:
+        findings.extend(_make_below_gate_group_findings(
+            zeek_full_df,
+            threshold=threshold,
+            min_subdomains=promote_min_subdomains,
+            min_nxdomain_fraction=promote_min_nxdomain_fraction,
+            surfaced_parents=surfaced_parents,
+            now=now,
+            data_window=context.data_window,
+        ))
 
     return findings
 

@@ -188,10 +188,8 @@ def test_build_features_extended_schema_includes_extended_columns() -> None:
 # Noise group: a3f7bc19.malware.example + m8x2q9n.malware.example → malware.example group finding.
 # Noise singleton: k8x2m5q7n1p.suspect.example → singleton finding.
 #
-# The ONLY permitted extra evidence key is the additive source="zeek".
-# All other keys and values must match exactly.
-# Assert (a) exact final order, (b) every other evidence key unchanged,
-# (c) the only added key is source=="zeek".
+# R14 adds source="zeek" and severity_basis while preserving the earlier
+# evidence values. Assert exact final order and the bounded additive key set.
 
 _REGRESSION_DF = pd.DataFrame([
     {"ts": 1.0, "src": "192.0.2.1", "query": "localhost"},               # single-label → filtered by has_dot
@@ -234,8 +232,8 @@ class _FakeHDBSCAN:
 def test_zeek_path_regression(monkeypatch) -> None:
     """Golden: Zeek path produces a group + singleton finding in exact order.
 
-    The zeek path may ONLY add source='zeek' to each finding's evidence.
-    Every other key and value must be identical.
+    The zeek path adds the frozen R14 severity basis to each finding's evidence.
+    Every pre-existing key and value must remain identical.
     """
     import sigwood.detectors.dns as dns_mod
 
@@ -289,7 +287,7 @@ def test_zeek_path_regression(monkeypatch) -> None:
             f"group evidence[{key!r}]: got {grp_f.evidence[key]!r}, expected {expected_val!r}"
         )
 
-    # source is the ONE permitted additive key
+    # R14 adds source plus the explicit, empty basis for an uncorroborated group.
     assert grp_f.evidence.get("source") == "zeek", (
         f"expected source='zeek', got {grp_f.evidence.get('source')!r}"
     )
@@ -298,13 +296,14 @@ def test_zeek_path_regression(monkeypatch) -> None:
         "total_queries", "unique_sources", "sample_domains", "querier_ips",
     }
     new_grp_keys = set(grp_f.evidence.keys()) - _pre_refactor_grp_keys
-    assert new_grp_keys == {"source"}, (
-        f"only 'source' may be added to group evidence; unexpected new keys: {new_grp_keys}"
+    assert new_grp_keys == {"source", "severity_basis"}, (
+        f"unexpected additive group evidence keys: {new_grp_keys}"
     )
+    assert grp_f.evidence["severity_basis"] == []
 
     # ── Singleton finding ─────────────────────────────────────────────────────
     sng_f = findings[1]
-    assert sng_f.severity == Severity.HIGH   # 1.93 >= 1.8
+    assert sng_f.severity == Severity.MEDIUM
     assert sng_f.title == "k8x2m5q7n1p.suspect.example"
 
     expected_sng_ev = {
@@ -325,9 +324,10 @@ def test_zeek_path_regression(monkeypatch) -> None:
         "label_score", "query_count", "unique_sources", "querier_ips", "rcode_distribution",
     }
     new_sng_keys = set(sng_f.evidence.keys()) - _pre_refactor_sng_keys
-    assert new_sng_keys == {"source"}, (
-        f"only 'source' may be added to singleton evidence; unexpected new keys: {new_sng_keys}"
+    assert new_sng_keys == {"source", "severity_basis"}, (
+        f"unexpected additive singleton evidence keys: {new_sng_keys}"
     )
+    assert sng_f.evidence["severity_basis"] == []
 
 
 # ── Pihole aggregate tests ────────────────────────────────────────────────────
@@ -633,6 +633,8 @@ def test_pihole_only_run_produces_findings(monkeypatch) -> None:
     assert all(f.evidence.get("source") == "pihole" for f in findings), (
         "all findings from a pihole-only run must carry source='pihole'"
     )
+    assert all(f.severity == Severity.MEDIUM for f in findings)
+    assert all(f.evidence["severity_basis"] == [] for f in findings)
 
 
 # ── _shared_back_half grouping ────────────────────────────────────────────────
@@ -672,11 +674,13 @@ def test_shared_back_half_grouping_consistency() -> None:
         },
     ])
 
-    findings = _shared_back_half(candidate_df, threshold=1.5, thresh_high=1.8, now=_NOW, data_window=_WINDOW)
+    findings = _shared_back_half(candidate_df, threshold=1.5, now=_NOW, data_window=_WINDOW)
 
     assert len(findings) == 1, "two rows with same registrable domain must produce one group finding"
     assert findings[0].evidence["subdomain_count"] == 2
     assert findings[0].evidence["source"] == "pihole"
+    assert findings[0].evidence["severity_basis"] == []
+    assert findings[0].severity == Severity.MEDIUM
 
 
 def test_pihole_group_qtype_counts_aggregated() -> None:
@@ -714,7 +718,7 @@ def test_pihole_group_qtype_counts_aggregated() -> None:
         },
     ])
 
-    findings = _shared_back_half(candidate_df, threshold=1.5, thresh_high=1.8, now=_NOW, data_window=_WINDOW)
+    findings = _shared_back_half(candidate_df, threshold=1.5, now=_NOW, data_window=_WINDOW)
 
     assert len(findings) == 1
     qtypes = findings[0].evidence.get("qtype_counts")
@@ -1168,8 +1172,14 @@ def test_dense_scan_surfaces_high_volume_tunnel(monkeypatch) -> None:
     labels = _high_entropy_labels(600)                       # > scan_max_members_per_cluster (500)
     tunnel = [f"{lbl}.tunnel.example" for lbl in labels]
     bg = ["www.example.com", "mail.example.com", "cdn.example.com"]  # readable/benign → noise
-    rows = [{"ts": float(i), "src": "192.0.2.10", "query": q} for i, q in enumerate(tunnel)]
-    rows += [{"ts": float(1000 + i), "src": "192.0.2.20", "query": q} for i, q in enumerate(bg)]
+    rows = [
+        {"ts": float(i), "src": "192.0.2.10", "query": q, "rcode": 3}
+        for i, q in enumerate(tunnel)
+    ]
+    rows += [
+        {"ts": float(1000 + i), "src": "192.0.2.20", "query": q, "rcode": 0}
+        for i, q in enumerate(bg)
+    ]
     df = pd.DataFrame(rows)
 
     monkeypatch.setattr(dns_mod, "_TLD_EXTRACT", _tunnel_extract)
@@ -1193,19 +1203,33 @@ def test_dense_scan_surfaces_high_volume_tunnel(monkeypatch) -> None:
     assert g.evidence["subdomain_count"] == 600
     assert g.evidence["total_queries"] == 600
 
-    # Full baseline DNS group evidence is present; additive delta is exactly
-    # {source, origin} (NOT the whole key-set).
+    # Full baseline DNS group evidence is present; dense + resolution
+    # corroboration is explicit and ordered.
     _group_baseline = {
         "registrable_domain", "subdomain_count", "max_label_score", "min_label_score",
         "total_queries", "unique_sources", "sample_domains", "querier_ips",
     }
     assert _group_baseline <= set(g.evidence.keys())
-    assert set(g.evidence.keys()) - _group_baseline == {"source", "origin"}
+    assert set(g.evidence.keys()) - _group_baseline == {
+        "source", "origin", "severity_basis",
+        "nxdomain_fraction", "nxdomain_count",
+    }
+    assert g.severity == Severity.HIGH
+    assert g.evidence["severity_basis"] == [
+        "resolution-outcome", "volume-concentration",
+    ]
+    # The dense detector surfaces at most 500 member rows, so outcome evidence
+    # is deliberately sample-relative while the structural totals above are 600.
+    assert g.evidence["nxdomain_fraction"] == 1.0
+    assert g.evidence["nxdomain_count"] == 500
 
     # Dense-origin prose - never the noise wording.
     assert "noise cluster" not in g.description
     assert "not clustered" not in g.description.lower()
     assert "dense" in g.description and "tunneling" in g.description
+    assert g.description.endswith(
+        "500 lookups under this name failed to resolve (100% of the total)."
+    )
 
     summary = [f for f in findings if f.evidence.get("tier") == "scan_summary"]
     assert len(summary) == 1
@@ -1236,6 +1260,8 @@ def test_dense_scan_repeated_single_query_routes_to_singleton(monkeypatch) -> No
     s = sng[0]
     assert "subdomain_count" not in s.evidence      # singleton, not a group
     assert s.evidence["origin"] == "dense_cluster"
+    assert s.severity == Severity.HIGH
+    assert s.evidence["severity_basis"] == ["volume-concentration"]
     assert "noise cluster" not in s.description
     assert "not clustered" not in s.description.lower()
     assert any(f.evidence.get("tier") == "scan_summary" for f in findings)

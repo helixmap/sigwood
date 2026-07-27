@@ -93,6 +93,97 @@ DETECTOR_METHOD = MethodTag(
     named=True,
 )
 
+_NXDOMAIN_MAJORITY = 0.5
+_NXDOMAIN_MIN_FAILURES = 2
+_RESOLUTION_BASIS = "resolution-outcome"
+_VOLUME_BASIS = "volume-concentration"
+
+
+def _nxdomain_stats(
+    distribution: dict[Any, Any] | pd.Series,
+) -> tuple[float, int] | None:
+    """Return ``(NXDOMAIN fraction, count)`` for measurable rcode evidence.
+
+    A Series is the group-constructor seam: its member dictionaries are
+    accumulated before the same calculation used for a singleton. Unknown
+    rcode keys remain in the denominator but never count as NXDOMAIN. Invalid
+    counts are skipped so malformed additive evidence cannot crash detection.
+    """
+    if isinstance(distribution, dict):
+        distributions = (distribution,)
+    elif isinstance(distribution, pd.Series):
+        distributions = tuple(
+            item for item in distribution.tolist() if isinstance(item, dict)
+        )
+    else:
+        return None
+    if not distributions:
+        return None
+
+    total = 0
+    nxdomain_count = 0
+    for item in distributions:
+        for raw_key, raw_count in item.items():
+            try:
+                count_float = float(raw_count)
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if (
+                not math.isfinite(count_float)
+                or count_float < 0
+                or not count_float.is_integer()
+            ):
+                continue
+            count = int(count_float)
+            total += count
+
+            try:
+                key_number = float(raw_key)
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if math.isfinite(key_number) and key_number == 3:
+                nxdomain_count += count
+
+    if total <= 0:
+        return None
+    return nxdomain_count / total, nxdomain_count
+
+
+def _severity_for(
+    nxdomain_stats: tuple[float, int] | None,
+    *,
+    dense_origin: bool,
+) -> tuple[Severity, list[str]]:
+    """Assign DNS severity from corroborating behavior, in stable basis order."""
+    basis: list[str] = []
+    if (
+        nxdomain_stats is not None
+        and nxdomain_stats[0] >= _NXDOMAIN_MAJORITY
+        and nxdomain_stats[1] >= _NXDOMAIN_MIN_FAILURES
+    ):
+        basis.append(_RESOLUTION_BASIS)
+    if dense_origin:
+        basis.append(_VOLUME_BASIS)
+    return (Severity.HIGH if basis else Severity.MEDIUM), basis
+
+
+def _behavior_sentence(
+    nxdomain_stats: tuple[float, int] | None,
+    severity_basis: list[str],
+) -> str:
+    """Second sentence for non-dense findings; additive sentence for dense."""
+    if _RESOLUTION_BASIS in severity_basis and nxdomain_stats is not None:
+        fraction, count = nxdomain_stats
+        return (
+            f" {count} lookups under this name failed to resolve "
+            f"({fraction:.0%} of the total)."
+        )
+    return (
+        " The label score is the only signal - nothing in the query behavior "
+        "corroborates it."
+    )
+
+
 # ---------------------------------------------------------------------------
 # Feature helpers
 # ---------------------------------------------------------------------------
@@ -740,7 +831,6 @@ def _enrich_zeek_with_pihole(
 def _shared_back_half(
     candidate_df: pd.DataFrame,
     threshold: float,
-    thresh_high: float,
     now: datetime,
     data_window: tuple[datetime, datetime],
 ) -> list[Finding]:
@@ -752,6 +842,8 @@ def _shared_back_half(
     candidate_df = candidate_df[candidate_df["label_entropy"] >= threshold].copy()
     if candidate_df.empty:
         return []
+    # Constructor precondition: every row reaching the constructors already
+    # cleared label_entropy >= threshold; constructors must not repeat that gate.
 
     candidate_df = candidate_df.sort_values(
         "label_entropy", ascending=False
@@ -763,11 +855,11 @@ def _shared_back_half(
     for reg_domain, grp in candidate_df.groupby("registrable_domain"):
         if len(grp) >= 2:
             group_findings.append(
-                _make_group_finding(str(reg_domain), grp, thresh_high, now, data_window)
+                _make_group_finding(str(reg_domain), grp, now, data_window)
             )
         else:
             singleton_findings.append(
-                _make_singleton_finding(grp.iloc[0], str(reg_domain), thresh_high, now, data_window)
+                _make_singleton_finding(grp.iloc[0], str(reg_domain), now, data_window)
             )
 
     group_findings.sort(key=lambda f: f.evidence["max_label_score"], reverse=True)
@@ -827,7 +919,7 @@ def run(context: DetectorContext) -> list[Finding]:
     if candidate_df is None or candidate_df.empty:
         return []
 
-    findings = _shared_back_half(candidate_df, threshold, thresh_high, now, context.data_window)
+    findings = _shared_back_half(candidate_df, threshold, now, context.data_window)
 
     # Synthetic INFO disclosure when the dense-cluster scan produced findings -
     # gated on the SAME threshold, so it never discloses more than the report shows.
@@ -845,7 +937,6 @@ def run(context: DetectorContext) -> list[Finding]:
 def _make_group_finding(
     reg_domain: str,
     grp: pd.DataFrame,
-    thresh_high: float,
     now: datetime,
     data_window: tuple[datetime, datetime],
 ) -> Finding:
@@ -855,7 +946,10 @@ def _make_group_finding(
     grp_sorted = grp.sort_values("label_entropy", ascending=False)
     max_ent = float(grp_sorted["label_entropy"].max())
     min_ent = float(grp_sorted["label_entropy"].min())
-    n_rows = len(grp)  # candidate rows surfaced in this group (sample + noise)
+    # For a dense group, n_rows and rcode_stats are sample-relative because
+    # only surfaced rows carry per-query outcome evidence; the true
+    # dominant-domain member count lives in cluster_true_member_count below.
+    n_rows = len(grp)
 
     # Honest counts. A dense-cluster group can mix noise rows with sampled rows
     # from one or more dense clusters; count noise rows individually but each
@@ -882,8 +976,14 @@ def _make_group_finding(
     unique_ips = list(dict.fromkeys(all_ips))
 
     sample_domains  = grp_sorted["query"].head(5).tolist()
-    sample_entropy  = grp_sorted["label_entropy"].head(5).tolist()
-    severity = Severity.HIGH if max_ent >= thresh_high else Severity.MEDIUM
+    rcode_stats = (
+        _nxdomain_stats(grp["rcode_distribution"])
+        if "rcode_distribution" in grp.columns
+        else None
+    )
+    severity, severity_basis = _severity_for(
+        rcode_stats, dense_origin=has_dense,
+    )
     title    = reg_domain
 
     if has_dense:
@@ -893,12 +993,13 @@ def _make_group_finding(
             f"Registrable domain {reg_domain} forms a dense, high-entropy cluster of "
             f"{subdomain_count} subdomains - the shape of DNS tunneling."
         )
+        if _RESOLUTION_BASIS in severity_basis:
+            description += _behavior_sentence(rcode_stats, severity_basis)
     else:
-        sample_desc = ", ".join(f"{d} ({e:.2f})" for d, e in zip(sample_domains, sample_entropy))
-        extra_note  = f" (+{n_rows - 5} more)" if n_rows > 5 else ""
         description = (
             f"Registrable domain {reg_domain} has {subdomain_count} subdomains in the DNS noise cluster "
-            f"with elevated label scores. Top subdomains: {sample_desc}{extra_note}."
+            f"with elevated label scores."
+            f"{_behavior_sentence(rcode_stats, severity_basis)}"
         )
     next_steps = [
         f"Check domain registration: whois {reg_domain}",
@@ -929,10 +1030,11 @@ def _make_group_finding(
             "forward_ratio":     float(grp["forward_ratio"].mean()),
             "special_count":     int(grp["special_count"].sum()),
             "qtype_counts":      combined_qtypes,
+            "severity_basis":    severity_basis,
         }
     else:
-        # zeek source - noise-path evidence carries only `source` as its additive
-        # key; a scan-surfaced (dense-cluster) finding additionally carries `origin`.
+        # Zeek findings carry resolution-outcome evidence when measurable; a
+        # scan-surfaced dense finding additionally carries ``origin``.
         evidence = {
             "source":            "zeek",
             "registrable_domain": reg_domain,
@@ -943,7 +1045,11 @@ def _make_group_finding(
             "unique_sources":    len(unique_ips),
             "sample_domains":    sample_domains,
             "querier_ips":       unique_ips,
+            "severity_basis":    severity_basis,
         }
+        if rcode_stats is not None:
+            evidence["nxdomain_fraction"] = round(rcode_stats[0], 4)
+            evidence["nxdomain_count"] = rcode_stats[1]
         # Both-mode enrichment fields (absent in zeek-only runs).
         if "was_blocked" in grp.columns:
             evidence["was_blocked"] = bool(grp["was_blocked"].any())
@@ -967,29 +1073,37 @@ def _make_group_finding(
 def _make_singleton_finding(
     row: pd.Series,
     reg_domain: str,
-    thresh_high: float,
     now: datetime,
     data_window: tuple[datetime, datetime],
 ) -> Finding:
     source = str(row["source"])
     domain = str(row["query"])
     ent    = float(row["label_entropy"])
-    severity = Severity.HIGH if ent >= thresh_high else Severity.MEDIUM
 
     # A dense cluster of one repeated high-entropy query collapses to a single
     # distinct candidate and routes here. The defensive dense-origin branch keeps
     # the prose honest independent of the group/singleton routing invariant.
     dense_origin = "dense_cluster_id" in row.index and pd.notna(row.get("dense_cluster_id"))
+    rcode_stats = (
+        _nxdomain_stats(row["rcode_distribution"])
+        if "rcode_distribution" in row.index
+        else None
+    )
+    severity, severity_basis = _severity_for(
+        rcode_stats, dense_origin=dense_origin,
+    )
 
     if dense_origin:
         description = (
             f"Domain {domain} sits in a dense, high-entropy cluster (label score {ent:.4f}) "
             f"- the shape of DNS tunneling."
         )
+        if _RESOLUTION_BASIS in severity_basis:
+            description += _behavior_sentence(rcode_stats, severity_basis)
     else:
         description = (
-            f"Domain {domain} appears in the DNS noise cluster with label score {ent:.4f}. "
-            f"Not clustered with any known-pattern group - warrants analyst review."
+            f"Domain {domain} appears in the DNS noise cluster with label score {ent:.4f}."
+            f"{_behavior_sentence(rcode_stats, severity_basis)}"
         )
     next_steps = [
         f"Check domain registration: whois {reg_domain}",
@@ -1011,10 +1125,11 @@ def _make_singleton_finding(
             "forward_ratio": float(row["forward_ratio"]),
             "qtype_counts":  dict(row["qtype_counts"]),
             "special_count": int(row.get("special_count", 0)),
+            "severity_basis": severity_basis,
         }
     else:
-        # zeek source - noise-path evidence carries only `source` as its additive
-        # key; a scan-surfaced (dense-cluster) finding additionally carries `origin`.
+        # Zeek findings carry resolution-outcome evidence when measurable; a
+        # scan-surfaced dense finding additionally carries ``origin``.
         evidence = {
             "source":             "zeek",
             "label_score":        round(ent, 4),
@@ -1022,7 +1137,11 @@ def _make_singleton_finding(
             "unique_sources":     int(row["unique_sources"]),
             "querier_ips":        row["querier_ips"],
             "rcode_distribution": row["rcode_distribution"],
+            "severity_basis":     severity_basis,
         }
+        if rcode_stats is not None:
+            evidence["nxdomain_fraction"] = round(rcode_stats[0], 4)
+            evidence["nxdomain_count"] = rcode_stats[1]
         # Both-mode enrichment fields (absent in zeek-only runs).
         if "was_blocked" in row.index:
             evidence["was_blocked"] = bool(row["was_blocked"])

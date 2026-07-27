@@ -42,6 +42,7 @@ def curated_evidence(finding: Finding) -> dict[str, Any]:
     its detector (and variant where applicable)."""
     ev = finding.evidence
     keys: tuple[str, ...] = ()
+    always_keys: tuple[str, ...] = ()
     det = finding.detector
 
     if det == "beacon":
@@ -50,19 +51,33 @@ def curated_evidence(finding: Finding) -> dict[str, Any]:
             "jitter_cv", "conn_count", "period_str",
         )
     elif det == "dns":
+        # An empty basis is meaningful: it says no behavioral severity leg
+        # fired. Keep that DNS-specific signal visible at the curated level.
+        always_keys = ("severity_basis",)
         src = ev.get("source")
         if "subdomain_count" in ev:  # group
-            base = ("sample_domains", "unique_sources", "min_label_score", "max_label_score")
-            extra = ("was_blocked", "block_ratio", "qtype_counts") if src == "pihole" else ()
+            base = (
+                "severity_basis", "sample_domains", "unique_sources",
+                "min_label_score", "max_label_score",
+            )
+            extra = (
+                ("was_blocked", "block_ratio", "qtype_counts")
+                if src == "pihole"
+                else ("nxdomain_fraction", "nxdomain_count")
+            )
             keys = base + extra
         elif src == "pihole":  # pihole singleton
             keys = (
+                "severity_basis",
                 "unique_sources", "querier_ips",
                 "was_blocked", "block_ratio",
                 "cache_ratio", "forward_ratio", "qtype_counts",
             )
         else:  # zeek singleton (and both-mode Zeek with pihole enrichment)
-            base = ("rcode_distribution", "unique_sources", "querier_ips")
+            base = (
+                "severity_basis", "nxdomain_fraction", "nxdomain_count",
+                "rcode_distribution", "unique_sources", "querier_ips",
+            )
             extra = ("was_blocked", "block_ratio") if "was_blocked" in ev else ()
             keys = base + extra
     elif det == "syslog":
@@ -101,7 +116,11 @@ def curated_evidence(finding: Finding) -> dict[str, Any]:
                 "top_actions", "distinct_event_source",
             )
 
-    out = {k: ev[k] for k in keys if k in ev and not is_empty(ev[k])}
+    out = {
+        k: ev[k]
+        for k in keys
+        if k in ev and (k in always_keys or not is_empty(ev[k]))
+    }
     # Cap the burst action/service lists at level 1 so a broad sweep (dozens of
     # actions across dozens of services) stays readable; -vv keeps the full list.
     if det == "aws" and ev.get("tier") == "burst":

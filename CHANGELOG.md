@@ -6,6 +6,23 @@ All notable changes to sigwood are recorded here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- **DNS severity is earned by behaviour now, not by the label score alone.** A
+  high-scoring domain name on its own is a lead, not a verdict, so it reports
+  MEDIUM. HIGH additionally requires corroboration from what the queries actually
+  did: most lookups under the name failing to resolve (a majority of responses,
+  and at least two failures), or the name belonging to a dense high-entropy
+  cluster - the shape of tunneling. One failed lookup is an event, not a pattern,
+  so a single dead or mistyped hostname no longer reaches HIGH. Every DNS finding
+  now records which corroboration applied, and says plainly when none did.
+- **DNS findings carry their resolution evidence.** Where it can be measured,
+  findings report the share of lookups that failed to resolve and how many failed.
+  Pi-hole logs carry no response code, so on a Pi-hole-only run that corroboration
+  is unavailable and DNS findings top out at MEDIUM - add Zeek DNS logs for the
+  fuller picture. Whether a domain was blocked remains evidence you can read; it
+  never decides severity.
+
 ## [0.2.8] - 2026-07-24
 
 ### Added

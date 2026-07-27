@@ -159,11 +159,13 @@ def _severity_for(
     nxdomain_stats: tuple[float, int] | None,
     *,
     dense_origin: bool,
+    has_public_suffix: bool,
 ) -> tuple[Severity, list[str]]:
     """Assign DNS severity from corroborating behavior, in stable basis order."""
     basis: list[str] = []
     if (
-        nxdomain_stats is not None
+        has_public_suffix
+        and nxdomain_stats is not None
         and nxdomain_stats[0] >= _NXDOMAIN_MAJORITY
         and nxdomain_stats[1] >= _NXDOMAIN_MIN_FAILURES
     ):
@@ -297,6 +299,25 @@ def summit(val: Any) -> float:
     return np.array(val, dtype=np.float32).sum()
 
 
+def _registrable_key(query: str, ext: Any) -> str:
+    """Grouping key for a query.
+
+    Use the registrable domain, or for a name with no public suffix the last
+    label, so a private namespace (``*.lan``) folds to one family instead of
+    independent singletons.
+    """
+    reg = ext.top_domain_under_public_suffix
+    if reg:
+        return reg
+    parts = [label for label in query.split(".") if label]
+    return parts[-1] if parts else query
+
+
+def _has_public_suffix(ext: Any) -> bool:
+    """Return whether the extractor found a registrable public-suffix domain."""
+    return bool(ext.top_domain_under_public_suffix)
+
+
 def _max_subdomain_entropy(query: str, ext: Any) -> float:
     """Max entropy across the subdomain labels left of the registrable domain.
 
@@ -315,7 +336,8 @@ def _max_subdomain_entropy(query: str, ext: Any) -> float:
             # query IS the registrable domain - score its domain label
             labels = [ext.domain] if ext.domain else []
     else:
-        labels = [query.split(".")[0]]
+        parts = [label for label in query.split(".") if label]
+        labels = parts[:-1] or parts
     return max(entropy(lbl) for lbl in labels) if labels else 0.0
 
 
@@ -581,7 +603,7 @@ def _surface_dense_clusters(
         for q in member_q.unique():
             ext = _TLD_EXTRACT(q)
             ent_by_q[q] = _max_subdomain_entropy(q, ext)
-            reg_by_q[q] = ext.top_domain_under_public_suffix or q
+            reg_by_q[q] = _registrable_key(q, ext)
 
         row_ent = member_q.map(ent_by_q)
         row_reg = member_q.map(reg_by_q)
@@ -734,7 +756,10 @@ def _run_zeek_path(
         candidate_df["block_ratio"] = enriched.apply(lambda e: e["block_ratio"])
 
     candidate_df["registrable_domain"] = candidate_df.apply(
-        lambda row: row["_ext"].top_domain_under_public_suffix or row["query"], axis=1
+        lambda row: _registrable_key(row["query"], row["_ext"]), axis=1
+    )
+    candidate_df["has_public_suffix"] = candidate_df["_ext"].apply(
+        _has_public_suffix
     )
     candidate_df.drop(columns=["_ext"], inplace=True)
     candidate_df["source"] = "zeek"
@@ -780,7 +805,10 @@ def _run_pihole_path(
         lambda row: _max_subdomain_entropy(row["query"], row["_ext"]), axis=1
     )
     candidate_df["registrable_domain"] = candidate_df.apply(
-        lambda row: row["_ext"].top_domain_under_public_suffix or row["query"], axis=1
+        lambda row: _registrable_key(row["query"], row["_ext"]), axis=1
+    )
+    candidate_df["has_public_suffix"] = candidate_df["_ext"].apply(
+        _has_public_suffix
     )
     candidate_df.drop(columns=["_ext"], inplace=True)
     candidate_df["source"] = "pihole"
@@ -864,9 +892,10 @@ def _make_below_gate_group_findings(
     distinct = pd.DataFrame({"query": pd.unique(full["query"])})
     distinct["_ext"] = distinct["query"].apply(_TLD_EXTRACT)
     distinct["registrable_domain"] = distinct.apply(
-        lambda row: row["_ext"].top_domain_under_public_suffix or row["query"],
+        lambda row: _registrable_key(row["query"], row["_ext"]),
         axis=1,
     )
+    distinct["has_public_suffix"] = distinct["_ext"].apply(_has_public_suffix)
     distinct["label_entropy"] = distinct.apply(
         lambda row: _max_subdomain_entropy(row["query"], row["_ext"]),
         axis=1,
@@ -910,7 +939,11 @@ def _make_below_gate_group_findings(
         # ``_severity_for`` remains the only severity-basis owner. Promotion is
         # INFO because the mandatory lexical leg did not clear; the behavior
         # that made it visible lives in tier + resolution evidence.
-        _, severity_basis = _severity_for(None, dense_origin=False)
+        _, severity_basis = _severity_for(
+            None,
+            dense_origin=False,
+            has_public_suffix=False,
+        )
         fraction, nxdomain_count = rcode_stats
         next_steps = [
             f"Review the queried names under {parent}",
@@ -920,14 +953,23 @@ def _make_below_gate_group_findings(
             next_steps.insert(
                 1, f"Pivot on querier IPs: {', '.join(sources[:5])}"
             )
+        has_public_suffix = bool(query_shapes["has_public_suffix"].all())
+        if has_public_suffix:
+            description = (
+                f"Registrable domain {parent} has a family of names that mostly "
+                "fail to resolve. This pattern may resemble automated name generation."
+            )
+        else:
+            description = (
+                f"Private namespace {parent} has a family of names that mostly fail "
+                "to resolve. Names in a private namespace routinely fail to resolve "
+                "outside their local zone."
+            )
         findings.append(Finding(
             detector=DETECTOR_NAME,
             severity=Severity.INFO,
             title=parent,
-            description=(
-                f"Registrable domain {parent} has a family of names that mostly "
-                "fail to resolve. This pattern may resemble automated name generation."
-            ),
+            description=description,
             evidence={
                 "tier": "below_gate_group",
                 "source": "zeek",
@@ -1141,32 +1183,49 @@ def _make_group_finding(
         if "rcode_distribution" in grp.columns
         else None
     )
+    has_public_suffix = bool(grp["has_public_suffix"].all())
     severity, severity_basis = _severity_for(
-        rcode_stats, dense_origin=has_dense,
+        rcode_stats,
+        dense_origin=has_dense,
+        has_public_suffix=has_public_suffix,
     )
     title    = reg_domain
 
     if has_dense:
         # Deliberately surfaced dense cluster - the opposite of noise. {subdomain_count}
         # is the honest dominant-domain count, never the capped/sampled row count.
+        namespace_kind = (
+            "Registrable domain" if has_public_suffix else "Private namespace"
+        )
         description = (
-            f"Registrable domain {reg_domain} forms a dense, high-entropy cluster of "
+            f"{namespace_kind} {reg_domain} forms a dense, high-entropy cluster of "
             f"{subdomain_count} subdomains - the shape of DNS tunneling."
         )
         if _RESOLUTION_BASIS in severity_basis:
             description += _behavior_sentence(rcode_stats, severity_basis)
     else:
+        namespace_kind = (
+            "Registrable domain" if has_public_suffix else "Private namespace"
+        )
         description = (
-            f"Registrable domain {reg_domain} has {subdomain_count} subdomains in the DNS noise cluster "
+            f"{namespace_kind} {reg_domain} has {subdomain_count} subdomains in the DNS noise cluster "
             f"with elevated label scores."
             f"{_behavior_sentence(rcode_stats, severity_basis)}"
         )
-    next_steps = [
-        f"Check domain registration: whois {reg_domain}",
-        f"Look up {reg_domain} on VirusTotal and Shodan",
-        "Check conn.log for connections to IPs resolved from these queries",
-        f"Pivot on querier IPs: {', '.join(unique_ips[:5])}",
-    ]
+    if has_public_suffix:
+        next_steps = [
+            f"Check domain registration: whois {reg_domain}",
+            f"Look up {reg_domain} on VirusTotal and Shodan",
+            "Check conn.log for connections to IPs resolved from these queries",
+            f"Pivot on querier IPs: {', '.join(unique_ips[:5])}",
+        ]
+    else:
+        next_steps = [
+            f"Check the local DNS zone or resolver that serves {reg_domain}",
+            "Confirm these names are expected on the internal network",
+            "Check conn.log for connections to IPs resolved from these queries",
+            f"Pivot on querier IPs: {', '.join(unique_ips[:5])}",
+        ]
 
     if source == "pihole":
         combined_qtypes: dict[str, int] = {}
@@ -1250,7 +1309,9 @@ def _make_singleton_finding(
         else None
     )
     severity, severity_basis = _severity_for(
-        rcode_stats, dense_origin=dense_origin,
+        rcode_stats,
+        dense_origin=dense_origin,
+        has_public_suffix=bool(row["has_public_suffix"]),
     )
 
     if dense_origin:

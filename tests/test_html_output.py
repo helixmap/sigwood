@@ -347,22 +347,25 @@ def test_empty_findings_render_empty_state() -> None:
 
 # ── section-aware html sidecars (RAIL SUPERSESSION: html matches text) ───────
 def test_html_section_vanishes_when_emptied_by_cap() -> None:
-    """dns: singletons-first; with cap=2 the 2 singletons consume the budget and
-    the groups section is emptied → its label VANISHES (no lonely label)."""
+    """DNS groups consume the cap first, so the later singleton label vanishes."""
     findings = [
         _finding(detector="dns", severity=Severity.MEDIUM, title="s1.example",
                  evidence={"source": "zeek", "label_score": 4.1, "query_count": 11, "unique_sources": 1}),
         _finding(detector="dns", severity=Severity.MEDIUM, title="s2.example",
                  evidence={"source": "zeek", "label_score": 4.2, "query_count": 12, "unique_sources": 2}),
-        _finding(detector="dns", severity=Severity.MEDIUM, title="g",
-                 evidence={"source": "zeek", "registrable_domain": "grp.example",
+        _finding(detector="dns", severity=Severity.MEDIUM, title="g1",
+                 evidence={"source": "zeek", "registrable_domain": "grp1.example",
                            "subdomain_count": 9, "max_label_score": 4.3, "min_label_score": 3.1,
                            "total_queries": 99, "unique_sources": 3}),
+        _finding(detector="dns", severity=Severity.MEDIUM, title="g2",
+                 evidence={"source": "zeek", "registrable_domain": "grp2.example",
+                           "subdomain_count": 7, "max_label_score": 4.4, "min_label_score": 3.2,
+                           "total_queries": 88, "unique_sources": 2}),
     ]
     out = _render(findings, cap=2)
-    assert "singletons (2)" in out      # singletons section present
-    assert "groups (" not in out        # groups section emptied by cap → vanished
-    assert "showing 2 of 3" in out
+    assert "groups (2)" in out
+    assert "singletons (" not in out
+    assert "showing 2 of 4" in out
 
 
 def test_html_syslog_three_section_order_privileged_rare_events_bursts() -> None:

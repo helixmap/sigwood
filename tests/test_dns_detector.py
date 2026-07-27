@@ -82,6 +82,37 @@ def test_shipped_threshold_matches_high_entropy_bar() -> None:
     assert DEFAULT_CONFIG["threshold"] == DEFAULT_CONFIG["thresh_high_entropy"] == 1.8
 
 
+def _non_psl_extract(query: str) -> SimpleNamespace:
+    """Return the tldextract shape for a private namespace with no suffix."""
+    parts = [label for label in query.split(".") if label]
+    return SimpleNamespace(
+        domain=parts[-1] if parts else "",
+        suffix="",
+        subdomain=".".join(parts[:-1]),
+        top_domain_under_public_suffix="",
+    )
+
+
+def test_non_psl_one_and_two_label_scores_preserve_first_label() -> None:
+    """Single-label names and one-child private names keep their prior score."""
+    import sigwood.detectors.dns as dns_mod
+
+    for query, scored_label in (("lan", "lan"), ("host1.lan", "host1")):
+        score = dns_mod._max_subdomain_entropy(query, _non_psl_extract(query))
+        assert score == dns_mod.entropy(scored_label)
+
+
+def test_non_psl_three_label_score_uses_maximum_subdomain_label() -> None:
+    """Every label left of a private root participates in the suspicion score."""
+    import sigwood.detectors.dns as dns_mod
+
+    query = "benign.a7f3k9.lan"
+    score = dns_mod._max_subdomain_entropy(query, _non_psl_extract(query))
+
+    assert score == max(dns_mod.entropy("benign"), dns_mod.entropy("a7f3k9"))
+    assert score > dns_mod.entropy("benign")
+
+
 # ── Test 1 - minimal-schema run() doesn't raise ───────────────────────────────
 
 def test_run_minimal_schema_does_not_raise(monkeypatch) -> None:
@@ -637,7 +668,156 @@ def test_pihole_only_run_produces_findings(monkeypatch) -> None:
     assert all(f.evidence["severity_basis"] == [] for f in findings)
 
 
+def test_non_psl_candidates_share_one_grouping_key_on_both_paths(
+    monkeypatch,
+) -> None:
+    """Zeek and Pi-hole candidates converge on one private-namespace family."""
+    import sigwood.detectors.dns as dns_mod
+
+    queries = [f"{label}.lan" for label in _high_entropy_labels(5)]
+    monkeypatch.setattr(dns_mod, "_TLD_EXTRACT", _non_psl_extract)
+    monkeypatch.setattr(
+        dns_mod,
+        "fit_predict_interruptible",
+        lambda matrix, **kwargs: np.full(matrix.shape[0], -1, dtype=int),
+    )
+    scan_cfg = {
+        key: DEFAULT_CONFIG[key]
+        for key in (
+            "scan_dense_clusters",
+            "scan_min_high_entropy_fraction",
+            "scan_min_cluster_members",
+            "scan_min_regdomain_share",
+            "scan_max_members_per_cluster",
+        )
+    }
+    scan_cfg["scan_dense_clusters"] = False
+
+    zeek = dns_mod._run_zeek_path(
+        pd.DataFrame([
+            {
+                "ts": float(index),
+                "src": "192.0.2.10",
+                "query": query,
+                "rcode": 3,
+            }
+            for index, query in enumerate(queries)
+        ]),
+        2,
+        1,
+        thresh_high=1.8,
+        scan_cfg=scan_cfg,
+    )
+    pihole = dns_mod._run_pihole_path(
+        pd.DataFrame([
+            {
+                "query": query,
+                "event_type": "query",
+                "src": "192.0.2.10",
+                "qtype": "A",
+            }
+            for query in queries
+        ]),
+        {"min_cluster_size": 2, "min_samples": 1},
+    )
+
+    assert zeek is not None and set(zeek["registrable_domain"]) == {"lan"}
+    assert pihole is not None and set(pihole["registrable_domain"]) == {"lan"}
+    findings = dns_mod._shared_back_half(zeek, 1.8, _NOW, _WINDOW)
+    groups = [finding for finding in findings if "subdomain_count" in finding.evidence]
+    assert len(groups) == 1
+    assert groups[0].evidence["registrable_domain"] == "lan"
+    assert groups[0].evidence["subdomain_count"] == len(queries)
+
+
 # ── _shared_back_half grouping ────────────────────────────────────────────────
+
+def _resolution_group_candidates(
+    registrable_domain: str,
+    *,
+    has_public_suffix: bool,
+) -> pd.DataFrame:
+    """Two one-failure members with identical behavior and suffix provenance."""
+    labels = _high_entropy_labels(2)
+    return pd.DataFrame([
+        {
+            "query": f"{label}.{registrable_domain}",
+            "label_entropy": dns_entropy(label),
+            "registrable_domain": registrable_domain,
+            "has_public_suffix": has_public_suffix,
+            "unique_sources": 1,
+            "querier_ips": ["192.0.2.10"],
+            "source": "zeek",
+            "query_count": 1,
+            "rcode_distribution": {3: 1},
+        }
+        for label in labels
+    ])
+
+
+def test_non_psl_group_keeps_nxdomain_measurement_without_corroboration() -> None:
+    """Private-namespace NXDOMAIN is measured but does not raise severity."""
+    findings = _shared_back_half(
+        _resolution_group_candidates("lan", has_public_suffix=False),
+        threshold=1.8,
+        now=_NOW,
+        data_window=_WINDOW,
+    )
+
+    assert len(findings) == 1
+    finding = findings[0]
+    assert finding.severity == Severity.MEDIUM
+    assert finding.evidence["severity_basis"] == []
+    assert finding.evidence["nxdomain_fraction"] == 1.0
+    assert finding.evidence["nxdomain_count"] == 2
+    assert finding.description == (
+        "Private namespace lan has 2 subdomains in the DNS noise cluster with "
+        "elevated label scores. The label score is the only signal - nothing in "
+        "the query behavior corroborates it."
+    )
+    assert finding.next_steps == [
+        "Check the local DNS zone or resolver that serves lan",
+        "Confirm these names are expected on the internal network",
+        "Check conn.log for connections to IPs resolved from these queries",
+        "Pivot on querier IPs: 192.0.2.10",
+    ]
+    assert not any(
+        marker in step
+        for step in finding.next_steps
+        for marker in ("whois", "VirusTotal")
+    )
+
+
+def test_psl_group_with_same_nxdomain_shape_stays_high_control() -> None:
+    """The identical public-suffix group keeps resolution corroboration."""
+    findings = _shared_back_half(
+        _resolution_group_candidates(
+            "family.example",
+            has_public_suffix=True,
+        ),
+        threshold=1.8,
+        now=_NOW,
+        data_window=_WINDOW,
+    )
+
+    assert len(findings) == 1
+    finding = findings[0]
+    assert finding.severity == Severity.HIGH
+    assert finding.evidence["severity_basis"] == ["resolution-outcome"]
+    assert finding.evidence["nxdomain_fraction"] == 1.0
+    assert finding.evidence["nxdomain_count"] == 2
+    assert finding.description == (
+        "Registrable domain family.example has 2 subdomains in the DNS noise "
+        "cluster with elevated label scores. 2 lookups under this name failed "
+        "to resolve (100% of the total)."
+    )
+    assert finding.next_steps == [
+        "Check domain registration: whois family.example",
+        "Look up family.example on VirusTotal and Shodan",
+        "Check conn.log for connections to IPs resolved from these queries",
+        "Pivot on querier IPs: 192.0.2.10",
+    ]
+
 
 def test_shared_back_half_grouping_consistency() -> None:
     """Two candidate rows sharing the same registrable domain produce one group finding."""
@@ -646,6 +826,7 @@ def test_shared_back_half_grouping_consistency() -> None:
             "query": "a3f7bc19.example.com",
             "label_entropy": 1.77,
             "registrable_domain": "example.com",
+            "has_public_suffix": True,
             "unique_sources": 1,
             "querier_ips": ["192.0.2.1"],
             "source": "pihole",
@@ -661,6 +842,7 @@ def test_shared_back_half_grouping_consistency() -> None:
             "query": "m8x2q9n.example.com",
             "label_entropy": 1.70,
             "registrable_domain": "example.com",
+            "has_public_suffix": True,
             "unique_sources": 1,
             "querier_ips": ["192.0.2.2"],
             "source": "pihole",
@@ -690,6 +872,7 @@ def test_pihole_group_qtype_counts_aggregated() -> None:
             "query": "a3f7bc19.example.com",
             "label_entropy": 1.77,
             "registrable_domain": "example.com",
+            "has_public_suffix": True,
             "unique_sources": 1,
             "querier_ips": ["192.0.2.1"],
             "source": "pihole",
@@ -705,6 +888,7 @@ def test_pihole_group_qtype_counts_aggregated() -> None:
             "query": "m8x2q9n.example.com",
             "label_entropy": 1.70,
             "registrable_domain": "example.com",
+            "has_public_suffix": True,
             "unique_sources": 1,
             "querier_ips": ["192.0.2.2"],
             "source": "pihole",
@@ -991,12 +1175,54 @@ def test_text_renderer_dns_sections_have_breathing_room() -> None:
 
     lines = TextHandler(verbose_level=0)._render_dns_group(_dns_sections([singleton, group]))
 
-    # The detector-level blank line above the singletons subsection is emitted
+    # The detector-level blank line above the groups subsection is emitted
     # by TextHandler.write (`print(file=stream)` before the header rule), not
     # by the renderer itself. Inside the renderer's output we only see the
     # gap BETWEEN sections.
-    group_header = next(i for i, line in enumerate(lines) if "groups" in line)
-    assert lines[group_header - 1] == ""
+    singleton_header = next(i for i, line in enumerate(lines) if "singletons" in line)
+    assert lines[singleton_header - 1] == ""
+
+
+def test_dns_partition_orders_groups_singletons_then_scan() -> None:
+    """Reading sections lead with families and keep the scan summary trailing."""
+    group = _make_dns_finding(
+        Severity.MEDIUM,
+        "family.example",
+        {
+            "source": "zeek",
+            "registrable_domain": "family.example",
+            "subdomain_count": 2,
+            "max_label_score": 2.1,
+            "min_label_score": 1.9,
+            "total_queries": 3,
+            "unique_sources": 1,
+        },
+    )
+    singleton = _make_dns_finding(
+        Severity.MEDIUM,
+        "solo.example",
+        {
+            "source": "zeek",
+            "label_score": 2.0,
+            "query_count": 1,
+            "unique_sources": 1,
+        },
+    )
+    scan = _make_dns_finding(
+        Severity.INFO,
+        "dense-cluster scan",
+        {
+            "tier": "scan_summary",
+            "cluster_count": 1,
+            "total_members": 5,
+        },
+    )
+
+    assert [section.label for section in _dns_sections([singleton, scan, group])] == [
+        "groups",
+        "singletons",
+        "dense-cluster scan",
+    ]
 
 
 def test_text_renderer_zeek_verbose_rcode_unchanged() -> None:
@@ -1124,6 +1350,75 @@ def _tunnel_extract(query: str) -> SimpleNamespace:
     )
 
 
+def test_dense_scan_concentrates_non_psl_cluster_under_private_root(
+    monkeypatch,
+) -> None:
+    """A private-namespace cluster has top share 1.0 and can pass the scan."""
+    import sigwood.detectors.dns as dns_mod
+
+    queries = [f"{label}.lan" for label in _high_entropy_labels(100)]
+    frame = pd.DataFrame({"query": queries})
+    monkeypatch.setattr(dns_mod, "_TLD_EXTRACT", _non_psl_extract)
+    scan_cfg = {
+        "scan_dense_clusters": True,
+        "scan_min_high_entropy_fraction": 0.8,
+        "scan_min_cluster_members": 100,
+        "scan_min_regdomain_share": 0.8,
+        "scan_max_members_per_cluster": 500,
+    }
+
+    records, dominant = dns_mod._surface_dense_clusters(
+        frame,
+        np.zeros(len(frame), dtype=int),
+        thresh_high=1.8,
+        scan_cfg=scan_cfg,
+    )
+
+    assert len(records) == len(queries)
+    assert dominant == set(queries)
+    keys = [
+        dns_mod._registrable_key(query, _non_psl_extract(query))
+        for query in queries
+    ]
+    top_share = pd.Series(keys).value_counts(normalize=True).iloc[0]
+    assert top_share == 1.0
+
+    monkeypatch.setattr(clustering, "HDBSCAN", _FakeAllCluster0)
+    run_frame = frame.assign(
+        ts=np.arange(len(frame), dtype=float),
+        src="192.0.2.10",
+    )
+    findings = run(DetectorContext(
+        logs={"dns*.log*": run_frame},
+        config=_DENSE_CFG,
+        allowlist=None,
+        data_window=_WINDOW,
+    ))
+    groups = [
+        finding
+        for finding in findings
+        if finding.evidence.get("registrable_domain") == "lan"
+    ]
+    assert len(groups) == 1
+    assert groups[0].severity == Severity.HIGH
+    assert groups[0].evidence["severity_basis"] == ["volume-concentration"]
+    assert groups[0].description == (
+        "Private namespace lan forms a dense, high-entropy cluster of 100 "
+        "subdomains - the shape of DNS tunneling."
+    )
+    assert groups[0].next_steps == [
+        "Check the local DNS zone or resolver that serves lan",
+        "Confirm these names are expected on the internal network",
+        "Check conn.log for connections to IPs resolved from these queries",
+        "Pivot on querier IPs: 192.0.2.10",
+    ]
+    assert not any(
+        marker in step
+        for step in groups[0].next_steps
+        for marker in ("whois", "VirusTotal")
+    )
+
+
 class _FakeAllCluster0:
     """HDBSCAN stand-in that puts every row in one non-noise cluster (label 0) -
     reproduces a fully self-clustering tunnel (zero noise)."""
@@ -1230,6 +1525,17 @@ def test_dense_scan_surfaces_high_volume_tunnel(monkeypatch) -> None:
     assert g.description.endswith(
         "500 lookups under this name failed to resolve (100% of the total)."
     )
+    assert g.description == (
+        "Registrable domain tunnel.example forms a dense, high-entropy cluster "
+        "of 600 subdomains - the shape of DNS tunneling. 500 lookups under this "
+        "name failed to resolve (100% of the total)."
+    )
+    assert g.next_steps == [
+        "Check domain registration: whois tunnel.example",
+        "Look up tunnel.example on VirusTotal and Shodan",
+        "Check conn.log for connections to IPs resolved from these queries",
+        "Pivot on querier IPs: 192.0.2.10",
+    ]
 
     summary = [f for f in findings if f.evidence.get("tier") == "scan_summary"]
     assert len(summary) == 1

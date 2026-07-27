@@ -59,6 +59,16 @@ def _extract(query: str) -> SimpleNamespace:
     )
 
 
+def _extract_non_psl(query: str) -> SimpleNamespace:
+    parts = [label for label in query.rstrip(".").split(".") if label]
+    return SimpleNamespace(
+        domain=parts[-1] if parts else "",
+        suffix="",
+        subdomain=".".join(parts[:-1]),
+        top_domain_under_public_suffix="",
+    )
+
+
 @pytest.fixture(autouse=True)
 def _stable_suffixes(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(dns_mod, "_TLD_EXTRACT", _extract)
@@ -189,6 +199,11 @@ def test_quiet_family_promotes_at_inclusive_defaults(
         "Registrable domain family.example has a family of names that mostly "
         "fail to resolve. This pattern may resemble automated name generation."
     )
+    assert finding.next_steps == [
+        "Review the queried names under family.example",
+        "Pivot on querier IPs: 192.0.2.10, 192.0.2.11, 192.0.2.12, 192.0.2.13",
+        "Check whether the parent is expected in this environment",
+    ]
     assert all(step[0].isupper() and not step.endswith(".") for step in finding.next_steps)
 
 
@@ -324,6 +339,77 @@ def test_surfaced_above_gate_parent_dedupes_promotion_control(
     assert len(findings) == 1
     assert findings[0].title == f"{_HIGH_LABEL}.family.example"
     assert _promotions(findings) == []
+
+
+def _non_psl_promotion_counterfactual(
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[list, list]:
+    """Return absent/present surfaced-parent arms for one private family."""
+    monkeypatch.setattr(dns_mod, "_TLD_EXTRACT", _extract_non_psl)
+    queries = [f"{label}.lan" for label in _LETTERS[:5]]
+    frame = pd.DataFrame([
+        {
+            "ts": float(index),
+            "src": "192.0.2.10",
+            "query": queries[index % len(queries)],
+            "rcode": 3,
+        }
+        for index in range(10)
+    ])
+    kwargs = {
+        "threshold": 1.8,
+        "min_subdomains": 5,
+        "min_nxdomain_fraction": 0.9,
+        "now": _NOW,
+        "data_window": _WINDOW,
+    }
+
+    absent = dns_mod._make_below_gate_group_findings(
+        frame,
+        surfaced_parents=set(),
+        **kwargs,
+    )
+    present = dns_mod._make_below_gate_group_findings(
+        frame,
+        surfaced_parents={"lan"},
+        **kwargs,
+    )
+    return absent, present
+
+
+def test_non_psl_eligible_family_promotes_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An otherwise eligible private family promotes exactly once."""
+    absent, _ = _non_psl_promotion_counterfactual(monkeypatch)
+    assert len(absent) == 1
+    assert absent[0].evidence["registrable_domain"] == "lan"
+    assert absent[0].evidence["subdomain_count"] == 5
+    assert absent[0].severity == Severity.INFO
+    assert absent[0].evidence["severity_basis"] == []
+    assert absent[0].description == (
+        "Private namespace lan has a family of names that mostly fail to resolve. "
+        "Names in a private namespace routinely fail to resolve outside their "
+        "local zone."
+    )
+    assert absent[0].next_steps == [
+        "Review the queried names under lan",
+        "Pivot on querier IPs: 192.0.2.10",
+        "Check whether the parent is expected in this environment",
+    ]
+    assert not any(
+        marker in step
+        for step in absent[0].next_steps
+        for marker in ("whois", "VirusTotal")
+    )
+
+
+def test_non_psl_surfaced_parent_dedupes_promotion_control(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The same eligible private family is suppressed after its root surfaced."""
+    _, present = _non_psl_promotion_counterfactual(monkeypatch)
+    assert present == []
 
 
 def test_unsurfaced_raw_high_name_does_not_dedupe_full_frame_family(
@@ -526,6 +612,68 @@ def test_default_demo_materializes_only_quiet_arm() -> None:
     assert {row["query"] for row in family} == {
         row["query"] for row in expected_rows
     }
+
+
+def test_default_demo_non_psl_family_groups_without_psl_collateral(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The seeded private family folds once while the public DGA stays grouped."""
+    first: list[dict] = []
+    second: list[dict] = []
+    apex = gen_corpus._gen_dns(first, _rng_for(3759), _NOW.timestamp())
+    apex_repeat = gen_corpus._gen_dns(second, _rng_for(3759), _NOW.timestamp())
+
+    assert apex_repeat == apex
+    assert first == second
+    private_rows = [row for row in first if row["query"].endswith(".lan")]
+    private_queries = {row["query"] for row in private_rows}
+    assert len(private_rows) == gen_corpus.NON_PSL_SUBDOMAIN_COUNT
+    assert len(private_queries) == gen_corpus.NON_PSL_SUBDOMAIN_COUNT
+    private_labels = [query.split(".", 1)[0] for query in private_queries]
+    assert all(any(char.isdigit() for char in label) for label in private_labels)
+    assert all(dns_mod.entropy(label) >= 1.8 for label in private_labels)
+
+    def _mixed_extract(query: str) -> SimpleNamespace:
+        if query.endswith(".lan"):
+            return _extract_non_psl(query)
+        return _extract(query)
+
+    monkeypatch.setattr(dns_mod, "_TLD_EXTRACT", _mixed_extract)
+    _force_noise(monkeypatch)
+    frame = _normalized_generator_rows(first)
+    findings = dns_mod.run(_context(frame.to_dict("records")))
+
+    private_groups = [
+        finding
+        for finding in findings
+        if finding.evidence.get("registrable_domain") == "lan"
+        and "subdomain_count" in finding.evidence
+    ]
+    assert len(private_groups) == 1
+    assert private_groups[0].evidence["subdomain_count"] == len(private_queries)
+    assert not any(
+        finding.title.endswith(".lan")
+        and "subdomain_count" not in finding.evidence
+        for finding in findings
+    )
+
+    public_groups = [
+        finding
+        for finding in findings
+        if finding.evidence.get("registrable_domain") == apex
+        and "subdomain_count" in finding.evidence
+    ]
+    public_queries = {
+        row["query"]
+        for row in first
+        if row["query"].endswith(f".{apex}")
+    }
+    expected_public_candidates = sum(
+        dns_mod.entropy(query.split(".", 1)[0]) >= 1.8
+        for query in public_queries
+    )
+    assert len(public_groups) == 1
+    assert public_groups[0].evidence["subdomain_count"] == expected_public_candidates
 
 
 def test_promoted_shape_survives_real_sinks(

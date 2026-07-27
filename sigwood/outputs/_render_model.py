@@ -104,9 +104,9 @@ def _severity_sort_key(f: Finding) -> int:
 
 
 def _partition_dns(findings: list[Finding]) -> list[Section]:
-    """DNS: singletons FIRST (no subdomain_count), then groups (the singletons
-    tier is consistently the more interesting one), then the synthetic
-    dense-cluster scan summary in its OWN trailing section. Each
+    """DNS: groups first, then singletons, then the synthetic dense-cluster scan
+    summary in its own trailing section. Corroborated and promoted families lead
+    before the benign-dominant singleton tier. Each
     speaks-iff-non-empty: an empty subsection vanishes entirely. The
     scan_summary finding is pulled out FIRST - it has no subdomain_count and must
     not land in the singleton branch."""
@@ -115,10 +115,10 @@ def _partition_dns(findings: list[Finding]) -> list[Section]:
     singletons = [f for f in rest if "subdomain_count" not in f.evidence]
     groups = [f for f in rest if "subdomain_count" in f.evidence]
     out: list[Section] = []
-    if singletons:
-        out.append(Section("singletons", singletons, len(singletons)))
     if groups:
         out.append(Section("groups", groups, len(groups)))
+    if singletons:
+        out.append(Section("singletons", singletons, len(singletons)))
     if scan:
         out.append(Section("dense-cluster scan", scan, len(scan)))
     return out

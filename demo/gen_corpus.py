@@ -62,6 +62,7 @@ FLOW = {
     "below_gate_parent": 0x16,
     "below_gate_labels": 0x17,
     "below_gate_timing": 0x18,
+    "non_psl_labels": 0x19,
 }
 
 WINDOW_SECONDS = 86_400  # a 24h corpus
@@ -69,6 +70,7 @@ PIHOLE_DGA_COUNT = 20    # below pihole min_cluster_size so the burst stays nois
 BELOW_GATE_SUBDOMAIN_COUNT = 8
 BELOW_GATE_QUIET_VOLUME = 40
 BELOW_GATE_LOUD_VOLUME = 4_000
+NON_PSL_SUBDOMAIN_COUNT = 6
 
 # Measurement-bench selectors and calibration pins. Tests import these values from
 # the live generator so the synthetic recipe has one owner.
@@ -374,6 +376,7 @@ def _gen_dns(rows: list[dict], rng_for, epoch0: float) -> str:
         epoch0,
         volume=BELOW_GATE_QUIET_VOLUME,
     )
+    _gen_non_psl_dns(rows, rng_for, epoch0)
 
     # Allowlist bite - a minority of queries the shipped domains_common list
     # suppresses before the detector runs (reverse-PTR .arpa, mDNS .local,
@@ -443,6 +446,36 @@ def _gen_below_gate_dns(
             [],
         )
     return parent
+
+
+def _gen_non_psl_dns(rows: list[dict], rng_for, epoch0: float) -> str:
+    """Add one deterministic high-score family under a private namespace."""
+    label_rng = rng_for("non_psl_labels")
+    labels: list[str] = []
+    while len(labels) < NON_PSL_SUBDOMAIN_COUNT:
+        digit = label_rng.choice("0123456789")
+        remainder = DGA_ALPHABET.replace(digit, "")
+        chars = [digit, *label_rng.sample(remainder, 17)]
+        label_rng.shuffle(chars)
+        label = "".join(chars)
+        if label not in labels:
+            labels.append(label)
+
+    root = "lan"
+    start = epoch0 + 55_000
+    for index, label in enumerate(labels):
+        _dns_row(
+            rows,
+            start + index * 3,
+            WEBHOST,
+            f"{label}.{root}",
+            1,
+            0.03,
+            3,
+            [30],
+            [],
+        )
+    return root
 
 
 # ---------------------------------------------------------------------------

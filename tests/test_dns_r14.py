@@ -247,7 +247,9 @@ def test_nxdomain_stats_handles_numpy_keys_unknown_keys_and_bad_counts() -> None
 
 def test_severity_uses_unrounded_fraction_at_the_half_boundary() -> None:
     severity, basis = dns_mod._severity_for(
-        (0.49996, 2), dense_origin=False,
+        (0.49996, 2),
+        dense_origin=False,
+        has_public_suffix=True,
     )
 
     assert round(0.49996, 4) == 0.5

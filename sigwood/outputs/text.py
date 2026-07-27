@@ -425,7 +425,7 @@ def _render_cap_disclosure(detector: str, renderable: DetectorRenderable, cap: i
     Honesty rail: the cap trims sections in DECLARED order, NOT
     global severity. For a FLAT detector (one implicit section) the cap is
     indeed by severity - sort-then-cap retains the highest tiers. For a
-    SUBSECTIONED detector (dns: singletons-first; aws: bursts-first) a
+    SUBSECTIONED detector (dns: groups-first; aws: bursts-first) a
     later section's HIGH row can be dropped while an earlier section's LOW
     row survives the cap. So "by severity" is true only in the flat case.
 
@@ -690,9 +690,10 @@ class TextHandler(OutputHandler):
         return out
 
     def _render_dns_group(self, sections: list[Section]) -> list[str]:
-        """Render DNS findings: singletons FIRST, then groups (singletons
-        lead - the more interesting tier). Each section gets a plain lowercase
-        ``label (N)`` line (pre-cap count from the section) - no ── rules.
+        """Render DNS findings: groups first, then singletons.
+
+        Each section gets a plain lowercase ``label (N)`` line (pre-cap count
+        from the section) - no ── rules.
         Column widths derived from the section's findings before any row is
         formatted. blocked column omitted when no row in the section has
         was_blocked=True - preserves the pre-pihole Zeek-only output exactly.

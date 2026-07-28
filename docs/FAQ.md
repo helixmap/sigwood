@@ -383,6 +383,22 @@ query shape (the cluster topology), not a claim that the score is Shannon entrop
 a starting point, not a verdict; the intended pivots are `dns.log` → `conn.log` → whois →
 reputation → ASN.
 
+**The score decides what gets looked at; behaviour decides how loudly.** Clearing the
+suspicion-score bar makes a name a candidate and is worth a MEDIUM — it says the name *looks*
+generated, nothing more. HIGH additionally requires corroboration of a different kind: either
+the name's lookups mostly failed to resolve (a name that looks generated *and* does not
+exist), or it sits in a dense, concentrated cluster of similar names. A name that merely
+scores high is never crowned on that alone, which is why a clean capture can produce a page of
+MEDIUMs and no HIGH at all — that is the tool being honest, not missing something.
+
+Two consequences worth knowing. On **Pi-hole/dnsmasq-only** data, HIGH is effectively out of
+reach: Pi-hole records no DNS response code, so resolution outcome cannot corroborate, and the
+dense-cluster scan is Zeek-only. Findings there top out at MEDIUM by design rather than by
+accident. And for a **private namespace** — names under a local-only suffix such as `.lan` or
+`.internal` — a failed lookup is not evidence of anything: failing to resolve outside its own
+zone is simply what a private namespace does. Those names are grouped as one family and
+reported, but their failures never count as corroboration.
+
 There is one place "noise is the signal" leaks: a *sustained, high-volume* tunnel is thousands
 of structurally-similar high-entropy queries, so past a size threshold it forms its own dense
 cluster and never reaches the noise set - the loudest exfil would be the one that hides.

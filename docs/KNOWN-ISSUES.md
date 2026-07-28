@@ -59,6 +59,14 @@ may not be flagged. The floor is deliberately cautious so a benign high-entropy
 cluster (a CDN or a telemetry endpoint) doesn't flood the report; allowlist the ones
 you recognize.
 
+**On Pi-hole/dnsmasq-only data, DNS findings cannot reach HIGH.** HIGH requires a name to
+look generated *and* to be corroborated by something else - lookups that mostly fail to
+resolve, or membership in a dense concentrated cluster. Pi-hole records no DNS response
+code, so the first is unavailable, and the dense-cluster scan runs on Zeek only, so the
+second is too. Pi-hole DNS findings therefore top out at MEDIUM. This is a fidelity limit
+of the source, not a judgement that the traffic is benign - add Zeek for the same domains
+if you need the distinction.
+
 **On Pi-hole/dnsmasq data, high-volume DNS tunneling can vanish from the report as it
 grows.** The dense-cluster tunnel scan runs on Zeek DNS only. Pi-hole queries are
 clustered without it, so a burst of random lookups that becomes voluminous enough to

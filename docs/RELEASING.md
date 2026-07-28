@@ -80,7 +80,7 @@ Anything pushed to the public repository may be cached permanently. Confirm that
 or secret-bearing path is tracked:
 
 ```bash
-if git ls-files | grep -iE 'privdocs|scratch|memory/|secret|token|\.env'; then
+if git ls-files | grep -iE 'private/|scratch|memory/|secret|token|\.env'; then
   printf 'review the tracked paths above before continuing\n' >&2
   false
 else

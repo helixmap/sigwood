@@ -103,6 +103,7 @@ _NXDOMAIN_MAJORITY = 0.5
 _NXDOMAIN_MIN_FAILURES = 2
 _RESOLUTION_BASIS = "resolution-outcome"
 _VOLUME_BASIS = "volume-concentration"
+_DENSE_TUNNEL_MIN_CHILDREN = 2
 
 
 def _nxdomain_stats(
@@ -190,6 +191,79 @@ def _behavior_sentence(
         " The label score is the only signal - nothing in the query behavior "
         "corroborates it."
     )
+
+
+def _finite_ts_bounds(
+    values: pd.Series | None,
+) -> tuple[float | None, float | None]:
+    """Return the minimum and maximum finite numeric timestamps."""
+    if values is None:
+        return None, None
+    numeric = pd.to_numeric(values, errors="coerce")
+    finite = numeric[np.isfinite(numeric)]
+    if finite.empty:
+        return None, None
+    return float(finite.min()), float(finite.max())
+
+
+def _event_time_evidence(
+    first_ts: Any,
+    last_ts: Any,
+) -> dict[str, str | float | None]:
+    """Project numeric event bounds into the DNS evidence contract."""
+    try:
+        first = float(first_ts)
+        last = float(last_ts)
+    except (TypeError, ValueError, OverflowError):
+        first = last = math.nan
+    if not math.isfinite(first) or not math.isfinite(last):
+        return {
+            "first_seen": None,
+            "last_seen": None,
+            "span_seconds": None,
+        }
+    try:
+        first_seen = datetime.fromtimestamp(first, timezone.utc).isoformat()
+        last_seen = datetime.fromtimestamp(last, timezone.utc).isoformat()
+    except (OSError, OverflowError, ValueError):
+        return {
+            "first_seen": None,
+            "last_seen": None,
+            "span_seconds": None,
+        }
+    return {
+        "first_seen": first_seen,
+        "last_seen": last_seen,
+        "span_seconds": float(last - first),
+    }
+
+
+def _meets_dense_child_floor(value: Any) -> bool:
+    """Return whether a dense cluster has enough distinct child names."""
+    try:
+        count = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return False
+    return (
+        math.isfinite(count)
+        and count >= _DENSE_TUNNEL_MIN_CHILDREN
+    )
+
+
+def _group_supports_dense_tunnel(grp: pd.DataFrame) -> bool:
+    """Return whether any distinct dense cluster clears the child floor."""
+    if (
+        "dense_cluster_id" not in grp.columns
+        or "cluster_true_member_count" not in grp.columns
+    ):
+        return False
+    dense = grp.dropna(subset=["dense_cluster_id"])
+    if dense.empty:
+        return False
+    per_cluster = dense.groupby(
+        "dense_cluster_id", sort=False,
+    )["cluster_true_member_count"].first()
+    return any(_meets_dense_child_floor(value) for value in per_cluster)
 
 
 # ---------------------------------------------------------------------------
@@ -422,6 +496,14 @@ def _build_pihole_aggregate(pihole_df: pd.DataFrame) -> pd.DataFrame:
     if query_events.empty:
         return pd.DataFrame()
 
+    if "ts" in query_events.columns:
+        event_ts = pd.to_numeric(query_events["ts"], errors="coerce")
+        query_events["_event_ts"] = event_ts.where(
+            np.isfinite(event_ts), np.nan,
+        )
+    else:
+        query_events["_event_ts"] = np.nan
+
     valid_domains = set(query_events["query"].unique())
 
     # Full event stream restricted to valid domains for ratio computation.
@@ -443,15 +525,18 @@ def _build_pihole_aggregate(pihole_df: pd.DataFrame) -> pd.DataFrame:
     )
     total_counts = full.groupby("query").size()
 
-    query_counts    = query_events.groupby("query").size()
-    client_nunique  = query_events.groupby("query")["src"].nunique()
-    querier_ips_s   = query_events.groupby("query")["src"].apply(
+    query_groups = query_events.groupby("query")
+    query_counts    = query_groups.size()
+    client_nunique  = query_groups["src"].nunique()
+    querier_ips_s   = query_groups["src"].apply(
         lambda x: sorted(x.dropna().unique().tolist())
     )
-    unique_qtypes_s = query_events.groupby("query")["qtype"].nunique()
-    qtype_counts_s  = query_events.groupby("query")["qtype"].apply(
+    unique_qtypes_s = query_groups["qtype"].nunique()
+    qtype_counts_s  = query_groups["qtype"].apply(
         lambda x: x.value_counts().to_dict()
     )
+    first_ts_s = query_groups["_event_ts"].min()
+    last_ts_s = query_groups["_event_ts"].max()
 
     domains = query_counts.index
 
@@ -467,6 +552,8 @@ def _build_pihole_aggregate(pihole_df: pd.DataFrame) -> pd.DataFrame:
     agg["unique_qtypes"]  = unique_qtypes_s.reindex(domains, fill_value=0)
     agg["querier_ips"]    = querier_ips_s.reindex(domains)
     agg["qtype_counts"]   = qtype_counts_s.reindex(domains)
+    agg["first_ts"]       = first_ts_s.reindex(domains)
+    agg["last_ts"]        = last_ts_s.reindex(domains)
 
     # Ratios: clip denominator to 1, then fillna(0.0) as a backstop. Evidence-only.
     agg["forward_ratio"] = (
@@ -735,11 +822,16 @@ def _run_zeek_path(
         rcode_dist: dict[Any, int] = {}
         if "rcode" in sub.columns:
             rcode_dist = sub["rcode"].value_counts().to_dict()
+        first_ts, last_ts = _finite_ts_bounds(
+            sub["ts"] if "ts" in sub.columns else None
+        )
         result: dict[str, Any] = {
             "query_count":      len(sub),
             "unique_sources":   len(srcs),
             "querier_ips":      srcs,
             "rcode_distribution": rcode_dist,
+            "first_ts":         first_ts,
+            "last_ts":          last_ts,
         }
         if has_block_enrichment:
             result["was_blocked"] = bool(sub["was_blocked"].any())
@@ -751,6 +843,8 @@ def _run_zeek_path(
     candidate_df["unique_sources"]    = enriched.apply(lambda e: e["unique_sources"])
     candidate_df["querier_ips"]       = enriched.apply(lambda e: e["querier_ips"])
     candidate_df["rcode_distribution"] = enriched.apply(lambda e: e["rcode_distribution"])
+    candidate_df["first_ts"] = enriched.apply(lambda e: e["first_ts"])
+    candidate_df["last_ts"] = enriched.apply(lambda e: e["last_ts"])
     if has_block_enrichment:
         candidate_df["was_blocked"] = enriched.apply(lambda e: e["was_blocked"])
         candidate_df["block_ratio"] = enriched.apply(lambda e: e["block_ratio"])
@@ -936,6 +1030,9 @@ def _make_below_gate_group_findings(
                 if isinstance(source, str)
             ]
         label_scores = query_shapes["label_entropy"].astype(float)
+        first_ts, last_ts = _finite_ts_bounds(
+            rows["ts"] if "ts" in rows.columns else None
+        )
         # ``_severity_for`` remains the only severity-basis owner. Promotion is
         # INFO because the mandatory lexical leg did not clear; the behavior
         # that made it visible lives in tier + resolution evidence.
@@ -984,6 +1081,7 @@ def _make_below_gate_group_findings(
                 "nxdomain_fraction": round(fraction, 4),
                 "nxdomain_count": nxdomain_count,
                 "severity_basis": severity_basis,
+                **_event_time_evidence(first_ts, last_ts),
             },
             next_steps=next_steps,
             ts_generated=now,
@@ -1160,6 +1258,7 @@ def _make_group_finding(
     # domain alone (undercounts two dense clusters under one parent).
     # cluster_true_* are DOMINANT-domain counts; never whole-cluster totals.
     has_dense = "dense_cluster_id" in grp.columns and grp["dense_cluster_id"].notna().any()
+    dense_tunnel_supported = _group_supports_dense_tunnel(grp)
     if "dense_cluster_id" in grp.columns:
         noise_rows = grp[grp["dense_cluster_id"].isna()]
         per_cluster = grp.dropna(subset=["dense_cluster_id"]).groupby("dense_cluster_id")
@@ -1183,15 +1282,21 @@ def _make_group_finding(
         if "rcode_distribution" in grp.columns
         else None
     )
+    first_ts, _ = _finite_ts_bounds(
+        grp["first_ts"] if "first_ts" in grp.columns else None
+    )
+    _, last_ts = _finite_ts_bounds(
+        grp["last_ts"] if "last_ts" in grp.columns else None
+    )
     has_public_suffix = bool(grp["has_public_suffix"].all())
     severity, severity_basis = _severity_for(
         rcode_stats,
-        dense_origin=has_dense,
+        dense_origin=dense_tunnel_supported,
         has_public_suffix=has_public_suffix,
     )
     title    = reg_domain
 
-    if has_dense:
+    if has_dense and dense_tunnel_supported:
         # Deliberately surfaced dense cluster - the opposite of noise. {subdomain_count}
         # is the honest dominant-domain count, never the capped/sampled row count.
         namespace_kind = (
@@ -1203,6 +1308,15 @@ def _make_group_finding(
         )
         if _RESOLUTION_BASIS in severity_basis:
             description += _behavior_sentence(rcode_stats, severity_basis)
+    elif has_dense:
+        namespace_kind = (
+            "Registrable domain" if has_public_suffix else "Private namespace"
+        )
+        description = (
+            f"{namespace_kind} {reg_domain} has a repeated high-scoring name in "
+            "a dense cluster that may reflect automated retry or rendezvous traffic."
+            f"{_behavior_sentence(rcode_stats, severity_basis)}"
+        )
     else:
         namespace_kind = (
             "Registrable domain" if has_public_suffix else "Private namespace"
@@ -1277,6 +1391,8 @@ def _make_group_finding(
         if has_dense:
             evidence["origin"] = "dense_cluster"
 
+    evidence.update(_event_time_evidence(first_ts, last_ts))
+
     return Finding(
         detector=DETECTOR_NAME,
         severity=severity,
@@ -1303,6 +1419,10 @@ def _make_singleton_finding(
     # distinct candidate and routes here. The defensive dense-origin branch keeps
     # the prose honest independent of the group/singleton routing invariant.
     dense_origin = "dense_cluster_id" in row.index and pd.notna(row.get("dense_cluster_id"))
+    dense_tunnel_supported = (
+        dense_origin
+        and _meets_dense_child_floor(row.get("cluster_true_member_count"))
+    )
     rcode_stats = (
         _nxdomain_stats(row["rcode_distribution"])
         if "rcode_distribution" in row.index
@@ -1310,17 +1430,23 @@ def _make_singleton_finding(
     )
     severity, severity_basis = _severity_for(
         rcode_stats,
-        dense_origin=dense_origin,
+        dense_origin=dense_tunnel_supported,
         has_public_suffix=bool(row["has_public_suffix"]),
     )
 
-    if dense_origin:
+    if dense_origin and dense_tunnel_supported:
         description = (
             f"Domain {domain} sits in a dense, high-entropy cluster (label score {ent:.4f}) "
             f"- the shape of DNS tunneling."
         )
         if _RESOLUTION_BASIS in severity_basis:
             description += _behavior_sentence(rcode_stats, severity_basis)
+    elif dense_origin:
+        description = (
+            f"Domain {domain} repeats in a dense cluster with label score {ent:.4f}, "
+            "a pattern that may reflect automated retry or rendezvous traffic."
+            f"{_behavior_sentence(rcode_stats, severity_basis)}"
+        )
     else:
         description = (
             f"Domain {domain} appears in the DNS noise cluster with label score {ent:.4f}."
@@ -1371,6 +1497,11 @@ def _make_singleton_finding(
         if dense_origin:
             evidence["origin"] = "dense_cluster"
 
+    evidence.update(_event_time_evidence(
+        row.get("first_ts"),
+        row.get("last_ts"),
+    ))
+
     return Finding(
         detector=DETECTOR_NAME,
         severity=severity,
@@ -1410,28 +1541,45 @@ def _make_scan_summary_finding(
 
     per_cluster = dense.groupby("dense_cluster_id")
     cluster_count = int(per_cluster.ngroups)
-    total_members = int(per_cluster["cluster_true_member_count"].first().sum())
+    member_counts = per_cluster["cluster_true_member_count"].first()
+    total_members = int(member_counts.sum())
     reg_domains   = per_cluster["registrable_domain"].first().tolist()[:5]
+    tunnel_supported = any(
+        _meets_dense_child_floor(value) for value in member_counts
+    )
+    if tunnel_supported:
+        description = (
+            "The dense-cluster scan surfaced high-entropy clusters concentrated under a "
+            "single registrable domain - the shape of DNS tunneling. A benign high-entropy "
+            "service can produce the same shape and should be allowlisted."
+        )
+        next_steps = [
+            "Review dense-cluster findings before treating as tunneling",
+            "Allowlist known high-entropy services",
+        ]
+    else:
+        description = (
+            "The dense-cluster scan surfaced a repeated high-scoring DNS name "
+            "concentrated under one registrable domain. This pattern may reflect "
+            "automated retry or rendezvous traffic."
+        )
+        next_steps = [
+            "Review the repeated name and its query source",
+            "Allowlist known automated services",
+        ]
 
     return Finding(
         detector=DETECTOR_NAME,
         severity=Severity.INFO,
         title="dense-cluster scan: high-entropy clusters surfaced",
-        description=(
-            "The dense-cluster scan surfaced high-entropy clusters concentrated under a "
-            "single registrable domain - the shape of DNS tunneling. A benign high-entropy "
-            "service can produce the same shape and should be allowlisted."
-        ),
+        description=description,
         evidence={
             "tier":                "scan_summary",
             "cluster_count":       cluster_count,
             "total_members":       total_members,
             "registrable_domains": reg_domains,
         },
-        next_steps=[
-            "Review dense-cluster findings before treating as tunneling",
-            "Allowlist known high-entropy services",
-        ],
+        next_steps=next_steps,
         ts_generated=now,
         data_window=data_window,
     )

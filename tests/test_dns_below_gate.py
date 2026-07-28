@@ -194,6 +194,9 @@ def test_quiet_family_promotes_at_inclusive_defaults(
         "nxdomain_fraction": 0.9,
         "nxdomain_count": 9,
         "severity_basis": [],
+        "first_seen": "1970-01-01T00:00:00+00:00",
+        "last_seen": "1970-01-01T00:00:09+00:00",
+        "span_seconds": 9.0,
     }
     assert finding.description == (
         "Registrable domain family.example has a family of names that mostly "
@@ -218,6 +221,27 @@ def test_fraction_uses_raw_value_before_evidence_rounding(
     assert 18_000 / 20_001 < 0.9
     assert round(18_000 / 20_001, 4) == 0.9
     assert _promotions(findings) == []
+
+
+@pytest.mark.parametrize("include_nan_ts", [False, True])
+def test_promotion_missing_event_time_carries_null_evidence(
+    monkeypatch: pytest.MonkeyPatch,
+    include_nan_ts: bool,
+) -> None:
+    _force_noise(monkeypatch)
+    rows = _zeek_rows()
+    for row in rows:
+        if include_nan_ts:
+            row["ts"] = np.nan
+        else:
+            row.pop("ts")
+
+    promoted = _promotions(dns_mod.run(_context(rows)))
+
+    assert len(promoted) == 1
+    assert promoted[0].evidence["first_seen"] is None
+    assert promoted[0].evidence["last_seen"] is None
+    assert promoted[0].evidence["span_seconds"] is None
 
 
 def test_four_subdomains_stay_silent_control(

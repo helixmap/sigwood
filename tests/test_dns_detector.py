@@ -327,10 +327,19 @@ def test_zeek_path_regression(monkeypatch) -> None:
         "total_queries", "unique_sources", "sample_domains", "querier_ips",
     }
     new_grp_keys = set(grp_f.evidence.keys()) - _pre_refactor_grp_keys
-    assert new_grp_keys == {"source", "severity_basis"}, (
+    assert new_grp_keys == {
+        "source",
+        "severity_basis",
+        "first_seen",
+        "last_seen",
+        "span_seconds",
+    }, (
         f"unexpected additive group evidence keys: {new_grp_keys}"
     )
     assert grp_f.evidence["severity_basis"] == []
+    assert grp_f.evidence["first_seen"] == "1970-01-01T00:00:04+00:00"
+    assert grp_f.evidence["last_seen"] == "1970-01-01T00:00:05+00:00"
+    assert grp_f.evidence["span_seconds"] == 1.0
 
     # ── Singleton finding ─────────────────────────────────────────────────────
     sng_f = findings[1]
@@ -355,10 +364,19 @@ def test_zeek_path_regression(monkeypatch) -> None:
         "label_score", "query_count", "unique_sources", "querier_ips", "rcode_distribution",
     }
     new_sng_keys = set(sng_f.evidence.keys()) - _pre_refactor_sng_keys
-    assert new_sng_keys == {"source", "severity_basis"}, (
+    assert new_sng_keys == {
+        "source",
+        "severity_basis",
+        "first_seen",
+        "last_seen",
+        "span_seconds",
+    }, (
         f"unexpected additive singleton evidence keys: {new_sng_keys}"
     )
     assert sng_f.evidence["severity_basis"] == []
+    assert sng_f.evidence["first_seen"] == "1970-01-01T00:00:06+00:00"
+    assert sng_f.evidence["last_seen"] == "1970-01-01T00:00:06+00:00"
+    assert sng_f.evidence["span_seconds"] == 0.0
 
 
 # ── Pihole aggregate tests ────────────────────────────────────────────────────
@@ -396,6 +414,8 @@ def test_pihole_aggregate_produces_per_domain_rows(monkeypatch) -> None:
     assert alpha["unique_clients"] == 2
     # 1 forwarded / 3 query events
     assert round(float(alpha["forward_ratio"]), 4) == round(1 / 3, 4)
+    assert pd.isna(alpha["first_ts"])
+    assert pd.isna(alpha["last_ts"])
 
     beta = agg[agg["query"] == "beta.example.com"].iloc[0]
     assert beta["query_count"] == 2
@@ -468,6 +488,7 @@ def test_block_ratio_not_in_pihole_feature_matrix() -> None:
             "forward_ratio": 0.4, "cache_ratio": 0.2,
             "block_ratio": 0.0, "was_blocked": False,
             "unique_sources": 2,
+            "first_ts": 1.0, "last_ts": 5.0,
         },
         {
             "query": "sub2.example.net",
@@ -479,13 +500,27 @@ def test_block_ratio_not_in_pihole_feature_matrix() -> None:
             "forward_ratio": 0.333, "cache_ratio": 0.0,
             "block_ratio": 0.25, "was_blocked": True,
             "unique_sources": 1,
+            "first_ts": 2.0, "last_ts": 8.0,
         },
     ])
 
     feat = _build_pihole_features(agg_df)
 
+    assert set(feat.columns) == {
+        "q_len",
+        "q_parts",
+        "q_suffix_len",
+        "q_domain_len",
+        "log1p_query_count",
+        "log1p_unique_clients",
+        "unique_qtypes",
+        "log1p_forward_ratio",
+        "log1p_cache_ratio",
+        "TLD_net",
+    }
     for col in ("block_ratio", "was_blocked", "block_count", "forward_count",
-                "cache_count", "total_count", "special_count"):
+                "cache_count", "total_count", "special_count",
+                "first_ts", "last_ts"):
         assert col not in feat.columns, f"{col!r} must not appear in pihole feature matrix"
 
 
@@ -642,9 +677,15 @@ def test_pihole_only_run_produces_findings(monkeypatch) -> None:
     monkeypatch.setattr(clustering, "HDBSCAN", _FakeAllNoise)
 
     rows = []
-    for domain in _PIHOLE_ONLY_EXT:
+    for domain_index, domain in enumerate(_PIHOLE_ONLY_EXT):
         for i in range(3):
-            rows.append({"query": domain, "event_type": "query", "src": f"192.0.2.{i + 1}", "qtype": "A"})
+            rows.append({
+                "ts": float(domain_index * 10 + i),
+                "query": domain,
+                "event_type": "query",
+                "src": f"192.0.2.{i + 1}",
+                "qtype": "A",
+            })
     pihole_df = pd.DataFrame(rows)
 
     ctx = DetectorContext(
@@ -666,6 +707,14 @@ def test_pihole_only_run_produces_findings(monkeypatch) -> None:
     )
     assert all(f.severity == Severity.MEDIUM for f in findings)
     assert all(f.evidence["severity_basis"] == [] for f in findings)
+    first = next(
+        finding
+        for finding in findings
+        if finding.title == "a3f7bc19.sus1.example"
+    )
+    assert first.evidence["first_seen"] == "1970-01-01T00:00:00+00:00"
+    assert first.evidence["last_seen"] == "1970-01-01T00:00:02+00:00"
+    assert first.evidence["span_seconds"] == 2.0
 
 
 def test_non_psl_candidates_share_one_grouping_key_on_both_paths(
@@ -863,6 +912,50 @@ def test_shared_back_half_grouping_consistency() -> None:
     assert findings[0].evidence["source"] == "pihole"
     assert findings[0].evidence["severity_basis"] == []
     assert findings[0].severity == Severity.MEDIUM
+
+
+def test_dns_group_event_time_spans_all_members() -> None:
+    """A group's event-time evidence uses the earliest and latest member."""
+    candidate_df = pd.DataFrame([
+        {
+            "query": "a3f7bc19.family.example",
+            "label_entropy": 2.1,
+            "registrable_domain": "family.example",
+            "has_public_suffix": True,
+            "unique_sources": 1,
+            "querier_ips": ["192.0.2.10"],
+            "source": "zeek",
+            "query_count": 2,
+            "rcode_distribution": {},
+            "first_ts": 10.0,
+            "last_ts": 12.0,
+        },
+        {
+            "query": "m8x2q9n.family.example",
+            "label_entropy": 2.0,
+            "registrable_domain": "family.example",
+            "has_public_suffix": True,
+            "unique_sources": 1,
+            "querier_ips": ["192.0.2.11"],
+            "source": "zeek",
+            "query_count": 3,
+            "rcode_distribution": {},
+            "first_ts": 20.0,
+            "last_ts": 30.0,
+        },
+    ])
+
+    findings = _shared_back_half(
+        candidate_df,
+        threshold=1.8,
+        now=_NOW,
+        data_window=_WINDOW,
+    )
+
+    assert len(findings) == 1
+    assert findings[0].evidence["first_seen"] == "1970-01-01T00:00:10+00:00"
+    assert findings[0].evidence["last_seen"] == "1970-01-01T00:00:30+00:00"
+    assert findings[0].evidence["span_seconds"] == 20.0
 
 
 def test_pihole_group_qtype_counts_aggregated() -> None:
@@ -1452,6 +1545,122 @@ def _fake_two_clusters(split: int):
 _DENSE_CFG = {"min_cluster_size": 50, "min_samples": 5}
 
 
+def _dense_group_candidates(
+    true_member_counts: tuple[int | None, ...],
+) -> pd.DataFrame:
+    """Candidate rows for one parent with dense and noise provenance."""
+    labels = _high_entropy_labels(len(true_member_counts), seed=41)
+    rows: list[dict] = []
+    for index, (label, true_member_count) in enumerate(
+        zip(labels, true_member_counts, strict=True)
+    ):
+        dense = true_member_count is not None
+        rows.append({
+            "query": f"{label}.tunnel.example",
+            "label_entropy": dns_entropy(label),
+            "registrable_domain": "tunnel.example",
+            "has_public_suffix": True,
+            "unique_sources": 1,
+            "querier_ips": ["192.0.2.10"],
+            "source": "zeek",
+            "query_count": 1,
+            "rcode_distribution": {},
+            "dense_cluster_id": float(index) if dense else np.nan,
+            "cluster_true_member_count": (
+                float(true_member_count) if dense else np.nan
+            ),
+            "cluster_true_query_total": (
+                float(true_member_count) if dense else np.nan
+            ),
+        })
+    return pd.DataFrame(rows)
+
+
+def test_dense_group_noise_rows_cannot_satisfy_distinct_child_floor() -> None:
+    """One dense child plus a noise sibling does not earn tunnel support."""
+    findings = _shared_back_half(
+        _dense_group_candidates((1, None)),
+        threshold=1.8,
+        now=_NOW,
+        data_window=_WINDOW,
+    )
+
+    assert len(findings) == 1
+    finding = findings[0]
+    assert finding.evidence["origin"] == "dense_cluster"
+    assert finding.severity == Severity.MEDIUM
+    assert finding.evidence["severity_basis"] == []
+    assert "automated retry or rendezvous traffic" in finding.description
+    assert "DNS tunneling" not in finding.description
+
+
+def test_dense_group_any_qualifying_cluster_earns_tunnel_support() -> None:
+    """One qualifying cluster is sufficient across mixed dense/noise rows."""
+    findings = _shared_back_half(
+        _dense_group_candidates((1, 2, None)),
+        threshold=1.8,
+        now=_NOW,
+        data_window=_WINDOW,
+    )
+
+    assert len(findings) == 1
+    finding = findings[0]
+    assert finding.severity == Severity.HIGH
+    assert finding.evidence["severity_basis"] == ["volume-concentration"]
+    assert "DNS tunneling" in finding.description
+
+
+def test_unrepresentable_event_time_carries_null_evidence() -> None:
+    """A finite but out-of-range epoch cannot crash DNS finding creation."""
+    import sigwood.detectors.dns as dns_mod
+
+    assert dns_mod._event_time_evidence(1e20, 1e20) == {
+        "first_seen": None,
+        "last_seen": None,
+        "span_seconds": None,
+    }
+
+
+@pytest.mark.parametrize("include_nan_ts", [False, True])
+def test_zeek_missing_event_time_carries_null_evidence(
+    monkeypatch: pytest.MonkeyPatch,
+    include_nan_ts: bool,
+) -> None:
+    """A missing or all-NaN Zeek clock remains a valid carrying tier."""
+    import sigwood.detectors.dns as dns_mod
+
+    labels = _high_entropy_labels(2, seed=53)
+    rows = [
+        {
+            "src": "192.0.2.10",
+            "query": f"{label}.tunnel.example",
+            **({"ts": np.nan} if include_nan_ts else {}),
+        }
+        for label in labels
+    ]
+    monkeypatch.setattr(dns_mod, "_TLD_EXTRACT", _tunnel_extract)
+    monkeypatch.setattr(
+        dns_mod,
+        "fit_predict_interruptible",
+        lambda matrix, **kwargs: np.full(matrix.shape[0], -1, dtype=int),
+    )
+
+    findings = run(DetectorContext(
+        logs={"dns*.log*": pd.DataFrame(rows)},
+        config={
+            **_DENSE_CFG,
+            "scan_dense_clusters": False,
+        },
+        allowlist=None,
+        data_window=_WINDOW,
+    ))
+
+    assert len(findings) == 1
+    assert findings[0].evidence["first_seen"] is None
+    assert findings[0].evidence["last_seen"] is None
+    assert findings[0].evidence["span_seconds"] is None
+
+
 def test_dense_scan_surfaces_high_volume_tunnel(monkeypatch) -> None:
     """A self-clustering high-volume tunnel carries a non-noise HDBSCAN label, so it
     never enters the noise-only candidate set; the dense-cluster scan surfaces it
@@ -1508,6 +1717,7 @@ def test_dense_scan_surfaces_high_volume_tunnel(monkeypatch) -> None:
     assert set(g.evidence.keys()) - _group_baseline == {
         "source", "origin", "severity_basis",
         "nxdomain_fraction", "nxdomain_count",
+        "first_seen", "last_seen", "span_seconds",
     }
     assert g.severity == Severity.HIGH
     assert g.evidence["severity_basis"] == [
@@ -1517,6 +1727,9 @@ def test_dense_scan_surfaces_high_volume_tunnel(monkeypatch) -> None:
     # is deliberately sample-relative while the structural totals above are 600.
     assert g.evidence["nxdomain_fraction"] == 1.0
     assert g.evidence["nxdomain_count"] == 500
+    assert g.evidence["first_seen"] == "1970-01-01T00:00:00+00:00"
+    assert g.evidence["last_seen"] == "1970-01-01T00:09:59+00:00"
+    assert g.evidence["span_seconds"] == 599.0
 
     # Dense-origin prose - never the noise wording.
     assert "noise cluster" not in g.description
@@ -1542,6 +1755,9 @@ def test_dense_scan_surfaces_high_volume_tunnel(monkeypatch) -> None:
     assert summary[0].severity == Severity.INFO
     assert summary[0].evidence["cluster_count"] >= 1
     assert summary[0].evidence["total_members"] == 600
+    assert not {
+        "first_seen", "last_seen", "span_seconds",
+    } & set(summary[0].evidence)
 
 
 def test_dense_scan_repeated_single_query_routes_to_singleton(monkeypatch) -> None:
@@ -1566,11 +1782,73 @@ def test_dense_scan_repeated_single_query_routes_to_singleton(monkeypatch) -> No
     s = sng[0]
     assert "subdomain_count" not in s.evidence      # singleton, not a group
     assert s.evidence["origin"] == "dense_cluster"
-    assert s.severity == Severity.HIGH
-    assert s.evidence["severity_basis"] == ["volume-concentration"]
+    assert s.severity == Severity.MEDIUM
+    assert s.evidence["severity_basis"] == []
+    assert s.evidence["first_seen"] == "1970-01-01T00:00:00+00:00"
+    assert s.evidence["last_seen"] == "1970-01-01T00:01:59+00:00"
+    assert s.evidence["span_seconds"] == 119.0
     assert "noise cluster" not in s.description
     assert "not clustered" not in s.description.lower()
+    assert "automated retry or rendezvous traffic" in s.description
+    assert all(
+        "DNS tunneling" not in finding.description
+        and "treating as tunneling" not in (
+            finding.description + " " + " ".join(finding.next_steps)
+        )
+        for finding in findings
+    )
     assert any(f.evidence.get("tier") == "scan_summary" for f in findings)
+
+
+def test_dense_scan_two_distinct_children_keep_tunnel_support(monkeypatch) -> None:
+    """The minimum two-child dense cluster keeps its structural corroborator."""
+    import sigwood.detectors.dns as dns_mod
+
+    labels = _high_entropy_labels(2)
+    queries = [f"{label}.tunnel.example" for label in labels]
+    df = pd.DataFrame([
+        {
+            "ts": float(index),
+            "src": "192.0.2.10",
+            "query": queries[index % 2],
+        }
+        for index in range(120)
+    ])
+
+    monkeypatch.setattr(dns_mod, "_TLD_EXTRACT", _tunnel_extract)
+    monkeypatch.setattr(clustering, "HDBSCAN", _FakeAllCluster0)
+
+    findings = run(DetectorContext(
+        logs={"dns*.log*": df},
+        config=_DENSE_CFG,
+        allowlist=None,
+        data_window=_WINDOW,
+    ))
+    assert_report_voice(findings)
+
+    groups = [
+        finding
+        for finding in findings
+        if finding.evidence.get("registrable_domain") == "tunnel.example"
+    ]
+    assert len(groups) == 1
+    group = groups[0]
+    assert group.severity == Severity.HIGH
+    assert group.evidence["severity_basis"] == ["volume-concentration"]
+    assert "DNS tunneling" in group.description
+    assert group.evidence["first_seen"] == "1970-01-01T00:00:00+00:00"
+    assert group.evidence["last_seen"] == "1970-01-01T00:01:59+00:00"
+    assert group.evidence["span_seconds"] == 119.0
+
+    summary = next(
+        finding
+        for finding in findings
+        if finding.evidence.get("tier") == "scan_summary"
+    )
+    assert "DNS tunneling" in summary.description
+    assert not {
+        "first_seen", "last_seen", "span_seconds",
+    } & set(summary.evidence)
 
 
 def test_dense_scan_regdomain_gate_rejects_multi_parent(monkeypatch) -> None:

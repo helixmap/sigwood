@@ -343,6 +343,11 @@ def test_dns_label_score_evidence_keys_reach_json(monkeypatch: pytest.MonkeyPatc
     for ev in singleton:
         assert "label_score" in ev
 
+    for ev in dns_ev:
+        assert ev["first_seen"] is not None
+        assert ev["last_seen"] is not None
+        assert isinstance(ev["span_seconds"], float)
+
     legacy = {"entropy", "max_entropy", "min_entropy"}
     for ev in dns_ev:
         leaked = legacy & set(ev)

@@ -23,10 +23,12 @@ of span; at a single day the same cadence clears the threshold only intermittent
 from __future__ import annotations
 
 import ipaddress
+import math
 from datetime import datetime, timezone
 from typing import Any
 
 import numpy as np
+import pandas as pd
 
 from sigwood.common.finding import DetectorContext, Finding, MethodTag, Severity
 
@@ -96,9 +98,12 @@ def run(context: DetectorContext) -> list[Finding]:
         if score_data is None or score_data["beacon_score"] < threshold:
             continue
 
+        first_ts, last_ts = _finite_ts_bounds(group["ts"])
+        time_evidence = _event_time_evidence(first_ts, last_ts)
         findings.append(_make_finding(
             str(src), str(dst), int(port), str(proto),
             score_data, group, context.data_window,
+            time_evidence=time_evidence,
         ))
 
     findings.sort(key=lambda f: f.evidence["beacon_score"], reverse=True)
@@ -299,6 +304,49 @@ def _compute_beacon_score(
     }
 
 
+def _finite_ts_bounds(values: Any) -> tuple[float | None, float | None]:
+    """Return the finite numeric timestamp extrema, or no bounds."""
+    if values is None:
+        return None, None
+    numeric = pd.to_numeric(values, errors="coerce")
+    finite = numeric[np.isfinite(numeric)]
+    if len(finite) == 0:
+        return None, None
+    return float(finite.min()), float(finite.max())
+
+
+def _event_time_evidence(
+    first_ts: Any,
+    last_ts: Any,
+) -> dict[str, str | float | None]:
+    """Project numeric event bounds into the beacon evidence contract."""
+    try:
+        first = float(first_ts)
+        last = float(last_ts)
+    except (TypeError, ValueError, OverflowError):
+        first = last = math.nan
+    if not math.isfinite(first) or not math.isfinite(last):
+        return {
+            "first_seen": None,
+            "last_seen": None,
+            "span_seconds": None,
+        }
+    try:
+        first_seen = datetime.fromtimestamp(first, timezone.utc).isoformat()
+        last_seen = datetime.fromtimestamp(last, timezone.utc).isoformat()
+    except (OSError, OverflowError, ValueError):
+        return {
+            "first_seen": None,
+            "last_seen": None,
+            "span_seconds": None,
+        }
+    return {
+        "first_seen": first_seen,
+        "last_seen": last_seen,
+        "span_seconds": float(last - first),
+    }
+
+
 def _make_finding(
     src: str,
     dst: str,
@@ -307,6 +355,7 @@ def _make_finding(
     score_data: dict[str, Any],
     group: Any,
     data_window: tuple[datetime, datetime],
+    time_evidence: dict[str, str | float | None] | None = None,
 ) -> Finding:
     score = score_data["beacon_score"]
     period_s = score_data["dominant_period"]
@@ -326,6 +375,22 @@ def _make_finding(
 
     bytes_s = group["bytes"].dropna()
     bytes_mean = round(float(bytes_s.mean()), 1) if len(bytes_s) > 0 else 0.0
+
+    if time_evidence is None:
+        time_evidence = {
+            "first_seen": None,
+            "last_seen": None,
+            "span_seconds": None,
+        }
+    span_seconds = time_evidence["span_seconds"]
+    cycles: float | None = None
+    try:
+        span = float(span_seconds) if span_seconds is not None else math.nan
+        period = float(period_s)
+    except (TypeError, ValueError, OverflowError):
+        span = period = math.nan
+    if math.isfinite(span) and math.isfinite(period) and period > 0:
+        cycles = round(span / period, 1)
 
     description = (
         f"Connections recur on a near-fixed {period_str} period - the regular "
@@ -348,6 +413,8 @@ def _make_finding(
         "dst_port": port,
         "proto": proto,
         "bytes_mean": bytes_mean,
+        **time_evidence,
+        "cycles": cycles,
     }
 
     return Finding(

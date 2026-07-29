@@ -352,6 +352,39 @@ directory window is `7d` - exactly the reliability bar - and it discloses a shor
 span at run time, so widen with `--all` when your archive holds less than a week, and lean
 on the allowlist to set aside your own infrastructure.
 
+### If beacon can't prove malice, why does it run by default?
+
+Because recurring automated connections are worth seeing, they are close to invisible in
+`grep`, and finding them needs no lookup, no list, and no service - which is the whole
+shape of this tool. That is the claim, and it stops there.
+
+What the detector actually does: it reads the connection log you supplied, on your
+machine, and reports flows whose timing repeats. It does not identify malware from
+timing, so a finding tops out at MEDIUM and its text says "the regular cadence of an
+automated check-in" rather than naming a threat. The first steps it suggests are local -
+the process on the source host, the DNS lookups that resolved to that destination, that
+destination's history in `conn.log` - because the evidence lives in your own logs. Each
+finding carries when the pattern started, when it was last seen, and how long it ran, so
+you can judge it without leaving the report.
+
+What it does not see is stated plainly rather than left for you to discover: cadences
+faster than 60 seconds are reported at the wrong period; only Zeek `SF`/`S1` connections
+with observed originator bytes are scored, so retries to a host that never answers are
+not analyzed; a jittered beacon needs about a week of span to resolve reliably; and a
+callback that rotates destinations or changes its rhythm can stay under the bar. sigwood
+discloses these at run time when they apply, in known-issues, and here.
+
+Two honest caveats about the evidence behind all that. Its effect has been measured on
+one home network, on synthetic cases, and against published method literature - not
+across many real deployments, so it carries no precision claim. And the allowlist is
+yours to set your own infrastructure aside; it is operator policy, not a substitute for
+the detector being right.
+
+If wider evidence later shows the lane earns less attention than it costs, narrowing it -
+or moving it out of the default hunt - is a legitimate outcome, and one this project
+would report rather than bury. Today the trade reads well: one bounded, inspectable,
+local question, answered without overclaiming.
+
 ### `dns` - why HDBSCAN, and why is "noise" the interesting part?
 
 Normal DNS is repetitive and clusters tightly. Your machines hit the same CDNs, update

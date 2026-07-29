@@ -144,6 +144,17 @@ _VARIANTS: dict[str, Finding] = {
 }
 
 
+def test_beacon_default_row_cells_stay_compact() -> None:
+    assert [(cell.key, cell.value) for cell in project_row(_VARIANTS["beacon"])] == [
+        (None, "192.0.2.211"),
+        (None, "→"),
+        (None, "198.51.100.222:4433/tcp"),
+        ("period", "period=61.5m"),
+        ("score", "score=0.617"),
+        ("conns", "918,273 conns"),
+    ]
+
+
 @pytest.mark.parametrize("variant", list(_VARIANTS))
 def test_row_signal_parity_text_and_html(variant: str) -> None:
     """Every NON-empty project_row cell of this row appears in BOTH surfaces.

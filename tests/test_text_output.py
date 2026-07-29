@@ -1188,6 +1188,46 @@ def test_vanish_dont_dash_minimal_finding_renders_title_alone() -> None:
         assert out.count("\n\n\n") == 0, f"no triple blank at level {level}"
 
 
+def test_beacon_event_time_evidence_follows_reading_levels() -> None:
+    finding = _bare_finding(
+        "beacon", Severity.MEDIUM, "192.0.2.10 → 198.51.100.20:443/tcp"
+    )
+    finding.evidence = {
+        "src_ip": "192.0.2.10",
+        "dst_ip": "198.51.100.20",
+        "dst_port": 443,
+        "proto": "tcp",
+        "period_str": "10.0m",
+        "beacon_score": 0.6052,
+        "spectral_ratio": 0.05,
+        "prominence_norm": 0.75,
+        "jitter_cv": 0.01,
+        "conn_count": 144,
+        "first_seen": "1970-01-01T00:00:00+00:00",
+        "last_seen": "1970-01-01T23:49:59+00:00",
+        "span_seconds": 85_799.0,
+        "cycles": 143.0,
+    }
+
+    at_level_0 = _capture_write(TextHandler(verbose_level=0), [finding])
+    at_level_1 = _capture_write(TextHandler(verbose_level=1), [finding])
+    at_level_2 = _capture_write(TextHandler(verbose_level=2), [finding])
+
+    for key in ("first_seen", "last_seen", "span_seconds", "cycles"):
+        assert f"{key}:" not in at_level_0
+    assert "first_seen: 1970-01-01T00:00:00+00:00" in at_level_1
+    assert "span_seconds: 85799.0" in at_level_1
+    assert "last_seen:" not in at_level_1
+    assert "cycles:" not in at_level_1
+    for expected in (
+        "first_seen: 1970-01-01T00:00:00+00:00",
+        "last_seen: 1970-01-01T23:49:59+00:00",
+        "span_seconds: 85799.0",
+        "cycles: 143.0",
+    ):
+        assert expected in at_level_2
+
+
 def test_vanish_truly_bare_finding_renders_title_only() -> None:
     """For a generic Finding (unknown detector → no curated subset) with
     empty description/evidence/next_steps, EVERY level emits just the title

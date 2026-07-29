@@ -328,6 +328,21 @@ class BeaconScorerTests(unittest.TestCase):
 class BeaconRunTests(unittest.TestCase):
     """run()-level contract: thresholding, finding shape, ordering, empties."""
 
+    @staticmethod
+    def _passing_score_data(conn_count: int) -> dict:
+        """A complete scorer result for evidence-assembly boundary tests."""
+        return {
+            "beacon_score": 0.6,
+            "dominant_period": 600.0,
+            "dominant_period_m": 10.0,
+            "spectral_ratio": 0.1,
+            "prominence": 50.0,
+            "prominence_norm": 0.5,
+            "jitter_cv": 0.1,
+            "conn_count": conn_count,
+            "occupancy": 0.1,
+        }
+
     def test_single_beaconing_flow_yields_one_finding(self):
         rows = _conn_rows(
             _train(600.0, 144, 6.0, 6001), "192.0.2.10", "198.51.100.20", 443
@@ -363,6 +378,91 @@ class BeaconRunTests(unittest.TestCase):
             ],
         )
         assert_report_voice(findings)
+
+    def test_finding_carries_event_bounds_span_and_constructed_cycle_count(self):
+        period = 600.0
+        arrivals = _train(period, 144, 6.0, 6001)
+
+        finding = run(_ctx(pd.DataFrame(_conn_rows(
+            arrivals, "192.0.2.10", "198.51.100.20", 443
+        ))))[0]
+
+        self.assertEqual(
+            finding.evidence["first_seen"],
+            datetime.fromtimestamp(float(arrivals[0]), timezone.utc).isoformat(),
+        )
+        self.assertEqual(
+            finding.evidence["last_seen"],
+            datetime.fromtimestamp(float(arrivals[-1]), timezone.utc).isoformat(),
+        )
+        expected_span = float(arrivals[-1] - arrivals[0])
+        self.assertAlmostEqual(finding.evidence["span_seconds"], expected_span, delta=1e-6)
+        self.assertEqual(
+            finding.evidence["cycles"],
+            round(expected_span / period, 1),
+        )
+
+    def test_partially_non_finite_timestamps_keep_real_finite_bounds(self):
+        arrivals = _train(600.0, 144, 6.0, 6001)
+        expected_first = float(arrivals[0])
+        expected_last = float(arrivals[-1])
+        arrivals[50] = np.nan
+
+        with pytest.MonkeyPatch.context() as monkeypatch:
+            monkeypatch.setattr(
+                "sigwood.detectors.beacon._compute_beacon_score",
+                lambda ts, _bin: self._passing_score_data(len(ts)),
+            )
+            finding = run(_ctx(pd.DataFrame(_conn_rows(
+                arrivals, "192.0.2.10", "198.51.100.20", 443
+            ))))[0]
+
+        self.assertEqual(
+            finding.evidence["first_seen"],
+            datetime.fromtimestamp(expected_first, timezone.utc).isoformat(),
+        )
+        self.assertEqual(
+            finding.evidence["last_seen"],
+            datetime.fromtimestamp(expected_last, timezone.utc).isoformat(),
+        )
+        self.assertAlmostEqual(
+            finding.evidence["span_seconds"],
+            expected_last - expected_first,
+            delta=1e-6,
+        )
+
+    def test_invalid_event_bounds_are_all_none_and_run_does_not_raise(self):
+        cases = {
+            "all-non-finite": np.resize(np.array([np.nan, np.inf, -np.inf]), 20),
+            "unrepresentable": 253_402_300_800.0 + np.arange(20) * 600.0,
+        }
+        for label, arrivals in cases.items():
+            with self.subTest(label=label), pytest.MonkeyPatch.context() as monkeypatch:
+                monkeypatch.setattr(
+                    "sigwood.detectors.beacon._compute_beacon_score",
+                    lambda ts, _bin: self._passing_score_data(len(ts)),
+                )
+                finding = run(_ctx(pd.DataFrame(_conn_rows(
+                    arrivals, "192.0.2.10", "198.51.100.20", 443
+                ))))[0]
+
+                self.assertIsNone(finding.evidence["first_seen"])
+                self.assertIsNone(finding.evidence["last_seen"])
+                self.assertIsNone(finding.evidence["span_seconds"])
+                self.assertIsNone(finding.evidence["cycles"])
+
+    def test_epoch_zero_is_a_valid_event_bound(self):
+        arrivals = _train(600.0, 144, 6.0, 6001)
+        arrivals -= arrivals[0]
+
+        finding = run(_ctx(pd.DataFrame(_conn_rows(
+            arrivals, "192.0.2.10", "198.51.100.20", 443
+        ))))[0]
+
+        self.assertEqual(
+            finding.evidence["first_seen"],
+            "1970-01-01T00:00:00+00:00",
+        )
 
     def test_score_pass_caps_at_medium(self):
         rows = _conn_rows(

@@ -49,6 +49,7 @@ def curated_evidence(finding: Finding) -> dict[str, Any]:
         keys = (
             "beacon_score", "spectral_ratio", "prominence_norm",
             "jitter_cv", "conn_count", "period_str",
+            "first_seen", "span_seconds",
         )
     elif det == "dns":
         # An empty basis is meaningful: it says no behavioral severity leg

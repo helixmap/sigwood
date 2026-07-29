@@ -19,6 +19,13 @@ All notable changes to sigwood are recorded here. The format follows
   under `[detectors.dns]` (`promote_below_gate`, `promote_min_subdomains`,
   `promote_min_nxdomain_fraction`), and off by one setting if you would rather not see them.
 
+- **Beacon findings carry their own event times.** Each finding now records when the
+  periodic flow was first and last seen, how long it ran, and roughly how many cycles
+  that span covers - so a ten-minute cadence that ran for an hour reads differently
+  from one that ran all week, without leaving the finding. The first-seen time and the
+  span show at `--verbose` and in the CSV worklist; the full set is in `-vv` and the
+  JSON feed. Detection is unchanged.
+
 ### Changed
 
 - **DNS severity is earned by behaviour now, not by the label score alone.** A

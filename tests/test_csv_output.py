@@ -137,6 +137,21 @@ def test_strip_happens_before_formula_guard() -> None:
     assert row["finding"] == "'=cmd"
 
 
+def test_beacon_signals_inherit_curated_event_time_evidence() -> None:
+    row = _rows(_emit([_finding(evidence={
+        "beacon_score": 0.61,
+        "first_seen": "1970-01-01T00:00:00+00:00",
+        "last_seen": "1970-01-01T23:49:59+00:00",
+        "span_seconds": 85_799.0,
+        "cycles": 143.0,
+    })]))[0]
+
+    assert "first_seen=1970-01-01T00:00:00+00:00" in row["signals"]
+    assert "span_seconds=85799.0" in row["signals"]
+    assert "last_seen=" not in row["signals"]
+    assert "cycles=" not in row["signals"]
+
+
 def test_multibyte_glyphs_survive_csv_control_strip() -> None:
     row = _rows(_emit([_finding(title="flow 192.0.2.10 → 198.51.100.20\x1b")]))[0]
     assert row["finding"] == "flow 192.0.2.10 → 198.51.100.20"

@@ -53,6 +53,23 @@ All notable changes to sigwood are recorded here. The format follows
 
 ### Fixed
 
+- **Beacon says why it scored nothing, instead of just reporting nothing.** When the
+  connection log is missing a column beacon needs, when every eligible connection
+  lacks byte counts, or when rows carry no source, destination, port or protocol,
+  the run summary now says so and names the cause - previously the detector
+  returned an empty result that read exactly like "nothing was periodic." The
+  counts describe the connections beacon actually received, after allowlist
+  suppression, so a note never blames missing bytes for rows your allowlist
+  removed. A configured `min_connections` below the scorer's own floor is now
+  disclosed as well, rather than quietly having no effect.
+- **A malformed `[detectors.beacon]` setting fails with a message that names the
+  key.** A zero `bin_seconds`, a non-numeric threshold, or a text value where a
+  number belongs used to surface as an opaque detector crash partway through a
+  run; it is now reported against the setting that caused it, the other detectors
+  still run, and no traceback reaches the terminal.
+- **A connection log missing an optional column no longer crashes beacon.** Absent
+  `bytes`, `conn_state`, `port` or `proto` columns are a fidelity limitation of the
+  source, so beacon now abstains and says which columns were missing.
 - **The beacon run-time disclosure describes the excluded connections truthfully.**
   It now says unscored connections were outside the Zeek SF/S1 states beacon
   analyzes, rather than calling them all "not established" - reset and

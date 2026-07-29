@@ -30,6 +30,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+import sigwood.detectors.beacon as beacon_module
 from sigwood.common.finding import DetectorContext, Severity
 from sigwood.detectors.beacon import (
     DEFAULT_CONFIG,
@@ -54,6 +55,15 @@ _WINDOW = (
 )
 
 _DEMO_GENERATOR = Path(__file__).resolve().parent.parent / "demo" / "gen_corpus.py"
+_BEACON_REQUIRED_COLUMNS = (
+    "conn_state",
+    "bytes",
+    "src",
+    "dst",
+    "port",
+    "proto",
+    "ts",
+)
 
 
 def _train(
@@ -518,6 +528,196 @@ class BeaconRunTests(unittest.TestCase):
 
     def test_empty_frame_returns_empty(self):
         self.assertEqual(run(_ctx(pd.DataFrame())), [])
+
+    def test_each_missing_beacon_required_column_abstains_and_reports_exactly_it(self):
+        """Every absent precondition is a clean abstention, including ts after the floor."""
+        frame = pd.DataFrame(_conn_rows(
+            _T0 + np.arange(20) * 600.0,
+            "192.0.2.10",
+            "198.51.100.20",
+            443,
+        ))
+        for column in _BEACON_REQUIRED_COLUMNS:
+            with self.subTest(column=column):
+                missing = frame.drop(columns=[column])
+                self.assertEqual(run(_ctx(missing)), [])
+                facts = beacon_module.scoring_eligibility(
+                    missing, ["192.0.2.0/24"]
+                )
+                self.assertEqual(facts["missing_columns"], (column,))
+                filtered = beacon_module._filter_conn(
+                    missing, ["192.0.2.0/24"]
+                )
+                self.assertTrue(filtered.empty)
+                self.assertEqual(list(filtered.columns), list(missing.columns))
+
+    def test_null_grouping_key_filter_preserves_healthy_scored_set(self):
+        """The explicit key gate must match pandas' historical dropna=True population."""
+        rows = _conn_rows(
+            _T0 + np.arange(20) * 600.0,
+            "192.0.2.10",
+            "198.51.100.20",
+            443,
+        )
+        rows += _conn_rows(
+            _T0 + np.arange(20) * 600.0,
+            "192.0.2.11",
+            "198.51.100.21",
+            8443,
+        )
+        null_key_rows = _conn_rows(
+            _T0 + np.arange(4) * 600.0,
+            "192.0.2.12",
+            "198.51.100.22",
+            9443,
+        )
+        for row in null_key_rows:
+            row["port"] = None
+        calls: list[tuple[str, str, int, str]] = []
+        real_make = beacon_module._make_finding
+
+        def _record_make(src, dst, port, proto, *args, **kwargs):
+            calls.append((src, dst, port, proto))
+            return real_make(src, dst, port, proto, *args, **kwargs)
+
+        with pytest.MonkeyPatch.context() as monkeypatch:
+            monkeypatch.setattr(
+                beacon_module,
+                "_compute_beacon_score",
+                lambda ts, _bin: self._passing_score_data(len(ts)),
+            )
+            monkeypatch.setattr(beacon_module, "_make_finding", _record_make)
+            findings = run(_ctx(pd.DataFrame(rows + null_key_rows)))
+
+        self.assertEqual(len(findings), 2)
+        self.assertEqual(
+            set(calls),
+            {
+                ("192.0.2.10", "198.51.100.20", 443, "tcp"),
+                ("192.0.2.11", "198.51.100.21", 8443, "tcp"),
+            },
+        )
+
+
+class BeaconEligibilityTests(unittest.TestCase):
+    """Eligibility accounting follows the detector gates and is total/defensive."""
+
+    def test_counts_follow_state_address_local_bytes_and_key_gates(self):
+        frame = pd.DataFrame(_conn_rows(
+            _T0 + np.arange(6) * 60.0,
+            "192.0.2.10",
+            "198.51.100.20",
+            443,
+        ))
+        frame.loc[0, "conn_state"] = "S0"
+        frame.loc[1, "dst"] = "224.0.0.1"
+        frame.loc[2, "local_orig"] = False
+        frame.loc[3, "bytes"] = None
+        frame.loc[4, "port"] = None
+
+        self.assertEqual(
+            beacon_module.scoring_eligibility(frame, ["192.0.2.0/24"]),
+            {
+                "missing_columns": (),
+                "rows_total": 6,
+                "rows_after_state": 5,
+                "rows_before_bytes": 3,
+                "rows_after_bytes": 2,
+                "rows_before_keys": 2,
+                "rows_after_keys": 1,
+            },
+        )
+
+    def test_custom_home_net_drives_the_effective_local_count(self):
+        frame = pd.DataFrame(_conn_rows(
+            [_T0],
+            "203.0.113.10",
+            "198.51.100.20",
+            443,
+            local_orig=None,
+        ))
+        custom = beacon_module.scoring_eligibility(frame, ["203.0.113.0/24"])
+        fallback = beacon_module.scoring_eligibility(frame)
+        self.assertEqual(custom["rows_before_bytes"], 1)
+        self.assertEqual(fallback["rows_before_bytes"], 0)
+
+    def test_unexpected_shape_returns_complete_no_measurement_dictionary(self):
+        self.assertEqual(
+            beacon_module.scoring_eligibility(object()),
+            {
+                "missing_columns": _BEACON_REQUIRED_COLUMNS,
+                "rows_total": 0,
+                "rows_after_state": 0,
+                "rows_before_bytes": 0,
+                "rows_after_bytes": 0,
+                "rows_before_keys": 0,
+                "rows_after_keys": 0,
+            },
+        )
+
+    def test_partial_and_total_null_grouping_key_counts(self):
+        for key in ("src", "dst", "port", "proto"):
+            with self.subTest(key=key):
+                frame = pd.DataFrame(_conn_rows(
+                    _T0 + np.arange(4) * 60.0,
+                    "192.0.2.10",
+                    "198.51.100.20",
+                    443,
+                ))
+                frame.loc[0, key] = None
+                partial = beacon_module.scoring_eligibility(frame)
+                self.assertEqual(partial["rows_before_keys"], 4)
+                self.assertEqual(partial["rows_after_keys"], 3)
+
+        frame = pd.DataFrame(_conn_rows(
+            _T0 + np.arange(4) * 60.0,
+            "192.0.2.10",
+            "198.51.100.20",
+            443,
+        ))
+        frame["port"] = None
+        total = beacon_module.scoring_eligibility(frame)
+        self.assertEqual(total["rows_before_keys"], 4)
+        self.assertEqual(total["rows_after_keys"], 0)
+
+
+@pytest.mark.parametrize(
+    ("overrides", "message"),
+    [
+        ({"threshold": 0}, r"\[detectors\.beacon\]\.threshold"),
+        ({"threshold": 1.01}, r"\[detectors\.beacon\]\.threshold"),
+        ({"threshold": np.nan}, r"\[detectors\.beacon\]\.threshold"),
+        ({"threshold": np.inf}, r"\[detectors\.beacon\]\.threshold"),
+        ({"threshold": -np.inf}, r"\[detectors\.beacon\]\.threshold"),
+        ({"threshold": "0.5"}, r"\[detectors\.beacon\]\.threshold"),
+        ({"threshold": True}, r"\[detectors\.beacon\]\.threshold"),
+        ({"min_connections": 0}, r"\[detectors\.beacon\]\.min_connections"),
+        ({"min_connections": 1.5}, r"\[detectors\.beacon\]\.min_connections"),
+        ({"min_connections": True}, r"\[detectors\.beacon\]\.min_connections"),
+        ({"bin_seconds": 0}, r"\[detectors\.beacon\]\.bin_seconds"),
+        ({"bin_seconds": -1}, r"\[detectors\.beacon\]\.bin_seconds"),
+        ({"bin_seconds": 1.5}, r"\[detectors\.beacon\]\.bin_seconds"),
+        ({"bin_seconds": True}, r"\[detectors\.beacon\]\.bin_seconds"),
+    ],
+)
+def test_validate_config_rejects_invalid_values(
+    overrides: dict, message: str,
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        beacon_module.validate_config({**DEFAULT_CONFIG, **overrides})
+
+
+@pytest.mark.parametrize("min_connections", [9, 10])
+def test_validate_config_accepts_floor_advisory_values(min_connections: int) -> None:
+    beacon_module.validate_config({
+        **DEFAULT_CONFIG,
+        "min_connections": min_connections,
+        "future_key": "ignored",
+    })
+
+
+def test_validate_config_accepts_threshold_upper_bound() -> None:
+    beacon_module.validate_config({**DEFAULT_CONFIG, "threshold": 1.0})
 
 
 class BeaconPrefilterTests(unittest.TestCase):

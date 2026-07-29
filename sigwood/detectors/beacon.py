@@ -25,6 +25,7 @@ from __future__ import annotations
 import ipaddress
 import math
 from datetime import datetime, timezone
+from numbers import Real
 from typing import Any
 
 import numpy as np
@@ -53,6 +54,21 @@ DETECTOR_METHOD = MethodTag("FFT", named=True)
 # Period range to consider (seconds). Outside this, FFT peaks are ignored.
 _MIN_PERIOD = 45
 _MAX_PERIOD = 7200
+_MIN_SCORABLE_SAMPLES = 10
+
+# Beacon-required scoring columns, in the stable order used by runner disclosure.
+# Several are canonically optional/nullable Zeek fields; absence is a fidelity
+# limitation that makes this detector abstain, not a malformed-log error.
+_REQUIRED_SCORING_COLUMNS = (
+    "conn_state",
+    "bytes",
+    "src",
+    "dst",
+    "port",
+    "proto",
+    "ts",
+)
+_GROUPING_COLUMNS = ("src", "dst", "port", "proto")
 
 # Fallback internal networks when the operator declares no home_net (mirrors scan).
 _DEFAULT_HOME_NET = ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"]
@@ -80,6 +96,8 @@ def run(context: DetectorContext) -> list[Finding]:
 
     df = context.logs.get("conn*.log*")
     if df is None or df.empty:
+        return []
+    if _missing_scoring_columns(df):
         return []
 
     home_net = list(context.home_net) if context.home_net else list(_DEFAULT_HOME_NET)
@@ -111,7 +129,7 @@ def run(context: DetectorContext) -> list[Finding]:
 
 
 def _filter_conn(df: Any, home_net: list[str]) -> Any:
-    """Apply beacon pre-filters: established conns, no non-unicast dst/src, local origin.
+    """Apply beacon scoring gates: state, addresses, local origin, bytes, grouping keys.
 
     Masks derived from ``.map`` are cast to bool so an empty post-conn_state frame stays a
     boolean mask. An empty object-dtype series used in ``df[...]`` is read by pandas as
@@ -124,9 +142,58 @@ def _filter_conn(df: Any, home_net: list[str]) -> Any:
     decides. This mirrors the blend in the conn digest so a sensor without local-network
     config (all-null ``local_orig``) is not blind.
     """
+    if _missing_scoring_columns(df):
+        return _empty_frame_like(df)
+    filtered, _facts = _apply_scoring_eligibility(df, home_net)
+    return filtered
+
+
+def _missing_scoring_columns(df: Any) -> tuple[str, ...]:
+    """Return absent Beacon-required columns in the module's stable order."""
+    try:
+        columns = df.columns
+    except Exception:
+        return _REQUIRED_SCORING_COLUMNS
+    return tuple(column for column in _REQUIRED_SCORING_COLUMNS if column not in columns)
+
+
+def _empty_frame_like(df: Any) -> Any:
+    """Return an empty slice that preserves a frame's columns when possible."""
+    try:
+        return df.iloc[0:0].copy()
+    except Exception:
+        return pd.DataFrame()
+
+
+def _no_measurement_facts(
+    *,
+    missing_columns: tuple[str, ...] = (),
+    rows_total: int = 0,
+) -> dict[str, int | tuple[str, ...]]:
+    """Complete eligibility shape for absent or unreadable input."""
+    return {
+        "missing_columns": missing_columns,
+        "rows_total": rows_total,
+        "rows_after_state": 0,
+        "rows_before_bytes": 0,
+        "rows_after_bytes": 0,
+        "rows_before_keys": 0,
+        "rows_after_keys": 0,
+    }
+
+
+def _apply_scoring_eligibility(
+    df: Any,
+    home_net: list[str],
+) -> tuple[Any, dict[str, int | tuple[str, ...]]]:
+    """Apply Beacon's existing gates once and return the surviving frame + counts."""
+    rows_total = len(df)
     df = df[df["conn_state"].isin(["SF", "S1"])].copy()
+    rows_after_state = len(df)
     if df.empty:
-        return df
+        facts = _no_measurement_facts(rows_total=rows_total)
+        facts["rows_after_state"] = rows_after_state
+        return df, facts
     df = df[~df["dst"].map(_is_non_unicast).astype(bool)]
     df = df[~df["src"].map(_is_non_unicast).astype(bool)]
     src_internal = df["src"].map(lambda ip: _ip_in_home_net(ip, home_net))
@@ -136,8 +203,87 @@ def _filter_conn(df: Any, home_net: list[str]) -> Any:
         lo = df["local_orig"]
         effective_local = lo.where(lo.notna(), src_internal).astype(bool)
     df = df[effective_local]
+    rows_before_bytes = len(df)
     df = df[df["bytes"].notna()]
-    return df
+    rows_after_bytes = len(df)
+    rows_before_keys = rows_after_bytes
+    df = df[df[list(_GROUPING_COLUMNS)].notna().all(axis=1)]
+    rows_after_keys = len(df)
+    return df, {
+        "missing_columns": (),
+        "rows_total": rows_total,
+        "rows_after_state": rows_after_state,
+        "rows_before_bytes": rows_before_bytes,
+        "rows_after_bytes": rows_after_bytes,
+        "rows_before_keys": rows_before_keys,
+        "rows_after_keys": rows_after_keys,
+    }
+
+
+def scoring_eligibility(
+    df: Any,
+    home_net: list[str] | None = None,
+) -> dict[str, int | tuple[str, ...]]:
+    """Return defensive facts about rows surviving each Beacon scoring gate.
+
+    The runner calls this before the detector loop on Beacon's post-allowlist view,
+    so it must never raise. ``home_net`` is optional for the public one-argument
+    contract; omission uses the same RFC1918 fallback as ``run``.
+    """
+    missing = _missing_scoring_columns(df)
+    try:
+        rows_total = len(df)
+    except Exception:
+        rows_total = 0
+    if missing:
+        return _no_measurement_facts(
+            missing_columns=missing,
+            rows_total=rows_total,
+        )
+    networks = list(home_net) if home_net else list(_DEFAULT_HOME_NET)
+    try:
+        _filtered, facts = _apply_scoring_eligibility(df, networks)
+    except Exception:
+        return _no_measurement_facts(rows_total=rows_total)
+    return facts
+
+
+def validate_config(cfg: dict) -> None:
+    """Validate Beacon's overlaid tuning section without reading config files."""
+    if not isinstance(cfg, dict):
+        raise ValueError("[detectors.beacon] must be a table")
+
+    threshold = cfg.get("threshold", DEFAULT_CONFIG["threshold"])
+    if (
+        isinstance(threshold, bool)
+        or not isinstance(threshold, Real)
+        or not math.isfinite(float(threshold))
+        or not 0 < threshold <= 1
+    ):
+        raise ValueError(
+            "[detectors.beacon].threshold must be a finite number greater than 0 "
+            "and at most 1"
+        )
+
+    min_connections = cfg.get("min_connections", DEFAULT_CONFIG["min_connections"])
+    if (
+        isinstance(min_connections, bool)
+        or not isinstance(min_connections, int)
+        or min_connections < 1
+    ):
+        raise ValueError(
+            "[detectors.beacon].min_connections must be a positive integer"
+        )
+
+    bin_seconds = cfg.get("bin_seconds", DEFAULT_CONFIG["bin_seconds"])
+    if (
+        isinstance(bin_seconds, bool)
+        or not isinstance(bin_seconds, int)
+        or bin_seconds < 1
+    ):
+        raise ValueError(
+            "[detectors.beacon].bin_seconds must be a positive integer"
+        )
 
 
 def _is_non_unicast(ip: object) -> bool:
@@ -228,7 +374,7 @@ def _compute_beacon_score(
     periodic flows. Prominence measures peak magnitude above the local noise floor,
     robust to harmonic spreading.
     """
-    if len(ts_array) < 10:
+    if len(ts_array) < _MIN_SCORABLE_SAMPLES:
         return None
 
     t_start = ts_array.min()

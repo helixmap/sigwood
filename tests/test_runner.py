@@ -4075,7 +4075,17 @@ def test_report_basename_date_routes_through_display_seam(pin_tz, restore_displa
 _NON_EST_NOTE_SUBSTR = "outside the Zeek SF/S1 states beacon analyzes"
 
 
-def _conn_full(ts, *, src="192.0.2.10", conn_state="SF", local_orig=True):
+def _conn_full(
+    ts,
+    *,
+    src="192.0.2.10",
+    dst="198.51.100.20",
+    port=443,
+    proto="tcp",
+    conn_state="SF",
+    local_orig=True,
+    bytes_value=512,
+):
     """A Zeek-native conn record carrying conn_state / bytes / local_orig.
 
     ``_conn`` above omits conn_state deliberately (the missing-column fixture); this
@@ -4084,13 +4094,200 @@ def _conn_full(ts, *, src="192.0.2.10", conn_state="SF", local_orig=True):
     return {
         "ts": ts,
         "id.orig_h": src,
-        "id.resp_h": "198.51.100.20",
-        "id.resp_p": 443,
-        "proto": "tcp",
-        "orig_bytes": 512,
+        "id.resp_h": dst,
+        "id.resp_p": port,
+        "proto": proto,
+        "orig_bytes": bytes_value,
         "conn_state": conn_state,
         "local_orig": local_orig,
     }
+
+
+_MISSING_COLUMNS_NOTE = "required conn.log columns missing"
+_BYTES_WIPE_NOTE = "carried no originator bytes - none were scored"
+_NULL_KEYS_NOTE = "null src/dst/port/proto grouping keys"
+_BELOW_FLOOR_NOTE = "configured min_connections is below the scorer floor"
+
+
+def test_beacon_missing_required_column_note_and_clean_abstention(
+    tmp_path, capture_summary,
+):
+    recs = [_conn_full(_TS_JAN5 + i * 60.0) for i in range(20)]
+    for rec in recs:
+        del rec["id.resp_p"]
+    zeek_dir = _make_flat_zeek(tmp_path, recs)
+
+    assert runner.run(config=_BEACON_ONLY, zeek_dir=zeek_dir) == 0
+    s = capture_summary["summary"]
+    assert (
+        "beacon: did not score 20 loaded connections - required conn.log columns "
+        "missing: port"
+    ) in s.notes
+    assert s.detectors_failed == {}
+
+
+def test_beacon_bytes_total_wipe_note_uses_post_gate_count(
+    tmp_path, capture_summary,
+):
+    recs = [
+        _conn_full(_TS_JAN5 + i * 60.0, bytes_value=None)
+        for i in range(20)
+    ]
+    zeek_dir = _make_flat_zeek(tmp_path, recs)
+
+    assert runner.run(config=_BEACON_ONLY, zeek_dir=zeek_dir) == 0
+    assert (
+        "beacon: 20 loaded connections passed the state, address, and local-origin "
+        "gates but carried no originator bytes - none were scored"
+    ) in capture_summary["summary"].notes
+
+
+def test_beacon_bytes_note_silent_for_partial_null_and_earlier_gate_empty(
+    tmp_path, capture_summary,
+):
+    partial = [_conn_full(_TS_JAN5 + i * 60.0) for i in range(20)]
+    partial[0]["orig_bytes"] = None
+    zeek_dir = _make_flat_zeek(tmp_path, partial)
+    assert runner.run(config=_BEACON_ONLY, zeek_dir=zeek_dir) == 0
+    assert not any(_BYTES_WIPE_NOTE in n for n in capture_summary["summary"].notes)
+
+    earlier_dir = tmp_path / "earlier"
+    earlier_dir.mkdir()
+    _write_ndjson(
+        earlier_dir / "conn.log",
+        [
+            _conn_full(_TS_JAN5 + i * 60.0, conn_state="S0", bytes_value=None)
+            for i in range(20)
+        ],
+    )
+    assert runner.run(config=_BEACON_ONLY, zeek_dir=earlier_dir) == 0
+    assert not any(_BYTES_WIPE_NOTE in n for n in capture_summary["summary"].notes)
+
+
+@pytest.mark.parametrize(("null_rows", "expected"), [(2, 2), (20, 20)])
+def test_beacon_null_grouping_key_note_partial_and_total_wipe(
+    tmp_path, capture_summary, null_rows, expected,
+):
+    recs = [_conn_full(_TS_JAN5 + i * 60.0) for i in range(20)]
+    for rec in recs[:null_rows]:
+        rec["id.resp_p"] = None
+    zeek_dir = _make_flat_zeek(tmp_path, recs)
+
+    assert runner.run(config=_BEACON_ONLY, zeek_dir=zeek_dir) == 0
+    assert (
+        f"beacon: {expected} loaded connections passed the earlier gates but had "
+        "null src/dst/port/proto grouping keys and were not scored"
+    ) in capture_summary["summary"].notes
+
+
+def test_beacon_numeric_allowlist_wipe_does_not_blame_bytes(
+    tmp_path, capture_summary,
+):
+    recs = [
+        _conn_full(_TS_JAN5 + i * 60.0, bytes_value=None)
+        for i in range(20)
+    ]
+    zeek_dir = _make_flat_zeek(tmp_path, recs)
+    config = {
+        "sigwood": {"detect": "beacon", "default_window": "1d"},
+        "allowlist": {
+            "entry": [{
+                "match": "ip_pair",
+                "src": "192.0.2.10",
+                "dst_port": 443,
+                "detectors": ["beacon"],
+            }],
+        },
+    }
+
+    assert runner.run(config=config, zeek_dir=zeek_dir) == 0
+    summary = capture_summary["summary"]
+    notes = summary.notes
+    assert not any(_BYTES_WIPE_NOTE in n for n in notes)
+    assert not any(_NULL_KEYS_NOTE in n for n in notes)
+    assert summary.suppression is not None
+    assert summary.suppression.connections == 20
+    assert summary.suppression.connection_total == 20
+
+
+def test_beacon_eligibility_note_seam_is_defensive_on_malformed_facts(
+    tmp_path, capture_summary, monkeypatch,
+):
+    import sigwood.detectors.beacon as beacon_mod
+
+    recs = [_conn_full(_TS_JAN5 + i * 60.0) for i in range(20)]
+    zeek_dir = _make_flat_zeek(tmp_path, recs)
+    monkeypatch.setattr(
+        beacon_mod,
+        "scoring_eligibility",
+        lambda *_args: {"rows_total": object()},
+    )
+
+    assert runner.run(config=_BEACON_ONLY, zeek_dir=zeek_dir) == 0
+    assert capture_summary["summary"].detectors_failed == {}
+
+
+def test_beacon_note_allowlist_failure_stays_in_prep_containment(
+    tmp_path, capture_summary, monkeypatch, capsys,
+):
+    from sigwood.common.allowlist import AllowlistMatcher
+
+    recs = [
+        _conn_full(_TS_JAN5 + i * 60.0, bytes_value=None)
+        for i in range(20)
+    ]
+    zeek_dir = _make_flat_zeek(tmp_path, recs)
+
+    def _explode_filter(*_args, **_kwargs):
+        raise RuntimeError("induced allowlist filter failure")
+
+    monkeypatch.setattr(AllowlistMatcher, "filter_df", _explode_filter)
+
+    assert runner.run(config=_BEACON_ONLY, zeek_dir=zeek_dir) == 1
+    err = capsys.readouterr().err
+    reason = "prep error - induced allowlist filter failure"
+    assert f"beacon: {reason}" in err
+    assert "Traceback" not in err
+    summary = capture_summary["summary"]
+    assert summary.detectors_failed == {"beacon": reason}
+    assert not any(_BYTES_WIPE_NOTE in note for note in summary.notes)
+
+
+def test_beacon_below_scorer_floor_note_is_nonfatal(tmp_path, capture_summary):
+    recs = [_conn_full(_TS_JAN5 + i * 60.0) for i in range(20)]
+    zeek_dir = _make_flat_zeek(tmp_path, recs)
+    config = {
+        "sigwood": {"detect": "beacon", "default_window": "1d"},
+        "detectors": {"beacon": {"min_connections": 9}},
+    }
+
+    assert runner.run(config=config, zeek_dir=zeek_dir) == 0
+    assert (
+        "beacon: configured min_connections is below the scorer floor of 10 - "
+        "smaller groups are not scored"
+    ) in capture_summary["summary"].notes
+
+
+def test_beacon_invalid_config_is_contained_as_prep_error_and_sibling_runs(
+    tmp_path, capture_summary, capsys,
+):
+    recs = [_conn_full(_TS_JAN5 + i * 60.0) for i in range(20)]
+    zeek_dir = _make_flat_zeek(tmp_path, recs)
+    config = {
+        "sigwood": {"detect": "beacon,scan", "default_window": "1d"},
+        "detectors": {"beacon": {"bin_seconds": 0}},
+    }
+
+    assert runner.run(config=config, zeek_dir=zeek_dir) == 1
+    err = capsys.readouterr().err
+    reason = (
+        "prep error - [detectors.beacon].bin_seconds must be a positive integer"
+    )
+    assert f"beacon: {reason}" in err
+    assert "Traceback" not in err
+    s = capture_summary["summary"]
+    assert s.detectors_failed == {"beacon": reason}
+    assert "scan" in s.detectors_run
 
 
 def test_beacon_non_established_note_fires_with_counts(tmp_path, capture_summary):
@@ -4099,7 +4296,7 @@ def test_beacon_non_established_note_fires_with_counts(tmp_path, capture_summary
     assert runner.run(config=_BEACON_ONLY, zeek_dir=zeek_dir) == 0
     s = capture_summary["summary"]
     assert (
-        "beacon: 1000 of 1000 connections (100%) were outside the Zeek SF/S1 states "
+        "beacon: 1000 of 1000 loaded connections (100%) were outside the Zeek SF/S1 states "
         "beacon analyzes and were not scored - periodic retry and reset patterns are "
         "not detected"
     ) in s.notes
@@ -4108,18 +4305,18 @@ def test_beacon_non_established_note_fires_with_counts(tmp_path, capture_summary
 def test_beacon_non_established_note_defensive_on_missing_conn_state(
     tmp_path, capture_summary,
 ):
-    # `_conn` omits conn_state, so the loaded frame lacks the column. The note helper
-    # runs pre-loop, OUTSIDE the detector's error containment, so it must not raise; it
-    # returns the (0, total) no-disclosure shape and no note is emitted. The detector's
-    # own _filter_conn KeyError on the absent column is the contained, ledgered residual
-    # - the run still completes (loop-continues), recorded as a failed detector with a
-    # nonzero exit (the note-path bug class is the uncontained one).
+    # `_conn` omits conn_state, so the loaded frame lacks the Beacon-required column.
+    # Both defensive note helpers and the detector abstention path stay clean.
     recs = [_conn(_TS_JAN5 + i) for i in range(1000)]
     zeek_dir = _make_flat_zeek(tmp_path, recs)
-    assert runner.run(config=_BEACON_ONLY, zeek_dir=zeek_dir) == 1
+    assert runner.run(config=_BEACON_ONLY, zeek_dir=zeek_dir) == 0
     s = capture_summary["summary"]
     assert not any(_NON_EST_NOTE_SUBSTR in n for n in s.notes)
-    assert list(s.detectors_failed) == ["beacon"]
+    assert (
+        "beacon: did not score 1000 loaded connections - required conn.log columns "
+        "missing: conn_state, bytes"
+    ) in s.notes
+    assert s.detectors_failed == {}
 
 
 def test_beacon_non_established_note_below_row_floor_is_silent(tmp_path, capture_summary):
@@ -4176,7 +4373,8 @@ def test_beacon_span_note_narrowed_short_span(tmp_path, capture_summary):
     ) == 0
     s = capture_summary["summary"]
     note = (
-        "beacon: analyzed 2d of data - resolving a jittered beacon needs about 7 days of span; "
+        "beacon: the loaded connections span 2d - resolving a jittered beacon needs about "
+        "7 days of span; "
         "widen with --all or a longer lookback"
     )
     assert note in s.notes
@@ -4196,7 +4394,8 @@ def test_beacon_span_note_unbounded_short_span_no_widen(tmp_path, capture_summar
     assert runner.run(config=_BEACON_ONLY, zeek_dir=zeek_dir, load_all=True) == 0
     s = capture_summary["summary"]
     assert (
-        "beacon: only 2d of data available - resolving a jittered beacon needs about 7 days of span"
+        "beacon: the loaded connections span only 2d - resolving a jittered beacon "
+        "needs about 7 days of span"
     ) in s.notes
     assert not any("widen" in n for n in s.notes)
 

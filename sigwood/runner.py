@@ -481,6 +481,14 @@ def _run_analyze(
     # Build run summary and begin output before the detector loop so the banner
     # ("Data found:", "Records:", "Detectors:") appears before analysis starts.
     data_sources = _derive_data_sources(plan.needed_logs, load_result.record_counts)
+    home_net = list(config.get("sigwood", {}).get("home_net", []))
+    # Resolve the allowlist plan once before note assembly. New Beacon failure-cause
+    # notes inspect the exact post-allowlist view the detector will receive; the two
+    # older source-shape notes below deliberately retain their raw-loaded population.
+    # Both remain pre-loop, so RunSummary is still complete before reporter.begin().
+    allowlist_plan = resolve_allowlist_plan(config)
+    allowlist = matcher_from_plan(allowlist_plan, force_off=no_allowlist)
+    suppression_enabled = (not no_allowlist) and allowlist_plan.master_enabled
     # The default window is announced pre-load on stderr (and the data-found
     # parenthetical carries the data-vs-requested span), so no prose default-window
     # note rides the run summary.
@@ -504,6 +512,25 @@ def _run_analyze(
     )
     if aws_no_interactive_note:
         notes.append(aws_no_interactive_note)
+    beacon_note_logs: dict[str, pd.DataFrame] | None = logs
+    beacon_df = logs.get("conn*.log*")
+    if "beacon" in plan.will_run and beacon_df is not None and not beacon_df.empty:
+        try:
+            filtered_beacon_df = allowlist.filter_df(beacon_df, "beacon")
+        except Exception:
+            # Do not derive a causal note from the raw frame when suppression could
+            # not produce Beacon's actual view. The ordinary detector prep repeats
+            # this operation inside its containment and records the actionable
+            # ``prep error`` without letting pre-loop summary assembly escape.
+            beacon_note_logs = None
+        else:
+            beacon_note_logs = dict(logs)
+            beacon_note_logs["conn*.log*"] = filtered_beacon_df
+    if beacon_note_logs is not None:
+        notes.extend(_beacon_eligibility_notes(plan, beacon_note_logs, home_net))
+    beacon_floor_note = _beacon_min_connections_note(plan, config)
+    if beacon_floor_note:
+        notes.append(beacon_floor_note)
     beacon_non_established_note = _beacon_non_established_note(plan, logs)
     if beacon_non_established_note:
         notes.append(beacon_non_established_note)
@@ -569,13 +596,6 @@ def _run_analyze(
         generated_at=now,
     )
 
-    # Resolve the allowlist plan ONCE and build the matcher HERE - the detector
-    # loop reuses it, and the banner's suppression line is computed from the SAME
-    # object so the readout cannot drift. `allowlist_plan` is distinct from `plan`
-    # (the RunPlan); do not conflate them.
-    allowlist_plan = resolve_allowlist_plan(config)
-    allowlist = matcher_from_plan(allowlist_plan, force_off=no_allowlist)
-    suppression_enabled = (not no_allowlist) and allowlist_plan.master_enabled
     # Suppression disclosure - scope-blind coverage over DISTINCT loaded frames
     # (NOT the per-detector loop, which filters the shared conn frame 3× and would
     # triple-count). Skip the O(N) string-map entirely when suppression is off so
@@ -651,7 +671,6 @@ def _run_analyze(
     reporter.begin(run_summary)
 
     # ── Run detectors ─────────────────────────────────────────────────────────
-    home_net = list(config.get("sigwood", {}).get("home_net", []))
     all_findings: list[Finding] = []
 
     for name in plan.will_run:
@@ -907,6 +926,8 @@ def _prepare_detector_context(
     Verbose is intentionally absent: detector context carries no
     verbosity; the result set is verbosity-invariant by construction.
     """
+    if hasattr(mod, "validate_config"):
+        mod.validate_config(det_cfg)
     det_patterns = {
         req["pattern"]
         for req in list(getattr(mod, "REQUIRED_LOGS", []))
@@ -2199,6 +2220,92 @@ def _aws_no_interactive_note(
     return note
 
 
+def _beacon_eligibility_notes(
+    plan: RunPlan,
+    logs: dict[str, pd.DataFrame],
+    home_net: list[str],
+) -> list[str]:
+    """Render Beacon failure-cause notes from its post-allowlist conn view.
+
+    The detector owns the predicates and returns plain counts in one scan; the runner
+    owns wording. This is called before the detector loop, so every seam is defensive.
+    """
+    if "beacon" not in plan.will_run:
+        return []
+    mod = plan.detectors.get("beacon")
+    if mod is None or not hasattr(mod, "scoring_eligibility"):
+        return []
+    df = logs.get("conn*.log*")
+    if df is None:
+        return []
+    try:
+        facts = mod.scoring_eligibility(df, home_net)
+        notes: list[str] = []
+        missing = tuple(facts.get("missing_columns", ()))
+        rows_total = int(facts.get("rows_total", 0))
+        if missing:
+            notes.append(
+                f"beacon: did not score {rows_total} loaded "
+                f"{plural(rows_total, 'connection')} - required conn.log columns missing: "
+                f"{', '.join(missing)}"
+            )
+            return notes
+
+        rows_before_bytes = int(facts.get("rows_before_bytes", 0))
+        rows_after_bytes = int(facts.get("rows_after_bytes", 0))
+        if rows_before_bytes > 0 and rows_after_bytes == 0:
+            notes.append(
+                f"beacon: {rows_before_bytes} loaded "
+                f"{plural(rows_before_bytes, 'connection')} passed the state, address, "
+                "and local-origin gates but carried no originator bytes - none were scored"
+            )
+
+        rows_before_keys = int(facts.get("rows_before_keys", 0))
+        rows_after_keys = int(facts.get("rows_after_keys", 0))
+        excluded = rows_before_keys - rows_after_keys
+        if excluded > 0:
+            notes.append(
+                f"beacon: {excluded} loaded {plural(excluded, 'connection')} passed the "
+                "earlier gates but had null src/dst/port/proto grouping keys and were not scored"
+            )
+        return notes
+    except Exception:
+        return []
+
+
+def _beacon_min_connections_note(
+    plan: RunPlan,
+    config: dict[str, Any],
+) -> str | None:
+    """Disclose a valid configured floor below Beacon's scorer-owned hard floor."""
+    if "beacon" not in plan.will_run:
+        return None
+    mod = plan.detectors.get("beacon")
+    if mod is None or not hasattr(mod, "_MIN_SCORABLE_SAMPLES"):
+        return None
+    try:
+        det_cfg = get_detector_config(
+            config, "beacon", getattr(mod, "DEFAULT_CONFIG", {})
+        )
+        configured = det_cfg.get("min_connections")
+        floor = mod._MIN_SCORABLE_SAMPLES
+    except Exception:
+        return None
+    if (
+        isinstance(configured, bool)
+        or not isinstance(configured, int)
+        or configured < 1
+        or not isinstance(floor, int)
+        or floor < 1
+        or configured >= floor
+    ):
+        return None
+    return (
+        f"beacon: configured min_connections is below the scorer floor of {floor} - "
+        "smaller groups are not scored"
+    )
+
+
 def _beacon_non_established_note(
     plan: RunPlan,
     logs: dict[str, pd.DataFrame],
@@ -2229,7 +2336,8 @@ def _beacon_non_established_note(
         return None
     pct = 100.0 * non_est / total
     return (
-        f"beacon: {non_est} of {total} {plural(total, 'connection')} ({pct:.0f}%) were "
+        f"beacon: {non_est} of {total} loaded "
+        f"{plural(total, 'connection')} ({pct:.0f}%) were "
         "outside the Zeek SF/S1 states beacon analyzes and were not scored - periodic "
         "retry and reset patterns are not detected"
     )
@@ -2272,11 +2380,11 @@ def _beacon_span_note(
     span = fmt_compact_span(timedelta(seconds=span_s))
     if requested_span is not None:
         return (
-            f"beacon: analyzed {span} of data - resolving a jittered beacon needs "
+            f"beacon: the loaded connections span {span} - resolving a jittered beacon needs "
             f"about {days} {plural(days, 'day')} of span; widen with --all or a longer lookback"
         )
     return (
-        f"beacon: only {span} of data available - resolving a jittered beacon needs "
+        f"beacon: the loaded connections span only {span} - resolving a jittered beacon needs "
         f"about {days} {plural(days, 'day')} of span"
     )
 

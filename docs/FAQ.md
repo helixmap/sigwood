@@ -459,7 +459,9 @@ discovers, without a single regex from you, that both lines share the structure
 Once every line carries a template, you can ask a question keyword lists can't answer: **which
 lines are structurally rare?** Count how often each template appears across every host; the ones at the bottom
 of the distribution - the lines that look like almost nothing else in the log - get surfaced,
-and a template seen exactly once is the strongest signal. The point of rarity over a
+and at the shipped default, every template that clears the rarity bar has been seen exactly
+once. What separates one of those lines from another is the program that produced it, not the
+count. The point of rarity over a
 signature list is that the interesting event is usually the one you didn't think to name. A
 keyword search only finds what you already anticipated; rarity finds the line that doesn't fit
 its neighbors, whatever it happens to say.
@@ -510,10 +512,11 @@ kernel-module, and policy-reload activity). When several findings on one host fa
 one recognized transaction, they fold into a single labeled review unit - `Jul 12
 22:11:11 · webhost · update run · 19 rare lines · 1m · mostly kernel, systemd` - with
 every member preserved behind it (`-v` in text, complete in JSON; in HTML the row expands
-straight to the members' raw log lines, grouped under thin per-member separators). One admin doing one system update reads as one line, not nineteen. Recognition only
-groups; it never decides severity - a unit is MEDIUM exactly when one of its members is
-from the privileged class, and a rare line that matches no transaction is left exactly as
-it was. If the pattern isn't there - an unfamiliar distro, a log that rotates mid-session -
+straight to the members' raw log lines, grouped under thin per-member separators). One admin doing one system update reads as one line, not nineteen. Recognition replaces the findings it
+groups with one unit and rates that unit from its members. A unit is MEDIUM exactly when one
+of its members is from the privileged class; otherwise it is INFO and appears in the bursts
+section. A rare line that matches no transaction is left exactly as it was. If the pattern
+isn't there - an unfamiliar distro, a log that rotates mid-session -
 findings simply stay ungrouped, and the same is true when the pattern is there but too big
 to be one session: recognition declines any candidate longer than eight hours (periodic
 privileged automation, like a frequent sudo cron, would otherwise chain into one

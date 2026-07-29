@@ -110,6 +110,11 @@ def _normalize_zeek_syslog_df(df: pd.DataFrame) -> pd.DataFrame:
         keep = [c for c in df.columns if c not in drop_cols]
         return df[keep].copy() if keep else df.copy()
 
+    # Canonical content is derived only from source text. Coercing nulls or
+    # numeric scalars would fabricate the log lines "None" / "nan" / "7".
+    text_rows = df["message"].map(lambda value: isinstance(value, str))
+    df = df.loc[text_rows].copy()
+
     # Narrow trailing-line-terminator strip: Zeek's NDJSON `message` field can
     # carry the upstream record's trailing "\r"/"\n" (observed: 15,995 of one
     # production capture). The detector uses raw as a single-line finding title;

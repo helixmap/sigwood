@@ -33,6 +33,7 @@ from sigwood.common.loader.diagnostics import (
     _zeek_bad_lines_warning,
     _zeek_file_parse_warning,
     _zeek_file_read_warning,
+    _zeek_message_value_warning,
     _zeek_no_records_warning,
 )
 from sigwood.common.loader.discovery import (
@@ -114,7 +115,7 @@ class SourceLoader:
       - ``should_skip(path)``: wrong-family guard returning a skip message
         (printed to stderr only under ``verbose=True``) or ``None`` to keep.
         Optional; ``None`` means never skip.
-      - ``normalize(df, pattern)``: post-assembly normalize hook
+      - ``normalize(df, pattern, *, warnings=None)``: post-assembly normalize hook
         (``_NORMALIZER_MAP`` dispatch for Zeek; ``None`` for the flat
         loaders).
       - ``unit``: progress bar unit label.
@@ -135,7 +136,7 @@ class SourceLoader:
     ts_policy: str  # "keep" | "drop"
     columns: list[str] | None
     should_skip: Callable[[Path], str | None] | None
-    normalize: Callable[[pd.DataFrame, str], pd.DataFrame] | None
+    normalize: Callable[..., pd.DataFrame] | None
     unit: str = " lines"
     # Signature: (files, since, until, *, verbose) -> (selected, RotationSkipInfo).
     # `Callable[...]` because the real callable has a keyword-only `verbose` arg
@@ -401,11 +402,21 @@ def _zeek_strategy_parse(line_iter, *, path, warnings):
     return _zeek_parse_from_lines(line_iter, path=path, warnings=warnings)
 
 
-def _zeek_normalize(df: pd.DataFrame, pattern: str) -> pd.DataFrame:
+def _zeek_normalize(
+    df: pd.DataFrame,
+    pattern: str,
+    *,
+    warnings: list[str] | None = None,
+) -> pd.DataFrame:
     """Apply the Zeek per-log-type normaliser when the pattern has one."""
     log_type = _log_type(pattern)
     if log_type in _NORMALIZER_MAP:
-        return _NORMALIZER_MAP[log_type](df)
+        before = len(df)
+        normalized = _NORMALIZER_MAP[log_type](df)
+        dropped = before - len(normalized)
+        if log_type == "syslog" and dropped > 0 and warnings is not None:
+            warnings.append(_zeek_message_value_warning(pattern, dropped))
+        return normalized
     return df
 
 
@@ -826,12 +837,22 @@ def run_load(
     # Frame mode (Zeek): concat with TODAY's behavior - bare empty, no forced
     # columns. Zeek's non-empty columns come from parse + normalize.
     result = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+    normalized_to_empty = False
     if strategy.normalize is not None and not result.empty:
-        result = strategy.normalize(result, pattern)
+        result = strategy.normalize(result, pattern, warnings=_warnings)
+        normalized_to_empty = result.empty
     if _coverage is not None:
-        sc = tracker.coverage(result.empty)
-        if sc is not None:
-            _coverage["coverage"] = sc
+        if normalized_to_empty and _log_type(pattern) == "syslog":
+            # Parsed rows whose message values all fail canonicalization are a
+            # parse gap, not "no files read"; the runner must not suggest a
+            # wider window for content it correctly rejected.
+            # Syslog alone publishes this explicit parse-gap fact. Extending it
+            # to conn/dns changes their record-honesty contract, not behavior.
+            _coverage["coverage"] = SourceCoverage(0, None)
+        else:
+            sc = tracker.coverage(result.empty)
+            if sc is not None:
+                _coverage["coverage"] = sc
     return result
 
 

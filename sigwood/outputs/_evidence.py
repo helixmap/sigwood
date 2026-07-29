@@ -85,18 +85,19 @@ def curated_evidence(finding: Finding) -> dict[str, Any]:
         tier = ev.get("tier")
         if tier == "burst":
             keys = (
-                "line_count", "span_seconds", "first_seen", "program_mix", "label",
+                "line_count", "host_total", "span_seconds", "first_seen",
+                "program_mix", "label",
             )
         elif tier == "family":
             keys = (
                 "program", "line_count", "program_total", "span_seconds", "first_seen",
             )
         elif tier == "reboot":
-            keys = ("label", "signal_count")
+            keys = ("label", "signal_count", "host_total")
         elif tier == "transaction":
             keys = (
                 "label", "member_count", "represented_line_count",
-                "span_seconds", "first_seen", "program_mix",
+                "host_total", "span_seconds", "first_seen", "program_mix",
             )
         else:  # isolated rare row
             keys = (

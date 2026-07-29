@@ -66,6 +66,7 @@ from sigwood.common.loader.diagnostics import (
     _zeek_bad_lines_warning,
     _zeek_file_parse_warning,
     _zeek_file_read_warning,
+    _zeek_message_value_warning,
     _zeek_no_records_warning,
 )
 from sigwood.common.loader.sniff import (

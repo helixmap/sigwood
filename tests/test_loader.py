@@ -3245,6 +3245,157 @@ def test_load_logs_zeek_syslog_ndjson_returns_canonical_seven_columns(
         assert col not in df.columns
 
 
+def test_zeek_syslog_message_drops_aggregate_warning_and_accounting(
+    tmp_path: Path,
+) -> None:
+    """Post-concat drops update row facts but retain pre-normalize file facts."""
+    zeek_dir = tmp_path / "zeek"
+    zeek_dir.mkdir()
+    first = zeek_dir / "syslog.a.log"
+    second = zeek_dir / "syslog.b.log"
+    _write_ndjson(first, [
+        {
+            "_path": "syslog",
+            "ts": 100.0,
+            "id.orig_h": "192.0.2.10",
+            "message": "Jun 11 12:00:00 host-a sshd[1]: valid one",
+        },
+        {
+            "_path": "syslog",
+            "ts": 110.0,
+            "id.orig_h": "192.0.2.10",
+            "message": None,
+        },
+        {
+            "_path": "syslog",
+            "ts": 120.0,
+            "id.orig_h": "192.0.2.10",
+            "message": 7,
+        },
+        {
+            "_path": "syslog",
+            "ts": 130.0,
+            "id.orig_h": "192.0.2.10",
+            "message": "",
+        },
+    ])
+    _write_ndjson(second, [
+        {
+            "_path": "syslog",
+            "ts": 200.0,
+            "id.orig_h": "192.0.2.20",
+            "message": "Jun 11 12:01:00 host-b cron[2]: valid two",
+        },
+        {
+            "_path": "syslog",
+            "ts": 210.0,
+            "id.orig_h": "192.0.2.20",
+            "message": None,
+        },
+        {
+            "_path": "syslog",
+            "ts": 220.0,
+            "id.orig_h": "192.0.2.20",
+            "message": 7.5,
+        },
+    ])
+
+    result = load_required_logs(
+        {"syslog*.log*": "zeek_dir"},
+        {"zeek_dir": [zeek_dir]},
+        show_progress=False,
+    )
+
+    assert result.record_counts == {"syslog*.log*": 3}
+    assert result.data_window == (
+        datetime.fromtimestamp(100.0, tz=timezone.utc),
+        datetime.fromtimestamp(200.0, tz=timezone.utc),
+    )
+    assert result.data_size_bytes == first.stat().st_size + second.stat().st_size
+    assert result.warnings == [
+        "syslog.log: skipped 4 rows with a missing or non-text message"
+    ]
+    assert result.coverage == {}
+    FileSpan = getattr(loader_module, "FileSpan")
+    assert result.file_spans == {
+        "syslog*.log*": (
+            FileSpan(first, 100.0, 130.0),
+            FileSpan(second, 200.0, 220.0),
+        )
+    }
+
+
+def test_zeek_syslog_all_messages_rejected_keeps_bounded_residual(
+    tmp_path: Path,
+) -> None:
+    """All-rejected content is disclosed without fabricating window facts."""
+    zeek_dir = tmp_path / "zeek"
+    zeek_dir.mkdir()
+    path = zeek_dir / "syslog.log"
+    _write_ndjson(path, [
+        {
+            "_path": "syslog",
+            "ts": 300.0,
+            "id.orig_h": "192.0.2.30",
+            "message": None,
+        },
+    ])
+
+    result = load_required_logs(
+        {"syslog*.log*": "zeek_dir"},
+        {"zeek_dir": [zeek_dir]},
+        show_progress=False,
+    )
+
+    assert result.logs["syslog*.log*"].empty
+    assert result.record_counts == {}
+    assert result.data_window is None
+    assert result.data_size_bytes == path.stat().st_size
+    assert result.warnings == [
+        "syslog.log: skipped 1 row with a missing or non-text message"
+    ]
+    assert result.coverage == {
+        "syslog*.log*": SourceCoverage(0, None),
+    }
+    FileSpan = getattr(loader_module, "FileSpan")
+    assert result.file_spans == {
+        "syslog*.log*": (FileSpan(path, 300.0, 300.0),)
+    }
+    assert load_logs(
+        zeek_dir,
+        "syslog*.log*",
+        _warnings=None,
+        show_progress=False,
+    ).empty
+
+
+def test_zeek_syslog_missing_message_column_uses_schema_warning_only(
+    tmp_path: Path,
+) -> None:
+    """Structural absence stays distinct from rejected column values."""
+    zeek_dir = tmp_path / "zeek"
+    zeek_dir.mkdir()
+    _write_ndjson(zeek_dir / "syslog.log", [{
+        "_path": "syslog",
+        "ts": 400.0,
+        "id.orig_h": "192.0.2.40",
+    }])
+
+    result = load_required_logs(
+        {"syslog*.log*": "zeek_dir"},
+        {"zeek_dir": [zeek_dir]},
+        show_progress=False,
+    )
+
+    assert result.record_counts == {"syslog*.log*": 1}
+    assert result.warnings == [
+        (
+            "syslog.log fields not found: host, message, program, raw - "
+            "is this a Zeek syslog.log?"
+        )
+    ]
+
+
 def test_load_logs_zeek_syslog_tsv_returns_canonical_seven_columns(
     tmp_path: Path,
 ) -> None:

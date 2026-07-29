@@ -866,6 +866,40 @@ def test_runner_empty_zeek_file_no_coverage_note(tmp_path, capture_summary):
     assert not any(n.startswith("Zeek conn:") for n in s.notes), s.notes
 
 
+def test_runner_all_rejected_zeek_syslog_warns_without_window_advice(
+    tmp_path, capture_summary, capsys,
+):
+    """Rejected message values are a parse gap, not a window-selection gap."""
+    zeek_dir = tmp_path / "zeek"
+    zeek_dir.mkdir()
+    _write_ndjson(zeek_dir / "syslog.log", [{
+        "_path": "syslog",
+        "ts": datetime(2026, 7, 20, tzinfo=timezone.utc).timestamp(),
+        "id.orig_h": "192.0.2.70",
+        "message": None,
+    }])
+
+    runner.run(
+        config={"sigwood": {"detect": "syslog", "default_window": ""}},
+        zeek_dir=zeek_dir,
+        syslog_source="off",
+        load_all=True,
+    )
+
+    summary = capture_summary["summary"]
+    assert capture_summary["findings"] == []
+    err = capsys.readouterr().err
+    assert (
+        "syslog.log: skipped 1 row with a missing or non-text message"
+        in err
+    )
+    assert "Traceback" not in err
+    assert not any(
+        note.startswith("Zeek syslog:") or "widen with --since/--days" in note
+        for note in summary.notes
+    )
+
+
 # ── Malformed domain-pattern advisory (runner seam) ───────────────────────────
 #
 # A malformed `re:` body in a CONFIGURED domain list is dropped at matcher build

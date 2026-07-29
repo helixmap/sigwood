@@ -461,6 +461,10 @@ def run(context: DetectorContext) -> list[Finding]:
             ["host", "program"], sort=False
         )
     }
+    host_totals = {
+        host: int(len(group))
+        for host, group in identity_df.groupby("host", sort=False)
+    }
 
     # One mask and its boolean complement over the RAW rare frame are the
     # exactly-once seam. Keep identity normalization local to its consumers so
@@ -506,6 +510,7 @@ def run(context: DetectorContext) -> list[Finding]:
             now=now,
             data_window=context.data_window,
         )
+    _decorate_host_totals(pairs, host_totals)
     # run() owns the SINGLE final cross-channel output sort; the helpers keep their
     # own internal stable ts sorts but return unsorted pairs.
     pairs.sort(key=lambda pair: pair[0])
@@ -525,6 +530,18 @@ def _normalize_identity_columns(frame: pd.DataFrame) -> pd.DataFrame:
         else:
             work[column] = work[column].fillna("unknown")
     return work
+
+
+def _decorate_host_totals(
+    pairs: list[tuple[float, Finding]],
+    host_totals: dict[object, int],
+) -> None:
+    """Add the loaded host population to final aggregate review units."""
+    for _, finding in pairs:
+        if finding.evidence.get("tier") not in {"burst", "reboot", "transaction"}:
+            continue
+        host = finding.evidence["host"]
+        finding.evidence["host_total"] = int(host_totals.get(host, 0))
 
 
 def _run_drain3(
@@ -1304,6 +1321,7 @@ def _burst_finding(
         ),
         evidence={
             "tier":         "burst",
+            "host":         host,
             "line_count":   len(group),
             "span_seconds": end_ts - start_ts,
             "start_ts":     start_ts,

@@ -2328,6 +2328,168 @@ class SyslogDetectorTests(unittest.TestCase):
         self.assertEqual(rebooted[0].evidence["line_count"], 4)
         self.assertEqual(_represented_output_count(findings), 6)
 
+    def test_real_run_decorates_every_host_population_shape(self) -> None:
+        """Burst, standalone reboot, and transaction expose their host totals."""
+        common = [
+            {**_common_row(i), "program": "cron", "message": "cron: ordinary event"}
+            for i in range(50)
+        ]
+        burst = [
+            {
+                "ts": _BASE_TS + 100_000 + index,
+                "host": "192.0.2.40",
+                "program": "kernel",
+                "raw": f"kernel: burst member {index}",
+                "message": f"kernel: burst member {index}",
+            }
+            for index in range(4)
+        ]
+        transaction = [
+            {
+                "ts": _BASE_TS + 200_000 + offset,
+                "host": "198.51.100.50",
+                "program": program,
+                "raw": message,
+                "message": message,
+            }
+            for offset, program, message in (
+                (0, "dnf", "dnf[*]: starting update"),
+                (1, "dnf", "dnf[*]: starting update"),
+                (30, "rpm", "rpm[*]: installed package-example"),
+                (31, "rpm", "rpm[*]: installed package-example"),
+                (10, "cron", "cron: update-side effect"),
+                (20, "kernel", "kernel: update-side effect"),
+            )
+        ]
+        reboot = [{
+            "ts": _BASE_TS + 300_000,
+            "host": "203.0.113.60",
+            "program": "systemd-logind",
+            "raw": "systemd-logind[1]: System is rebooting.",
+            "message": "systemd-logind: System is rebooting.",
+        }]
+        other_shapes = [
+            {
+                "ts": _BASE_TS + 400_000,
+                "host": "203.0.113.70",
+                "program": "cron",
+                "raw": "cron: isolated review row",
+                "message": "cron: isolated review row",
+            },
+            *[
+                {
+                    "ts": _BASE_TS + 500_000 + index * 1_000,
+                    "host": "203.0.113.80",
+                    "program": "cron",
+                    "raw": f"cron: family member {index}",
+                    "message": f"cron: family member {index}",
+                }
+                for index in range(4)
+            ],
+        ]
+        rows = [*common, *burst, *transaction, *reboot, *other_shapes]
+        ids = (
+            [1] * len(common)
+            + [2, 3, 4, 5]
+            + [6, 6, 7, 7, 8, 9]
+            + [10]
+            + [11, 12, 13, 14, 15]
+        )
+        templates = (
+            ["ordinary"] * len(common)
+            + ["burst-0", "burst-1", "burst-2", "burst-3"]
+            + [
+                "dnf-anchor",
+                "dnf-anchor",
+                "rpm-anchor",
+                "rpm-anchor",
+                "transaction-member-1",
+                "transaction-member-2",
+            ]
+            + ["reboot-signal"]
+            + ["needle", "family-0", "family-1", "family-2", "family-3"]
+        )
+
+        findings = _run_with(rows, ids, templates)
+        by_tier = {
+            finding.evidence.get("tier"): finding
+            for finding in findings
+            if finding.evidence.get("tier") in {"burst", "reboot", "transaction"}
+        }
+
+        self.assertEqual(set(by_tier), {"burst", "reboot", "transaction"})
+        self.assertEqual(by_tier["burst"].evidence["host"], "192.0.2.40")
+        self.assertEqual(by_tier["burst"].evidence["host_total"], 4)
+        self.assertEqual(by_tier["reboot"].evidence["host_total"], 1)
+        self.assertEqual(by_tier["transaction"].evidence["host_total"], 6)
+        self.assertFalse(any(
+            "host_total" in member
+            for member in by_tier["transaction"].evidence["members"]
+        ))
+        non_targets = [
+            finding
+            for finding in findings
+            if finding.evidence.get("tier") not in {
+                "burst", "reboot", "transaction",
+            }
+        ]
+        self.assertTrue(any(
+            finding.evidence.get("tier") == "family" for finding in non_targets
+        ))
+        self.assertTrue(any(
+            finding.evidence.get("tier") is None for finding in non_targets
+        ))
+        self.assertTrue(all(
+            "host_total" not in finding.evidence for finding in non_targets
+        ))
+
+        from sigwood.outputs._evidence import curated_evidence
+        from sigwood.outputs._render_model import project_row
+
+        for finding in by_tier.values():
+            self.assertEqual(
+                curated_evidence(finding)["host_total"],
+                finding.evidence["host_total"],
+            )
+            self.assertNotIn("host", curated_evidence(finding))
+            without_total = copy.deepcopy(finding)
+            without_total.evidence.pop("host_total")
+            self.assertEqual(project_row(finding), project_row(without_total))
+
+    def test_unknown_host_total_uses_the_full_normalized_population(self) -> None:
+        common = [
+            {
+                "ts": _BASE_TS + index * 100,
+                "host": None,
+                "program": "cron",
+                "raw": f"cron: repeated {index}",
+                "message": "cron: repeated",
+            }
+            for index in range(10)
+        ]
+        burst = [
+            {
+                "ts": _BASE_TS + 100_000 + index,
+                "host": None,
+                "program": "kernel",
+                "raw": f"kernel: unknown-host burst {index}",
+                "message": f"kernel: unknown-host burst {index}",
+            }
+            for index in range(4)
+        ]
+        findings = _run_with(
+            [*common, *burst],
+            [1] * len(common) + [2, 3, 4, 5],
+            ["ordinary"] * len(common) + ["b0", "b1", "b2", "b3"],
+        )
+        finding = next(
+            item for item in findings if item.evidence.get("tier") == "burst"
+        )
+
+        self.assertEqual(finding.evidence["host"], "unknown")
+        self.assertEqual(finding.evidence["line_count"], 4)
+        self.assertEqual(finding.evidence["host_total"], 14)
+
     def test_recognize_transactions_false_bypasses_recognition(self) -> None:
         rows = [
             *[
@@ -3371,6 +3533,85 @@ def test_journal_needle_runs_to_time_anchored_text() -> None:
         )
     )
     assert "[L]   Oct  9 08:53:20 · journal needle sentinel" in rendered
+
+
+def test_non_text_zeek_rows_do_not_change_real_detector_contract(tmp_path) -> None:
+    """A loaded malformed-row superset yields the same real detector result."""
+    from sigwood.common.loader import load_logs
+
+    clean = tmp_path / "clean"
+    dirty = tmp_path / "dirty"
+    clean.mkdir()
+    dirty.mkdir()
+    valid = {
+        "_path": "syslog",
+        "ts": _BASE_TS,
+        "id.orig_h": "192.0.2.90",
+        "message": "May 30 12:00:00 host-a cron[1]: rare valid sentinel",
+    }
+    (clean / "syslog.log").write_text(
+        json.dumps(valid) + "\n",
+        encoding="utf-8",
+    )
+    (dirty / "syslog.log").write_text(
+        "\n".join([
+            json.dumps(valid),
+            json.dumps({
+                "_path": "syslog",
+                "ts": _BASE_TS + 1,
+                "id.orig_h": "192.0.2.90",
+                "message": None,
+            }),
+            json.dumps({
+                "_path": "syslog",
+                "ts": _BASE_TS + 2,
+                "id.orig_h": "192.0.2.90",
+                "message": 7,
+            }),
+        ]) + "\n",
+        encoding="utf-8",
+    )
+    clean_warnings: list[str] = []
+    dirty_warnings: list[str] = []
+    clean_frame = load_logs(
+        clean, "syslog*.log*", _warnings=clean_warnings, show_progress=False
+    )
+    dirty_frame = load_logs(
+        dirty, "syslog*.log*", _warnings=dirty_warnings, show_progress=False
+    )
+
+    pd.testing.assert_frame_equal(clean_frame, dirty_frame)
+    assert clean_warnings == []
+    assert dirty_warnings == [
+        "syslog.log: skipped 2 rows with a missing or non-text message"
+    ]
+    def detector_context(frame: pd.DataFrame) -> DetectorContext:
+        return DetectorContext(
+            logs={"syslog*.log*": frame},
+            config={},
+            allowlist=None,
+            data_window=_WINDOW,
+        )
+
+    clean_findings = run(detector_context(clean_frame))
+    dirty_findings = run(detector_context(dirty_frame))
+
+    def contract(findings: list[Finding]) -> list[tuple]:
+        return [
+            (
+                finding.severity,
+                finding.title,
+                finding.description,
+                finding.evidence,
+                finding.next_steps,
+            )
+            for finding in findings
+        ]
+
+    assert contract(clean_findings) == contract(dirty_findings)
+    rendered = json.dumps(contract(dirty_findings), default=str).lower()
+    assert '"none"' not in rendered
+    assert '"nan"' not in rendered
 
 
 if __name__ == "__main__":

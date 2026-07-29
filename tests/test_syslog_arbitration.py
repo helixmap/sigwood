@@ -457,6 +457,41 @@ def test_cross_feed_arbitration_empty_result_retains_columns() -> None:
     assert list(arbitrated.logs["syslog*.log*"].columns) == list(zeek.columns)
 
 
+def test_non_text_zeek_message_cannot_create_cross_feed_host_overlap(
+    tmp_path: Path,
+) -> None:
+    flat = tmp_path / "flat"
+    flat.mkdir()
+    line = _syslog_line("shared-a", "authentication placeholder alpha")
+    (flat / "system.log").write_text(line + "\n", encoding="utf-8")
+    zeek = tmp_path / "zeek"
+    zeek.mkdir()
+    malformed = _zeek_record(line, uid="C1")
+    malformed["id.orig_h"] = "shared-a"
+    malformed["message"] = None
+    valid = _zeek_record(line, uid="C2", ts=_EVENT_TS + 1)
+    (zeek / "syslog.log").write_text(
+        json.dumps(malformed) + "\n" + json.dumps(valid) + "\n",
+        encoding="utf-8",
+    )
+
+    from sigwood.common.loader import load_required_logs
+
+    loaded = load_required_logs(
+        {"*.log*": "syslog_dir", "syslog*.log*": "zeek_dir"},
+        {"syslog_dir": [flat], "zeek_dir": [zeek]},
+        show_progress=False,
+    )
+    arbitrated, facts = runner._arbitrate_cross_feed_syslog(loaded)
+
+    assert loaded.record_counts["syslog*.log*"] == 1
+    assert loaded.warnings == [
+        "syslog.log: skipped 1 row with a missing or non-text message"
+    ]
+    assert facts == (1, 1)
+    assert arbitrated.logs["syslog*.log*"].empty
+
+
 def test_cross_feed_arbitration_replace_preserves_loader_metadata() -> None:
     from sigwood.common import loader
 

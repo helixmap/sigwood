@@ -539,6 +539,40 @@ def test_zeek_syslog_normalizer_malformed_missing_message_preserves_absence() ->
     assert "raw" in warning
 
 
+def test_zeek_syslog_normalizer_rejects_non_text_message_values() -> None:
+    """Only actual strings may become canonical syslog content."""
+    from sigwood.parsers.zeek import _normalize_zeek_syslog_df
+
+    raw_df = pd.DataFrame([
+        {
+            "ts": 100.0,
+            "id.orig_h": "192.0.2.10",
+            "message": "Jun 11 12:00:00 host-a sshd[1]: valid text",
+        },
+        {
+            "ts": 101.0,
+            "id.orig_h": "192.0.2.11",
+            "message": "",
+        },
+        {"ts": 102.0, "id.orig_h": "192.0.2.12", "message": None},
+        {"ts": 103.0, "id.orig_h": "192.0.2.13", "message": float("nan")},
+        {"ts": 104.0, "id.orig_h": "192.0.2.14", "message": 7},
+        {"ts": 105.0, "id.orig_h": "192.0.2.15", "message": 7.5},
+    ])
+
+    normalized = _normalize_zeek_syslog_df(raw_df)
+
+    assert normalized["ts"].tolist() == [100.0, 101.0]
+    assert normalized.iloc[0]["host"] == "host-a"
+    assert normalized.iloc[0]["program"] == "sshd"
+    assert normalized.iloc[0]["raw"].endswith("valid text")
+    assert normalized.iloc[1]["raw"] == ""
+    for column in ("raw", "program", "message"):
+        values = normalized[column].astype(str).str.lower().tolist()
+        assert "none" not in values
+        assert "nan" not in values
+
+
 def test_zeek_tsv_sniff_syslog_path_claims_syslog() -> None:
     """TSV sniff layer claims `#path syslog` - the TSV twin of the NDJSON
     `_path == "syslog"` claim. Test in test_sniff_recognizers covers the

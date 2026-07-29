@@ -7,6 +7,7 @@ import io
 from datetime import datetime, timezone
 
 import numpy as np
+import pytest
 
 from sigwood.common.finding import Finding, RunSummary, Severity
 from sigwood.outputs.csv import _FIELDNAMES, CsvHandler
@@ -246,6 +247,7 @@ def test_syslog_transaction_signals_are_curated_without_nested_members() -> None
         evidence={
             "tier": "transaction", "label": "update run", "host": "host-a",
             "member_count": 2, "represented_line_count": 4,
+            "host_total": 47,
             "start_ts": 1.0, "end_ts": 61.0,
             "first_seen": "1970-01-01T00:00:01+00:00", "span_seconds": 60.0,
             "program_mix": [["dnf", 3], ["kernel", 1]],
@@ -263,12 +265,63 @@ def test_syslog_transaction_signals_are_curated_without_nested_members() -> None
 
     assert row["signals"] == (
         "label=update run; member_count=2; represented_line_count=4; "
-        "span_seconds=60.0; first_seen=1970-01-01T00:00:01+00:00; "
+        "host_total=47; span_seconds=60.0; "
+        "first_seen=1970-01-01T00:00:01+00:00; "
         "program_mix=dnf (3), kernel (1)"
     )
     assert "members" not in row["signals"]
     assert "start_ts" not in row["signals"]
     assert "end_ts" not in row["signals"]
+
+
+@pytest.mark.parametrize(
+    ("tier", "evidence", "expected"),
+    [
+        (
+            "burst",
+            {
+                "tier": "burst",
+                "host": "host-b",
+                "line_count": 4,
+                "host_total": 91,
+                "span_seconds": 3.0,
+                "program_mix": [["kernel", 4]],
+                "label": None,
+            },
+            (
+                "line_count=4; host_total=91; span_seconds=3.0; "
+                "program_mix=kernel (4)"
+            ),
+        ),
+        (
+            "reboot",
+            {
+                "tier": "reboot",
+                "host": "host-c",
+                "label": "rebooted",
+                "signal_count": 2,
+                "host_total": 17,
+            },
+            "label=rebooted; signal_count=2; host_total=17",
+        ),
+    ],
+)
+def test_syslog_host_population_is_curated_for_aggregate_rows(
+    tier: str,
+    evidence: dict,
+    expected: str,
+) -> None:
+    finding = _finding(
+        detector="syslog",
+        severity=Severity.INFO,
+        title=f"host-{tier}",
+        evidence=evidence,
+    )
+
+    row = _rows(_emit([finding]))[0]
+
+    assert row["signals"] == expected
+    assert "host=" not in row["signals"]
 
 
 def test_verbosity_invariant() -> None:

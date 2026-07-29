@@ -4,7 +4,8 @@ The non-dataclass glue kept out of ``types``: ``_log_type`` (glob →
 canonical log type), ``_schema_warning`` (actionable missing-field message),
 ``_zeek_file_read_warning`` / ``_cloudtrail_parse_warning`` /
 ``_zeek_file_parse_warning`` / ``_zeek_bad_lines_warning`` (privacy-safe
-per-file failure wording). Imports the parser schema constants and the
+per-file failure wording), and ``_zeek_message_value_warning`` (aggregated
+canonicalization disclosure). Imports the parser schema constants and the
 ``plural`` display helper only.
 """
 
@@ -89,6 +90,16 @@ def _schema_warning(pattern: str, df: pd.DataFrame) -> str | None:
             "is this a Zeek syslog.log?"
         )
     return None
+
+
+def _zeek_message_value_warning(pattern: str, count: int) -> str:
+    """Return the pattern-level warning for rejected Zeek syslog messages."""
+    log_type = _log_type(pattern)
+    label = f"{log_type}.log" if log_type is not None else pattern
+    return (
+        f"{label}: skipped {count} {plural(count, 'row')} "
+        "with a missing or non-text message"
+    )
 
 
 def _zeek_file_read_warning(

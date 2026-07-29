@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import ipaddress
 import math
+from collections.abc import Callable
 from datetime import datetime, timezone
 from numbers import Real
 from typing import Any
@@ -131,10 +132,10 @@ def run(context: DetectorContext) -> list[Finding]:
 def _filter_conn(df: Any, home_net: list[str]) -> Any:
     """Apply beacon scoring gates: state, addresses, local origin, bytes, grouping keys.
 
-    Masks derived from ``.map`` are cast to bool so an empty post-conn_state frame stays a
-    boolean mask. An empty object-dtype series used in ``df[...]`` is read by pandas as
-    column selection, collapsing the frame to zero columns, after which ``df["src"]`` raises
-    KeyError. The cast keeps the mask boolean and empty-safe; the same reason the
+    Classifier masks stay indexed boolean Series so an empty post-conn_state frame remains a
+    row mask. An empty object-dtype series used in ``df[...]`` is read by pandas as column
+    selection, collapsing the frame to zero columns, after which ``df["src"]`` raises
+    KeyError. The explicit boolean shape keeps masks empty-safe; the same reason the
     effective-local mask below stays chained to its ``.astype(bool)``.
 
     Origin is effective-local: ``local_orig`` decides when set (a False value stays excluded -
@@ -182,6 +183,28 @@ def _no_measurement_facts(
     }
 
 
+def _classify_distinct(
+    series: pd.Series,
+    classifier: Callable[[object], bool],
+) -> pd.Series:
+    """Classify each distinct hashable value once, preserving scalar tolerance."""
+    try:
+        codes, uniques = pd.factorize(series)
+    except (TypeError, ValueError):
+        return series.map(classifier).astype(bool)
+
+    answers = np.asarray(
+        [classifier(value) for value in uniques],
+        dtype=bool,
+    )
+    missing_answer = bool(classifier(None))
+    result = np.full(len(codes), missing_answer, dtype=bool)
+    present = codes >= 0
+    if answers.size:
+        result[present] = answers[codes[present]]
+    return pd.Series(result, index=series.index, dtype=bool)
+
+
 def _apply_scoring_eligibility(
     df: Any,
     home_net: list[str],
@@ -194,9 +217,12 @@ def _apply_scoring_eligibility(
         facts = _no_measurement_facts(rows_total=rows_total)
         facts["rows_after_state"] = rows_after_state
         return df, facts
-    df = df[~df["dst"].map(_is_non_unicast).astype(bool)]
-    df = df[~df["src"].map(_is_non_unicast).astype(bool)]
-    src_internal = df["src"].map(lambda ip: _ip_in_home_net(ip, home_net))
+    df = df[~_classify_distinct(df["dst"], _is_non_unicast)]
+    df = df[~_classify_distinct(df["src"], _is_non_unicast)]
+    src_internal = _classify_distinct(
+        df["src"],
+        lambda ip: _ip_in_home_net(ip, home_net),
+    )
     if "local_orig" not in df.columns:
         effective_local = src_internal.astype(bool)
     else:

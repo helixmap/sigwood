@@ -23,6 +23,7 @@ from __future__ import annotations
 import importlib.util
 import random
 import unittest
+from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -130,6 +131,59 @@ def _ctx(
         data_window=_WINDOW,
         home_net=home_net or [],
     )
+
+
+def _scalar_eligibility_reference(
+    frame: pd.DataFrame,
+    home_net: list[str],
+) -> tuple[pd.DataFrame, dict[str, int | tuple[str, ...]]]:
+    """E3's scalar gate pipeline, retained as the cycle-2 parity oracle."""
+    rows_total = len(frame)
+    filtered = frame[frame["conn_state"].isin(["SF", "S1"])].copy()
+    rows_after_state = len(filtered)
+    if filtered.empty:
+        return filtered, {
+            "missing_columns": (),
+            "rows_total": rows_total,
+            "rows_after_state": rows_after_state,
+            "rows_before_bytes": 0,
+            "rows_after_bytes": 0,
+            "rows_before_keys": 0,
+            "rows_after_keys": 0,
+        }
+    filtered = filtered[
+        ~filtered["dst"].map(_is_non_unicast).astype(bool)
+    ]
+    filtered = filtered[
+        ~filtered["src"].map(_is_non_unicast).astype(bool)
+    ]
+    src_internal = filtered["src"].map(
+        lambda ip: _ip_in_home_net(ip, home_net)
+    )
+    if "local_orig" not in filtered.columns:
+        effective_local = src_internal.astype(bool)
+    else:
+        local_orig = filtered["local_orig"]
+        effective_local = local_orig.where(
+            local_orig.notna(), src_internal
+        ).astype(bool)
+    filtered = filtered[effective_local]
+    rows_before_bytes = len(filtered)
+    filtered = filtered[filtered["bytes"].notna()]
+    rows_after_bytes = len(filtered)
+    rows_before_keys = rows_after_bytes
+    filtered = filtered[
+        filtered[["src", "dst", "port", "proto"]].notna().all(axis=1)
+    ]
+    return filtered, {
+        "missing_columns": (),
+        "rows_total": rows_total,
+        "rows_after_state": rows_after_state,
+        "rows_before_bytes": rows_before_bytes,
+        "rows_after_bytes": rows_after_bytes,
+        "rows_before_keys": rows_before_keys,
+        "rows_after_keys": len(filtered),
+    }
 
 
 def _load_demo_generator():
@@ -601,6 +655,167 @@ class BeaconRunTests(unittest.TestCase):
 
 class BeaconEligibilityTests(unittest.TestCase):
     """Eligibility accounting follows the detector gates and is total/defensive."""
+
+    def test_distinct_classification_fast_path_calls_once_per_unique(self):
+        """Hashable duplicates are classified by value at all three IP sites."""
+        row_count = 24
+        frame = pd.DataFrame(_conn_rows(
+            _T0 + np.arange(row_count) * 60.0,
+            "192.0.2.10",
+            "198.51.100.20",
+            443,
+        ))
+        frame["src"] = (
+            ["192.0.2.10"] * 12
+            + ["192.0.2.11"] * 11
+            + [None]
+        )
+        frame["dst"] = (
+            ["198.51.100.20"] * 12
+            + ["198.51.100.21"] * 11
+            + [np.nan]
+        )
+        home_net = ["192.0.2.0/24"]
+        expected_frame, expected_facts = _scalar_eligibility_reference(
+            frame, home_net
+        )
+
+        real_non_unicast = beacon_module._is_non_unicast
+        real_in_home_net = beacon_module._ip_in_home_net
+        non_unicast_calls: list[object] = []
+        home_net_calls: list[object] = []
+
+        def _count_non_unicast(value: object) -> bool:
+            non_unicast_calls.append(value)
+            return real_non_unicast(value)
+
+        def _count_in_home_net(value: object, networks: list[str]) -> bool:
+            home_net_calls.append(value)
+            return real_in_home_net(value, networks)
+
+        with pytest.MonkeyPatch.context() as monkeypatch:
+            monkeypatch.setattr(
+                beacon_module, "_is_non_unicast", _count_non_unicast
+            )
+            monkeypatch.setattr(
+                beacon_module, "_ip_in_home_net", _count_in_home_net
+            )
+            actual_frame, actual_facts = (
+                beacon_module._apply_scoring_eligibility(frame, home_net)
+            )
+
+        post_state = frame[frame["conn_state"].isin(["SF", "S1"])]
+        post_dst = post_state[
+            ~post_state["dst"].map(real_non_unicast).astype(bool)
+        ]
+        dst_distinct = list(pd.unique(post_state["dst"].dropna()))
+        src_distinct = list(pd.unique(post_dst["src"].dropna()))
+
+        self.assertEqual(actual_frame.equals(expected_frame), True)
+        self.assertEqual(actual_facts, expected_facts)
+        self.assertEqual(actual_facts["rows_before_bytes"], row_count)
+        self.assertEqual(actual_facts["rows_after_bytes"], row_count)
+        self.assertEqual(actual_facts["rows_before_keys"], row_count)
+        self.assertEqual(actual_facts["rows_after_keys"], row_count - 1)
+        self.assertEqual(
+            Counter(value for value in non_unicast_calls if value is not None),
+            Counter(dst_distinct + src_distinct),
+        )
+        self.assertEqual(
+            sum(value is None for value in non_unicast_calls), 2
+        )
+        self.assertEqual(
+            Counter(value for value in home_net_calls if value is not None),
+            Counter(src_distinct),
+        )
+        self.assertEqual(sum(value is None for value in home_net_calls), 1)
+        self.assertLess(len(non_unicast_calls), row_count)
+        self.assertLess(len(home_net_calls), row_count)
+
+    def test_unhashable_classification_fallback_has_scalar_parity(self):
+        """List/dict cells attempt factorization, then retain E3 tolerance."""
+        frame = pd.DataFrame(_conn_rows(
+            _T0 + np.arange(8) * 60.0,
+            "192.0.2.10",
+            "198.51.100.20",
+            443,
+        ))
+        frame.at[0, "dst"] = ["198.51.100.20"]
+        frame.at[1, "src"] = {"ip": "192.0.2.10"}
+        frame.at[2, "dst"] = np.nan
+        frame.at[3, "src"] = None
+        frame.at[4, "dst"] = 3
+        frame.at[5, "src"] = "fe80::1%eth0"
+        frame.at[7, "dst"] = "224.0.0.1"
+        home_net = ["192.0.2.0/24"]
+        expected_frame, expected_facts = _scalar_eligibility_reference(
+            frame, home_net
+        )
+        real_factorize = pd.factorize
+        attempts = 0
+        fallbacks = 0
+
+        def _factorize_spy(*args, **kwargs):
+            nonlocal attempts, fallbacks
+            attempts += 1
+            try:
+                return real_factorize(*args, **kwargs)
+            except (TypeError, ValueError):
+                fallbacks += 1
+                raise
+
+        with pytest.MonkeyPatch.context() as monkeypatch:
+            monkeypatch.setattr(
+                beacon_module.pd, "factorize", _factorize_spy
+            )
+            actual_frame = beacon_module._filter_conn(frame, home_net)
+            actual_facts = beacon_module.scoring_eligibility(frame, home_net)
+
+        self.assertEqual(actual_frame.equals(expected_frame), True)
+        self.assertEqual(actual_facts, expected_facts)
+        self.assertEqual(attempts, 6)
+        self.assertEqual(fallbacks, 6)
+
+    def test_all_missing_and_empty_address_frames_preserve_facts(self):
+        empty = pd.DataFrame(columns=[
+            "src", "dst", "port", "proto", "ts", "bytes", "conn_state",
+            "local_orig",
+        ])
+        empty_frame, empty_facts = beacon_module._apply_scoring_eligibility(
+            empty, ["192.0.2.0/24"]
+        )
+        self.assertEqual(empty_frame.equals(empty), True)
+        self.assertEqual(
+            empty_facts,
+            {
+                "missing_columns": (),
+                "rows_total": 0,
+                "rows_after_state": 0,
+                "rows_before_bytes": 0,
+                "rows_after_bytes": 0,
+                "rows_before_keys": 0,
+                "rows_after_keys": 0,
+            },
+        )
+
+        all_missing = pd.DataFrame(_conn_rows(
+            _T0 + np.arange(4) * 60.0,
+            "192.0.2.10",
+            "198.51.100.20",
+            443,
+        ))
+        all_missing["src"] = None
+        all_missing["dst"] = np.nan
+        expected_frame, expected_facts = _scalar_eligibility_reference(
+            all_missing, ["192.0.2.0/24"]
+        )
+        actual_frame, actual_facts = (
+            beacon_module._apply_scoring_eligibility(
+                all_missing, ["192.0.2.0/24"]
+            )
+        )
+        self.assertEqual(actual_frame.equals(expected_frame), True)
+        self.assertEqual(actual_facts, expected_facts)
 
     def test_counts_follow_state_address_local_bytes_and_key_gates(self):
         frame = pd.DataFrame(_conn_rows(

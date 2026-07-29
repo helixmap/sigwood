@@ -53,6 +53,25 @@ All notable changes to sigwood are recorded here. The format follows
 
 ### Fixed
 
+- **A Zeek `syslog.log` line with no message no longer becomes a finding about text
+  that never existed.** A row whose `message` field is empty of content - JSON `null`,
+  or `-` in TSV - was turned into the literal words `None` or `nan`, which then read as
+  a program name, templated like any other line, and could surface as a rare finding.
+  Those rows are now dropped before that can happen, and the count is reported:
+  `syslog.log: skipped 3 rows with a missing or non-text message`. A genuinely empty
+  message is kept, and so is a real log line whose text happens to read `None` - the
+  check is on the field's type, not on how it prints.
+
+### Added
+
+- **Every grouped syslog finding now says what it is a fraction of.** Bursts, reboots,
+  and recognized transactions carry the host's full analyzed line count beside their own,
+  so "12 rare lines" can be read against the 40 lines that host produced or the 400,000
+  it produced. Rare-line and per-program findings already carried the equivalent figure.
+  Visible with `-v` and in the CSV worklist; the default one-line rows are unchanged.
+
+### Fixed
+
 - **A mistyped syslog setting now says which setting is wrong, instead of failing
   strangely later.** `[detectors.syslog]` values are checked before the detector
   runs: an out-of-range `rarity_pct` used to crash mid-run with an unhelpful

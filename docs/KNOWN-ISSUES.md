@@ -26,12 +26,13 @@ time; give it a week or more of `conn.log`, and use the allowlist to suppress th
 infrastructure you recognize. Reliability across diverse real-world networks is still
 being characterized, and this is the honest state of the flagship beacon detector today.
 
-**Beacon doesn't yet score beacons to dead or blocked hosts.** The pre-filter looks
-at connections that reached an established state, so a periodic check-in to a host
-that never answers - connections that all fail or get rejected - isn't analyzed.
-sigwood discloses at run time when most of the loaded connections were
-non-established and went unscored. Scoring that traffic as its own tier is planned; it
-needs threshold and false-positive calibration first.
+**Beacon only scores Zeek SF/S1 connection states.** The pre-filter looks
+at Zeek SF/S1 connections with observed originator bytes. Other state families are
+not analyzed, including established-but-reset or incomplete connections such as
+RSTO/RSTR/S2/S3 and unanswered or rejected attempts such as S0/REJ. sigwood discloses
+at run time when most loaded connections fall outside SF/S1 and go unscored. Scoring
+those families as separate tiers is planned; it needs threshold and false-positive
+calibration first.
 
 **A beacon faster than 60 seconds is reported with the wrong period.** The FFT runs
 over 30-second bins, so the fastest cadence it can represent is 60 seconds. A faster
@@ -134,6 +135,15 @@ one or two other rare lines, those lines are listed individually rather than fol
 reboot's summary. No data is lost in any of these cases.
 
 ## Ingestion and windows
+
+**An explicit conn log named outside `conn*.log*` silently skips the connection
+detectors.** Pointing sigwood at a single Zeek connection log whose filename does not
+match `conn*.log*` (say, `capture.ndjson`) reports `conn.log not found` and skips
+beacon, scan, and duration, even though the file's content is a valid conn log -
+single-file discovery still matches by filename. Rename the file to match the
+pattern (`conn.capture.log` works), or point sigwood at its directory with the
+standard names. Content-trusted explicit files are planned; the filename match is
+the current rule.
 
 **On daily-rotating Zeek trees, the default window can miss today's newest events.**
 The default window is anchored on the newest dated log directory, so on a tree that

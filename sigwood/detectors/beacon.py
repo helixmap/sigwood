@@ -9,7 +9,7 @@ Algorithm:
   constant - threshold, period band, and the reference calibration are tuned to 30s.
 - Compute FFT over the binned time grid (resilient to data gaps vs raw inter-arrival)
 - Composite score: 40% spectral ratio + 40% peak prominence + 20% inverted jitter CV
-- Peak prominence: peak power relative to local spectral noise floor, normalized at 100x
+- Peak prominence: peak magnitude relative to the local spectral noise floor, normalized at 100x
 - Jitter CV computed on outlier-cleaned inter-arrival deltas
 - Minimum 20 connections per candidate flow
 
@@ -63,9 +63,9 @@ _NON_ESTABLISHED_NOTE_MIN_ROWS = 1000
 _NON_ESTABLISHED_NOTE_SHARE = 0.5
 
 # Reliable beaconing detection needs roughly a week of span: a jittered periodic flow
-# clears the score threshold only ~13% of the time given a single day of data but ~100%
-# given seven. The runner reads this constant to disclose an inadequate analysis span; a
-# single source, never re-derived.
+# clears the score threshold only intermittently on a single day of data but reliably
+# across seven. The runner reads this constant to disclose an inadequate analysis span;
+# a single source, never re-derived.
 _MIN_RELIABLE_SPAN_DAYS = 7
 
 
@@ -171,7 +171,7 @@ def _ip_in_home_net(ip: object, home_net: list[str]) -> bool:
 
 
 def non_established_share(df: Any) -> tuple[int, int]:
-    """Count connections not in an established state, over the total loaded.
+    """Count connections outside the Zeek SF/S1 states beacon analyzes, over the total loaded.
 
     Defensive: returns ``(0, total)`` when ``conn_state`` is absent, so the runner's
     pre-loop disclosure - which runs outside the detector's error containment - never raises
@@ -220,7 +220,7 @@ def _compute_beacon_score(
 
     Why prominence alongside spectral ratio: sparse binary signals spread energy
     across harmonics, keeping the absolute spectral ratio low even for perfectly
-    periodic flows. Prominence measures peak power above the local noise floor,
+    periodic flows. Prominence measures peak magnitude above the local noise floor,
     robust to harmonic spreading.
     """
     if len(ts_array) < 10:
@@ -253,19 +253,19 @@ def _compute_beacon_score(
 
     peak_idx = int(fft_masked.argmax())
     peak_period = float(periods[peak_idx])
-    peak_power = float(fft_mag[peak_idx])
-    total_power = float(fft_mag[1:].sum())
-    if total_power == 0:
+    peak_magnitude = float(fft_mag[peak_idx])
+    total_magnitude = float(fft_mag[1:].sum())
+    if total_magnitude == 0:
         return None
 
-    spectral_ratio = peak_power / total_power
+    spectral_ratio = peak_magnitude / total_magnitude
 
     window = max(10, int(peak_idx * 0.05))
     lo = max(1, peak_idx - window)
     hi = min(len(fft_mag) - 1, peak_idx + window)
     local = np.concatenate([fft_mag[lo:peak_idx], fft_mag[peak_idx + 1:hi + 1]])
     noise_floor = float(np.median(local)) if len(local) > 0 else 1.0
-    prominence = peak_power / (noise_floor + 1e-10)
+    prominence = peak_magnitude / (noise_floor + 1e-10)
     prominence_norm = min(prominence / 100.0, 1.0)
 
     deltas = np.diff(ts_array)
@@ -313,9 +313,10 @@ def _make_finding(
     period_m = score_data["dominant_period_m"]
     conn_count = score_data["conn_count"]
 
-    if score >= 0.7:
-        severity = Severity.HIGH
-    elif score >= 0.5:
+    # Severity caps at MEDIUM: the composite is timing evidence from one category, and
+    # HIGH requires corroboration from an independent evidence category that beacon's
+    # timing analysis cannot supply alone. Do not reintroduce a score band to HIGH.
+    if score >= 0.5:
         severity = Severity.MEDIUM
     else:
         severity = Severity.LOW
@@ -328,14 +329,14 @@ def _make_finding(
 
     description = (
         f"Connections recur on a near-fixed {period_str} period - the regular "
-        "cadence of an automated check-in or C2 beacon."
+        "cadence of an automated check-in."
     )
 
     next_steps = [
         f"Identify the process on {src} making connections every {period_str}",
         f"Pivot to dns.log - search for lookups resolving to {dst}",
+        f"Review the full connection history for {dst} in conn.log",
         f"Check {dst} on VirusTotal, Shodan, and ASN lookup",
-        f"Review full history: zeek-cut id.orig_h id.resp_h id.resp_p ts | grep '{dst}'",
         "Review allowlist controls: sigwood allowlist",
     ]
 

@@ -2230,8 +2230,8 @@ def _beacon_non_established_note(
     pct = 100.0 * non_est / total
     return (
         f"beacon: {non_est} of {total} {plural(total, 'connection')} ({pct:.0f}%) were "
-        "not in an established state and were not scored - a periodic retry pattern to a "
-        "dead or blocked host is not detected"
+        "outside the Zeek SF/S1 states beacon analyzes and were not scored - periodic "
+        "retry and reset patterns are not detected"
     )
 
 

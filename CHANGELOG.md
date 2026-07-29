@@ -35,6 +35,27 @@ All notable changes to sigwood are recorded here. The format follows
   is unavailable and DNS findings top out at MEDIUM - add Zeek DNS logs for the
   fuller picture. Whether a domain was blocked remains evidence you can read; it
   never decides severity.
+- **Beacon severity follows the same rule: timing alone tops out at MEDIUM.** A
+  periodic connection train is one category of evidence - a shape worth review,
+  not a corroborated verdict - so a beacon finding on its own no longer reaches
+  HIGH, whatever its score. The finding's prose now says what was measured (the
+  regular cadence of an automated check-in) instead of asserting a C2 beacon,
+  and its suggested next steps lead with local evidence - the process, dns.log,
+  and conn.log history - before any external reputation lookup. Detection is
+  unchanged: the same flows surface with the same scores.
+
+### Fixed
+
+- **The beacon run-time disclosure describes the excluded connections truthfully.**
+  It now says unscored connections were outside the Zeek SF/S1 states beacon
+  analyzes, rather than calling them all "not established" - reset and
+  half-closed connections are established states, and the old wording misfiled
+  them. The known-issues entry carries the same correction, and the eligibility
+  it states now matches the code exactly.
+- **Beacon's suggested history pivot no longer prints a command that hangs.** The
+  old `zeek-cut` suggestion piped nothing into `zeek-cut` and assumed a TSV file
+  in the current directory; the step is now a plain instruction to review the
+  destination's history in `conn.log`.
 
 ## [0.2.8] - 2026-07-24
 

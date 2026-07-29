@@ -169,7 +169,7 @@ def _finding():
     from sigwood.common.finding import Finding, Severity
     return Finding(
         detector="beacon",
-        severity=Severity.HIGH,
+        severity=Severity.MEDIUM,
         title="192.0.2.10 → 192.0.2.20:443/tcp",
         description="",
         evidence={},

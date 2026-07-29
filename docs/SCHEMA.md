@@ -97,8 +97,8 @@ duration, digest (conn card), graph (conn replay). (The Zeek dns feed shares the
 ```
 src        - source IP (str)
 dst        - destination IP (str)
-port       - destination port (int)
-proto      - tcp / udp / icmp (str)
+port       - destination port (int, nullable)
+proto      - tcp / udp / icmp (str, nullable)
 ts         - unix epoch timestamp (float)
 bytes      - originator bytes (int, nullable)
 resp_bytes - responder bytes (int, nullable; graph byte-direction shares)

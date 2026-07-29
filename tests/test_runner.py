@@ -4072,7 +4072,7 @@ def test_report_basename_date_routes_through_display_seam(pin_tz, restore_displa
 
 # --- beacon non-established-share disclosure (real runner.run seam) ---
 
-_NON_EST_NOTE_SUBSTR = "were not in an established state"
+_NON_EST_NOTE_SUBSTR = "outside the Zeek SF/S1 states beacon analyzes"
 
 
 def _conn_full(ts, *, src="192.0.2.10", conn_state="SF", local_orig=True):
@@ -4099,8 +4099,8 @@ def test_beacon_non_established_note_fires_with_counts(tmp_path, capture_summary
     assert runner.run(config=_BEACON_ONLY, zeek_dir=zeek_dir) == 0
     s = capture_summary["summary"]
     assert (
-        "beacon: 1000 of 1000 connections (100%) were not in an established state "
-        "and were not scored - a periodic retry pattern to a dead or blocked host is "
+        "beacon: 1000 of 1000 connections (100%) were outside the Zeek SF/S1 states "
+        "beacon analyzes and were not scored - periodic retry and reset patterns are "
         "not detected"
     ) in s.notes
 

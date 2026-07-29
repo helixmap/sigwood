@@ -27,7 +27,7 @@ def _summary() -> RunSummary:
 def _finding(**kw) -> Finding:
     base = dict(
         detector="beacon",
-        severity=Severity.HIGH,
+        severity=Severity.MEDIUM,
         title="192.0.2.10 → 192.0.2.20:443/tcp",
         description="A regular beat.",
         evidence={"beacon_score": np.float64(0.61)},

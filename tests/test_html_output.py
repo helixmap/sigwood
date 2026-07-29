@@ -48,7 +48,7 @@ def _summary(**kw) -> RunSummary:
 
 def _finding(
     detector: str = "beacon",
-    severity: Severity = Severity.HIGH,
+    severity: Severity = Severity.MEDIUM,
     title: str = "192.0.2.10 → 192.0.2.20:443/tcp",
     evidence: dict | None = None,
     description: str = "A regular beat.",
@@ -291,7 +291,20 @@ def test_header_window_none_renders_none() -> None:
 
 # ── severity summary strip ───────────────────────────────────────────────────
 def test_severity_strip_and_classes_present() -> None:
-    out = _render([_finding(severity=Severity.HIGH), _finding(severity=Severity.MEDIUM)])
+    out = _render([
+        _finding(
+            detector="dns",
+            severity=Severity.HIGH,
+            title="generated.example",
+            evidence={
+                "source": "zeek",
+                "label_score": 4.2,
+                "query_count": 12,
+                "unique_sources": 2,
+            },
+        ),
+        _finding(severity=Severity.MEDIUM),
+    ])
     assert "sev-strip" in out
     for cls in ("sev-high", "sev-medium", "sev-low", "sev-info"):
         assert cls in out
@@ -636,7 +649,18 @@ def test_html_non_capsule_severity_pills_remain_inert() -> None:
             "sample_raw": ["kernel: ignored toggle bait"],
         },
     )
-    out = _render([needle, _narrow_beacon()])
+    high_dns = _finding(
+        detector="dns",
+        severity=Severity.HIGH,
+        title="generated.example",
+        evidence={
+            "source": "zeek",
+            "label_score": 4.2,
+            "query_count": 12,
+            "unique_sources": 2,
+        },
+    )
+    out = _render([needle, high_dns])
 
     assert 'class="row-toggle"' not in out
     assert out.count('class="pill sev-low"') == 1

@@ -60,7 +60,7 @@ def _html_text(findings, level=0):
 
 # ── one finding per detector AND per variant, UNIQUE SENTINEL values ─────────
 _VARIANTS: dict[str, Finding] = {
-    "beacon": _f("beacon", Severity.HIGH, "x", {
+    "beacon": _f("beacon", Severity.MEDIUM, "x", {
         "src_ip": "192.0.2.211", "dst_ip": "198.51.100.222", "dst_port": 4433,
         "proto": "tcp", "period_str": "61.5m", "beacon_score": 0.6171, "conn_count": 918273}),
     "dns_singleton": _f("dns", Severity.MEDIUM, "sentineldomain.example", {

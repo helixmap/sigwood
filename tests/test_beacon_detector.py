@@ -347,7 +347,54 @@ class BeaconRunTests(unittest.TestCase):
         self.assertAlmostEqual(
             finding.evidence["dominant_period"], 600.0, delta=12.0
         )
+        self.assertEqual(
+            finding.description,
+            "Connections recur on a near-fixed 10.0m period - the regular cadence "
+            "of an automated check-in.",
+        )
+        self.assertEqual(
+            finding.next_steps,
+            [
+                "Identify the process on 192.0.2.10 making connections every 10.0m",
+                "Pivot to dns.log - search for lookups resolving to 198.51.100.20",
+                "Review the full connection history for 198.51.100.20 in conn.log",
+                "Check 198.51.100.20 on VirusTotal, Shodan, and ASN lookup",
+                "Review allowlist controls: sigwood allowlist",
+            ],
+        )
         assert_report_voice(findings)
+
+    def test_score_pass_caps_at_medium(self):
+        rows = _conn_rows(
+            _train(600.0, 144, 6.0, 6001), "192.0.2.10", "198.51.100.20", 443
+        )
+        for score in (0.5, 0.7):
+            with self.subTest(score=score), pytest.MonkeyPatch.context() as monkeypatch:
+                monkeypatch.setattr(
+                    "sigwood.detectors.beacon._compute_beacon_score",
+                    lambda _ts, _bin: {
+                        "beacon_score": score,
+                        "dominant_period": 600.0,
+                        "dominant_period_m": 10.0,
+                        "spectral_ratio": 0.1,
+                        "prominence": 50.0,
+                        "prominence_norm": 0.5,
+                        "jitter_cv": 0.1,
+                        "conn_count": 144,
+                        "occupancy": 0.1,
+                    },
+                )
+                finding = run(_ctx(pd.DataFrame(rows)))[0]
+            self.assertEqual(finding.severity, Severity.MEDIUM)
+
+    def test_lowered_threshold_keeps_sub_half_score_low(self):
+        rows = _conn_rows(
+            _train(180.0, 480, 3.5, 1801), "192.0.2.10", "198.51.100.20", 443
+        )
+        findings = run(_ctx(pd.DataFrame(rows), {"threshold": 0.4}))
+        self.assertEqual(len(findings), 1)
+        self.assertAlmostEqual(findings[0].evidence["beacon_score"], 0.4311, delta=0.001)
+        self.assertEqual(findings[0].severity, Severity.LOW)
 
     def test_findings_sorted_by_score_descending(self):
         rows = _conn_rows(

@@ -43,7 +43,7 @@ def _summary() -> RunSummary:
 
 def _finding() -> Finding:
     return Finding(
-        detector="beacon", severity=Severity.HIGH,
+        detector="beacon", severity=Severity.MEDIUM,
         title="192.0.2.10 → 192.0.2.20:443/tcp", description="A regular beat.",
         evidence={"beacon_score": 0.61}, next_steps=["Inspect the flow"],
         ts_generated=datetime(2026, 6, 1, 18, 0, tzinfo=timezone.utc), data_window=_W,

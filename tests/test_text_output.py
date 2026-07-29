@@ -1165,7 +1165,7 @@ def test_vanish_dont_dash_minimal_finding_renders_title_alone() -> None:
     """A Finding with empty description/evidence/next_steps at levels 0/1/2
     produces NO blank lines, NO empty headers, NO dangling indents. The tail
     helpers return []; the data-window line is gated on body being non-empty."""
-    f = _bare_finding("beacon", Severity.HIGH, "the title")
+    f = _bare_finding("beacon", Severity.MEDIUM, "the title")
     f.evidence = {
         "src_ip": "192.0.2.10",
         "dst_ip": "203.0.113.5",

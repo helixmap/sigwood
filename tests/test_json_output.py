@@ -50,7 +50,7 @@ def _run_summary() -> RunSummary:
 def _finding(evidence: dict, ts: datetime | None = None) -> Finding:
     return Finding(
         detector="beacon",
-        severity=Severity.HIGH,
+        severity=Severity.MEDIUM,
         title="192.0.2.10 → 192.0.2.20:443/tcp",
         description="A regular beat.",
         evidence=evidence,
@@ -372,7 +372,7 @@ def test_run_summary_added_fields_present() -> None:
 def test_no_severity_tag() -> None:
     f = _emit([_finding({})])["findings"][0]
     assert "severity_tag" not in f
-    assert f["severity"] == "high"
+    assert f["severity"] == "medium"
 
 
 def test_non_utc_datetime_serializes_as_utc() -> None:

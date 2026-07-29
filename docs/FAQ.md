@@ -333,7 +333,10 @@ jitter) - over flows of at least 20 connections.
 
 The detector measures *periodicity*, not maliciousness: a benign MRTG poller hitting SSH
 every 60 seconds lights up too. That's the right mental model - beaconing is a *shape*, and a
-finding is a flow with that shape, for you to explain or allowlist. The calibration reference
+finding is a flow with that shape, for you to explain or allowlist. That is also why a beacon
+finding on its own never rises above MEDIUM severity: timing is one category of evidence, and
+HIGH is reserved for findings corroborated by evidence of a different kind - which timing
+analysis alone cannot supply. The calibration reference
 is the demo corpus's seeded 180-second beacon (480 connections over 24 hours), which scores
 ~0.62 with a dominant period of exactly 180.0s - one favorable *single-day* realization, not a
 typical number; a 60-second cadence sits at the edge of what 30-second bins can represent, so

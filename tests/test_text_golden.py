@@ -40,13 +40,13 @@ def _render(findings, *, level=0, cap=100):
 
 # ── beacon ───────────────────────────────────────────────────────────────────
 def test_golden_beacon():
-    out = _render([_f("beacon", Severity.HIGH, "192.0.2.10 → 198.51.100.20:443/tcp",
+    out = _render([_f("beacon", Severity.MEDIUM, "192.0.2.10 → 198.51.100.20:443/tcp",
         {"src_ip": "192.0.2.10", "dst_ip": "198.51.100.20", "dst_port": 443,
          "proto": "tcp", "period_str": "60.0m", "beacon_score": 0.6083,
          "conn_count": 918273})])
     assert out == (
-        f"\nbeacon - 1 finding · 1 H\n{RULE}\n"
-        "[H]  192.0.2.10  →  198.51.100.20:443/tcp   period=60.0m   score=0.608   918,273 conns\n\n"
+        f"\nbeacon - 1 finding · 1 M\n{RULE}\n"
+        "[M]  192.0.2.10  →  198.51.100.20:443/tcp   period=60.0m   score=0.608   918,273 conns\n\n"
     )
 
 
@@ -290,14 +290,14 @@ def test_golden_aws_burst_ranked_summary():
 
 # ── cap-disclosure line ──────────────────────────────────────────────────────
 def test_golden_cap_disclosure():
-    findings = [_f("beacon", Severity.HIGH, f"192.0.2.{i} → 198.51.100.20:443/tcp",
+    findings = [_f("beacon", Severity.MEDIUM, f"192.0.2.{i} → 198.51.100.20:443/tcp",
         {"src_ip": f"192.0.2.{i}", "dst_ip": "198.51.100.20", "dst_port": 443,
          "proto": "tcp", "period_str": "60.0m", "beacon_score": 0.6,
          "conn_count": 100 + i}) for i in (10, 11, 12)]
     out = _render(findings, cap=1)
     assert out == (
-        f"\nbeacon - 3 findings · 3 H\n{RULE}\n"
-        "[H]  192.0.2.10  →  198.51.100.20:443/tcp   period=60.0m   score=0.600   110 conns\n\n"
+        f"\nbeacon - 3 findings · 3 M\n{RULE}\n"
+        "[M]  192.0.2.10  →  198.51.100.20:443/tcp   period=60.0m   score=0.600   110 conns\n\n"
         "… 2 more not shown (showing first 1). Unusually high - narrow with the "
         "allowlist, or this detector may be misbehaving.\n\n"
     )
@@ -305,7 +305,7 @@ def test_golden_cap_disclosure():
 
 # ── verbose tails (L1 curated, L2 full) - must stay byte-identical ───────────
 _BEACON_VERBOSE = _f(
-    "beacon", Severity.HIGH, "192.0.2.10 → 198.51.100.20:443/tcp",
+    "beacon", Severity.MEDIUM, "192.0.2.10 → 198.51.100.20:443/tcp",
     {"src_ip": "192.0.2.10", "dst_ip": "198.51.100.20", "dst_port": 443, "proto": "tcp",
      "period_str": "60.0m", "beacon_score": 0.6083, "conn_count": 918273,
      "spectral_ratio": 0.71, "prominence_norm": 0.55, "jitter_cv": 0.12},
@@ -317,8 +317,8 @@ _BEACON_VERBOSE = _f(
 def test_golden_verbose_tail_level_1_curated():
     out = _render([_BEACON_VERBOSE], level=1)
     assert out == (
-        f"\nbeacon - 1 finding · 1 H\n{RULE}\n"
-        "[H]  192.0.2.10  →  198.51.100.20:443/tcp   period=60.0m   score=0.608   918,273 conns\n"
+        f"\nbeacon - 1 finding · 1 M\n{RULE}\n"
+        "[M]  192.0.2.10  →  198.51.100.20:443/tcp   period=60.0m   score=0.608   918,273 conns\n"
         "     A regular beat to a fixed destination.\n"
         "     evidence:\n"
         "       beacon_score: 0.6083\n"
@@ -336,8 +336,8 @@ def test_golden_verbose_tail_level_1_curated():
 def test_golden_verbose_tail_level_2_full():
     out = _render([_BEACON_VERBOSE], level=2)
     assert out == (
-        f"\nbeacon - 1 finding · 1 H\n{RULE}\n"
-        "[H]  192.0.2.10  →  198.51.100.20:443/tcp   period=60.0m   score=0.608   918,273 conns\n"
+        f"\nbeacon - 1 finding · 1 M\n{RULE}\n"
+        "[M]  192.0.2.10  →  198.51.100.20:443/tcp   period=60.0m   score=0.608   918,273 conns\n"
         "     A regular beat to a fixed destination.\n"
         "     evidence:\n"
         "       src_ip: 192.0.2.10\n"

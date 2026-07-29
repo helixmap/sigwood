@@ -33,10 +33,12 @@ Pipeline:
 from __future__ import annotations
 
 import ipaddress
+import math
 import re
 import sys
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
+from numbers import Real
 from typing import Iterable, Mapping, NamedTuple
 
 import pandas as pd
@@ -157,6 +159,83 @@ DEFAULT_CONFIG = {
     "recognize_transactions": True,
     "line_trim_limit":     LINE_TRIM_LIMIT,
 }
+
+
+def validate_config(cfg: dict) -> None:
+    """Validate syslog's overlaid tuning section without reading config files."""
+    if not isinstance(cfg, dict):
+        raise ValueError("[detectors.syslog] must be a table")
+
+    rarity_pct = cfg.get("rarity_pct", DEFAULT_CONFIG["rarity_pct"])
+    if (
+        isinstance(rarity_pct, bool)
+        or not isinstance(rarity_pct, int)
+        or not 0 <= rarity_pct <= 100
+    ):
+        raise ValueError(
+            "[detectors.syslog].rarity_pct must be an integer from 0 through 100"
+        )
+
+    max_count = cfg.get("max_count", DEFAULT_CONFIG["max_count"])
+    if (
+        isinstance(max_count, bool)
+        or not isinstance(max_count, int)
+        or max_count < 1
+    ):
+        raise ValueError(
+            "[detectors.syslog].max_count must be a positive integer"
+        )
+
+    privileged_programs = cfg.get(
+        "privileged_programs", DEFAULT_CONFIG["privileged_programs"]
+    )
+    if (
+        isinstance(privileged_programs, str)
+        or not isinstance(privileged_programs, (list, tuple))
+        or not all(isinstance(program, str) for program in privileged_programs)
+    ):
+        raise ValueError(
+            "[detectors.syslog].privileged_programs must be a list or tuple of strings"
+        )
+
+    positive_integer_keys = (
+        "burst_gap_seconds",
+        "burst_min_size",
+        "family_min_size",
+        "reboot_cluster_seconds",
+        "line_trim_limit",
+    )
+    for key in positive_integer_keys:
+        value = cfg.get(key, DEFAULT_CONFIG[key])
+        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+            raise ValueError(
+                f"[detectors.syslog].{key} must be a positive integer"
+            )
+
+    sim_thresh = cfg.get("sim_thresh", DEFAULT_CONFIG["sim_thresh"])
+    if (
+        isinstance(sim_thresh, bool)
+        or not isinstance(sim_thresh, Real)
+        or not math.isfinite(float(sim_thresh))
+        or not 0 < sim_thresh <= 1
+    ):
+        raise ValueError(
+            "[detectors.syslog].sim_thresh must be a finite number greater than 0 "
+            "and at most 1"
+        )
+
+    depth = cfg.get("depth", DEFAULT_CONFIG["depth"])
+    # Mirror drain3's runtime check: its accepted minimum depth is three.
+    if isinstance(depth, bool) or not isinstance(depth, int) or depth < 3:
+        raise ValueError(
+            "[detectors.syslog].depth must be an integer greater than or equal to 3"
+        )
+
+    for key in ("parametrize_numeric", "recognize_transactions"):
+        value = cfg.get(key, DEFAULT_CONFIG[key])
+        if not isinstance(value, bool):
+            raise ValueError(f"[detectors.syslog].{key} must be a boolean")
+
 
 DETECTOR_METHOD = MethodTag("drain3", named=True)
 

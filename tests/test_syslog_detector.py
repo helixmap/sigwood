@@ -11,6 +11,7 @@ The drain3 function itself has its own smoke test.
 
 from __future__ import annotations
 
+import copy
 import io
 import json
 import sys
@@ -60,6 +61,7 @@ from sigwood.detectors.syslog import (
     _reconcile,
     _reconcile_transactions,
     _run_drain3,
+    _score_rarity,
     _transaction_finding,
     run,
 )
@@ -299,6 +301,136 @@ def _represented_output_count(findings: list[Finding]) -> int:
 
 
 # ── Tests ─────────────────────────────────────────────────────────────────────
+
+
+class SyslogConfigValidationTests(unittest.TestCase):
+
+    @staticmethod
+    def _validate(overrides: dict) -> None:
+        syslog_detector.validate_config({**DEFAULT_CONFIG, **overrides})
+
+    def _assert_invalid(self, overrides: dict, message: str) -> None:
+        with self.assertRaisesRegex(ValueError, message):
+            self._validate(overrides)
+
+    def test_rejects_non_table_section(self) -> None:
+        with self.assertRaisesRegex(
+            ValueError, r"^\[detectors\.syslog\] must be a table$"
+        ):
+            syslog_detector.validate_config([])  # type: ignore[arg-type]
+
+    def test_rarity_pct_contract(self) -> None:
+        message = (
+            r"^\[detectors\.syslog\]\.rarity_pct must be an integer "
+            r"from 0 through 100$"
+        )
+        for value in (200, -5, 100.5, "10", True):
+            with self.subTest(value=value):
+                self._assert_invalid({"rarity_pct": value}, message)
+        for value in (0, 100):
+            with self.subTest(value=value):
+                self._validate({"rarity_pct": value})
+
+    def test_max_count_contract(self) -> None:
+        message = (
+            r"^\[detectors\.syslog\]\.max_count must be a positive integer$"
+        )
+        for value in (0, -1, True):
+            with self.subTest(value=value):
+                self._assert_invalid({"max_count": value}, message)
+        self._validate({"max_count": 1})
+
+    def test_privileged_programs_contract(self) -> None:
+        message = (
+            r"^\[detectors\.syslog\]\.privileged_programs must be a list "
+            r"or tuple of strings$"
+        )
+        for value in ("sshd", 1, ["sshd", 1]):
+            with self.subTest(value=value):
+                self._assert_invalid({"privileged_programs": value}, message)
+        for value in (
+            ["sshd", "sudo"],
+            ("sshd", "sudo"),
+            [],
+            (),
+            DEFAULT_CONFIG["privileged_programs"],
+        ):
+            with self.subTest(value=value):
+                self._validate({"privileged_programs": value})
+
+    def test_positive_integer_neighbor_contracts(self) -> None:
+        keys = (
+            "burst_gap_seconds",
+            "burst_min_size",
+            "family_min_size",
+            "reboot_cluster_seconds",
+            "line_trim_limit",
+        )
+        for key in keys:
+            message = (
+                rf"^\[detectors\.syslog\]\.{key} must be a positive integer$"
+            )
+            for value in (0, 1.5, True):
+                with self.subTest(key=key, value=value):
+                    self._assert_invalid({key: value}, message)
+            with self.subTest(key=key, value=1):
+                self._validate({key: 1})
+
+    def test_sim_thresh_contract(self) -> None:
+        message = (
+            r"^\[detectors\.syslog\]\.sim_thresh must be a finite number "
+            r"greater than 0 and at most 1$"
+        )
+        for value in (
+            0,
+            -0.1,
+            1.01,
+            "0.5",
+            float("nan"),
+            float("inf"),
+            float("-inf"),
+            True,
+        ):
+            with self.subTest(value=value):
+                self._assert_invalid({"sim_thresh": value}, message)
+        for value in (0.5, 1.0, 1):
+            with self.subTest(value=value):
+                self._validate({"sim_thresh": value})
+
+    def test_depth_contract(self) -> None:
+        message = (
+            r"^\[detectors\.syslog\]\.depth must be an integer greater "
+            r"than or equal to 3$"
+        )
+        for value in (2, 3.5, True):
+            with self.subTest(value=value):
+                self._assert_invalid({"depth": value}, message)
+        self._validate({"depth": 3})
+
+    def test_boolean_contracts(self) -> None:
+        for key in ("parametrize_numeric", "recognize_transactions"):
+            message = rf"^\[detectors\.syslog\]\.{key} must be a boolean$"
+            for value in (0, 1, "true"):
+                with self.subTest(key=key, value=value):
+                    self._assert_invalid({key: value}, message)
+            for value in (False, True):
+                with self.subTest(key=key, value=value):
+                    self._validate({key: value})
+
+    def test_defaults_and_unknown_future_key_validate(self) -> None:
+        syslog_detector.validate_config(DEFAULT_CONFIG)
+        self._validate({"future_key": "ignored"})
+
+    def test_validation_is_pure_and_preserves_nested_identity(self) -> None:
+        roster = ["sshd", "sudo"]
+        cfg = {**DEFAULT_CONFIG, "privileged_programs": roster, "future_key": {"x": []}}
+        before = copy.deepcopy(cfg)
+
+        syslog_detector.validate_config(cfg)
+
+        self.assertEqual(cfg, before)
+        self.assertIs(cfg["privileged_programs"], roster)
+
 
 class SyslogDetectorTests(unittest.TestCase):
 
@@ -696,6 +828,16 @@ class SyslogDetectorTests(unittest.TestCase):
             _flagged({"max_count": 3, "rarity_pct": 10}),
             _flagged({"max_count": 3, "rarity_pct": 50}),
         )
+
+    def test_rarity_pct_endpoints_keep_threshold_1_at_default_max_count(self) -> None:
+        frame = pd.DataFrame({"template_id": [1, 1, 2]})
+
+        for rarity_pct in (0, 100):
+            with self.subTest(rarity_pct=rarity_pct):
+                _scored, threshold, _freq = _score_rarity(
+                    frame, rarity_pct=rarity_pct, max_count=1
+                )
+                self.assertEqual(threshold, 1)
 
     def test_medium_finding_evidence_fields(self) -> None:
         """Evidence contains host, template_id (int), template_str, count, threshold."""

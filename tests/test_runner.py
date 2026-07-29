@@ -4290,6 +4290,37 @@ def test_beacon_invalid_config_is_contained_as_prep_error_and_sibling_runs(
     assert "scan" in s.detectors_run
 
 
+def test_syslog_invalid_config_is_contained_as_prep_error_and_sibling_runs(
+    tmp_path, capture_summary, capsys,
+):
+    recs = [_conn_full(_TS_JAN5 + i * 60.0) for i in range(20)]
+    zeek_dir = _make_flat_zeek(tmp_path, recs)
+    syslog_dir = tmp_path / "syslog"
+    syslog_dir.mkdir()
+    (syslog_dir / "messages").write_text(
+        "2026-01-05T00:00:00Z fixture-host sshd[1]: accepted placeholder\n",
+        encoding="utf-8",
+    )
+    config = {
+        "sigwood": {"detect": "syslog,scan", "default_window": "1d"},
+        "detectors": {"syslog": {"rarity_pct": 200}},
+    }
+
+    assert runner.run(
+        config=config, zeek_dir=zeek_dir, syslog_dir=syslog_dir
+    ) == 1
+    err = capsys.readouterr().err
+    reason = (
+        "prep error - [detectors.syslog].rarity_pct must be an integer "
+        "from 0 through 100"
+    )
+    assert f"syslog: {reason}" in err
+    assert "Traceback" not in err
+    s = capture_summary["summary"]
+    assert s.detectors_failed == {"syslog": reason}
+    assert "scan" in s.detectors_run
+
+
 def test_beacon_non_established_note_fires_with_counts(tmp_path, capture_summary):
     recs = [_conn_full(_TS_JAN5 + i, conn_state="S0") for i in range(1000)]
     zeek_dir = _make_flat_zeek(tmp_path, recs)

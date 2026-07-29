@@ -53,6 +53,16 @@ All notable changes to sigwood are recorded here. The format follows
 
 ### Fixed
 
+- **A mistyped syslog setting now says which setting is wrong, instead of failing
+  strangely later.** `[detectors.syslog]` values are checked before the detector
+  runs: an out-of-range `rarity_pct` used to crash mid-run with an unhelpful
+  message, `max_count = 0` silently switched rare-line detection off entirely, and
+  writing `privileged_programs = "useradd"` instead of a list quietly emptied the
+  privileged tier - a string is a sequence of letters, so the roster became `a`,
+  `d`, `e`, `r`, `s`, `u`. Each is now reported against the setting that caused it,
+  the other detectors still run, and no traceback reaches the terminal. This
+  repairs crash and silent-disable shapes; it does not change detection on a valid
+  configuration, and `rarity_pct` remains inert at the shipped `max_count = 1`.
 - **Beacon says why it scored nothing, instead of just reporting nothing.** When the
   connection log is missing a column beacon needs, when every eligible connection
   lacks byte counts, or when rows carry no source, destination, port or protocol,

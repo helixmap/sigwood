@@ -8,6 +8,17 @@ All notable changes to sigwood are recorded here. The format follows
 
 ### Added
 
+- **A field-validation kit for independent testers.** `tools/fieldkit.py` is one standalone
+  script a collaborator can download and run wherever the `sigwood` command is installed: it
+  proves the install with a small synthetic canary, runs exactly one ordinary default hunt,
+  offers an optional local triage pass, and writes one reviewable Markdown report. The
+  automated projection never copies a log-derived string - it keeps enumerated numeric
+  measurements, counts, and fixed tokens, and groups anything unexpected under `other`; the
+  three typed answers are the sole free-text exception, and the file is created privately and
+  reviewed before the collaborator chooses to email it. `docs/FIELDKIT.md` states the complete
+  field list and the exact privacy boundary. The kit is a repository tool, not a sigwood
+  command, and nothing about the product changes.
+
 - **Families of low-scoring names that mostly fail to resolve are now visible.** A single
   odd-looking domain that scores below the detector's bar stays quiet, as before - but when
   one parent domain carries several such names and nearly all of their lookups come back

@@ -102,6 +102,21 @@ findings come entirely from the per-label suspicion score, not from cluster shap
 `dns (fast-HDBSCAN)` method label names the clustering backend that ran even when it formed no
 clusters, so on a small capture the lexical score is doing the work.
 
+**DNS clustering cost rises with the volume of unsuppressed queries.** Measured on one frozen
+seven-day corpus of about 2.2 million rows, on one machine: a plain `--no-allowlist` run of the
+DNS path did not complete within a nine-minute bound, while the same window with the shipped
+allowlist completed normally. At a one-day window, the same unsuppressed run completed in about
+50 seconds.
+
+Separately, during a bounded ten-minute measurement run over the same corpus, the process was
+observed at about 7.7 GB resident. That is a single observation during a bounded run, not a
+stable peak and not a memory requirement.
+
+With an unusually thin allowlist, or `--no-allowlist` over a large window, the DNS path may be
+impractically slow or may exceed the memory available to the process on a smaller machine. Narrow
+the window or keep suppression enabled. These figures come from one corpus and one machine. They
+are not a scaling law and do not explain why clustering behaves this way.
+
 **A fast sequence of unprivileged rare events folds into one informational burst.** Four or
 more rare log lines outside the privileged program class within about a minute on one host
 collapse into a single INFO "burst" finding rather than individual LOW findings - that

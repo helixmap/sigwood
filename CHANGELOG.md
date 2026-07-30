@@ -19,6 +19,15 @@ All notable changes to sigwood are recorded here. The format follows
   under `[detectors.dns]` (`promote_below_gate`, `promote_min_subdomains`,
   `promote_min_nxdomain_fraction`), and off by one setting if you would rather not see them.
 
+- **The known-issues list now records what a very thin allowlist costs the DNS path.** Turning
+  suppression off, or running with an unusually short allowlist over a large window, makes DNS
+  clustering markedly more expensive - on one seven-day corpus of about 2.2 million rows the
+  unsuppressed run did not finish inside a nine-minute bound, while the same window with the
+  shipped allowlist completed normally. The entry gives the measured figures, says plainly that
+  they come from one corpus on one machine, and offers the only two things that reliably help:
+  narrow the window, or leave suppression on. Nothing about detection changed - this is a
+  limitation that was always there and is now written down.
+
 - **Beacon findings carry their own event times.** Each finding now records when the
   periodic flow was first and last seen, how long it ran, and roughly how many cycles
   that span covers - so a ten-minute cadence that ran for an hour reads differently

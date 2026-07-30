@@ -21,12 +21,22 @@ All notable changes to sigwood are recorded here. The format follows
 
 - **The known-issues list now records what a very thin allowlist costs the DNS path.** Turning
   suppression off, or running with an unusually short allowlist over a large window, makes DNS
-  clustering markedly more expensive - on one seven-day corpus of about 2.2 million rows the
-  unsuppressed run did not finish inside a nine-minute bound, while the same window with the
-  shipped allowlist completed normally. The entry gives the measured figures, says plainly that
-  they come from one corpus on one machine, and offers the only two things that reliably help:
-  narrow the window, or leave suppression on. Nothing about detection changed - this is a
+  clustering markedly more expensive - on one seven-day corpus of about 2.2 million rows the DNS
+  detector on its own took about eight minutes unsuppressed and sat near 8 GiB of memory, and
+  running the whole default hunt over that same window unsuppressed did not finish inside a
+  nine-minute bound. The entry gives the measured figures, says plainly that they come from one
+  corpus on one machine, and offers the three things that reliably help: narrow the window, run
+  the detector on its own, or leave suppression on. Nothing about detection changed - this is a
   limitation that was always there and is now written down.
+
+- **The known-issues list now records how a recognized admin session or update run groups
+  lines.** Grouping claims the rare lines that fall inside the session's window - that is what
+  turns one administrator's work into a single row instead of nineteen - and it means a line
+  that merely happened at the same time is grouped too, and can set the unit's severity if it
+  came from a privileged program. Every grouped line is still listed under the unit with its own
+  time and program, so the entry tells you to read a unit as "these things happened together"
+  rather than "these things are the same event". Nothing about detection changed; narrowing the
+  grouping by program was measured and rejected because it dissolved genuine sessions.
 
 - **Beacon findings carry their own event times.** Each finding now records when the
   periodic flow was first and last seen, how long it ran, and roughly how many cycles

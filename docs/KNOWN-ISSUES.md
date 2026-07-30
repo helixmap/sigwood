@@ -103,19 +103,18 @@ findings come entirely from the per-label suspicion score, not from cluster shap
 clusters, so on a small capture the lexical score is doing the work.
 
 **DNS clustering cost rises with the volume of unsuppressed queries.** Measured on one frozen
-seven-day corpus of about 2.2 million rows, on one machine: a plain `--no-allowlist` run of the
-DNS path did not complete within a nine-minute bound, while the same window with the shipped
-allowlist completed normally. At a one-day window, the same unsuppressed run completed in about
-50 seconds.
-
-Separately, during a bounded ten-minute measurement run over the same corpus, the process was
-observed at about 7.7 GB resident. That is a single observation during a bounded run, not a
-stable peak and not a memory requirement.
+seven-day corpus of about 2.2 million rows, on one machine. Running the DNS detector on its own,
+a `--no-allowlist` pass over the full seven days completed in about eight minutes, and the
+process was observed at about 8 GiB resident — holding near that level for most of the run rather
+than spiking briefly. Running the whole default hunt over the same window, also unsuppressed, did
+not finish within a nine-minute bound. With the shipped allowlist the same window completes
+normally, and at a one-day window the unsuppressed run completes in about 50 seconds.
 
 With an unusually thin allowlist, or `--no-allowlist` over a large window, the DNS path may be
 impractically slow or may exceed the memory available to the process on a smaller machine. Narrow
-the window or keep suppression enabled. These figures come from one corpus and one machine. They
-are not a scaling law and do not explain why clustering behaves this way.
+the window, run the detector on its own (`--detect=dns`), or keep suppression enabled. These
+figures come from one corpus and one machine. They are not a scaling law and do not explain why
+clustering behaves this way.
 
 **A fast sequence of unprivileged rare events folds into one informational burst.** Four or
 more rare log lines outside the privileged program class within about a minute on one host
@@ -148,6 +147,17 @@ apart is reported as two reboots rather than one; reboots whose log lines carry 
 timestamp are grouped into a single undated reboot per host; and when a reboot produces only
 one or two other rare lines, those lines are listed individually rather than folded into the
 reboot's summary. No data is lost in any of these cases.
+
+**A recognized admin session or update run groups the lines that fall inside it, related or
+not.** When sigwood recognizes a session or a package-update run, it claims the rare lines
+inside that window - which is what turns one administrator's work into a single row instead of
+nineteen, because the daemon noise their actions caused belongs in the same story. The same
+rule cannot tell that noise apart from something unrelated that merely happened at the same
+time, so an unrelated line inside the window is grouped too, and if it came from a privileged
+program the whole unit is reported at that higher severity. Nothing is hidden - every grouped
+line is listed under the unit with its own time and program - so read a unit as "these things
+happened together", not as "these things are the same event". Narrowing the rule by program was
+measured and rejected: it dissolved genuine sessions and dropped most of their content.
 
 ## Ingestion and windows
 

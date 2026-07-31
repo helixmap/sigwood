@@ -857,7 +857,7 @@ class TextHandler(OutputHandler):
                 values = [_sanitize(cell.value) for cell in project_row(f)]
                 line = f"  {tag}  {' · '.join(values)}"
                 row_lines = [line]
-                if f.evidence.get("tier") in ("family", "burst"):
+                if f.evidence.get("tier") in ("family", "burst", "transaction"):
                     fragments = f.evidence.get("member_fragments")
                     if isinstance(fragments, (list, tuple)):
                         row_lines.extend(

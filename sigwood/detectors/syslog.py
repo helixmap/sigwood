@@ -53,6 +53,7 @@ from sigwood.parsers.syslog import (
     REBOOT_SIGNALS_RE,
     UPDATE_RUN_ANCHOR_RE,
     parse_timestamp,
+    strip_header,
     strip_program,
 )
 
@@ -320,9 +321,14 @@ def _distill_member_fragments(rows: Iterable[object]) -> list[str]:
         seen_templates.add(template_id)
         collected.append(str(message))
 
+    return _distill_tokens(collected)
+
+
+def _distill_tokens(messages: Iterable[str]) -> list[str]:
+    """Return the existing bounded token-line projection for message strings."""
     seen_tokens: set[str] = set()
     tokens: list[str] = []
-    for message in collected:
+    for message in messages:
         token_input = message
         for escaped_ws in _RSYSLOG_WS_ESCAPES:
             token_input = token_input.replace(escaped_ws, " ")
@@ -371,6 +377,28 @@ def _distill_member_fragments(rows: Iterable[object]) -> list[str]:
     if has_token and len(lines) < _TOKEN_LINE_LIMIT:
         lines.append(line)
     return lines
+
+
+def _distill_transaction_fragments(members: list[Finding]) -> list[str]:
+    """Distill one representative raw line from each bounded transaction member."""
+    collected: list[str] = []
+    for member in members[:_FRAGMENT_TEMPLATE_SCAN_LIMIT]:
+        line: str | None = None
+        if member.evidence.get("tier") in ("family", "burst"):
+            samples = member.evidence.get("sample_raw")
+            if isinstance(samples, (list, tuple)):
+                line = next(
+                    (
+                        sample
+                        for sample in samples
+                        if isinstance(sample, str) and sample.strip()
+                    ),
+                    None,
+                )
+        if line is None:
+            line = member.title
+        collected.append(strip_header(line))
+    return _distill_tokens(collected)
 
 
 class _BootEvent(NamedTuple):
@@ -1019,6 +1047,7 @@ def _transaction_finding(
         "first_seen": _iso_utc(event.start_ts),
         "span_seconds": event.end_ts - event.start_ts,
         "program_mix": _transaction_program_mix(ordered_members),
+        "member_fragments": _distill_transaction_fragments(ordered_members),
         "members": [_transaction_member(member) for member in ordered_members],
     }
     if privileged:

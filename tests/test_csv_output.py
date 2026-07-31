@@ -251,6 +251,7 @@ def test_syslog_transaction_signals_are_curated_without_nested_members() -> None
             "start_ts": 1.0, "end_ts": 61.0,
             "first_seen": "1970-01-01T00:00:01+00:00", "span_seconds": 60.0,
             "program_mix": [["dnf", 3], ["kernel", 1]],
+            "member_fragments": ["must-not-reach-csv"],
             "members": [
                 {"severity": "low", "tier": "family",
                  "represented_line_count": 3, "title": "host-a", "program": "dnf"},
@@ -270,6 +271,7 @@ def test_syslog_transaction_signals_are_curated_without_nested_members() -> None
         "program_mix=dnf (3), kernel (1)"
     )
     assert "members" not in row["signals"]
+    assert "member_fragments" not in row["signals"]
     assert "start_ts" not in row["signals"]
     assert "end_ts" not in row["signals"]
 

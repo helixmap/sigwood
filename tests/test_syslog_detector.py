@@ -468,6 +468,190 @@ class SyslogDetectorTests(unittest.TestCase):
 
     # ── Capsule member fragments ──────────────────────────────────────────────
 
+    def test_distill_tokens_extraction_preserves_existing_fragment_bytes(self) -> None:
+        messages = [
+            "prog: for /net/backups (/net/backups) From from",
+            "prog: next from",
+        ]
+        self.assertEqual(
+            syslog_detector._distill_tokens(messages),
+            ["tokens: for /net/backups From from next"],
+        )
+
+    def test_transaction_fragment_source_ladder_never_skips_a_member(self) -> None:
+        def member(
+            tier: str | None,
+            title: str,
+            sample_raw: list[object] | None = None,
+        ) -> Finding:
+            evidence: dict[str, object] = {
+                "program": "pkg",
+                "first_seen": "2026-07-12T21:57:33+00:00",
+            }
+            if tier is not None:
+                evidence["tier"] = tier
+            if sample_raw is not None:
+                evidence["sample_raw"] = sample_raw
+            return Finding(
+                detector="syslog",
+                severity=Severity.LOW,
+                title=title,
+                description="",
+                evidence=evidence,
+                next_steps=[],
+                ts_generated=_NOW,
+                data_window=_WINDOW,
+            )
+
+        members = [
+            member(
+                "family",
+                "Jul 12 21:57:33 host-a pkg: ignored-title",
+                [None, "", "   ", "Jul 12 21:57:33 host-a pkg: sample-token"],
+            ),
+            member(
+                "burst",
+                "Jul 12 21:57:34 host-a pkg: fallback-token",
+                [None, "", "   "],
+            ),
+            member(
+                None,
+                "Jul 12 21:57:35 host-a pkg: needle-token",
+            ),
+        ]
+
+        self.assertEqual(
+            syslog_detector._distill_transaction_fragments(members),
+            ["tokens: sample-token fallback-token needle-token"],
+        )
+
+    def test_recognized_two_line_transaction_renders_title_token_meat(self) -> None:
+        from sigwood.outputs.html import render_report_html
+        from sigwood.outputs.text import TextHandler
+
+        first = _stored_needle(
+            _BASE_TS + 10,
+            "host-a",
+            "Jul 12 21:57:33 host-a dnf: installed package",
+            program="dnf",
+        )[1]
+        second = _stored_needle(
+            _BASE_TS + 20,
+            "host-a",
+            "Jul 12 21:57:34 host-a rpm: verified package",
+            program="rpm",
+        )[1]
+        event = _TransactionEvent(
+            "update run",
+            "host-a",
+            _BASE_TS + 10,
+            _BASE_TS + 20,
+            _BASE_TS,
+            _BASE_TS + 30,
+            (_BASE_TS + 10, _BASE_TS + 20),
+        )
+
+        _, transaction = _transaction_finding(
+            event,
+            [second, first],
+            _NOW,
+            _WINDOW,
+        )
+
+        self.assertEqual(
+            transaction.evidence["member_fragments"],
+            ["tokens: installed package verified"],
+        )
+        text_stream = io.StringIO()
+        TextHandler(stream=text_stream, verbose_level=0).write([transaction])
+        html = render_report_html(
+            [transaction],
+            None,
+            verbose_level=0,
+            max_findings_per_detector=100,
+        )
+        self.assertIn("tokens: installed package verified", text_stream.getvalue())
+        self.assertIn(
+            '<div class="meat-line">tokens: installed package verified</div>',
+            html,
+        )
+
+    def test_transaction_meat_real_path_neutralizes_hostile_member_sources(self) -> None:
+        from sigwood.outputs.html import render_report_html
+        from sigwood.outputs.text import TextHandler
+
+        family = Finding(
+            detector="syslog",
+            severity=Severity.LOW,
+            title="host-a",
+            description="",
+            evidence={
+                "tier": "family",
+                "program": "dnf",
+                "line_count": 2,
+                "first_seen": "2026-07-12T21:57:33+00:00",
+                "sample_raw": [
+                    "Jul 12 21:57:33 host-a dnf: sample<script>x</script>\x1b"
+                ],
+            },
+            next_steps=[],
+            ts_generated=_NOW,
+            data_window=_WINDOW,
+        )
+        needle = Finding(
+            detector="syslog",
+            severity=Severity.LOW,
+            title=(
+                "Jul 12 21:57:34 host-a rpm: "
+                "title<img src=x>\x07\x9b"
+            ),
+            description="",
+            evidence={
+                "program": "rpm",
+                "first_seen": "2026-07-12T21:57:34+00:00",
+            },
+            next_steps=[],
+            ts_generated=_NOW,
+            data_window=_WINDOW,
+        )
+        event = _TransactionEvent(
+            "update run",
+            "host-a",
+            _BASE_TS + 10,
+            _BASE_TS + 20,
+            _BASE_TS,
+            _BASE_TS + 30,
+            (_BASE_TS + 10, _BASE_TS + 20),
+        )
+
+        _, transaction = _transaction_finding(
+            event,
+            [family, needle],
+            _NOW,
+            _WINDOW,
+        )
+        text_stream = io.StringIO()
+        TextHandler(stream=text_stream, verbose_level=0).write([transaction])
+        text = text_stream.getvalue()
+        html = render_report_html(
+            [transaction],
+            None,
+            verbose_level=0,
+            max_findings_per_detector=100,
+        )
+
+        for control in ("\x1b", "\x07", "\x9b"):
+            self.assertNotIn(control, text)
+            self.assertNotIn(control, html)
+        self.assertIn("sample<script>x</script>", text)
+        self.assertIn("title<img src=x>", text)
+        self.assertIn("sample&lt;script&gt;x&lt;/script&gt;", html)
+        self.assertIn("title&lt;img src=x&gt;", html)
+        self.assertNotIn("<script>x</script>", html)
+        self.assertNotIn("<img src=x>", html)
+        self.assertNotIn("href=", html)
+        self.assertNotIn("url(", html)
+
     def test_diverse_family_meat_is_at_most_two_token_lines(self) -> None:
         rows = [
             _rare_row(
@@ -3138,6 +3322,48 @@ class SyslogDetectorTests(unittest.TestCase):
             self.assertNotIn("member_fragments:", rendered)
             for control in ("\x1b", "\x07", "\x9b"):
                 self.assertNotIn(control, rendered)
+
+    def test_text_transaction_fragments_render_once_and_debug_skip_is_name_keyed(
+        self,
+    ) -> None:
+        from sigwood.outputs.text import TextHandler
+
+        finding = Finding(
+            detector="syslog",
+            severity=Severity.INFO,
+            title="host-transaction",
+            description="Recognized system update activity.",
+            evidence={
+                "tier": "transaction",
+                "label": "update run",
+                "host": "host-transaction",
+                "member_count": 2,
+                "represented_line_count": 2,
+                "start_ts": 1.0,
+                "end_ts": 2.0,
+                "span_seconds": 1.0,
+                "program_mix": [["dnf", 1], ["rpm", 1]],
+                "member_fragments": ["tokens: installed verified"],
+                "members": [
+                    {"severity": "low", "represented_line_count": 1,
+                     "title": "dnf: installed"},
+                    {"severity": "low", "represented_line_count": 1,
+                     "title": "rpm: verified"},
+                ],
+            },
+            next_steps=[],
+            ts_generated=_NOW,
+            data_window=_WINDOW,
+        )
+
+        for level in (0, 1, 2):
+            rendered = "\n".join(
+                TextHandler(verbose_level=level)._render_syslog_group(
+                    _flat_section([finding])
+                )
+            )
+            self.assertEqual(rendered.count("tokens: installed verified"), 1)
+            self.assertNotIn("member_fragments:", rendered)
 
     def test_text_renderer_syslog_verbose_shows_template_details(self) -> None:
         """Verbose syslog output includes rarity and drain3 template internals."""

@@ -181,6 +181,7 @@ def test_syslog_transaction_evidence_is_additive_without_schema_bump() -> None:
         "first_seen": "1970-01-01T00:00:01+00:00",
         "span_seconds": 60.0,
         "program_mix": [["CRON", 3], ["cron", 1], ["kernel", 1]],
+        "member_fragments": ["tokens: package update"],
         "members": [
             {"severity": "low", "tier": "family", "represented_line_count": 4,
              "title": "host-a", "first_seen": "1970-01-01T00:00:02+00:00",
@@ -207,6 +208,9 @@ def test_syslog_transaction_evidence_is_additive_without_schema_bump() -> None:
         "host-a", "kernel: package event",
     ]
     assert members[0]["sample_raw"] == ["cron-raw-a", "cron-raw-b"]
+    assert payload["findings"][0]["evidence"]["member_fragments"] == [
+        "tokens: package update"
+    ]
     assert "tier" not in members[1]
     assert "sample_raw" not in members[1]
     assert payload["findings"][0]["next_steps"] == [

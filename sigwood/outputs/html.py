@@ -30,7 +30,7 @@ from sigwood.common.finding import Finding, MethodTag, RunSummary, Severity
 from sigwood.common.output import OutputHandler, register_handler
 from sigwood.common.paths import private_mkdir, private_write_text
 from sigwood.parsers.syslog import split_header
-from sigwood.outputs._evidence import evidence_at_level
+from sigwood.outputs._evidence import evidence_at_level, sample_bound_note
 from sigwood.outputs._render_model import (
     ColumnSpec,
     DetectorRenderable,
@@ -254,6 +254,12 @@ def _render_sample_details(finding: Finding, *, colspan: int) -> str:
         if samples is None:
             return ""
         lines = "".join(_render_sample_line(line) for line in samples)
+        note = sample_bound_note(
+            finding.evidence.get("line_count"),
+            len(samples),
+        )
+        if note is not None:
+            lines += f'<div class="sample-bound">{_esc(note)}</div>'
     return (
         '<tr class="sample-detail"><td class="sev-cell"></td>'
         f'<td colspan="{colspan}"><div class="sample-detail-body">{lines}</div>'
@@ -306,12 +312,19 @@ def _render_transaction_member_line(member: object) -> str:
     ])
     samples = member.get("sample_raw")
     if isinstance(samples, (list, tuple)) and samples:
-        body = "".join(_render_sample_line(line) for line in samples)
+        rendered_lines = list(samples)
     else:
-        body = _render_sample_line(member.get("title", ""))
+        rendered_lines = [member.get("title", "")]
+    body = "".join(_render_sample_line(line) for line in rendered_lines)
+    note = sample_bound_note(count, len(rendered_lines))
+    note_line = (
+        f'<div class="sample-bound">{_esc(note)}</div>'
+        if note is not None
+        else ""
+    )
     return (
         f'<div class="sample-line transaction-member">{_esc(separator)}</div>'
-        f"{body}"
+        f"{body}{note_line}"
     )
 
 
@@ -336,7 +349,7 @@ def _render_sample_line(line: object) -> str:
 def _render_meat_row(finding: Finding, *, colspan: int) -> str:
     """Always-visible distilled member fragments for a syslog capsule."""
     if finding.detector != "syslog" or finding.evidence.get("tier") not in (
-        "family", "burst",
+        "family", "burst", "transaction",
     ):
         return ""
     fragments = finding.evidence.get("member_fragments")
@@ -630,6 +643,7 @@ header { border-bottom: 2px solid var(--border); padding-bottom: 18px; margin-bo
   padding-top: 3px;
 }
 .sample-detail-body .transaction-member:first-child { margin-top: 0; }
+.sample-detail-body .sample-bound { color: var(--muted); }
 .hl-ts { color: var(--hl-ts); font-weight: 700; }
 .hl-host { color: var(--hl-host); font-weight: 600; }
 .hl-prog { color: var(--hl-prog); font-weight: 600; }

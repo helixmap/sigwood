@@ -114,6 +114,7 @@ _VARIANTS: dict[str, Finding] = {
         "start_ts": 1.0, "end_ts": 121.0,
         "first_seen": "1970-01-01T00:00:01+00:00", "span_seconds": 120.0,
         "program_mix": [["dnfsentinel", 5], ["kernsentinel", 2]],
+        "member_fragments": ["transaction-fragment-sentinel-737"],
         "members": [
             {"severity": "low", "tier": "family", "represented_line_count": 5,
              "title": "host-sentinel-txn-9", "program": "dnfsentinel"},
@@ -365,7 +366,10 @@ def test_syslog_reboot_timestamp_uses_display_formatter_and_null_vanishes(
     assert "rebooted @" not in rendered
 
 
-@pytest.mark.parametrize("variant", ["syslog_family", "syslog_burst"])
+@pytest.mark.parametrize(
+    "variant",
+    ["syslog_family", "syslog_burst", "syslog_transaction"],
+)
 def test_syslog_member_fragment_parity_outside_projector(variant: str) -> None:
     finding = _VARIANTS[variant]
     fragments = finding.evidence["member_fragments"]

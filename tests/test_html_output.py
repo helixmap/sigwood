@@ -5,14 +5,17 @@ from __future__ import annotations
 import io
 import re
 import sys
+from decimal import Decimal
 from datetime import datetime, timedelta, timezone
 from importlib import resources
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 import sigwood
 from sigwood.common.finding import Finding, MethodTag, RunSummary, Severity
+from sigwood.outputs import _evidence
 from sigwood.outputs.html import HtmlHandler, render_report_html
 
 
@@ -81,12 +84,39 @@ def _render(
     )
 
 
+def _sample_detail_body(rendered: str) -> str:
+    marker = '<div class="sample-detail-body">'
+    start = rendered.index(marker) + len(marker)
+    end = rendered.index("</div></td></tr>", start)
+    return rendered[start:end]
+
+
 _DATA_CONTROLS = ("\x1b", "\x00", "\x07", "\r", "\x9b")
 
 
 def _assert_no_data_controls(value: str) -> None:
     for ch in _DATA_CONTROLS:
         assert ch not in value
+
+
+def test_sample_bound_note_accepts_only_positive_integral_objects() -> None:
+    assert _evidence.sample_bound_note(97, 20) == "showing 20 of 97 rare lines"
+    assert _evidence.sample_bound_note(np.int64(2), np.int64(1)) == (
+        "showing 1 of 2 rare lines"
+    )
+    assert _evidence.sample_bound_note(20, 20) is None
+    assert _evidence.sample_bound_note(19, 20) is None
+
+
+@pytest.mark.parametrize(
+    "value",
+    [True, "20", 1.9, Decimal("20"), None, 0, -1],
+)
+def test_sample_bound_note_rejects_malformed_or_nonpositive_values(
+    value: object,
+) -> None:
+    assert _evidence.sample_bound_note(value, 1) is None
+    assert _evidence.sample_bound_note(2, value) is None
 
 
 # ── self-containment ─────────────────────────────────────────────────────────
@@ -531,6 +561,12 @@ def test_html_syslog_transaction_summary_and_member_drilldown_are_safe() -> None
         < out.index(plain_separator)
         < out.index("single&lt;img src=x&gt;&quot;&lt;/details&gt;")
     )
+    note = '<div class="sample-bound">showing 2 of 3 rare lines</div>'
+    assert out.count(note) == 2
+    family_note = out.index(note, out.index("family-raw-second"))
+    burst_note = out.index(note, out.index("burst-raw-second"))
+    assert out.index("family-raw-second") < family_note < out.index(burst_separator)
+    assert out.index("burst-raw-second") < burst_note < out.index(plain_separator)
     assert "<script>raw</script>" not in out
     assert "<script>sep</script>" not in out
     assert "<img src=x>" not in out
@@ -858,6 +894,163 @@ def test_html_syslog_meat_row_is_escaped_visible_and_ordered() -> None:
     assert ".findings-table tr.sample-detail { display: none; }" in out
     print_block = out[out.index("@media print"):]
     assert ".meat-line" not in print_block
+
+
+def test_html_syslog_bounded_sample_discloses_shown_and_total() -> None:
+    samples = [f"Jul 12 21:57:{index:02d} host-a kernel: line-{index}" for index in range(20)]
+    finding = _finding(
+        detector="syslog",
+        severity=Severity.INFO,
+        title="host-a",
+        evidence={
+            "tier": "burst",
+            "host": "host-a",
+            "line_count": 97,
+            "span_seconds": 6.0,
+            "start_ts": 1.0,
+            "end_ts": 7.0,
+            "program_mix": [["kernel", 97]],
+            "sample_raw": samples,
+            "member_fragments": ["tokens: line"],
+            "label": None,
+        },
+    )
+
+    body = _sample_detail_body(_render([finding]))
+
+    assert body.count('<div class="sample-line">') == 20
+    note = '<div class="sample-bound">showing 20 of 97 rare lines</div>'
+    assert note in body
+    assert body.rindex('<div class="sample-line">') < body.index(note)
+
+
+@pytest.mark.parametrize("line_count", [6, 13, 15])
+def test_html_syslog_complete_sample_body_has_no_bound_note(
+    line_count: int,
+) -> None:
+    samples = [f"kernel: complete-{index}" for index in range(line_count)]
+    finding = _finding(
+        detector="syslog",
+        severity=Severity.INFO,
+        title="host-a",
+        evidence={
+            "tier": "burst",
+            "host": "host-a",
+            "line_count": line_count,
+            "span_seconds": 6.0,
+            "start_ts": 1.0,
+            "end_ts": 7.0,
+            "program_mix": [["kernel", line_count]],
+            "sample_raw": samples,
+            "member_fragments": ["tokens: complete"],
+            "label": None,
+        },
+    )
+
+    body = _sample_detail_body(_render([finding]))
+
+    assert body.count('<div class="sample-line">') == line_count
+    assert 'class="sample-bound"' not in body
+
+
+def test_html_syslog_expandable_capsules_share_meat_eligibility() -> None:
+    family = _finding(
+        detector="syslog",
+        severity=Severity.LOW,
+        title="host-family",
+        evidence={
+            "tier": "family",
+            "host": "host-family",
+            "program": "kernel",
+            "line_count": 2,
+            "start_ts": 1.0,
+            "end_ts": 2.0,
+            "span_seconds": 1.0,
+            "sample_raw": ["kernel: one", "kernel: two"],
+            "member_fragments": ["tokens: one two"],
+            "label": None,
+        },
+    )
+    burst = _finding(
+        detector="syslog",
+        severity=Severity.INFO,
+        title="host-burst",
+        evidence={
+            "tier": "burst",
+            "host": "host-burst",
+            "line_count": 2,
+            "start_ts": 1.0,
+            "end_ts": 2.0,
+            "span_seconds": 1.0,
+            "program_mix": [["kernel", 2]],
+            "sample_raw": ["kernel: one", "kernel: two"],
+            "member_fragments": ["tokens: one two"],
+            "label": "rebooted",
+        },
+    )
+    transaction_needles = _finding(
+        detector="syslog",
+        severity=Severity.INFO,
+        title="host-transaction",
+        evidence={
+            "tier": "transaction",
+            "label": "update run",
+            "host": "host-transaction",
+            "member_count": 2,
+            "represented_line_count": 2,
+            "start_ts": 1.0,
+            "end_ts": 2.0,
+            "span_seconds": 1.0,
+            "program_mix": [["kernel", 2]],
+            "members": [
+                {"severity": "low", "represented_line_count": 1,
+                 "title": "kernel: one"},
+                {"severity": "low", "represented_line_count": 1,
+                 "title": "kernel: two"},
+            ],
+            "member_fragments": ["tokens: one two"],
+        },
+    )
+    transaction_mixed = _finding(
+        detector="syslog",
+        severity=Severity.INFO,
+        title="host-mixed",
+        evidence={
+            **transaction_needles.evidence,
+            "host": "host-mixed",
+            "members": [
+                {"severity": "low", "tier": "family",
+                 "represented_line_count": 2, "title": "host-mixed",
+                 "sample_raw": ["kernel: one"]},
+                {"severity": "low", "represented_line_count": 1,
+                 "title": "kernel: two"},
+            ],
+        },
+    )
+
+    for finding in (family, burst, transaction_needles, transaction_mixed):
+        rendered = _render([finding])
+        assert 'class="row-toggle"' in rendered
+        assert 'class="meat-row"' in rendered
+        assert 'class="sample-detail"' in rendered
+        assert rendered.index('class="meat-row"') < rendered.index(
+            'class="sample-detail"'
+        )
+
+    opaque = _finding(
+        detector="syslog",
+        severity=Severity.INFO,
+        title="host-opaque",
+        evidence={
+            **transaction_needles.evidence,
+            "host": "host-opaque",
+            "member_fragments": [],
+        },
+    )
+    opaque_rendered = _render([opaque])
+    assert 'class="row-toggle"' in opaque_rendered
+    assert 'class="sample-detail"' in opaque_rendered
+    assert 'class="meat-row"' not in opaque_rendered
 
 
 def test_html_syslog_mixed_keyed_and_full_width_rows_clip_in_one_table() -> None:

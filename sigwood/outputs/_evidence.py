@@ -12,8 +12,10 @@ detector result set stays verbosity-invariant; tiering happens here at render.
 
 from __future__ import annotations
 
+from operator import index
 from typing import Any
 
+from sigwood.common.display import plural
 from sigwood.common.finding import Finding, Severity
 
 # Curated (level-1) cap for long evidence LISTS. The full list still appears at
@@ -32,6 +34,23 @@ def cap_evidence_list(values: "list | tuple") -> str:
         return ", ".join(items)
     shown = ", ".join(items[:_CURATED_LIST_CAP])
     return f"{shown}, … (+{len(items) - _CURATED_LIST_CAP} more)"
+
+
+def sample_bound_note(total: object, shown: object) -> str | None:
+    """Describe a positive integral sample shortfall, or vanish defensively."""
+    if isinstance(total, bool) or isinstance(shown, bool):
+        return None
+    try:
+        total_int = int(index(total))
+        shown_int = int(index(shown))
+    except TypeError:
+        return None
+    if total_int <= 0 or shown_int <= 0 or total_int <= shown_int:
+        return None
+    return (
+        f"showing {shown_int} of {total_int} "
+        f"{plural(total_int, 'rare line')}"
+    )
 
 
 # Per-detector curated-evidence subsets for level 1 - tolerant: omit absent

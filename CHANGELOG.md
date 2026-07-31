@@ -6,7 +6,26 @@ All notable changes to sigwood are recorded here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **A system-log capsule that shows a sample now says so.** Opening a finding that reported
+  97 rare lines showed twenty of them and gave no sign the rest existed, which reads as a
+  miscount or a broken control. The capsule now closes with `showing 20 of 97 rare lines`
+  whenever the lines on screen are fewer than the lines counted, and says nothing at all when
+  the capsule is complete. A grouped administrative session or update run discloses per
+  grouped entry rather than once at the top, using the same count that entry already prints.
+  The twenty-line sample itself is unchanged: those are the lines sigwood carries, so the
+  disclosure states the shortfall rather than offering a switch that cannot recover it.
+
 ### Added
+
+- **Every expandable system-log finding now shows its vocabulary above the fold.** The short
+  `tokens:` line that previews what a capsule contains was reaching grouped families and
+  bursts but not recognized administrative sessions or update runs - so the most structured
+  finding sigwood produces was the one row on the page with nothing under it until you opened
+  it. Recognized sessions now carry the same preview, distilled from the lines they group,
+  and it appears on both the plain-text and HTML reports. A capsule whose content is entirely
+  opaque identifiers still shows no preview rather than an empty one.
 
 - **A field-validation kit for independent testers.** `tools/fieldkit.py` is one standalone
   script a collaborator can download and run wherever the `sigwood` command is installed: it

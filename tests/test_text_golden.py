@@ -197,6 +197,7 @@ def test_golden_syslog_transaction_row():
             "start_ts": 1.0, "end_ts": 121.0,
             "first_seen": "1970-01-01T00:00:01+00:00", "span_seconds": 120.0,
             "program_mix": [["dnf", 4], ["DNF", 1], ["kernel", 2]],
+            "member_fragments": ["tokens: installed package verified"],
             "members": [
                 {"severity": "low", "tier": "family",
                  "represented_line_count": 5, "title": "host-t", "program": "dnf"},
@@ -208,7 +209,8 @@ def test_golden_syslog_transaction_row():
         f"\nsyslog - 1 finding · 1 I\n{RULE}\n"
         "bursts (1)\n"
         "  [I]   Jan  1 00:00:01 · host-t · update run · "
-        "7 rare lines · 2m · mostly dnf, kernel\n\n"
+        "7 rare lines · 2m · mostly dnf, kernel\n"
+        "        tokens: installed package verified\n\n"
     )
 
 

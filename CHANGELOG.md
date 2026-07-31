@@ -16,7 +16,11 @@ All notable changes to sigwood are recorded here. The format follows
   with thousands of digits, or JSON nested thousands of levels deep, produced a raw Python
   error instead of a warning; both are now reported as an unreadable file and skipped, and a
   single bad line in a newline-delimited file no longer discards the good lines around it.
-  Neither case changes what sigwood reports on ordinary logs.
+  A Zeek TSV log whose column-type header declares a container nested thousands of levels
+  deep did the same thing; that line is now skipped and counted with the file's other
+  malformed lines, and the rest of the file still loads. A column with an unusual type that
+  never carries a value keeps parsing exactly as before - the limit applies to values, not to
+  the header. None of these change what sigwood reports on ordinary logs.
 
 - **A system-log capsule that shows a sample now says so.** Opening a finding that reported
   97 rare lines showed twenty of them and gave no sign the rest existed, which reads as a

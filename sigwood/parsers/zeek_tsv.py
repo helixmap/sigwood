@@ -199,6 +199,10 @@ _SCALAR_TYPES = frozenset({
     "addr", "string", "enum",
 })
 
+# Zeek emits single-level set/vector values. This structural cap leaves ample
+# headroom for nested containers without tying acceptance to runtime recursion.
+_MAX_CONTAINER_DEPTH = 8
+
 
 def _coerce(
     raw: str,
@@ -206,6 +210,8 @@ def _coerce(
     set_sep: str,
     empty_field: str,
     unset_field: str,
+    *,
+    _depth: int = 0,
 ) -> Any:
     """Coerce a raw TSV field value to its Python equivalent for the given Zeek type.
 
@@ -223,10 +229,23 @@ def _coerce(
     if m:
         if raw == empty_field:
             return []
+        if _depth >= _MAX_CONTAINER_DEPTH:
+            raise ValueError(
+                f"Zeek TSV: container nesting exceeds {_MAX_CONTAINER_DEPTH}; "
+                f"at most {_MAX_CONTAINER_DEPTH} nested set/vector wrappers "
+                "are accepted"
+            )
         inner_type = m.group(1)
         result = []
         for element in raw.split(set_sep):
-            coerced = _coerce(element, inner_type, set_sep, empty_field, unset_field)
+            coerced = _coerce(
+                element,
+                inner_type,
+                set_sep,
+                empty_field,
+                unset_field,
+                _depth=_depth + 1,
+            )
             if coerced is _UNSET:
                 raise ValueError(
                     f"Zeek TSV: unset token found inside collection element "

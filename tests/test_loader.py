@@ -1633,6 +1633,38 @@ def test_load_logs_tsv_truncated_final_line_warns_and_loads(tmp_path: Path) -> N
     assert w == ["conn.log: skipped 1 malformed line (first at line 9)"]
 
 
+def test_load_logs_tsv_deep_container_skips_value_and_loads_primary_sibling(
+    tmp_path: Path,
+) -> None:
+    """Both primary conn files route through discovery and survive one bad value."""
+    zeek_dir = tmp_path / "zeek"
+    zeek_dir.mkdir()
+    deep_type = "set[" * 60_000 + "string" + "]" * 60_000
+    _write_tsv(
+        zeek_dir / "conn.log",
+        "#separator \\x09\n"
+        "#unset_field\t-\n"
+        "#path\tconn\n"
+        "#fields\tts\tuid\tid.orig_h\tid.resp_h\tid.resp_p\tproto\tpayload\n"
+        f"#types\ttime\tstring\taddr\taddr\tport\tenum\t{deep_type}\n"
+        "1785525000.0\tCbad\t192.0.2.110\t198.51.100.110\t443\ttcp\tvalue\n"
+        "1785525001.0\tCkeep\t192.0.2.111\t198.51.100.111\t443\ttcp\t-\n",
+    )
+    _write_tsv(
+        zeek_dir / "conn.2026-07-31-00:00:00.log",
+        _CONN_TSV_HEADER
+        + "1785525002.0\tCsibling\t192.0.2.112\t1234\t198.51.100.112\t80\ttcp\n",
+    )
+
+    warnings: list[str] = []
+    df = load_logs(zeek_dir, "conn*.log*", _warnings=warnings)
+
+    assert set(df["src"]) == {"192.0.2.111", "192.0.2.112"}
+    assert warnings == [
+        "conn.log: skipped 1 malformed line (first at line 6)"
+    ]
+
+
 def test_load_logs_tsv_malformed_header_skips_file_loads_healthy_sibling(
     tmp_path: Path,
 ) -> None:

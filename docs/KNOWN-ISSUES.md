@@ -172,8 +172,8 @@ guessing wrong would silently discard valid data, which is worse. So they are wr
 here rather than half-fixed.
 
 The scope is one local run on your own workstation: sigwood is batch, single-user, and
-reads files you chose. There is no service to take down and no exposure of data - the two
-cases that produced a raw crash or an unbounded allocation are fixed. If you are pointing
+reads files you chose. There is no service to take down and no exposure of data, and every
+case that produced a raw crash or an unbounded allocation has been fixed. If you are pointing
 sigwood at logs from a source you do not trust, treat it like any other parser: run it
 somewhere you don't mind restarting.
 

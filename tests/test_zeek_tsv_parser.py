@@ -12,6 +12,7 @@ import math
 import pandas as pd
 import pytest
 
+import sigwood.parsers.zeek_tsv as zeek_tsv_module
 from sigwood.parsers.zeek import _normalize_conn_df, _normalize_dns_df
 from sigwood.parsers.zeek_tsv import parse_tsv_log
 
@@ -127,6 +128,31 @@ def _compare(tsv_df: pd.DataFrame, ndjson_df: pd.DataFrame) -> None:
     left  = tsv_df.sort_values("ts").reset_index(drop=True)
     right = ndjson_df.sort_values("ts").reset_index(drop=True)
     pd.testing.assert_frame_equal(left, right, check_like=True)
+
+
+_SPEC_RESOURCE_DEPTH = 60_000
+_SPEC_MAX_CONTAINER_DEPTH = 8
+
+
+def _nested_container_type(depth: int, scalar_type: str = "string") -> str:
+    """Build a set type deep enough to exercise the container-depth seam."""
+    return "set[" * depth + scalar_type + "]" * depth
+
+
+def _container_tsv(zeek_type: str, values: list[str]) -> str:
+    rows = "".join(
+        f"{1748649600.0 + index}\t{value}\n"
+        for index, value in enumerate(values)
+    )
+    return (
+        "#separator \\x09\n"
+        "#set_separator\t,\n"
+        "#empty_field\t(empty)\n"
+        "#unset_field\t-\n"
+        "#fields\tts\tpayload\n"
+        f"#types\ttime\t{zeek_type}\n"
+        f"{rows}"
+    )
 
 
 # ── Parity tests ──────────────────────────────────────────────────────────────
@@ -336,6 +362,85 @@ def test_sink_bad_coercion_mid_file_skips_line_and_continues() -> None:
     assert len(sink) == 1
     assert sink[0][0] == 5
     assert "bool" in sink[0][1]
+
+
+def test_sink_deep_container_type_skips_value_and_keeps_unset_row() -> None:
+    """A resource-hostile type is a per-value failure, not a file failure."""
+    tsv = _container_tsv(
+        _nested_container_type(_SPEC_RESOURCE_DEPTH),
+        ["actual-value", "-"],
+    )
+    sink: list[tuple[int, str]] = []
+    limit = getattr(
+        zeek_tsv_module,
+        "_MAX_CONTAINER_DEPTH",
+        _SPEC_MAX_CONTAINER_DEPTH,
+    )
+
+    df = parse_tsv_log(tsv.splitlines(keepends=True), bad_lines=sink)
+
+    assert df["ts"].tolist() == [1748649601.0]
+    assert "payload" not in df.columns
+    assert sink == [
+        (
+            7,
+            f"Zeek TSV: container nesting exceeds {limit}; at most {limit} nested "
+            "set/vector wrappers are accepted",
+        )
+    ]
+
+
+def test_ordinary_set_and_vector_values_keep_their_list_shapes() -> None:
+    tsv = (
+        "#separator \\x09\n"
+        "#set_separator\t,\n"
+        "#fields\tts\ttags\tcounts\n"
+        "#types\ttime\tset[string]\tvector[count]\n"
+        "1748649600.0\talpha,beta\t1,2\n"
+    )
+
+    df = parse_tsv_log(tsv.splitlines(keepends=True))
+
+    assert df.iloc[0]["tags"] == ["alpha", "beta"]
+    assert df.iloc[0]["counts"] == [1, 2]
+
+
+def test_deep_type_is_not_rejected_at_header_when_value_is_always_unset() -> None:
+    tsv = _container_tsv(
+        _nested_container_type(_SPEC_RESOURCE_DEPTH),
+        ["-"],
+    )
+
+    df = parse_tsv_log(tsv.splitlines(keepends=True))
+
+    assert df["ts"].tolist() == [1748649600.0]
+    assert "payload" not in df.columns
+
+
+def test_container_depth_boundary_uses_the_shipped_constant() -> None:
+    limit = getattr(zeek_tsv_module, "_MAX_CONTAINER_DEPTH", None)
+    if limit is None:
+        pytest.skip("the container-depth bound is not present")
+
+    at_limit = parse_tsv_log(
+        _container_tsv(_nested_container_type(limit), ["value"]).splitlines(
+            keepends=True
+        )
+    )
+    expected: object = "value"
+    for _ in range(limit):
+        expected = [expected]
+    assert at_limit.iloc[0]["payload"] == expected
+
+    with pytest.raises(
+        ValueError,
+        match=rf"at most {limit} nested set/vector wrappers are accepted",
+    ):
+        parse_tsv_log(
+            _container_tsv(_nested_container_type(limit + 1), ["value"]).splitlines(
+                keepends=True
+            )
+        )
 
 
 def test_sink_header_error_still_raises() -> None:

@@ -395,6 +395,43 @@ def test_cloudtrail_resource_parse_failure_exits_cleanly_with_one_warning(
     assert "Traceback" not in captured.err
 
 
+def test_zeek_tsv_deep_container_exits_cleanly_with_one_warning(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(cfg, "SEARCH_PATHS", [])
+    deep_type = "set[" * 60_000 + "string" + "]" * 60_000
+    (tmp_path / "conn.log").write_text(
+        "#separator \\x09\n"
+        "#unset_field\t-\n"
+        "#path\tconn\n"
+        "#fields\tts\tuid\tid.orig_h\tid.resp_h\tid.resp_p\tproto\tpayload\n"
+        f"#types\ttime\tstring\taddr\taddr\tport\tenum\t{deep_type}\n"
+        "1785525000.0\tCbad\t192.0.2.120\t198.51.100.120\t443\ttcp\tvalue\n"
+        "1785525001.0\tCkeep\t192.0.2.121\t198.51.100.121\t443\ttcp\t-\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "conn.2026-07-31-00:00:00.log").write_text(
+        "#separator \\x09\n"
+        "#path\tconn\n"
+        "#fields\tts\tuid\tid.orig_h\tid.resp_h\tid.resp_p\tproto\n"
+        "#types\ttime\tstring\taddr\taddr\tport\tenum\n"
+        "1785525002.0\tCsibling\t192.0.2.122\t198.51.100.122\t80\ttcp\n",
+        encoding="utf-8",
+    )
+    warning = "conn.log: skipped 1 malformed line (first at line 6)"
+
+    assert cli.main(
+        ["hunt", "--detect=scan", f"--zeek-dir={tmp_path}"]
+    ) is None
+
+    captured = capsys.readouterr()
+    assert captured.err.splitlines().count(warning) == 1
+    assert "no detectors could run" not in captured.err
+    assert "Traceback" not in captured.err
+
+
 def test_garbage_conn_log_json_null_window(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

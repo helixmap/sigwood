@@ -161,6 +161,22 @@ measured and rejected: it dissolved genuine sessions and dropped most of their c
 
 ## Ingestion and windows
 
+**A deliberately malformed log file can still stop a single run.** sigwood reads whatever
+you point it at, and a file crafted to be hostile rather than merely broken can exhaust
+memory or CPU badly enough to end that one run: a compressed archive that expands enormously,
+a single line of unbounded length, an XZ stream declaring a huge decoder dictionary, a
+timestamp span that inflates the digest histogram, an unbounded journal capture, or a DNS
+name long enough to make lexical scoring crawl. The bound each of those needs is a judgement
+about real logs - how long a legitimate line can be, how far a real archive expands - and
+guessing wrong would silently discard valid data, which is worse. So they are written down
+here rather than half-fixed.
+
+The scope is one local run on your own workstation: sigwood is batch, single-user, and
+reads files you chose. There is no service to take down and no exposure of data - the two
+cases that produced a raw crash or an unbounded allocation are fixed. If you are pointing
+sigwood at logs from a source you do not trust, treat it like any other parser: run it
+somewhere you don't mind restarting.
+
 **An explicit conn log named outside `conn*.log*` silently skips the connection
 detectors.** Pointing sigwood at a single Zeek connection log whose filename does not
 match `conn*.log*` (say, `capture.ndjson`) reports `conn.log not found` and skips

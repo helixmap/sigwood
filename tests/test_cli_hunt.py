@@ -375,6 +375,26 @@ def test_garbage_conn_log_since_never_paints_requested_window(
     assert _data_found_line(captured.out) == "data found:    none"
 
 
+def test_cloudtrail_resource_parse_failure_exits_cleanly_with_one_warning(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(cfg, "SEARCH_PATHS", [])
+    name = "hostile.json"
+    hostile = '{"eventTime": "2026-06-01T12:00:00Z", "value": ' + "9" * 5_000 + "}"
+    (tmp_path / name).write_text(f"{hostile}\n", encoding="utf-8")
+    warning = f"{name} could not be read - not valid JSON; skipping"
+
+    assert cli.main(
+        ["hunt", "--detect=aws", f"--cloudtrail-dir={tmp_path}"]
+    ) is None
+
+    captured = capsys.readouterr()
+    assert captured.err.splitlines().count(warning) == 1
+    assert "Traceback" not in captured.err
+
+
 def test_garbage_conn_log_json_null_window(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

@@ -21,6 +21,7 @@ import pandas as pd
 import pytest
 
 import sigwood.common.loader as loader_module
+import sigwood.common.loader.pipeline as loader_pipeline
 from datetime import date, timedelta
 
 from sigwood.common.loader import (
@@ -2273,6 +2274,96 @@ def test_load_cloudtrail_undecodable_ndjson_lines_silently_skipped(
 
     assert len(df) == 2
     assert set(df["event_id"]) == {"good-a", "good-b"}
+
+
+@pytest.mark.parametrize(
+    ("name", "hostile_value"),
+    [
+        ("oversized-integer.json", "9" * 5_000),
+        (
+            "deeply-nested.json",
+            '[{"nested":' * 60_000 + "0" + "}]" * 60_000,
+        ),
+    ],
+    ids=["oversized-integer", "deep-nesting"],
+)
+def test_load_cloudtrail_whole_document_resource_failures_warn_and_empty(
+    tmp_path: Path,
+    name: str,
+    hostile_value: str,
+) -> None:
+    cloudtrail_dir = tmp_path / "ct"
+    cloudtrail_dir.mkdir()
+    path = cloudtrail_dir / name
+    path.write_text(
+        '{\n"Records": [\n{"eventTime": "2026-06-01T12:00:00Z", '
+        f'"hostile": {hostile_value}\n'
+        "}]\n}\n",
+        encoding="utf-8",
+    )
+
+    result = load_required_logs(
+        {"*.json*": "cloudtrail_dir"},
+        {"cloudtrail_dir": [cloudtrail_dir]},
+    )
+
+    assert result.logs["*.json*"].empty
+    assert result.warnings == [
+        f"{name} could not be read - not valid JSON; skipping"
+    ]
+
+
+def test_load_cloudtrail_ndjson_oversized_integer_skips_only_hostile_line(
+    tmp_path: Path,
+) -> None:
+    cloudtrail_dir = tmp_path / "ct"
+    cloudtrail_dir.mkdir()
+    good_a = json.dumps(_ct_event(eventID="good-a"))
+    hostile = '{"eventTime": "2026-06-01T12:00:00Z", "value": ' + "9" * 5_000 + "}"
+    good_b = json.dumps(_ct_event(eventID="good-b"))
+    (cloudtrail_dir / "events.json.log").write_text(
+        f"{good_a}\n{hostile}\n{good_b}\n",
+        encoding="utf-8",
+    )
+
+    df = load_cloudtrail(cloudtrail_dir)
+
+    assert len(df) == 2
+    assert set(df["event_id"]) == {"good-a", "good-b"}
+
+
+def test_load_cloudtrail_first_line_resource_failure_does_not_route_as_fragment(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cloudtrail_dir = tmp_path / "ct"
+    cloudtrail_dir.mkdir()
+    name = "first-line.json"
+    hostile = '{"eventTime": "2026-06-01T12:00:00Z", "value": ' + "9" * 5_000 + "}"
+    good = json.dumps(_ct_event(eventID="must-not-load"))
+    (cloudtrail_dir / name).write_text(
+        f"{hostile}\n{good}\n",
+        encoding="utf-8",
+    )
+
+    def _fragment_route_forbidden(*args: object, **kwargs: object) -> None:
+        raise AssertionError("resource failure reached whole-document routing")
+
+    monkeypatch.setattr(
+        loader_pipeline,
+        "_events_from_whole_document",
+        _fragment_route_forbidden,
+    )
+
+    result = load_required_logs(
+        {"*.json*": "cloudtrail_dir"},
+        {"cloudtrail_dir": [cloudtrail_dir]},
+    )
+
+    assert result.logs["*.json*"].empty
+    assert result.warnings == [
+        f"{name} could not be read - not valid JSON; skipping"
+    ]
 
 
 def test_load_required_logs_warns_and_skips_corrupt_cloudtrail_gzip(

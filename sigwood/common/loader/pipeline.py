@@ -342,7 +342,7 @@ def _events_from_whole_document(
     """
     try:
         doc = json.loads(text)
-    except json.JSONDecodeError:
+    except (json.JSONDecodeError, ValueError, OverflowError, RecursionError):
         if _warnings is not None:
             _warnings.append(_cloudtrail_parse_warning(path))
         return []
@@ -497,6 +497,12 @@ def _cloudtrail_strategy_parse(line_iter, *, path, warnings):
             if row is not None:
                 yield row
         return
+    # JSONDecodeError subclasses ValueError, so this must follow the fragment
+    # branch above to preserve pretty-printed multi-line document routing.
+    except (ValueError, OverflowError, RecursionError):
+        if warnings is not None:
+            warnings.append(_cloudtrail_parse_warning(path))
+        return
 
     if isinstance(first_value, dict):
         if "Records" in first_value:
@@ -518,7 +524,12 @@ def _cloudtrail_strategy_parse(line_iter, *, path, warnings):
                 continue
             try:
                 evt = json.loads(line)
-            except json.JSONDecodeError:
+            except (
+                json.JSONDecodeError,
+                ValueError,
+                OverflowError,
+                RecursionError,
+            ):
                 continue
             if isinstance(evt, dict):
                 row = _parse_cloudtrail_event(evt)

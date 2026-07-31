@@ -196,6 +196,76 @@ def _load_demo_generator():
     return mod
 
 
+_SPEC_MAX_SCORABLE_BINS = 5_000_000
+
+
+class _DenseAllocationReached(Exception):
+    """Sentinel proving the scorer reached its first dense allocation."""
+
+
+def _intercept_dense_allocation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> list[int]:
+    requested: list[int] = []
+
+    def _stop_at_zeros(n_bins: int, *args: object, **kwargs: object) -> None:
+        requested.append(n_bins)
+        raise _DenseAllocationReached
+
+    monkeypatch.setattr(beacon_module.np, "zeros", _stop_at_zeros)
+    return requested
+
+
+def _scorable_bin_limit() -> int:
+    """Use the shipped limit when present and its approved value on baseline."""
+    return getattr(
+        beacon_module,
+        "_MAX_SCORABLE_BINS",
+        _SPEC_MAX_SCORABLE_BINS,
+    )
+
+
+def test_wide_span_abstains_before_dense_allocation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    limit = _scorable_bin_limit()
+    span_seconds = (limit + 1) * _BIN
+    timestamps = np.linspace(_T0, _T0 + span_seconds, 10)
+    requested = _intercept_dense_allocation(monkeypatch)
+
+    assert _compute_beacon_score(timestamps, _BIN) is None
+    assert requested == []
+
+
+def test_exact_bin_ceiling_reaches_allocation_without_allocating(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    limit = getattr(beacon_module, "_MAX_SCORABLE_BINS", None)
+    if limit is None:
+        pytest.skip("the dense-bin ceiling is not present")
+    span_seconds = (limit - 1) * _BIN
+    timestamps = np.linspace(_T0, _T0 + span_seconds, 10)
+    requested = _intercept_dense_allocation(monkeypatch)
+
+    with pytest.raises(_DenseAllocationReached):
+        _compute_beacon_score(timestamps, _BIN)
+
+    assert requested == [limit]
+
+
+def test_small_bin_amplification_abstains_before_dense_allocation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    limit = _scorable_bin_limit()
+    bin_size = 1
+    span_seconds = (limit + 1) * bin_size
+    timestamps = np.linspace(_T0, _T0 + span_seconds, 10)
+    requested = _intercept_dense_allocation(monkeypatch)
+
+    assert _compute_beacon_score(timestamps, bin_size) is None
+    assert requested == []
+
+
 class BeaconScorerTests(unittest.TestCase):
     """_compute_beacon_score properties on synthetic arrival trains."""
 

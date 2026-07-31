@@ -8,6 +8,16 @@ All notable changes to sigwood are recorded here. The format follows
 
 ### Fixed
 
+- **A malformed log file can no longer stop a run in two specific ways.** A connection log
+  whose timestamps span an implausible range - ten lines dated years apart - made the beacon
+  detector ask for billions of memory slots before it scored anything, which ended the
+  process. It now declines to score that flow and carries on, which is what it already did
+  for every other thing it cannot measure. Separately, a CloudTrail file containing a number
+  with thousands of digits, or JSON nested thousands of levels deep, produced a raw Python
+  error instead of a warning; both are now reported as an unreadable file and skipped, and a
+  single bad line in a newline-delimited file no longer discards the good lines around it.
+  Neither case changes what sigwood reports on ordinary logs.
+
 - **A system-log capsule that shows a sample now says so.** Opening a finding that reported
   97 rare lines showed twenty of them and gave no sign the rest existed, which reads as a
   miscount or a broken control. The capsule now closes with `showing 20 of 97 rare lines`

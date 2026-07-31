@@ -57,6 +57,13 @@ _MIN_PERIOD = 45
 _MAX_PERIOD = 7200
 _MIN_SCORABLE_SAMPLES = 10
 
+# Scoring holds several bin-proportional arrays at once: full-width counts and
+# normalized counts, plus half-width magnitudes, frequencies, periods, masks,
+# and masked magnitudes, with additional NumPy transients. That is on the order
+# of 30-40 bytes per bin, so this ceiling keeps dense working memory around
+# 150-200 MB. At the default 30-second bin size it permits about 4.75 years.
+_MAX_SCORABLE_BINS = 5_000_000
+
 # Beacon-required scoring columns, in the stable order used by runner disclosure.
 # Several are canonically optional/nullable Zeek fields; absence is a fidelity
 # limitation that makes this detector abstain, not a malformed-log error.
@@ -406,6 +413,8 @@ def _compute_beacon_score(
     t_start = ts_array.min()
     t_end = ts_array.max()
     n_bins = int((t_end - t_start) / bin_size) + 1
+    if n_bins > _MAX_SCORABLE_BINS:
+        return None
 
     bin_idx = ((ts_array - t_start) / bin_size).astype(int)
     counts = np.zeros(n_bins)

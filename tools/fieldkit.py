@@ -306,6 +306,8 @@ def _classify_note(value: Any) -> str:
         ("default window", "default_window"),
         ("coverage", "coverage"),
         ("rotation", "rotation"),
+        ("carried by both", "arbitration"),
+        ("system logs", "provider"),
         ("journal", "provider"),
         ("provider", "provider"),
         ("arbitration", "arbitration"),
@@ -779,6 +781,18 @@ def render_bundle(projection: Mapping[str, Any]) -> str:
                 )
             )
 
+    if not isinstance(findings, Mapping):
+        findings_output = (
+            "sigwood produced no readable report, so no finding summary is available."
+        )
+    elif not findings.get("counts"):
+        findings_output = "sigwood ran the hunt and reported no findings."
+    else:
+        findings_output = _markdown_table(
+            ("detector", "high", "medium", "low", "info", "other"),
+            finding_rows,
+        )
+
     machine_json = json.dumps(projection, indent=2, ensure_ascii=True, sort_keys=True)
     fence = _json_fence(machine_json)
     lines = [
@@ -823,14 +837,7 @@ def render_bundle(projection: Mapping[str, Any]) -> str:
         "",
         "## findings",
         "",
-        (
-            _markdown_table(
-                ("detector", "high", "medium", "low", "info", "other"),
-                finding_rows,
-            )
-            if finding_rows
-            else "No report-derived finding summary is available."
-        ),
+        findings_output,
         "",
         "## triage",
         "",

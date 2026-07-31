@@ -23,6 +23,10 @@ from sigwood.detectors import aws, beacon, dns, duration, scan, syslog
 
 ROOT = Path(__file__).resolve().parent.parent
 FIELDKIT_PATH = ROOT / "tools" / "fieldkit.py"
+UNAVAILABLE_FINDINGS = (
+    "sigwood produced no readable report, so no finding summary is available."
+)
+CLEAN_FINDINGS = "sigwood ran the hunt and reported no findings."
 
 
 def _load_script() -> ModuleType:
@@ -313,6 +317,27 @@ def test_classifier_buckets_never_copy_source_text() -> None:
     assert fieldkit._classify_note(marker) == "other"
 
 
+def test_note_classifier_orders_arbitration_before_system_log_provider() -> None:
+    assert fieldkit._classify_note("system logs: off") == "provider"
+    assert (
+        fieldkit._classify_note(
+            "system logs: journal (explicit; no file fallback configured)"
+        )
+        == "provider"
+    )
+    assert (
+        fieldkit._classify_note("system logs: files /var/log (configured)")
+        == "provider"
+    )
+    arbitration = (
+        "system logs: 2 hosts carried by both the local feed and Zeek syslog.log - "
+        "kept the local rows (7 Zeek rows set aside)"
+    )
+    assert fieldkit._classify_note(arbitration) == "arbitration"
+    assert fieldkit._classify_note(arbitration) != "provider"
+    assert fieldkit._classify_note("unmatched field note") == "other"
+
+
 def test_smoke_corpus_is_deterministic_and_fires_real_beacon(tmp_path: Path) -> None:
     first = fieldkit.generate_smoke_corpus()
     second = fieldkit.generate_smoke_corpus()
@@ -565,6 +590,32 @@ def test_missing_hunt_report_continues_with_null_report_sections(
     assert projection["findings"] is None
 
 
+def test_clean_hunt_empty_findings_list_renders_result_not_report_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = _payload("DROP_CLEAN")
+    payload["findings"] = []
+    bin_dir = tmp_path / "bin"
+    _stub_sigwood(bin_dir, payload, version="sigwood 0.2.8")
+    monkeypatch.setenv("PATH", str(bin_dir))
+
+    assert fieldkit.main(
+        ["--out=%s" % tmp_path, "--skip-smoke", "--no-triage"]
+    ) == 0
+
+    bundle = next(tmp_path.glob("sigwood-field-report_*.md")).read_text(
+        encoding="utf-8"
+    )
+    # A clean hunt must stay distinct from an absent or unreadable report.
+    assert CLEAN_FINDINGS in bundle
+    assert UNAVAILABLE_FINDINGS not in bundle
+    machine_findings = _machine_data(bundle)["findings"]
+    assert isinstance(machine_findings, dict)
+    assert machine_findings["counts"] == {}
+    assert isinstance(machine_findings["evidence"], dict)
+
+
 def test_non_mapping_hunt_report_continues_with_null_report_sections(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -625,6 +676,38 @@ def test_rendered_prose_and_machine_data_share_one_count() -> None:
     projection = _machine_data(rendered)
     count = projection["run_summary"]["record_counts"]["conn*.log*"]
     assert "| records: conn*.log* | %d |" % count in rendered
+
+
+def test_findings_render_distinguishes_unavailable_clean_and_populated() -> None:
+    unavailable_projection = _projection()
+    unavailable_projection["findings"] = None
+    unavailable = fieldkit.render_bundle(unavailable_projection)
+
+    clean_projection = _projection()
+    clean_projection["findings"] = {"counts": {}, "evidence": {}}
+    clean = fieldkit.render_bundle(clean_projection)
+
+    populated = fieldkit.render_bundle(_projection())
+    populated_section = populated.split("## findings\n\n", 1)[1].split(
+        "\n\n## triage", 1
+    )[0]
+
+    assert UNAVAILABLE_FINDINGS != CLEAN_FINDINGS
+    assert UNAVAILABLE_FINDINGS in unavailable
+    assert CLEAN_FINDINGS not in unavailable
+    assert CLEAN_FINDINGS in clean
+    assert UNAVAILABLE_FINDINGS not in clean
+    assert populated_section == (
+        "| detector | high | medium | low | info | other |\n"
+        "| --- | --- | --- | --- | --- | --- |\n"
+        "| beacon | 0 | 1 | 0 | 0 | 0 |\n"
+        "| other | 0 | 0 | 0 | 0 | 1 |"
+    )
+    assert UNAVAILABLE_FINDINGS not in populated
+    assert CLEAN_FINDINGS not in populated
+
+    assert _machine_data(unavailable)["findings"] is None
+    assert _machine_data(clean)["findings"] == {"counts": {}, "evidence": {}}
 
 
 def test_machine_data_fence_outgrows_answer_backticks() -> None:

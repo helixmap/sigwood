@@ -17,7 +17,11 @@ All notable changes to sigwood are recorded here. The format follows
   three typed answers are the sole free-text exception, and the file is created privately and
   reviewed before the collaborator chooses to email it. `docs/FIELDKIT.md` states the complete
   field list and the exact privacy boundary. The kit is a repository tool, not a sigwood
-  command, and nothing about the product changes.
+  command, and nothing about the product changes. A quiet network now reads as a quiet
+  network: a hunt that completes and reports nothing says so in its own words, distinct from
+  a run where sigwood produced no readable report at all. The collaborator page also names
+  pipx as a precondition, since several distributions do not ship it and block the
+  pip-install alternative.
 
 - **Families of low-scoring names that mostly fail to resolve are now visible.** A single
   odd-looking domain that scores below the detector's bar stays quiet, as before - but when

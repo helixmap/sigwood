@@ -58,6 +58,13 @@ Ask us to delete it at any time and we will.
 
 ## Run the protocol
 
+Many distributions do not ship pipx; install your platform’s pipx package first
+(on Debian or Ubuntu):
+
+```console
+sudo apt install pipx
+```
+
 Install sigwood in its own environment:
 
 ```console

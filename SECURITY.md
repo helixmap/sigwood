@@ -112,8 +112,9 @@ range itself has to move. Private vulnerability reporting is enabled, so a repor
 can also be raised confidentially through GitHub rather than by email.
 
 **Release integrity.** Every GitHub Actions step is pinned to a full commit SHA
-rather than a moving tag. Workflows run read-only by default; the publish job is
-the single exception and holds only the token-minting permission it needs.
-Releases are published to PyPI with Trusted Publishing and carry signed
-provenance attestations, so a release traces back to the workflow run and commit
-that produced it.
+rather than a moving tag, and those pins are kept current by scheduled update
+proposals. Workflows run read-only by default; the publish job is the single
+exception and holds only the token-minting permission it needs. Releases are
+published to PyPI with Trusted Publishing and carry signed provenance
+attestations, so a release traces back to the workflow run and commit that
+produced it.

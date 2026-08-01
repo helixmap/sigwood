@@ -136,6 +136,13 @@ All notable changes to sigwood are recorded here. The format follows
 
 ### Changed
 
+- **DNS clustering now treats response outcomes as evidence, not geometry.** Response
+  codes no longer act like ordered numbers in the clustering matrix, suffix categories
+  keep stable identities when counts tie, and a missing round-trip time stays
+  distinguishable from a median observation without overpowering the other features.
+  Cluster membership near the candidate bar can shift slightly as a result: on a benign
+  reference week this meant four fewer barely-over-the-bar findings, with every
+  corroborated and grouped finding unchanged.
 - **DNS severity is earned by behaviour now, not by the label score alone.** A
   high-scoring domain name on its own is a lead, not a verdict, so it reports
   MEDIUM. HIGH additionally requires corroboration from what the queries actually

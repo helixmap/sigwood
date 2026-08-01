@@ -23,6 +23,7 @@ from sigwood.outputs.text import TextHandler
 from sigwood.outputs._render_model import _partition_dns as _dns_sections
 from sigwood.detectors.dns import (
     DEFAULT_CONFIG,
+    _add_top_suffix_dummies,
     _build_features,
     _build_pihole_aggregate,
     _build_pihole_features,
@@ -167,8 +168,7 @@ def test_query_shape_uses_dns_labels_not_raw_split_fragments() -> None:
 def test_build_features_minimal_schema_omits_extended_columns() -> None:
     """With only ts/src/query, extended features must be absent (drop-from-matrix, not zero-fill).
 
-    Queries include both .com and .net TLDs so pd.get_dummies(drop_first=True)
-    still produces at least one TLD_ column.
+    Every suffix in the small batch retains its own identity column.
     """
     df = pd.DataFrame([
         {"ts": 1.0, "src": "192.0.2.1", "query": "api.test.example.com"},
@@ -181,10 +181,9 @@ def test_build_features_minimal_schema_omits_extended_columns() -> None:
     for col in ("qlen", "qparts", "sufflen", "domlen"):
         assert col in feat.columns, f"expected query-derived column {col!r} in feature matrix"
 
-    tld_cols = [c for c in feat.columns if c.startswith("TLD_")]
-    assert len(tld_cols) >= 1, "expected at least one TLD_ one-hot column"
+    assert {"TLD_com", "TLD_net"}.issubset(feat.columns)
 
-    for col in ("rtt", "ttl", "rcode", "answer", "tc"):
+    for col in ("rtt", "rtt_missing", "ttl", "rcode", "answer", "tc"):
         assert col not in feat.columns, (
             f"{col!r} must be absent from feature matrix when not present in input "
             "(drop-from-matrix, not zero-fill)"
@@ -193,8 +192,8 @@ def test_build_features_minimal_schema_omits_extended_columns() -> None:
 
 # ── Test 3 - _build_features extended schema → extended features included ─────
 
-def test_build_features_extended_schema_includes_extended_columns() -> None:
-    """When canonical extended columns are present they appear in the feature matrix."""
+def test_build_features_extended_schema_excludes_resolution_outcome() -> None:
+    """Extended measurements enter the matrix, but response outcome does not."""
     df = pd.DataFrame([
         {
             "ts": 1.0, "src": "192.0.2.1", "query": "api.example.com",
@@ -209,8 +208,67 @@ def test_build_features_extended_schema_includes_extended_columns() -> None:
     ])
     feat = _build_features(df)
 
-    for col in ("rtt", "ttl", "rcode", "answer", "tc"):
+    for col in ("rtt", "rtt_missing", "ttl", "answer", "tc"):
         assert col in feat.columns, f"expected extended column {col!r} in feature matrix"
+    assert "rcode" not in feat.columns
+
+
+def test_rcode_not_in_zeek_feature_matrix() -> None:
+    """Nominal response outcomes remain raw evidence, never clustering geometry."""
+    df = pd.DataFrame([
+        {
+            "ts": float(index),
+            "src": f"192.0.2.{index + 1}",
+            "query": f"host{index}.example.com",
+            "rcode": rcode,
+        }
+        for index, rcode in enumerate((0, 2, 3, None))
+    ])
+
+    feat = _build_features(df)
+
+    assert "rcode" not in feat.columns
+
+
+def test_suffix_dummies_are_deterministic_and_lossless() -> None:
+    """Tied top-20 membership is lexical and no retained identity is dropped."""
+    suffixes = pd.Series([f"s{index:02d}" for index in range(21)])
+
+    first = _add_top_suffix_dummies(pd.DataFrame(index=suffixes.index), suffixes)
+    permutation = suffixes.sample(frac=1, random_state=3759)
+    shuffled = _add_top_suffix_dummies(
+        pd.DataFrame(index=permutation.index), permutation,
+    ).sort_index()
+
+    expected_columns = {f"TLD_s{index:02d}" for index in range(20)} | {"TLD_other"}
+    assert set(first.columns) == expected_columns
+    assert set(shuffled.columns) == expected_columns
+    pd.testing.assert_frame_equal(first, shuffled)
+    assert first.loc[19, "TLD_s19"]
+    assert first.loc[20, "TLD_other"]
+
+
+def test_rtt_missing_is_conditional_and_unscaled() -> None:
+    """Rare RTT missingness stays a raw bounded binary feature."""
+    rows = [
+        {
+            "ts": float(index),
+            "src": f"192.0.2.{index + 1}",
+            "query": f"host{index}.example.com",
+            "rtt": None if index == 20 else 0.05,
+        }
+        for index in range(21)
+    ]
+
+    feat = _build_features(pd.DataFrame(rows))
+    without_rtt = _build_features(pd.DataFrame([
+        {key: value for key, value in row.items() if key != "rtt"}
+        for row in rows
+    ]))
+
+    assert set(feat["rtt_missing"].unique()) == {0.0, 1.0}
+    assert feat.loc[20, "rtt_missing"] == 1.0
+    assert "rtt_missing" not in without_rtt.columns
 
 
 # ── Test 4 - Zeek path golden regression ─────────────────────────────────────
@@ -516,11 +574,12 @@ def test_block_ratio_not_in_pihole_feature_matrix() -> None:
         "unique_qtypes",
         "log1p_forward_ratio",
         "log1p_cache_ratio",
+        "TLD_com",
         "TLD_net",
     }
     for col in ("block_ratio", "was_blocked", "block_count", "forward_count",
                 "cache_count", "total_count", "special_count",
-                "first_ts", "last_ts"):
+                "first_ts", "last_ts", "rtt_missing"):
         assert col not in feat.columns, f"{col!r} must not appear in pihole feature matrix"
 
 

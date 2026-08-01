@@ -360,10 +360,13 @@ def _query_shape_frame(queries: pd.Series) -> pd.DataFrame:
 
 
 def _add_top_suffix_dummies(feat: pd.DataFrame, suffixes: pd.Series) -> pd.DataFrame:
-    top_suffixes = suffixes.value_counts().nlargest(20).index
+    """Add a deterministic, batch-relative top-20 suffix vocabulary."""
+    suffix_counts = suffixes.value_counts().sort_index()
+    ranked_suffixes = suffix_counts.sort_values(ascending=False, kind="stable")
+    top_suffixes = ranked_suffixes.head(20).index
     suffix_col = suffixes.where(suffixes.isin(top_suffixes), "other")
     feat["TLD"] = suffix_col.values
-    return pd.get_dummies(feat, columns=["TLD"], drop_first=True)
+    return pd.get_dummies(feat, columns=["TLD"], drop_first=False)
 
 
 def summit(val: Any) -> float:
@@ -426,6 +429,9 @@ def _build_features(df: pd.DataFrame) -> pd.DataFrame:
     feat = pd.DataFrame(index=df.index)
 
     if "rtt" in df.columns:
+        # Keep rare missingness bounded at 0/1. Scaling a rare binary feature
+        # would give missing rows disproportionate weight in cluster distance.
+        feat["rtt_missing"] = df["rtt"].isna().astype(float)
         rtt_median = df["rtt"].median()
         rtt_fill = 0.0 if pd.isna(rtt_median) else float(rtt_median)
         feat["rtt"] = np.log1p(df["rtt"].fillna(rtt_fill))
@@ -433,8 +439,8 @@ def _build_features(df: pd.DataFrame) -> pd.DataFrame:
     if "ttl" in df.columns:
         feat["ttl"] = np.log1p(df["ttl"].fillna(0).apply(summit))
 
-    if "rcode" in df.columns:
-        feat["rcode"] = df["rcode"].fillna(-1)
+    # Resolution outcome belongs to _nxdomain_stats and finding evidence; it is
+    # a severity corroborator, never an ordinal clustering feature.
 
     feat["qlen"] = shape["length"].values
     feat["qparts"] = shape["parts"].values

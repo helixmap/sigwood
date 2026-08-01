@@ -1,0 +1,24 @@
+version: 2
+updates:
+  # Keeps the SHA-pinned action references current. Pins are written as
+  # <sha> # <version>; Dependabot rewrites both together, so pinning survives
+  # the update rather than being reverted to a floating tag.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "saturday"
+    groups:
+      actions:
+        patterns:
+          - "*"
+    # One open pull request at a time, and no automatic rebasing of it as main
+    # moves - this repository is pushed to directly and often.
+    open-pull-requests-limit: 1
+    rebase-strategy: "disabled"
+
+  # No pip entry, deliberately. Runtime dependencies are declared as ranges
+  # rather than pinned, so the only constraint a version update could act on is
+  # the pandas upper bound, which is set for a documented segfault and must not
+  # be widened automatically. Security updates still cover pip when an advisory
+  # lands.

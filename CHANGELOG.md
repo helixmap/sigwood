@@ -8,6 +8,16 @@ All notable changes to sigwood are recorded here. The format follows
 
 ### Fixed
 
+- **A CloudTrail record can no longer exclude itself from analysis by imitating an AWS
+  service name.** An event is treated as automated service activity - and so left out of
+  the per-principal scoring entirely - when the field naming what invoked it ends in
+  `amazonaws.com`. That test had no boundary, so a value such as `not-a-host/amazonaws.com`
+  satisfied it and the event was set aside with no note and no count. The field must now be
+  exactly `amazonaws.com` or end with `.amazonaws.com`, and the comparison is
+  case-sensitive; anything else is treated as interactive and is analyzed. Genuine service
+  activity is unaffected, because every value AWS writes there has the form
+  `<service>.amazonaws.com`.
+
 - **A malformed log file can no longer stop a run in two specific ways.** A connection log
   whose timestamps span an implausible range - ten lines dated years apart - made the beacon
   detector ask for billions of memory slots before it scored anything, which ended the

@@ -244,9 +244,12 @@ Derived fields:
 ```
 principal     - stable per-actor key derived from userIdentity (see below)
 lane          - "interactive" | "service". Service iff any of: userIdentity.type
-                in {AWSService, AWSAccount}; invokedBy ends "amazonaws.com"; or
+                in {AWSService, AWSAccount}; invokedBy is exactly
+                "amazonaws.com" or ends with ".amazonaws.com"; or
                 "AWSServiceRoleFor" appears in the userIdentity or sessionIssuer
-                arn. Otherwise interactive. No hardcoded principal-name list.
+                arn. Otherwise interactive. The invokedBy comparison requires
+                that dot boundary and is case-sensitive - anything else stays
+                interactive and is analyzed. No hardcoded principal-name list.
 read_write    - "read" | "write". From top-level readOnly when present (bool or
                 "true"/"false" string); else inferred from the action verb
                 (Get/List/Describe/Head/Lookup/Search/BatchGet/Select/Query/Scan

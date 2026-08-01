@@ -86,3 +86,34 @@ common 64-bit platforms (x86-64, aarch64/arm64); stock hdbscan elsewhere,
 including 32-bit ARM. Optional features pull additional stacks (`[splunk]`,
 `[cloudtrail]`, `[pdf]`). Keep your dependencies updated; we track advisories
 against them as part of release hygiene.
+
+## Repository and release integrity
+
+sigwood is maintained by one person. This section states how the repository is
+run so you can judge that directly rather than infer it.
+
+**Branch model.** `main` is the development branch and the maintainer pushes to
+it directly; there is no pull-request requirement, because there is no second
+reviewer for one to route to. Force-pushes and branch deletion are blocked, so
+history on `main` is append-only. What stands behind the absence of a review
+gate: `main` is not a distribution channel - releases are tagged and published
+to PyPI, and that is what an install gives you. Continuous integration runs on
+every push to `main` across Python 3.11 through 3.14, and the release workflow
+runs that same full matrix again at the tag, so a published release has passed
+the suite on every supported interpreter.
+
+**Automated checks.** Code scanning analyzes both the Python source and the
+workflow definitions, on change and weekly. Secret scanning is enabled with push
+protection. Dependency alerts and automated security updates are enabled, so a
+published advisory against a dependency raises an alert; because sigwood declares
+dependency ranges rather than pinned versions, most fixed versions are already
+permitted by the existing range, and an update is proposed where the declared
+range itself has to move. Private vulnerability reporting is enabled, so a report
+can also be raised confidentially through GitHub rather than by email.
+
+**Release integrity.** Every GitHub Actions step is pinned to a full commit SHA
+rather than a moving tag. Workflows run read-only by default; the publish job is
+the single exception and holds only the token-minting permission it needs.
+Releases are published to PyPI with Trusted Publishing and carry signed
+provenance attestations, so a release traces back to the workflow run and commit
+that produced it.

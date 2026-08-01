@@ -173,7 +173,8 @@ def _derive_lane(user_identity: Any) -> str:
 
     Mechanical, no security judgment. "service" if any of:
       1. userIdentity.type is AWSService or AWSAccount
-      2. userIdentity.invokedBy ends with "amazonaws.com"
+      2. userIdentity.invokedBy is "amazonaws.com" or ends with
+         ".amazonaws.com" (case-sensitive)
       3. "AWSServiceRoleFor" appears in userIdentity.arn or
          sessionContext.sessionIssuer.arn
 
@@ -188,7 +189,10 @@ def _derive_lane(user_identity: Any) -> str:
         return "service"
 
     invoked_by = user_identity.get("invokedBy")
-    if isinstance(invoked_by, str) and invoked_by.endswith("amazonaws.com"):
+    # Unexpected casing stays interactive so the event is analyzed.
+    if isinstance(invoked_by, str) and (
+        invoked_by == "amazonaws.com" or invoked_by.endswith(".amazonaws.com")
+    ):
         return "service"
 
     arn = user_identity.get("arn")

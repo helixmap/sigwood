@@ -178,6 +178,19 @@ def test_principal_distinct_principal_ids_under_unknown_type_stay_distinct() -> 
 
 # ── lane derivation ───────────────────────────────────────────────────────────
 
+def _lane_for_assumed_role_invoked_by(invoked_by: str) -> str:
+    """Return the lane from the invokedBy rule without another service shortcut."""
+    event = _event(userIdentity={
+        "type":      "AssumedRole",
+        "invokedBy": invoked_by,
+        "sessionContext": {"sessionIssuer": {
+            "type":     "Role",
+            "userName": "placeholder-role",
+        }},
+    })
+    return parse_event(event)["lane"]
+
+
 def test_lane_aws_service_type_is_service() -> None:
     event = _event(userIdentity={"type": "AWSService", "invokedBy": "lambda.amazonaws.com"})
     assert parse_event(event)["lane"] == "service"
@@ -198,6 +211,27 @@ def test_lane_invoked_by_amazonaws_com_is_service() -> None:
         }},
     })
     assert parse_event(event)["lane"] == "service"
+
+
+def test_lane_invoked_by_requires_dns_label_boundary() -> None:
+    assert _lane_for_assumed_role_invoked_by(
+        "not-a-host/amazonaws.com"
+    ) == "interactive"
+
+
+def test_lane_invoked_by_accepts_exact_and_dot_bounded_service_names() -> None:
+    for invoked_by in (
+        "ec2.amazonaws.com",
+        "cloudtrail.amazonaws.com",
+        "amazonaws.com",
+    ):
+        assert _lane_for_assumed_role_invoked_by(invoked_by) == "service"
+
+
+def test_lane_invoked_by_comparison_is_case_sensitive() -> None:
+    assert _lane_for_assumed_role_invoked_by(
+        "Ec2.AmazonAWS.Com"
+    ) == "interactive"
 
 
 def test_lane_service_role_in_arn_is_service() -> None:

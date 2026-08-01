@@ -167,6 +167,8 @@ PY
 git add CHANGELOG.md README.md sigwood/__init__.py
 git commit -m "sigwood $VERSION final"
 git push origin main
+
+### §2a
 ```
 
  and wait for [Release Workflow](https://github.com/helixmap/sigwood/actions) to show a green matrix before proceding.
@@ -191,6 +193,8 @@ else
   printf 'not a stable release version: %s\n' "$VERSION" >&2
   false
 fi
+
+### §2b
 ```
 
 All checks must succeed.
@@ -258,6 +262,8 @@ else
   printf 'local release validation failed; inspect %s\n' "$BUILD" >&2
   false
 fi
+
+### §3
 ```
 
 Nothing above this point changes remote release state.
@@ -302,6 +308,8 @@ else
   printf 'TestPyPI rehearsal failed for %s\n' "${REHEARSAL_URL:-no run URL}" >&2
   false
 fi
+
+### §4
 ```
 
 Both index flags are required. `--index-url` selects the sigwood package from TestPyPI;
@@ -326,6 +334,8 @@ else
   printf 'tag creation or push failed for %s\n' "$TAG" >&2
   false
 fi
+
+### §5a
 ```
 
 Capture the workflow run belonging to the tagged commit. This lookup block is safe to rerun
@@ -351,6 +361,8 @@ else
   printf 'could not resolve tagged commit for %s\n' "$TAG" >&2
   false
 fi
+
+### §5b
 ```
 
 The workflow reruns the complete Python 3.11-3.14 matrix, validates a fresh sdist and wheel,
@@ -400,6 +412,8 @@ else
   printf 'could not extract release notes for %s\n' "$VERSION" >&2
   false
 fi
+
+### §7a
 ```
 
 Create a draft from the existing remote tag, then open it for rendered inspection:
@@ -412,6 +426,8 @@ else
   printf 'GitHub Release draft creation failed; notes remain at %s\n' "$NOTES_FILE" >&2
   false
 fi
+
+### §7b
 ```
 
 The draft appears on the repository's **Releases** page and remains editable. Confirm the
@@ -424,14 +440,17 @@ else
   printf 'GitHub Release publication failed; notes remain at %s\n' "${NOTES_FILE:-unknown}" >&2
   false
 fi
+
+### §7c
 ```
 
 Attaching built artifacts is optional; PyPI remains the distribution source of truth.
 
 ### 8 - Verify the public release
 
-Install the exact version from real PyPI into a clean venv *from the project
-venv*. `--no-cache-dir` prevents a local wheel cache from satisfying the check.
+*Wait for the publish to settle.* Then install the exact version from real PyPI
+into a clean venv. `--no-cache-dir` prevents a local wheel cache from satisfying
+the check.
 
 ```bash
 if POST_VENV=$(mktemp -d "${TMPDIR:-/tmp}/sigwood-postpub.XXXXXX") &&
@@ -446,6 +465,8 @@ else
   printf 'public-release verification failed; inspect %s\n' "${POST_VENV:-no venv}" >&2
   false
 fi
+
+### §8
 ```
 
 This exact-version install is the authoritative signal that the release is live. PyPI's JSON

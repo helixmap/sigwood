@@ -300,11 +300,15 @@ virtualenv at roughly 450 MB on disk - light to operate, not light to install.
 
 ## Digest and output
 
-**Not every finding carries a machine-readable event timestamp.** `duration`, `scan`,
-aws burst, and syslog family/burst/reboot findings carry event timestamps in their JSON
-evidence; beacon, dns, and isolated syslog rare-event findings currently do not, so a
-`jq` timeline can place some findings but not others. Every finding does carry the run's data window.
-Converging on a representative event timestamp for every finding is planned.
+**Findings carry an event timestamp in their JSON evidence, but the key name varies by
+finding type.** Most of them - beacon, dns, duration, and syslog families, bursts and
+single rare lines - use `first_seen`. aws burst findings use `start_time`; syslog reboot
+findings use `reboot_ts`, which is the reboot instant rather than the first event of a
+group; and `scan` uses `window_start`, whose value is UTC but written without a timezone
+offset. Two summary findings that describe a whole scan rather than one entity - the aws
+ranked summary and the dns scan summary - carry no event timestamp at all, by design. A
+`jq` timeline therefore has to know which key a given finding type uses. Every finding
+also carries the run's data window.
 
 **The conn digest is slow on very large frames.** The connection digest walks every
 row to build its histogram and per-flow summary, so a multi-million-row `conn.log`

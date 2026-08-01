@@ -6,6 +6,32 @@ All notable changes to sigwood are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **A written contract for what sigwood keeps stable.** `docs/CONTRACT.md` states, in one
+  place, what will not change across 1.x releases: the twelve verbs, the flag spellings and
+  their `=`-only value grammar, the five output-format tokens, the documented config key
+  paths, the JSON envelope and its field types, the CSV column set, and the exit codes.
+  Linked from the README and the FAQ. Detection itself is explicitly outside that promise -
+  thresholds and calibration move when measurement says they should.
+- **Every detector is now importable and callable from Python**, which the README and FAQ
+  already described. `from sigwood import DetectorContext, Finding, Severity` works, as does
+  `from sigwood.detectors.<name> import run` for all six detectors.
+  `DetectorContext.unsuppressed(...)` builds a context for that use with allowlist
+  suppression **off**, and says so in its name and docstring, because results can be noisier
+  than the same detector run through the CLI. Importing the package stays lightweight - it
+  does not pull in pandas.
+- **Tests that hold the contract to its word.** The published inventory is pinned by
+  executable tests rather than prose alone, including a check that a consumer tolerating new
+  fields keeps working, and an event-time matrix asserted against the real finding producers.
+  The installed-wheel smoke in CI now exercises the documented Python example end to end.
+
+### Fixed
+
+- The known-issues entry on event timestamps said `beacon` and `dns` findings carried none.
+  They have carried one for some time; the real wrinkle is that the key name varies by
+  finding type, which is now stated plainly and tabulated in the contract page.
+
 ## [0.2.9] - 2026-08-01
 
 ### Added

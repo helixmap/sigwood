@@ -25,6 +25,7 @@ box, over logs at rest, and your logs never have to leave your machine.
 <p align="center">
   <b><a href="#quick-start">Install</a></b> ·
   <a href="https://github.com/helixmap/sigwood/blob/main/docs/FAQ.md">FAQ</a> ·
+  <a href="https://github.com/helixmap/sigwood/blob/main/docs/CONTRACT.md">Contract</a> ·
   <a href="https://github.com/helixmap/sigwood/blob/main/docs/ROADMAP.md">Roadmap</a> ·
   <a href="https://github.com/helixmap/sigwood/blob/main/docs/KNOWN-ISSUES.md">Known issues</a> ·
   <a href="https://github.com/helixmap/sigwood/blob/main/docs/SCHEMA.md">Schemas</a> ·
@@ -435,6 +436,10 @@ config):
 
 `text`, `html`, and `pdf` are reading views - they honor `-v` (the curated "why it scored") and
 `-vv` (raw debug). `json` and `csv` always carry the full set.
+
+The [public contract](https://github.com/helixmap/sigwood/blob/main/docs/CONTRACT.md)
+lists the CLI, Python, config, JSON, CSV, and exit-code surfaces that stay stable
+throughout 1.x.
 
 Every text format - including `html` - prints to stdout by default; redirect or pipe to save
 (`sigwood dns -f=html > report.html`). `pdf` is binary, so it needs a destination: a pipe

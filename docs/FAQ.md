@@ -303,6 +303,9 @@ open files, read config, or render output (the one caveat: syslog shows a termin
 progress bar while templating, silent when piped). You can import one and call it on a DataFrame in a
 notebook, which is exactly how the clustering work is prototyped.
 
+The [public contract](CONTRACT.md#calling-sigwood-from-python) shows the supported
+entry point and the other scripting surfaces that stay stable throughout 1.x.
+
 ---
 
 ## How the detectors work

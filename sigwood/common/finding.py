@@ -293,3 +293,30 @@ class DetectorContext:
     data_window: tuple[datetime, datetime]
     data_sources: list[str] = field(default_factory=list)
     home_net: list[str] = field(default_factory=list)
+
+    @classmethod
+    def unsuppressed(
+        cls,
+        logs: dict[str, "pd.DataFrame"],
+        *,
+        data_window: tuple[datetime, datetime],
+        config: dict[str, Any] | None = None,
+        data_sources: tuple[str, ...] = (),
+        home_net: tuple[str, ...] = (),
+    ) -> "DetectorContext":
+        """Build a notebook context without applying allowlist suppression.
+
+        Results may be noisier than the same detector run through the CLI, whose
+        runner applies allowlist suppression before analysis.  The matcher here is
+        a real, empty matcher so detector code receives the ordinary context shape.
+        """
+        from sigwood.common.allowlist import AllowlistMatcher
+
+        return cls(
+            logs=logs,
+            config={} if config is None else config,
+            allowlist=AllowlistMatcher(),
+            data_window=data_window,
+            data_sources=list(data_sources),
+            home_net=list(home_net),
+        )

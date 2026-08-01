@@ -6,50 +6,7 @@ All notable changes to sigwood are recorded here. The format follows
 
 ## [Unreleased]
 
-### Fixed
-
-- **Imitating a service role name no longer excludes a CloudTrail event from analysis.**
-  Events are treated as automated service activity - and so left out of the per-principal
-  scoring - when a role name in the record carries the `AWSServiceRoleFor` marker AWS uses
-  for its own service roles. That marker was matched anywhere in the name, so a role called
-  `MyAWSServiceRoleForSomething` qualified and its events were set aside with no note and no
-  count. The marker must now begin a path segment of the role's identifier, and the
-  comparison is case-sensitive; anything else is treated as interactive and is analyzed.
-  Genuine service roles are unaffected. A role named exactly like a service role still
-  qualifies, which is recorded in the known-issues list with the reason it is not closed.
-
-- **A CloudTrail record can no longer exclude itself from analysis by imitating an AWS
-  service name.** An event is treated as automated service activity - and so left out of
-  the per-principal scoring entirely - when the field naming what invoked it ends in
-  `amazonaws.com`. That test had no boundary, so a value such as `not-a-host/amazonaws.com`
-  satisfied it and the event was set aside with no note and no count. The field must now be
-  exactly `amazonaws.com` or end with `.amazonaws.com`, and the comparison is
-  case-sensitive; anything else is treated as interactive and is analyzed. Genuine service
-  activity is unaffected, because every value AWS writes there has the form
-  `<service>.amazonaws.com`.
-
-- **A malformed log file can no longer stop a run in two specific ways.** A connection log
-  whose timestamps span an implausible range - ten lines dated years apart - made the beacon
-  detector ask for billions of memory slots before it scored anything, which ended the
-  process. It now declines to score that flow and carries on, which is what it already did
-  for every other thing it cannot measure. Separately, a CloudTrail file containing a number
-  with thousands of digits, or JSON nested thousands of levels deep, produced a raw Python
-  error instead of a warning; both are now reported as an unreadable file and skipped, and a
-  single bad line in a newline-delimited file no longer discards the good lines around it.
-  A Zeek TSV log whose column-type header declares a container nested thousands of levels
-  deep did the same thing; that line is now skipped and counted with the file's other
-  malformed lines, and the rest of the file still loads. A column with an unusual type that
-  never carries a value keeps parsing exactly as before - the limit applies to values, not to
-  the header. None of these change what sigwood reports on ordinary logs.
-
-- **A system-log capsule that shows a sample now says so.** Opening a finding that reported
-  97 rare lines showed twenty of them and gave no sign the rest existed, which reads as a
-  miscount or a broken control. The capsule now closes with `showing 20 of 97 rare lines`
-  whenever the lines on screen are fewer than the lines counted, and says nothing at all when
-  the capsule is complete. A grouped administrative session or update run discloses per
-  grouped entry rather than once at the top, using the same count that entry already prints.
-  The twenty-line sample itself is unchanged: those are the lines sigwood carries, so the
-  disclosure states the shortfall rather than offering a switch that cannot recover it.
+## [0.2.9] - 2026-08-01
 
 ### Added
 
@@ -134,6 +91,12 @@ All notable changes to sigwood are recorded here. The format follows
   span show at `--verbose` and in the CSV worklist; the full set is in `-vv` and the
   JSON feed. Detection is unchanged.
 
+- **Every grouped syslog finding now says what it is a fraction of.** Bursts, reboots,
+  and recognized transactions carry the host's full analyzed line count beside their own,
+  so "12 rare lines" can be read against the 40 lines that host produced or the 400,000
+  it produced. Rare-line and per-program findings already carried the equivalent figure.
+  Visible with `-v` and in the CSV worklist; the default one-line rows are unchanged.
+
 ### Changed
 
 - **DNS clustering now treats response outcomes as evidence, not geometry.** Response
@@ -168,6 +131,49 @@ All notable changes to sigwood are recorded here. The format follows
 
 ### Fixed
 
+- **Imitating a service role name no longer excludes a CloudTrail event from analysis.**
+  Events are treated as automated service activity - and so left out of the per-principal
+  scoring - when a role name in the record carries the `AWSServiceRoleFor` marker AWS uses
+  for its own service roles. That marker was matched anywhere in the name, so a role called
+  `MyAWSServiceRoleForSomething` qualified and its events were set aside with no note and no
+  count. The marker must now begin a path segment of the role's identifier, and the
+  comparison is case-sensitive; anything else is treated as interactive and is analyzed.
+  Genuine service roles are unaffected. A role named exactly like a service role still
+  qualifies, which is recorded in the known-issues list with the reason it is not closed.
+
+- **A CloudTrail record can no longer exclude itself from analysis by imitating an AWS
+  service name.** An event is treated as automated service activity - and so left out of
+  the per-principal scoring entirely - when the field naming what invoked it ends in
+  `amazonaws.com`. That test had no boundary, so a value such as `not-a-host/amazonaws.com`
+  satisfied it and the event was set aside with no note and no count. The field must now be
+  exactly `amazonaws.com` or end with `.amazonaws.com`, and the comparison is
+  case-sensitive; anything else is treated as interactive and is analyzed. Genuine service
+  activity is unaffected, because every value AWS writes there has the form
+  `<service>.amazonaws.com`.
+
+- **A malformed log file can no longer stop a run in two specific ways.** A connection log
+  whose timestamps span an implausible range - ten lines dated years apart - made the beacon
+  detector ask for billions of memory slots before it scored anything, which ended the
+  process. It now declines to score that flow and carries on, which is what it already did
+  for every other thing it cannot measure. Separately, a CloudTrail file containing a number
+  with thousands of digits, or JSON nested thousands of levels deep, produced a raw Python
+  error instead of a warning; both are now reported as an unreadable file and skipped, and a
+  single bad line in a newline-delimited file no longer discards the good lines around it.
+  A Zeek TSV log whose column-type header declares a container nested thousands of levels
+  deep did the same thing; that line is now skipped and counted with the file's other
+  malformed lines, and the rest of the file still loads. A column with an unusual type that
+  never carries a value keeps parsing exactly as before - the limit applies to values, not to
+  the header. None of these change what sigwood reports on ordinary logs.
+
+- **A system-log capsule that shows a sample now says so.** Opening a finding that reported
+  97 rare lines showed twenty of them and gave no sign the rest existed, which reads as a
+  miscount or a broken control. The capsule now closes with `showing 20 of 97 rare lines`
+  whenever the lines on screen are fewer than the lines counted, and says nothing at all when
+  the capsule is complete. A grouped administrative session or update run discloses per
+  grouped entry rather than once at the top, using the same count that entry already prints.
+  The twenty-line sample itself is unchanged: those are the lines sigwood carries, so the
+  disclosure states the shortfall rather than offering a switch that cannot recover it.
+
 - **A Zeek `syslog.log` line with no message no longer becomes a finding about text
   that never existed.** A row whose `message` field is empty of content - JSON `null`,
   or `-` in TSV - was turned into the literal words `None` or `nan`, which then read as
@@ -176,16 +182,6 @@ All notable changes to sigwood are recorded here. The format follows
   `syslog.log: skipped 3 rows with a missing or non-text message`. A genuinely empty
   message is kept, and so is a real log line whose text happens to read `None` - the
   check is on the field's type, not on how it prints.
-
-### Added
-
-- **Every grouped syslog finding now says what it is a fraction of.** Bursts, reboots,
-  and recognized transactions carry the host's full analyzed line count beside their own,
-  so "12 rare lines" can be read against the 40 lines that host produced or the 400,000
-  it produced. Rare-line and per-program findings already carried the equivalent figure.
-  Visible with `-v` and in the CSV worklist; the default one-line rows are unchanged.
-
-### Fixed
 
 - **A mistyped syslog setting now says which setting is wrong, instead of failing
   strangely later.** `[detectors.syslog]` values are checked before the detector
@@ -758,7 +754,8 @@ agent, no account.
 - Analysis-window controls (`--since`/`--until`/`--days`/`--all`), a per-source default
   lookback window, and local-or-UTC time rendering.
 
-[Unreleased]: https://github.com/helixmap/sigwood/compare/v0.2.8...HEAD
+[Unreleased]: https://github.com/helixmap/sigwood/compare/v0.2.9...HEAD
+[0.2.9]: https://github.com/helixmap/sigwood/compare/v0.2.8...v0.2.9
 [0.2.8]: https://github.com/helixmap/sigwood/compare/v0.2.7...v0.2.8
 [0.2.7]: https://github.com/helixmap/sigwood/compare/v0.2.6...v0.2.7
 [0.2.6]: https://github.com/helixmap/sigwood/compare/v0.2.5...v0.2.6

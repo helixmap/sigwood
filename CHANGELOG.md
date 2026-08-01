@@ -53,6 +53,27 @@ All notable changes to sigwood are recorded here. The format follows
 
 ### Added
 
+- **The DNS suspicion score's measured catch rates are now written down.** The FAQ and the
+  known-issues list state what the score actually catches, from a seeded measurement against
+  the live scorer (1,000 samples per label length, eleven lengths from 6 to 63): the
+  vowel-free digit-and-consonant shape the score is tuned toward clears the candidate bar
+  about 19-36% of the time at typical DGA lengths (10-16 characters); a uniformly random
+  letter-digit label, 6.6-14.8% at the same lengths; and random all-letter labels never clear
+  it at any length - zero of 11,000 samples, with the best possible all-letter label below
+  the bar by arithmetic. Boosting the letter-only class lexically was measured and rejected:
+  every boost rule tested either flagged real benign names - the strictest still crossed 57
+  in a benign reference week - or caught under half of its target, because the benign score
+  curve decays smoothly through the region with no gap to put a threshold in. The docs pair
+  the numbers with what one name's score does and does not decide: a score over the bar makes
+  a candidate, families group by parent, and the below-gate family check - five or more
+  low-scoring subdomains under one parent on Zeek data, nearly all of whose lookups fail to
+  resolve - surfaces as one INFO finding regardless of score, while a family spread across
+  many parents, or one whose names resolve, is outside it. The hex-tunneling entry is
+  corrected by the same measurement: a long hex label straddles the bar - roughly half of
+  samples clear it - rather than sitting just under it; the conclusion that a high-volume hex
+  tunnel can slip the dense-cluster scan is unchanged, since half is well short of the member
+  share the scan requires.
+
 - **Every expandable system-log finding now shows its vocabulary above the fold.** The short
   `tokens:` line that previews what a capsule contains was reaching grouped families and
   bursts but not recognized administrative sessions or update runs - so the most structured
@@ -76,7 +97,7 @@ All notable changes to sigwood are recorded here. The format follows
   pipx as a precondition, since several distributions do not ship it and block the
   pip-install alternative.
 
-- **Families of low-scoring names that mostly fail to resolve are now visible.** A single
+- **Families of low-scoring names whose lookups nearly all fail to resolve are now visible.** A single
   odd-looking domain that scores below the detector's bar stays quiet, as before - but when
   one parent domain carries several such names and nearly all of their lookups come back
   NXDOMAIN, sigwood now reports the family as one INFO finding. That is the shape of a

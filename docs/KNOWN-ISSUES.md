@@ -80,20 +80,29 @@ gap directly. Failing that, read the distinct-domain count on the digest card
 names queried once each, so it inflates the distinct-domain count while never rising to a
 heaviest-domain - which is why a per-domain-volume check does not surface it.
 
-**Letter-only high-entropy DGA labels are under-reported.** The DNS suspicion score
-leans heavily on digits, so a random no-digit label scores about one point below a
-digit-bearing equivalent. That makes this class invisible to the HIGH/tunnel path,
-and leaves it below the surface gate for the vast majority of realistic lengths. Pivot on
-query volume, registrable-domain concentration, and allowlist review when no-digit
-labels show up in noisy DNS traffic.
+**Letter-only DGA labels never clear the suspicion score's bar.** The score leans on digit
+density, so a random no-digit label scores roughly a third of a point below a digit-bearing
+label of the same length, and the best possible all-letter label sits below the candidate
+bar (1.8) by arithmetic: zero of 11,000 seeded samples cleared it, 1,000 per length across
+eleven lengths from 6 to 63. The vowel-free digit-and-consonant shape the score is tuned
+toward clears the bar about 19-36% of the time at typical DGA lengths (10-16 characters); a
+uniformly random letter-digit label, 6.6-14.8%. Boosting the letter-only class was measured
+and rejected - every length- or vowel-keyed boost rule tested either flagged real benign
+names (the strictest still crossed 57 in a benign reference week) or caught under half of
+its target. The compensating channel is behavioral and narrow: on Zeek data, five or more
+low-scoring subdomains under one parent whose lookups fail to resolve at least 90% of the
+time surface together as one INFO finding regardless of score; a family spread across many
+registrable domains, or one whose names resolve, is not covered by it. Pivot on query
+volume, registrable-domain concentration, and allowlist review when no-digit labels show up
+in noisy DNS traffic.
 
 **Hex-encoded DNS tunneling can slip the high-volume scan.** A long hexadecimal label - the
-shape of base16-encoded tunneling - scores just below the high-entropy bar the dense-cluster
-scan requires: a 32-character hex label scores about 1.78 against a 1.8 bar, so a high-volume
-hex tunnel that grows into its own cluster can pass the scan without tripping it. The bias cuts
-both ways - a short hex ID scores higher and can read as high-entropy, while a long hex tunnel
-reads as just under the bar. Pivot on the volume and registrable-domain concentration of
-random-looking lookups when the scan is quiet.
+shape of base16-encoded tunneling - straddles the high-entropy bar (1.8) the dense-cluster
+scan requires: measured on seeded random hex, roughly half of labels clear the bar (40-60%
+across lengths 16-63), well short of the 80% of cluster members the scan demands, so a
+high-volume hex tunnel that grows into its own cluster can pass the scan without tripping
+it. Pivot on the volume and registrable-domain concentration of random-looking lookups when
+the scan is quiet.
 
 **On a small DNS capture, no clusters form and the method label still names the algorithm.**
 Zeek DNS analysis needs a substantial number of queries before HDBSCAN groups them (the default

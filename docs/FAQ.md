@@ -407,14 +407,20 @@ The features are per-query RTT, TTL, query length/depth, and TLD distribution. T
 domains are then ranked by a per-label **suspicion score** - sigwood's own weighted lexical
 heuristic, not Shannon entropy - computed on the highest-scoring label across all subdomains,
 then grouped by registrable domain (eTLD+1), so fourteen random subdomains of one parent read
-as one finding instead of fourteen. The score leans on digit density, so it has three related
-biases: benign digit-heavy labels such as short hex IDs or versioned hostnames can score high;
-dictionary-word DGAs can score low; and genuinely random letter-only, no-digit labels can also
-score low (as can a long hexadecimal label, which sits just under the tunnel bar - see
-[KNOWN-ISSUES.md](KNOWN-ISSUES.md)). A digit-bearing random-looking label such as `x7f2k9q1` scores much higher than a
-letter-only label of similar length, so letter-only labels cannot reach HIGH severity or trip
-the dense-cluster tunnel scan, and they fall below the surface gate for the vast majority of
-realistic lengths. "High-entropy cluster" elsewhere is a colloquial name for that random-looking
+as one finding instead of fourteen. The score leans on digit density, and its biases are
+measured (1,000 seeded samples per label length against the live scorer, eleven lengths from
+6 to 63): benign digit-heavy labels such as short hex IDs or versioned hostnames can score
+high; dictionary-word DGAs never cleared the candidate bar (a score of 1.8) in measurement;
+and random letter-only labels never clear it at any length - zero of 11,000 samples, and the
+best possible all-letter label sits below the bar by arithmetic - so a letter-only name can
+never reach HIGH severity or trip the dense-cluster tunnel scan on its score. A random
+vowel-free digit-and-consonant label - the shape the score is tuned toward - clears the bar
+about 19-36% of the time at typical DGA lengths (10-16 characters); a uniformly random
+letter-digit label, vowels included, clears it 6.6-14.8% at the same lengths; a long
+hexadecimal label straddles the bar, with roughly half of samples clearing (see
+[KNOWN-ISSUES.md](KNOWN-ISSUES.md)). Those are single-name rates, not the detector's -
+what one name's score does and does not decide is two paragraphs down. "High-entropy
+cluster" elsewhere is a colloquial name for that random-looking
 query shape (the cluster topology), not a claim that the score is Shannon entropy. A finding is
 a starting point, not a verdict; the intended pivots are `dns.log` → `conn.log` → whois →
 reputation → ASN.
@@ -427,10 +433,26 @@ exist), or it sits in a dense, concentrated cluster of similar names. A name tha
 scores high is never crowned on that alone, which is why a clean capture can produce a page of
 MEDIUMs and no HIGH at all — that is the tool being honest, not missing something.
 
+That division of labor is why the measured catch rates above are one leg's recall, not the
+detector's. A DGA family rarely appears as one name: at typical lengths a fifty-name family
+under one registrable domain is very likely to put at least two members over the bar, and two
+is all it takes to fold the parent into one group finding - though a family spread across
+many registrable domains surfaces only as the individual names that clear. Below the bar
+there is a second, narrower net, on Zeek data only: five or more low-scoring subdomains under
+one parent, nearly all of whose lookups fail to resolve (at least 90%), surface together as
+one INFO finding with no help from the score - a family spread across parents, or one whose
+names resolve, is outside it. The bar itself is also not a free lever: the benign score curve
+decays smoothly through the whole region around it - there is no gap between generated and
+benign names in which to place a threshold - and boosting low-vowel or letter-only shapes was
+measured and rejected for the same reason: every boost rule tested either flagged real benign
+names (the strictest still crossed 57 in a benign reference week) or caught under half of its
+target. Corroboration carries severity because no spelling rule tested could.
+
 Two consequences worth knowing. On **Pi-hole/dnsmasq-only** data, HIGH is effectively out of
 reach: Pi-hole records no DNS response code, so resolution outcome cannot corroborate, and the
-dense-cluster scan is Zeek-only. Findings there top out at MEDIUM by design rather than by
-accident. And for a **private namespace** — names under a local-only suffix such as `.lan` or
+dense-cluster scan is Zeek-only. The below-gate family net above needs response codes too, so
+it is also Zeek-only - on Pi-hole the score's single-name rates are the whole lexical story.
+Findings there top out at MEDIUM by design rather than by accident. And for a **private namespace** — names under a local-only suffix such as `.lan` or
 `.internal` — a failed lookup is not evidence of anything: failing to resolve outside its own
 zone is simply what a private namespace does. Those names are grouped as one family and
 reported, but their failures never count as corroboration.

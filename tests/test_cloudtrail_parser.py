@@ -259,6 +259,54 @@ def test_lane_service_role_in_session_issuer_arn_is_service() -> None:
     assert parse_event(event)["lane"] == "service"
 
 
+def test_lane_service_role_marker_must_start_user_identity_arn_segment() -> None:
+    event = _event(userIdentity={
+        "type":        "AssumedRole",
+        "principalId": "AROAEXAMPLE:session-x",
+        "arn": (
+            f"arn:aws:sts::{_DOCS_ACCOUNT}:assumed-role/"
+            "NotAWSServiceRoleForPlaceholder/session-x"
+        ),
+        "sessionContext": {"sessionIssuer": {
+            "type":     "Role",
+            "userName": "placeholder-role",
+        }},
+    })
+    assert parse_event(event)["lane"] == "interactive"
+
+
+def test_lane_service_role_marker_must_start_session_issuer_arn_segment() -> None:
+    event = _event(userIdentity={
+        "type":        "AssumedRole",
+        "principalId": "AROAEXAMPLE:session-x",
+        "arn":         f"arn:aws:sts::{_DOCS_ACCOUNT}:assumed-role/placeholder-role/session-x",
+        "sessionContext": {"sessionIssuer": {
+            "type": "Role",
+            "arn": (
+                f"arn:aws:iam::{_DOCS_ACCOUNT}:role/"
+                "NotAWSServiceRoleForPlaceholder"
+            ),
+        }},
+    })
+    assert parse_event(event)["lane"] == "interactive"
+
+
+def test_lane_service_role_marker_is_case_sensitive() -> None:
+    event = _event(userIdentity={
+        "type":        "AssumedRole",
+        "principalId": "AROAEXAMPLE:session-x",
+        "arn": (
+            f"arn:aws:sts::{_DOCS_ACCOUNT}:assumed-role/"
+            "awsserviceroleforplaceholder/session-x"
+        ),
+        "sessionContext": {"sessionIssuer": {
+            "type":     "Role",
+            "userName": "placeholder-role",
+        }},
+    })
+    assert parse_event(event)["lane"] == "interactive"
+
+
 def test_lane_plain_iam_user_is_interactive() -> None:
     assert parse_event(_event())["lane"] == "interactive"
 

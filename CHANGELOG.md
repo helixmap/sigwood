@@ -8,6 +8,16 @@ All notable changes to sigwood are recorded here. The format follows
 
 ### Fixed
 
+- **Imitating a service role name no longer excludes a CloudTrail event from analysis.**
+  Events are treated as automated service activity - and so left out of the per-principal
+  scoring - when a role name in the record carries the `AWSServiceRoleFor` marker AWS uses
+  for its own service roles. That marker was matched anywhere in the name, so a role called
+  `MyAWSServiceRoleForSomething` qualified and its events were set aside with no note and no
+  count. The marker must now begin a path segment of the role's identifier, and the
+  comparison is case-sensitive; anything else is treated as interactive and is analyzed.
+  Genuine service roles are unaffected. A role named exactly like a service role still
+  qualifies, which is recorded in the known-issues list with the reason it is not closed.
+
 - **A CloudTrail record can no longer exclude itself from analysis by imitating an AWS
   service name.** An event is treated as automated service activity - and so left out of
   the per-principal scoring entirely - when the field naming what invoked it ends in

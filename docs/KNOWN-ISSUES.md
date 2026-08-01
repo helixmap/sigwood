@@ -159,6 +159,19 @@ line is listed under the unit with its own time and program - so read a unit as 
 happened together", not as "these things are the same event". Narrowing the rule by program was
 measured and rejected: it dissolved genuine sessions and dropped most of their content.
 
+**An AWS event can still exclude itself from analysis by naming a role exactly like a service
+role.** CloudTrail activity is split into automated service activity and interactive activity,
+and only the interactive side is scored. One of the signals for "service" is a role whose name
+begins with `AWSServiceRoleFor`, the convention AWS uses for roles its own services assume. A
+role created with a name that begins the same way is read the same way, and its events are set
+aside without being counted or mentioned. A name that merely contains that marker somewhere in
+the middle no longer qualifies, and neither does a different capitalisation. Closing the
+exact-name case too would mean also requiring the reserved role path AWS uses for these roles -
+but the records carry that path in only one of the two places the role name appears, and the
+handful of real examples available cannot establish that it is always present. If it is not,
+genuine automated activity would start being reported as ordinary user activity. That trade is
+not worth making without more evidence.
+
 ## Ingestion and windows
 
 **A deliberately malformed log file can still stop a single run.** sigwood reads whatever

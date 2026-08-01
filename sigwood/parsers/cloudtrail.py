@@ -168,6 +168,12 @@ def _derive_principal(user_identity: Any) -> str:
     return "unknown"
 
 
+def _names_service_linked_role(arn: str) -> bool:
+    """Return whether an ARN path segment starts with the service-role marker."""
+    # Unexpected casing stays interactive so the event is analyzed.
+    return any(segment.startswith("AWSServiceRoleFor") for segment in arn.split("/"))
+
+
 def _derive_lane(user_identity: Any) -> str:
     """Return "service" or "interactive" for an event's userIdentity.
 
@@ -175,8 +181,8 @@ def _derive_lane(user_identity: Any) -> str:
       1. userIdentity.type is AWSService or AWSAccount
       2. userIdentity.invokedBy is "amazonaws.com" or ends with
          ".amazonaws.com" (case-sensitive)
-      3. "AWSServiceRoleFor" appears in userIdentity.arn or
-         sessionContext.sessionIssuer.arn
+      3. an "AWSServiceRoleFor" prefix starts a path segment in userIdentity.arn
+         or sessionContext.sessionIssuer.arn (case-sensitive)
 
     Otherwise "interactive". No hardcoded principal-name list - corpus-specific
     role names are not a parser concern.
@@ -196,7 +202,7 @@ def _derive_lane(user_identity: Any) -> str:
         return "service"
 
     arn = user_identity.get("arn")
-    if isinstance(arn, str) and "AWSServiceRoleFor" in arn:
+    if isinstance(arn, str) and _names_service_linked_role(arn):
         return "service"
 
     session_context = user_identity.get("sessionContext")
@@ -204,7 +210,7 @@ def _derive_lane(user_identity: Any) -> str:
         issuer = session_context.get("sessionIssuer")
         if isinstance(issuer, dict):
             issuer_arn = issuer.get("arn")
-            if isinstance(issuer_arn, str) and "AWSServiceRoleFor" in issuer_arn:
+            if isinstance(issuer_arn, str) and _names_service_linked_role(issuer_arn):
                 return "service"
 
     return "interactive"

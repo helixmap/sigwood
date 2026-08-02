@@ -467,15 +467,41 @@ def test_query_resolution_ambiguous() -> None:
     config = _make_config({"alpha": {"spl": "search a"}, "beta": {"spl": "search b"}})
     with pytest.raises(ValueError) as exc_info:
         _resolve_queries(config, "splunk", [])
-    msg = str(exc_info.value)
-    assert "alpha" in msg
-    assert "beta" in msg
+    assert str(exc_info.value) == (
+        "multiple queries for backend 'splunk': alpha, beta - "
+        "specify one: sigwood export splunk <query>"
+    )
+
+
+def test_query_resolution_default_among_multiple_is_ambiguous() -> None:
+    config = _make_config({
+        "default": {"spl": "search index=main"},
+        "auth": {"spl": "search index=auth"},
+    })
+    with pytest.raises(ValueError) as exc_info:
+        _resolve_queries(config, "splunk", [])
+    assert str(exc_info.value) == (
+        "multiple queries for backend 'splunk': auth, default - "
+        "specify one: sigwood export splunk <query>"
+    )
+
+
+def test_query_resolution_zero_is_byte_stable() -> None:
+    with pytest.raises(ValueError) as exc_info:
+        _resolve_queries(_make_config({}), "splunk", [])
+    assert str(exc_info.value) == (
+        "no queries defined under [export.splunk.query] - "
+        "add a [export.splunk.query.<name>] section"
+    )
 
 
 def test_query_resolution_explicit() -> None:
-    config = _make_config({"alpha": {"spl": "search a"}, "beta": {"spl": "search b"}})
-    result = _resolve_queries(config, "splunk", ["beta"])
-    assert result == [("beta", {"spl": "search b"})]
+    config = _make_config({
+        "auth": {"spl": "search a"},
+        "default": {"spl": "search d"},
+    })
+    result = _resolve_queries(config, "splunk", ["default"])
+    assert result == [("default", {"spl": "search d"})]
 
 
 def test_query_resolution_missing() -> None:

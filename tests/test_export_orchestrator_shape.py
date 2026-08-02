@@ -15,7 +15,8 @@ from typing import Any
 
 import pytest
 
-from sigwood import exporters
+from sigwood import cli, exporters
+from sigwood.common import config as cfg
 from sigwood.exporters import run_export
 
 
@@ -151,6 +152,49 @@ def test_splunk_no_query_under_export_namespace_raises_actionable(
         )
     msg = str(exc_info.value)
     assert "[export.splunk.query." in msg
+
+
+@pytest.mark.parametrize(
+    "argv",
+    (["export"], ["export", "splunk"]),
+    ids=("auto-backend", "explicit-backend"),
+)
+def test_cli_bare_export_rejects_default_among_multiple_queries(
+    argv: list[str],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    tmp_path.chmod(0o700)
+    config = {
+        "sigwood": {"root": str(tmp_path)},
+        "export": {"splunk": {
+            "host": "192.0.2.20",
+            "port": 8089,
+            "query": {
+                "auth": {"spl": "search index=auth"},
+                "default": {"spl": "search index=main"},
+            },
+        }},
+    }
+    monkeypatch.setattr(cfg, "load", lambda _path=None: config)
+
+    def _unexpected_fetch(*_args, **_kwargs):
+        pytest.fail("ambiguous bare export reached the backend fetch seam")
+
+    from sigwood.exporters import splunk as splunk_module
+    monkeypatch.setattr(splunk_module, "fetch", _unexpected_fetch)
+
+    with pytest.raises(SystemExit) as exc_info:
+        cli.main(argv)
+
+    assert exc_info.value.code == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == (
+        "sigwood: multiple queries for backend 'splunk': auth, default - "
+        "specify one: sigwood export splunk <query>\n"
+    )
 
 
 # ── the no-timeframe default window anchors on display-timezone midnights ────

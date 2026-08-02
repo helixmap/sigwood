@@ -101,8 +101,8 @@ allowlist_dir    = "allowlist.d/"
 # Export backends (configure only what you use)
 # ════════════════════════════════════════════════════════════════════
 # Splunk - a non-empty host activates it. Prefer env SIGWOOD_SPLUNK_USER /
-# _PASS over plaintext credentials. A query named "default" runs with a bare
-# `sigwood export`; run others by name (`sigwood export auth`).
+# _PASS over plaintext credentials. A bare `sigwood export` runs the only
+# defined query; with several defined, name one (`sigwood export splunk auth`).
 #
 # [export.splunk]
 # host = "192.0.2.20"
@@ -114,7 +114,7 @@ allowlist_dir    = "allowlist.d/"
 # (no per-source auto-segment). Uncomment to override the global base.
 # export_dir = "/srv/exports/splunk/"
 #
-# [export.splunk.query.default]
+# [export.splunk.query.syslog]
 # spl = "search index=main sourcetype=syslog | table _time, host, _raw"
 # output_basename = "syslog"
 # Per-query export_dir: the finest grain, a LITERAL final dir for this query

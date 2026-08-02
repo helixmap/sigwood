@@ -29,7 +29,7 @@ from sigwood.common.display import (
     hidden_cursor,
 )
 from sigwood.common.errors import ExportAborted
-from sigwood.exporters import _resolve_output_path
+from sigwood.exporters import _resolve_output_path, run_export
 from sigwood.exporters import cloudtrail as ct
 
 from tests._cloudtrail_fakes import FakeS3Client, _gz_envelope
@@ -68,6 +68,45 @@ def test_implicit_default_query_and_extension() -> None:
     # Filename fix depends on the basename being explicit - assert it directly.
     assert ct.implicit_default_query() == {"output_basename": "cloudtrail"}
     assert ct.OUTPUT_EXTENSION == ".json.log"
+
+
+def test_run_export_uses_cloudtrail_synthetic_query(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    captured: dict[str, Any] = {"writes": 0}
+
+    def _fetch(query_config, backend_config, since, until, verbose, *, skip_confirm=False):
+        captured["query_config"] = query_config
+        captured["backend_config"] = backend_config
+        return [], {"units": 0, "unit_label": "objects"}
+
+    def _write(events, outpath, verbose):
+        captured["writes"] += 1
+        captured["outpath"] = outpath
+        return 0, {"bytes": 0, "paths": [outpath]}
+
+    monkeypatch.setattr(ct, "fetch", _fetch)
+    monkeypatch.setattr(ct, "write", _write)
+    run_export(
+        config={
+            "sigwood": {"root": str(tmp_path), "export_dir": str(tmp_path)},
+            "export": {"cloudtrail": {
+                "path": "s3://example-trail-bucket/AWSLogs/",
+            }},
+        },
+        backend="cloudtrail",
+        query_names=[],
+        since=datetime(2026, 6, 1, tzinfo=timezone.utc),
+        until=datetime(2026, 6, 2, tzinfo=timezone.utc),
+        out=None,
+        verbose=False,
+    )
+
+    assert captured["query_config"] == {"output_basename": "cloudtrail"}
+    assert captured["backend_config"]["path"] == "s3://example-trail-bucket/AWSLogs/"
+    assert captured["writes"] == 1
+    assert captured["outpath"].name == "cloudtrail_20260601_1d.json.log"
 
 
 def test_filename_json_log(tmp_path: Path) -> None:

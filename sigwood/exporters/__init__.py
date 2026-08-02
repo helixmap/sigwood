@@ -118,7 +118,8 @@ def run_export(
     Args:
         config: Loaded config dict (from common/config.py).
         backend: Backend name ("splunk", etc.) or None to auto-select.
-        query_names: Named queries to run. Empty list uses default/single logic.
+        query_names: Named queries to run. An empty list auto-selects only when
+            exactly one query is defined.
         since: Start of window, or None to use yesterday 00:00:00 in the
             display timezone (local, or UTC under --utc / use_utc).
         until: End of window, or None to use today 00:00:00 in the display
@@ -368,8 +369,8 @@ def _resolve_queries(
 ) -> list[tuple[str, dict[str, Any]]]:
     """Resolve query names to (name, config) pairs.
 
-    Empty query_names uses auto-selection: "default" if it exists, or the only
-    defined query. Multiple defined queries with no name given raises ValueError.
+    Empty query_names auto-selects only when exactly one query is defined.
+    Multiple defined queries with no name given raise ValueError.
 
     If the backend has no queries configured AND exposes an
     ``implicit_default_query()`` hook, a synthetic single "default" query is
@@ -382,9 +383,7 @@ def _resolve_queries(
         queries = {"default": backend_module.implicit_default_query()}
 
     if not query_names:
-        if "default" in queries:
-            return [("default", queries["default"])]
-        elif len(queries) == 1:
+        if len(queries) == 1:
             name = next(iter(queries))
             return [(name, queries[name])]
         elif len(queries) == 0:

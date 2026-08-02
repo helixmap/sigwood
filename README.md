@@ -406,7 +406,7 @@ other source - the syslog detector can't tell whether the data came from rsyslog
 export.
 
 ```bash
-sigwood export splunk            # run the configured "default" query
+sigwood export splunk            # run the only configured query
 sigwood export splunk auth       # run the configured named query: "auth"
 sigwood export cloudtrail        # pull logs from S3
 ```

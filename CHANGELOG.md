@@ -6,6 +6,15 @@ All notable changes to sigwood are recorded here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- **A saved search named `default` no longer silently wins a bare `sigwood export`.**
+  With several saved searches configured, `sigwood export` (or `sigwood export splunk`)
+  now stops with the existing error naming them and the exact command to run instead of
+  quietly picking the one called `default`. A single configured search still runs bare,
+  whatever its name, and `default` remains a valid name to ask for explicitly. CloudTrail
+  exports are unaffected. The example config and README no longer teach the old behavior.
+
 ### Added
 
 - **A misspelled setting name now warns instead of being silently ignored - at every

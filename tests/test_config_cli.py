@@ -1655,3 +1655,93 @@ def test_broken_pipe_smoke_exits_141_silently() -> None:
     assert err == b""
     assert b"Traceback" not in err
     assert b"Broken pipe" not in err
+
+
+@pytest.mark.parametrize(
+    "read_size",
+    [None, 200],
+    ids=["immediate-close", "read-200"],
+)
+def test_merged_broken_pipe_exits_141_for_early_reader(
+    read_size: int | None,
+) -> None:
+    """A pending stderr flush cannot change a merged pipe exit to 120."""
+    script = textwrap.dedent(
+        """
+        import sys
+        import sigwood.cli as c
+
+        def fake_main(argv=None):
+            sys.stderr.buffer.write(b"pending stderr")
+            sys.stdout.write("x" * (4 * 1024 * 1024))
+            sys.stdout.flush()
+            return 0
+
+        c._main = fake_main
+        c.main([])
+        """
+    )
+    proc = subprocess.Popen(
+        [sys.executable, "-c", script],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+    )
+    assert proc.stdout is not None
+    if read_size is not None:
+        proc.stdout.read(read_size)
+    proc.stdout.close()
+
+    assert proc.wait() == 141
+
+
+def test_broken_pipe_redirects_stderr_when_stdout_has_no_fileno(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed stdout redirect cannot skip the independent stderr redirect."""
+    devnull_fd = 91
+    stderr_fd = 92
+    dup2_calls: list[tuple[int, int]] = []
+
+    class _StreamProxy:
+        def __init__(
+            self,
+            wrapped,
+            *,
+            fd: int | None = None,
+            fileno_error: bool = False,
+        ) -> None:
+            self._wrapped = wrapped
+            self._fd = fd
+            self._fileno_error = fileno_error
+
+        def fileno(self) -> int:
+            if self._fileno_error:
+                raise OSError("stream has no fileno")
+            assert self._fd is not None
+            return self._fd
+
+        def __getattr__(self, name: str):
+            return getattr(self._wrapped, name)
+
+    def _raise_broken_pipe(argv: list[str] | None = None) -> int:
+        raise BrokenPipeError(32, "Broken pipe")
+
+    monkeypatch.setattr(cli, "_main", _raise_broken_pipe)
+    monkeypatch.setattr(
+        sys,
+        "stdout",
+        _StreamProxy(sys.stdout, fileno_error=True),
+    )
+    monkeypatch.setattr(sys, "stderr", _StreamProxy(sys.stderr, fd=stderr_fd))
+    monkeypatch.setattr(cli.os, "open", lambda _path, _flags: devnull_fd)
+    monkeypatch.setattr(
+        cli.os,
+        "dup2",
+        lambda source, target: dup2_calls.append((source, target)),
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        cli.main([])
+
+    assert exc.value.code == 141
+    assert dup2_calls == [(devnull_fd, stderr_fd)]

@@ -198,9 +198,17 @@ def test_probe_keyboard_interrupt_terminates_and_reaps(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     pid_file = tmp_path / "pid"
+    pid_temp = tmp_path / "pid.tmp"
     executable = _executable(
         tmp_path,
-        f"import os, time; open({str(pid_file)!r}, 'w').write(str(os.getpid())); time.sleep(30)",
+        f"""
+import os, time
+pid_handle = open({str(pid_temp)!r}, "w")
+pid_handle.write(str(os.getpid()))
+pid_handle.close()
+os.replace({str(pid_temp)!r}, {str(pid_file)!r})
+time.sleep(30)
+""",
     )
     monkeypatch.setattr(journal_probe, "resolve_journalctl", lambda: executable)
 

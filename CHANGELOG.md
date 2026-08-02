@@ -8,6 +8,12 @@ All notable changes to sigwood are recorded here. The format follows
 
 ### Fixed
 
+- **A pipeline reading the merged stream now gets the promised broken-pipe exit code.**
+  `sigwood ... 2>&1 | head` exited 120 when the reader closed early - the closed-pipe
+  handler quieted stdout but not stderr, so the interpreter's final flush crashed on the
+  same closed pipe. Both streams are now quieted and the exit code is 141 as documented,
+  matching the plain `| head` case. Nothing is printed either way; a closed pipe is not
+  an error.
 - **A crafted log value can no longer execute when a finding's suggested command is
   pasted.** The literal commands some findings offer - `whois <domain>` on DNS findings,
   `grep <address>` and `whois <address>` on duration findings - now shell-quote the

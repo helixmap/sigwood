@@ -26,6 +26,16 @@ def _config(tmp_path: Path, body: str = "") -> Path:
     return p
 
 
+def _config_with_sigwood_typo(tmp_path: Path) -> Path:
+    p = tmp_path / "typo-config.toml"
+    p.write_text(
+        f'[sigwood]\nroot = "{tmp_path}"\nzeek_dri = "/placeholder"\n'
+        "[allowlist]\nenabled = true\n",
+        encoding="utf-8",
+    )
+    return p
+
+
 def _allowlist_d(tmp_path: Path) -> Path:
     d = tmp_path / "allowlist.d"
     d.mkdir(exist_ok=True)
@@ -43,6 +53,45 @@ def test_readout_renders_plan(tmp_path: Path, capsys) -> None:
     assert "common" in out and "devices" in out and "homelab" in out
     assert "off" in out                       # homelab default off
     assert "classification: 0 stanza entries" in out
+
+
+@pytest.mark.parametrize(
+    "positionals",
+    [
+        [],
+        ["show", "common"],
+        ["copy", "common", "as", "local"],
+    ],
+    ids=["readout", "show", "copy"],
+)
+def test_existing_allowlist_load_paths_disclose_config_typos(
+    positionals: list[str],
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    config_path = _config_with_sigwood_typo(tmp_path)
+
+    cli._main(["allowlist", *positionals, f"--config={config_path}"])
+
+    assert capsys.readouterr().err.splitlines() == [
+        "config: ignoring unknown setting [sigwood].zeek_dri "
+        "(did you mean zeek_dir?)",
+    ]
+
+
+def test_allowlist_toggle_does_not_load_or_disclose_unrelated_config_typos(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    config_path = _config_with_sigwood_typo(tmp_path)
+
+    cli._main([
+        "allowlist", "enable", "homelab", f"--config={config_path}",
+    ])
+
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    assert captured.out == "enabled homelab\n"
 
 
 def test_readout_config_path_list_shows_resolved_path(tmp_path: Path, capsys) -> None:

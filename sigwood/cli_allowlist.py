@@ -19,8 +19,10 @@ flag raises ``UsageError`` (which DOES get the usage hint).
 from __future__ import annotations
 
 import re
+import sys
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 from sigwood.common import allowlist as al
 from sigwood.common import config as cfg
@@ -34,6 +36,14 @@ from sigwood.common.paths import (
 from sigwood.common.sanitize import strip_control
 
 _VALID_SUBCOMMANDS = ("show", "enable", "disable", "copy")
+
+
+def _load_config_with_disclosure(config_path: str | None) -> dict[str, Any]:
+    """Load once and emit config-owner-composed warning lines."""
+    config = cfg.load(config_path)
+    for line in cfg.config_disclosure_lines(config):
+        print(line, file=sys.stderr)
+    return config
 
 
 # ── entry point ───────────────────────────────────────────────────────────────
@@ -63,7 +73,7 @@ def run_allowlist(positionals: list[str], *, config_path: str | None = None) -> 
 
 
 def _readout(config_path: str | None) -> None:
-    config = cfg.load(config_path)
+    config = _load_config_with_disclosure(config_path)
     plan = al.resolve_allowlist_plan(config)
 
     summaries = {spec.name: spec.summary for spec in al._SHIPPED_LISTS}
@@ -176,7 +186,7 @@ def _show(rest: list[str], config_path: str | None) -> None:
     if not rest:
         raise UsageError("allowlist show needs a list name")
     name = rest[0]
-    config = cfg.load(config_path)
+    config = _load_config_with_disclosure(config_path)
     plan = al.resolve_allowlist_plan(config)
 
     rl = _resolve_named_list(plan, name)
@@ -333,7 +343,7 @@ def _copy(rest: list[str], config_path: str | None) -> None:
     # none), preserving SIGWOOD_ROOT and an explicit root="". An explicit
     # allowlist_dir="" resolves to None (drop-ins disabled) - error, don't write a
     # file into a directory the resolver ignores.
-    config = cfg.load(config_path)
+    config = _load_config_with_disclosure(config_path)
     dest_dir = al.resolve_allowlist_dir(config)
     if dest_dir is None:
         raise ValueError(

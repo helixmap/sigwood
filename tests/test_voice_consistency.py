@@ -18,6 +18,7 @@ import pytest
 
 from sigwood import cli
 from sigwood import runner
+from sigwood.common import config as cfg
 from sigwood.common.errors import DigestEmpty
 
 
@@ -88,6 +89,19 @@ def test_digest_recognized_empty_single_prefix(tmp_path, monkeypatch, capsys) ->
     assert "sigwood: conn.log: recognized as conn, no parseable records - skipping" in err
     assert "sigwood: sigwood" not in err
     assert "digest:" not in err
+
+
+def test_config_disclosure_is_warning_voice_not_error_voice() -> None:
+    lines = cfg.config_disclosure_lines({"sigwood": {"zeek_dri": "/placeholder"}})
+
+    assert lines == [
+        "config: ignoring unknown setting [sigwood].zeek_dri "
+        "(did you mean zeek_dir?)",
+    ]
+    assert all(line.startswith("config:") for line in lines)
+    assert all(not line.startswith("sigwood:") for line in lines)
+    assert all(not line.endswith(".") for line in lines)
+    assert all("sigwood: sigwood" not in line for line in lines)
 
 
 # ── usage pointer ONLY on argument errors ─────────────────────────────────────

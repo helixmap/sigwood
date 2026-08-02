@@ -1079,21 +1079,17 @@ def _advise_loose_root(config: dict[str, Any]) -> None:
 
 
 def _load_config(parsed: dict[str, Any]) -> dict[str, Any]:
-    """Load config for a verb and disclose any top-level section nothing reads.
+    """Load config for a verb and disclose names no configured scope reads.
 
-    An unrecognized section is not an error - the run proceeds on defaults - but it
-    is never silent: a stale or mistyped name would otherwise void every setting
-    under it with no diagnostic. Section names come from the user's file and a TOML
-    quoted key can carry terminal control bytes, so they are stripped at this emit
-    seam. Not quiet-gated: a warning is not progress narration.
+    An unrecognized name is not an error - the run proceeds on what it understood -
+    but it is never silent.  Composition and user-data neutralization belong to the
+    config owner; this CLI seam owns only stderr emission.  Not quiet-gated: a
+    warning is not progress narration.
     """
     config = cfg.load(parsed.get("config"))
     _advise_loose_root(config)
-    unknown = cfg.unknown_sections(config)
-    if unknown:
-        names = ", ".join(f"[{strip_control(name)}]" for name in unknown)
-        noun = plural(len(unknown), "section")
-        print(f"config: ignoring unknown {noun} {names}", file=sys.stderr)
+    for line in cfg.config_disclosure_lines(config):
+        print(line, file=sys.stderr)
     return config
 
 

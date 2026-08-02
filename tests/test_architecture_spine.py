@@ -13,6 +13,7 @@ from types import SimpleNamespace
 
 import pandas as pd
 
+from sigwood import runner
 from sigwood.common.allowlist import AllowlistMatcher, build_matcher
 from sigwood.common.finding import Finding, RunSummary, Severity
 from sigwood.common.output import Reporter, get_handler
@@ -60,6 +61,40 @@ class ArchitectureSpineTests(unittest.TestCase):
         self.assertIn("duration", detectors)
         for planned in ("auth", "ssl", "protocol", "weird", "dnsblock"):
             self.assertNotIn(planned, detectors)
+
+    def test_discovery_vocabulary_includes_available_and_planned_modules(self) -> None:
+        vocab = {}
+
+        detectors = discover_detectors(_vocab=vocab)
+
+        self.assertEqual(set(detectors), {
+            "aws", "beacon", "dns", "duration", "scan", "syslog",
+        })
+        self.assertEqual(set(vocab), {
+            "auth", "aws", "beacon", "dns", "dnsblock", "duration",
+            "protocol", "scan", "ssl", "syslog", "weird",
+        })
+        self.assertEqual(vocab["dns"]["pihole"], {
+            "min_cluster_size": 25,
+            "min_samples": 10,
+        })
+        self.assertEqual(vocab["auth"], {})
+
+    def test_injected_detector_selection_derives_vocab_without_discovery(self) -> None:
+        detector = SimpleNamespace(
+            DEFAULT_CONFIG={"nested": {"threshold": 1}},
+            IN_DEFAULT_HUNT=True,
+        )
+
+        selection = select_detectors("alpha", {"alpha": detector})
+
+        self.assertEqual(selection.vocab, {
+            "alpha": {"nested": {"threshold": 1}},
+        })
+        self.assertEqual(
+            getattr(runner.DetectorSelection({}, [], {}), "vocab"),
+            {},
+        )
 
     def test_html_splitter_is_the_sole_outputs_to_parsers_import(self) -> None:
         """Pin the one approved presentation dependency on parser grammar."""

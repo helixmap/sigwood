@@ -18,7 +18,7 @@ import pkgutil
 import shlex
 import sys
 from contextlib import ExitStack
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Collection, Mapping, Sequence
@@ -28,6 +28,7 @@ import pandas as pd
 import sigwood.detectors as _detectors_pkg
 from sigwood.common.config import (
     DEFAULT_DETECT_SPEC,
+    detector_disclosure_lines,
     get_detector_config,
     parse_window_span,
     validate_table_sections,
@@ -111,12 +112,13 @@ class RunPlan:
 
 @dataclass(frozen=True)
 class DetectorSelection:
-    """Detector discovery and detect-spec resolution before source probing."""
+    """Detector discovery, vocabulary, and selection before source probing."""
 
     detectors: dict[str, Any]
     selected: list[str]
     import_failures: dict[str, str]
     used_default: bool = False
+    vocab: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -250,6 +252,11 @@ def _run_analyze(
     )
     with liveness("loading detectors", enabled=not quiet):
         selection = _detector_selection or select_detectors(detect_spec)
+
+    detectors_cfg = config.get("detectors", {})
+    if isinstance(detectors_cfg, Mapping):
+        for line in detector_disclosure_lines(detectors_cfg, selection.vocab):
+            _estderr(line)
 
     analyze_sources = resolve_analyze_sources(
         config,
@@ -964,7 +971,11 @@ def _failure_reason(phase: str, exc: Exception) -> str:
     return f"{phase} - {first}"
 
 
-def discover_detectors(*, _failures: dict[str, str] | None = None) -> dict[str, Any]:
+def discover_detectors(
+    *,
+    _failures: dict[str, str] | None = None,
+    _vocab: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Scan sigwood/detectors/ and return available detector modules by name.
 
     ``_failures`` is an optional caller-owned sink: when present, a module
@@ -975,6 +986,11 @@ def discover_detectors(*, _failures: dict[str, str] | None = None) -> dict[str, 
     detector). The catch stays ImportError-only: a missing dependency is the
     declared recoverable class; any other failure (e.g. a syntax error in a
     corrupt module) raises loudly.
+
+    ``_vocab`` is a separate optional caller-owned sink populated during the
+    same scan. Successfully imported detector modules record ``DEFAULT_CONFIG``
+    (including planned stubs, before status filtering); ImportError module names
+    record ``None`` because their vocabulary cannot be read.
     """
     detectors: dict[str, Any] = {}
     for _finder, name, _ispkg in pkgutil.iter_modules(_detectors_pkg.__path__):
@@ -984,9 +1000,16 @@ def discover_detectors(*, _failures: dict[str, str] | None = None) -> dict[str, 
             if _failures is not None:
                 msg = str(exc).strip()
                 _failures[name] = msg.splitlines()[0] if msg else type(exc).__name__
+            if _vocab is not None:
+                _vocab[name] = None
             continue
-        if hasattr(mod, "DETECTOR_NAME") and getattr(mod, "STATUS", "available") == "available":
-            detectors[mod.DETECTOR_NAME] = mod
+        if not hasattr(mod, "DETECTOR_NAME"):
+            continue
+        detector_name = mod.DETECTOR_NAME
+        if _vocab is not None:
+            _vocab[detector_name] = getattr(mod, "DEFAULT_CONFIG", None)
+        if getattr(mod, "STATUS", "available") == "available":
+            detectors[detector_name] = mod
     return detectors
 
 
@@ -996,11 +1019,18 @@ def select_detectors(
 ) -> DetectorSelection:
     """Resolve detector selection without inspecting source availability."""
     import_failures: dict[str, str] = {}
-    all_detectors = (
-        detectors
-        if detectors is not None
-        else discover_detectors(_failures=import_failures)
-    )
+    vocab: dict[str, Any] = {}
+    if detectors is not None:
+        all_detectors = detectors
+        vocab.update({
+            name: getattr(mod, "DEFAULT_CONFIG", None)
+            for name, mod in detectors.items()
+        })
+    else:
+        all_detectors = discover_detectors(
+            _failures=import_failures,
+            _vocab=vocab,
+        )
     effective_spec = str(detect_spec or DEFAULT_DETECT_SPEC)
     default_members = sorted(
         name
@@ -1019,6 +1049,7 @@ def select_detectors(
         selected,
         import_failures,
         used_default="default" in tokens,
+        vocab=vocab,
     )
 
 

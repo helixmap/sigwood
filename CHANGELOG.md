@@ -8,6 +8,14 @@ All notable changes to sigwood are recorded here. The format follows
 
 ### Added
 
+- **A misspelled setting name now warns instead of being silently ignored - at every
+  config scope.** A typo like `zeek_dri`, a mistyped `[detectors.beacn]` table, an unknown
+  `[export.splnk]` backend, or a wrong key nested as deep as `[detectors.dns.pihole]` now
+  prints one plain warning on stderr - `config: ignoring unknown setting [sigwood].zeek_dri
+  (did you mean zeek_dir?)` - and the run continues on what it understood. Nothing stops,
+  no value is validated, and `-q` does not hide it (a warning is not progress narration).
+  The `allowlist` command's read paths disclose the same way. The suggestion appears only
+  when a close match exists.
 - **A written contract for what sigwood keeps stable.** `docs/CONTRACT.md` states, in one
   place, what will not change across 1.x releases: the twelve verbs, the flag spellings and
   their `=`-only value grammar, the five output-format tokens, the documented config key

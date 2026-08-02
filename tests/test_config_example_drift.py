@@ -237,3 +237,38 @@ def _assert_engine_subset(shown: dict, defaults: dict, path: str) -> None:
             assert val == defaults[key], (
                 f"[{path}].{key}: example={val!r} vs DEFAULT_CONFIG={defaults[key]!r}"
             )
+
+
+# ── (d) disclosure vocabulary covers defaults + the complete commented example ─
+
+
+def _assert_declared_subset(defaults: dict, declared: dict, path: str) -> None:
+    """Every default key is named by the explicit disclosure declaration."""
+    for key, value in defaults.items():
+        assert key in declared, f"[{path}].{key} missing from KNOWN_CONFIG_KEYS"
+        if isinstance(value, dict):
+            assert isinstance(declared[key], dict), (
+                f"[{path}].{key} is nested in defaults but terminal in the declaration"
+            )
+            _assert_declared_subset(value, declared[key], f"{path}.{key}")
+
+
+def test_disclosure_declaration_covers_defaults_and_documented_only_keys() -> None:
+    _assert_declared_subset(cfg._DEFAULTS, cfg.KNOWN_CONFIG_KEYS, "root")
+
+    assert cfg.KNOWN_CONFIG_KEYS["sigwood"]["report_dir"] is cfg._LEAF
+    assert cfg.KNOWN_CONFIG_KEYS["export"]["splunk"]["export_dir"] is cfg._LEAF
+    assert cfg.KNOWN_CONFIG_KEYS["export"]["cloudtrail"]["export_dir"] is cfg._LEAF
+    query = cfg.KNOWN_CONFIG_KEYS["export"]["splunk"]["query"]
+    assert set(query) == {cfg._ANY_SCOPE}
+    assert set(query[cfg._ANY_SCOPE]) == {"spl", "output_basename", "export_dir"}
+
+
+def test_fully_uncommented_example_has_zero_disclosures() -> None:
+    text = EXAMPLE_PATH.read_text(encoding="utf-8")
+    parsed = tomllib.loads(_uncomment_engine_room(text))
+
+    assert cfg.config_disclosure_lines(parsed) == []
+    assert cfg.detector_disclosure_lines(
+        parsed.get("detectors", {}), _DETECTOR_DEFAULTS,
+    ) == []

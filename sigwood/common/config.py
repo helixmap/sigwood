@@ -11,11 +11,14 @@ When no config file is found, returns a deep copy of built-in defaults - no exce
 from __future__ import annotations
 
 import copy
+import difflib
 import tomllib
+from collections.abc import Mapping
 from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
+from sigwood.common.sanitize import strip_control
 from sigwood.common.syslog_mode import SyslogModeError, parse_syslog_mode
 
 
@@ -182,6 +185,74 @@ SEARCH_PATHS: list[Path] = [
 KNOWN_SECTIONS: frozenset[str] = frozenset(_DEFAULTS)
 _INTERNAL_KEYS: frozenset[str] = frozenset({"__user_set__"})
 
+# The explicit public config vocabulary.  ``_LEAF`` recognizes a name without
+# descending into its value; ``_ANY_SCOPE`` recognizes an arbitrary table name
+# and applies the nested declaration to that table's contents.  This cannot be
+# derived from _DEFAULTS: several supported keys are deliberately unset there.
+_LEAF = object()
+_ANY_SCOPE = object()
+
+KNOWN_CONFIG_KEYS: dict[str, Any] = {
+    "sigwood": {
+        "root": _LEAF,
+        "detect": _LEAF,
+        "zeek_dir": _LEAF,
+        "syslog_dir": _LEAF,
+        "syslog_source": _LEAF,
+        "pihole_dir": _LEAF,
+        "cloudtrail_dir": _LEAF,
+        "home_net": _LEAF,
+        "export_dir": _LEAF,
+        "report_dir": _LEAF,
+        "output_format": _LEAF,
+        "default_window": _LEAF,
+        "warn_above": _LEAF,
+        "quiet": _LEAF,
+        "use_utc": _LEAF,
+        "max_findings_per_detector": _LEAF,
+    },
+    "graph": {
+        "target_bins": _LEAF,
+        "top_hosts": _LEAF,
+        "top_services": _LEAF,
+        "domain_level": _LEAF,
+    },
+    # Detector names and keys are checked runner-side after discovery.  The
+    # wildcard makes this subtree open to the config-level walker.
+    "detectors": {_ANY_SCOPE: _LEAF},
+    "allowlist": {
+        "enabled": _LEAF,
+        "domain_patterns": _LEAF,
+        "connection_rules": _LEAF,
+        "allowlist_dir": _LEAF,
+        # Shipped-list names and stanza contents are deliberately open.
+        "lists": _LEAF,
+        "entry": _LEAF,
+    },
+    "export": {
+        "splunk": {
+            "host": _LEAF,
+            "port": _LEAF,
+            "verify_tls": _LEAF,
+            "username": _LEAF,
+            "password": _LEAF,
+            "export_dir": _LEAF,
+            "query": {
+                _ANY_SCOPE: {
+                    "spl": _LEAF,
+                    "output_basename": _LEAF,
+                    "export_dir": _LEAF,
+                },
+            },
+        },
+        "cloudtrail": {
+            "path": _LEAF,
+            "egress_warn_gb": _LEAF,
+            "export_dir": _LEAF,
+        },
+    },
+}
+
 
 def unknown_sections(config: dict[str, Any]) -> list[str]:
     """Top-level config keys that no reader looks up, in first-seen order.
@@ -197,6 +268,149 @@ def unknown_sections(config: dict[str, Any]) -> list[str]:
         for key in config
         if key not in KNOWN_SECTIONS and key not in _INTERNAL_KEYS
     ]
+
+
+def _suggestion(name: str, vocabulary: list[str]) -> str:
+    """Optional close-match clause for one user-authored config name."""
+    matches = difflib.get_close_matches(name, vocabulary, n=1, cutoff=0.6)
+    if not matches:
+        return ""
+    return f" (did you mean {strip_control(matches[0])}?)"
+
+
+def _setting_line(path: tuple[str, ...], key: str, vocabulary: list[str]) -> str:
+    scope = strip_control(".".join(path))
+    shown_key = strip_control(key)
+    return (
+        f"config: ignoring unknown setting [{scope}].{shown_key}"
+        f"{_suggestion(key, vocabulary)}"
+    )
+
+
+def _section_line(
+    path: tuple[str, ...],
+    key: str,
+    vocabulary: list[str],
+    *,
+    detector: bool = False,
+) -> str:
+    section = strip_control(".".join((*path, key)))
+    kind = "detector section" if detector else "section"
+    return (
+        f"config: ignoring unknown {kind} [{section}]"
+        f"{_suggestion(key, vocabulary)}"
+    )
+
+
+def _schema_keys(schema: Mapping[object, Any]) -> list[str]:
+    return [key for key in schema if isinstance(key, str)]
+
+
+def _walk_declared_scope(
+    configured: Mapping[str, Any],
+    schema: Mapping[object, Any],
+    path: tuple[str, ...],
+    section_lines: list[str],
+    setting_lines: list[str],
+    *,
+    root: bool = False,
+) -> None:
+    """Collect unknown names from one declared scope without validating values."""
+    dynamic_schema = schema.get(_ANY_SCOPE)
+    if dynamic_schema is not None:
+        if not isinstance(dynamic_schema, Mapping):
+            return
+        for name, value in configured.items():
+            if isinstance(name, str) and isinstance(value, Mapping):
+                _walk_declared_scope(
+                    value,
+                    dynamic_schema,
+                    (*path, name),
+                    section_lines,
+                    setting_lines,
+                )
+        return
+
+    vocabulary = _schema_keys(schema)
+    for key, value in configured.items():
+        if not isinstance(key, str) or key in schema:
+            continue
+        if root:
+            if key not in _INTERNAL_KEYS:
+                section_lines.append(_section_line((), key, vocabulary))
+        elif path == ("export",) and isinstance(value, Mapping):
+            section_lines.append(_section_line(path, key, vocabulary))
+        else:
+            setting_lines.append(_setting_line(path, key, vocabulary))
+
+    for key, child_schema in schema.items():
+        if not isinstance(key, str) or not isinstance(child_schema, Mapping):
+            continue
+        value = configured.get(key)
+        if not isinstance(value, Mapping):
+            continue
+        _walk_declared_scope(
+            value,
+            child_schema,
+            (*path, key),
+            section_lines,
+            setting_lines,
+        )
+
+
+def config_disclosure_lines(config: Mapping[str, Any]) -> list[str]:
+    """Compose warnings for unknown non-detector config names.
+
+    Sections precede settings.  Within each group, scopes follow the explicit
+    declaration order and unknown keys retain their mapping order.  Pure and
+    value-shape agnostic: validation and emission remain caller responsibilities.
+    """
+    if not isinstance(config, Mapping):
+        return []
+    sections: list[str] = []
+    settings: list[str] = []
+    _walk_declared_scope(
+        config,
+        KNOWN_CONFIG_KEYS,
+        (),
+        sections,
+        settings,
+        root=True,
+    )
+    return sections + settings
+
+
+def detector_disclosure_lines(
+    detectors_cfg: Mapping[str, Any],
+    vocab: Mapping[str, Mapping[str, Any] | None],
+) -> list[str]:
+    """Compose warnings for unknown detector names and recursively unknown keys."""
+    if not isinstance(detectors_cfg, Mapping) or not isinstance(vocab, Mapping):
+        return []
+
+    sections: list[str] = []
+    settings: list[str] = []
+    names = [name for name in vocab if isinstance(name, str)]
+    for name in detectors_cfg:
+        if isinstance(name, str) and name not in vocab:
+            sections.append(
+                _section_line(("detectors",), name, names, detector=True)
+            )
+
+    for name, schema in vocab.items():
+        configured = detectors_cfg.get(name)
+        if schema is None or not isinstance(schema, Mapping):
+            continue
+        if not isinstance(configured, Mapping):
+            continue
+        _walk_declared_scope(
+            configured,
+            schema,
+            ("detectors", name),
+            sections,
+            settings,
+        )
+    return sections + settings
 
 
 def load(config_file: str | Path | None = None) -> dict[str, Any]:

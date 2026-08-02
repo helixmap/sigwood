@@ -128,9 +128,11 @@ def test_discover_records_failure_and_returns_good_sibling(
     synthetic module), and a dns-only sink shows nothing else was recorded.
     """
     failures: dict[str, str] = {}
-    detectors = discover_detectors(_failures=failures)
+    vocab: dict[str, object] = {}
+    detectors = discover_detectors(_failures=failures, _vocab=vocab)
 
     assert failures == {"dns": _IMPORT_ERROR_LINE}
+    assert vocab == {"dns": None, "pulse": {}}
     assert sorted(detectors) == ["pulse"]
     assert detectors["pulse"].DETECTOR_NAME == "pulse"
 

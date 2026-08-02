@@ -27,6 +27,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import math
+import shlex
 from datetime import datetime, timezone
 from typing import Any
 
@@ -1334,7 +1335,7 @@ def _make_group_finding(
         )
     if has_public_suffix:
         next_steps = [
-            f"Check domain registration: whois {reg_domain}",
+            f"Check domain registration: whois {shlex.quote(str(reg_domain))}",
             f"Look up {reg_domain} on VirusTotal and Shodan",
             "Check conn.log for connections to IPs resolved from these queries",
             f"Pivot on querier IPs: {', '.join(unique_ips[:5])}",
@@ -1459,7 +1460,7 @@ def _make_singleton_finding(
             f"{_behavior_sentence(rcode_stats, severity_basis)}"
         )
     next_steps = [
-        f"Check domain registration: whois {reg_domain}",
+        f"Check domain registration: whois {shlex.quote(str(reg_domain))}",
         f"Look up {domain} on VirusTotal and Shodan",
         "Check conn.log for connections to IPs resolved from this query",
         "Check ASN for resolved IPs",

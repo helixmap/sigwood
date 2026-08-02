@@ -7,6 +7,7 @@ tunneling, C2 keep-alive sessions, or data exfiltration channels.
 from __future__ import annotations
 
 import ipaddress
+import shlex
 from datetime import datetime, timezone
 
 import pandas as pd
@@ -169,7 +170,7 @@ def run(context: DetectorContext) -> list[Finding]:
                 "link-local infrastructure traffic."
             )
             next_steps = [
-                f"Review {max_dur_str} connection in conn.log: zeek-cut id.orig_h id.resp_h id.resp_p duration conn_state < conn.log | grep {src}",
+                f"Review {max_dur_str} connection in conn.log: zeek-cut id.orig_h id.resp_h id.resp_p duration conn_state < conn.log | grep {shlex.quote(str(src))}",
                 "Confirm whether this local-scope destination is expected for "
                 "service discovery, address assignment, or link-local infrastructure",
                 "Add expected local-scope traffic to the allowlist if it repeats",
@@ -180,9 +181,9 @@ def run(context: DetectorContext) -> list[Finding]:
                 "or an active data exfiltration channel."
             )
             next_steps = [
-                f"Review {max_dur_str} connection in conn.log: zeek-cut id.orig_h id.resp_h id.resp_p duration conn_state < conn.log | grep {src}",
+                f"Review {max_dur_str} connection in conn.log: zeek-cut id.orig_h id.resp_h id.resp_p duration conn_state < conn.log | grep {shlex.quote(str(src))}",
                 "Check if this is expected infrastructure (VPN, backup, monitoring) - if so, add to allowlist",
-                f"Check the destination: whois {dst}",
+                f"Check the destination: whois {shlex.quote(str(dst))}",
             ]
 
         findings.append(Finding(

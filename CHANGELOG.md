@@ -6,6 +6,15 @@ All notable changes to sigwood are recorded here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **A crafted log value can no longer execute when a finding's suggested command is
+  pasted.** The literal commands some findings offer - `whois <domain>` on DNS findings,
+  `grep <address>` and `whois <address>` on duration findings - now shell-quote the
+  log-derived value. Ordinary addresses and domains render exactly as before; a value
+  carrying shell metacharacters arrives visibly quoted and inert. Verified unchanged
+  byte-for-byte on the frozen benign corpora.
+
 ### Changed
 
 - **A saved search named `default` no longer silently wins a bare `sigwood export`.**

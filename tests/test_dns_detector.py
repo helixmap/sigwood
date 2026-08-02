@@ -840,6 +840,68 @@ def test_non_psl_candidates_share_one_grouping_key_on_both_paths(
 
 # ── _shared_back_half grouping ────────────────────────────────────────────────
 
+def _real_tld_command_candidates(parent: str, count: int) -> pd.DataFrame:
+    """Build candidates whose parent is derived by the production extractor."""
+    import sigwood.detectors.dns as dns_mod
+
+    rows: list[dict] = []
+    for label in _high_entropy_labels(count, seed=53):
+        query = f"{label}.{parent}"
+        extracted = dns_mod._TLD_EXTRACT(query)
+        registrable_domain = dns_mod._registrable_key(query, extracted)
+        assert registrable_domain == parent
+        rows.append({
+            "query": query,
+            "label_entropy": dns_entropy(label),
+            "registrable_domain": registrable_domain,
+            "has_public_suffix": bool(
+                extracted.top_domain_under_public_suffix
+            ),
+            "unique_sources": 1,
+            "querier_ips": ["192.0.2.10"],
+            "source": "zeek",
+            "query_count": 1,
+            "rcode_distribution": {},
+        })
+    return pd.DataFrame(rows)
+
+
+@pytest.mark.parametrize(
+    ("parent", "count", "expected_step"),
+    [
+        ("example.com", 2, "Check domain registration: whois example.com"),
+        ("example.com", 1, "Check domain registration: whois example.com"),
+        (
+            "example;id.com",
+            2,
+            "Check domain registration: whois 'example;id.com'",
+        ),
+        (
+            "example;id.com",
+            1,
+            "Check domain registration: whois 'example;id.com'",
+        ),
+    ],
+)
+def test_command_steps_quote_extractor_derived_registrable_domain(
+    parent: str,
+    count: int,
+    expected_step: str,
+) -> None:
+    """Group and singleton whois commands quote the real derived parent."""
+    findings = _shared_back_half(
+        _real_tld_command_candidates(parent, count),
+        threshold=1.8,
+        now=_NOW,
+        data_window=_WINDOW,
+    )
+
+    assert_report_voice(findings)
+    assert len(findings) == 1
+    assert ("subdomain_count" in findings[0].evidence) is (count == 2)
+    assert findings[0].next_steps[0] == expected_step
+
+
 def _resolution_group_candidates(
     registrable_domain: str,
     *,

@@ -188,6 +188,94 @@ class DurationDetectorTests(unittest.TestCase):
         self.assertEqual(findings[0].severity, Severity.HIGH)
         self.assertTrue(any("whois 203.0.113.9" in step for step in findings[0].next_steps))
 
+    def test_local_command_step_quotes_hostile_source(self) -> None:
+        findings = run(_ctx(pd.DataFrame([
+            _conn_row(
+                src="192.0.2.10;id",
+                dst="239.255.255.250",
+                port=1900,
+                proto="udp",
+            )
+        ])))
+
+        assert_report_voice(findings)
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(
+            findings[0].next_steps[0],
+            "Review 2h 0m connection in conn.log: zeek-cut id.orig_h id.resp_h "
+            "id.resp_p duration conn_state < conn.log | grep '192.0.2.10;id'",
+        )
+
+    def test_external_command_steps_quote_hostile_endpoints(self) -> None:
+        findings = run(_ctx(pd.DataFrame([
+            _conn_row(
+                src="2001:db8::10;id",
+                dst="203.0.113.9;id",
+            )
+        ])))
+
+        assert_report_voice(findings)
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(
+            findings[0].next_steps[0],
+            "Review 2h 0m connection in conn.log: zeek-cut id.orig_h id.resp_h "
+            "id.resp_p duration conn_state < conn.log | grep '2001:db8::10;id'",
+        )
+        self.assertEqual(
+            findings[0].next_steps[2],
+            "Check the destination: whois '203.0.113.9;id'",
+        )
+
+    def test_command_steps_preserve_safe_endpoint_bytes(self) -> None:
+        local = run(_ctx(pd.DataFrame([
+            _conn_row(
+                src="192.0.2.10",
+                dst="239.255.255.250",
+                port=1900,
+                proto="udp",
+            )
+        ])))[0]
+        external = run(_ctx(pd.DataFrame([
+            _conn_row(
+                src="2001:db8::10",
+                dst="203.0.113.9",
+            )
+        ])))[0]
+
+        assert_report_voice([local, external])
+        self.assertEqual(
+            local.next_steps[0],
+            "Review 2h 0m connection in conn.log: zeek-cut id.orig_h id.resp_h "
+            "id.resp_p duration conn_state < conn.log | grep 192.0.2.10",
+        )
+        self.assertEqual(
+            external.next_steps[0],
+            "Review 2h 0m connection in conn.log: zeek-cut id.orig_h id.resp_h "
+            "id.resp_p duration conn_state < conn.log | grep 2001:db8::10",
+        )
+        self.assertEqual(
+            external.next_steps[2],
+            "Check the destination: whois 203.0.113.9",
+        )
+
+    def test_numeric_and_nan_group_keys_remain_renderable(self) -> None:
+        """Non-string keys are a green-at-HEAD neutrality control."""
+        findings = run(_ctx(pd.DataFrame([
+            _conn_row(src=123.5, dst=float("nan"))  # type: ignore[arg-type]
+        ])))
+
+        assert_report_voice(findings)
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(
+            findings[0].next_steps[0],
+            "Review 2h 0m connection in conn.log: zeek-cut id.orig_h id.resp_h "
+            "id.resp_p duration conn_state < conn.log | grep 123.5",
+        )
+        self.assertEqual(
+            findings[0].next_steps[2],
+            "Check the destination: whois nan",
+        )
+
     def test_non_unicast_helper_fails_open_for_non_ip_values(self) -> None:
         self.assertTrue(_is_non_unicast_dst("239.255.255.250"))
         self.assertTrue(_is_non_unicast_dst("255.255.255.255"))

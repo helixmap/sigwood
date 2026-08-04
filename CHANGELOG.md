@@ -8,6 +8,14 @@ All notable changes to sigwood are recorded here. The format follows
 
 ### Fixed
 
+- **The PDF error now names a command that works.** Asking for `--format=pdf` without the
+  optional extra installed pointed at `pip install 'sigwood[pdf]'`. That fails twice over for
+  anyone who followed the recommended install: a stock Ubuntu server may not have a `pip`
+  command at all, and
+  pipx declines a plain `install` for a package you already have - which you always do, since you
+  just ran sigwood to get the error. It now names `pipx install --force 'sigwood[pdf]'` with the
+  virtualenv form alongside, and the README says how to add an extra to an install you already
+  have.
 - **sigwood no longer suggests widening access to your failed-login database.** When scanning
   a log directory, sigwood tried to read every file in it - including `btmp`, the binary record
   of failed logins, which on most Linux systems an ordinary user cannot read. It then advised

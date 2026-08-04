@@ -280,6 +280,12 @@ pipx install 'sigwood[cloudtrail]'    # CloudTrail (S3) exporter
 pipx install 'sigwood[pdf]'           # PDF reports - opt-in, see note below
 ```
 
+Those install sigwood *with* an extra. **Adding one to an install you already have
+needs `--force`**, because pipx will otherwise decline to touch the existing
+environment: `pipx install --force 'sigwood[pdf]'`. In a virtualenv, plain
+`pip install 'sigwood[pdf]'` adds it in place; under `uv`, see uv's own
+documentation for reinstalling a tool with extras.
+
 A bare install needs no C compiler on the platforms people run this on. On
 64-bit machines, DNS clustering uses `fast-hdbscan`; on 32-bit ARM it uses stock
 `hdbscan` which is a bit slower but still works fine. The **first** run on a

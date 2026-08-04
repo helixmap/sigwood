@@ -32,7 +32,10 @@ from sigwood.outputs.html import render_report_html
 # ONLY the pip extra, never Pango. Voice: lowercase-led, raised bare
 # (cli.main owns the `sigwood:` prefix), the actionable `- run:` tail with the
 # extra quoted for shell safety.
-_PDF_PIP_ERROR = "pdf output needs the [pdf] extra - run: pip install 'sigwood[pdf]'"
+_PDF_PIP_ERROR = (
+    "pdf output needs the [pdf] extra - run: pipx install --force 'sigwood[pdf]' "
+    "(pip in a venv: pip install 'sigwood[pdf]')"
+)
 
 # OSError arm - package present, native libraries won't load. {hint} is platform-
 # forked below; the native libs are named here so the fix is unambiguous.

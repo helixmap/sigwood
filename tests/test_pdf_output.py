@@ -215,7 +215,11 @@ def test_stack_error_strings_follow_voice() -> None:
         assert not m.startswith("sigwood")  # cli.main owns the prefix
         assert "Warning:" not in m  # no decorative prefix
         assert not m.rstrip().endswith(".")  # single clause / em-dash tail
-    assert "- run: pip install 'sigwood[pdf]'" in _PDF_PIP_ERROR  # quoted extra
+    assert (
+        "- run: pipx install --force 'sigwood[pdf]' "
+        "(pip in a venv: pip install 'sigwood[pdf]')"
+        in _PDF_PIP_ERROR
+    )  # quoted extra
     assert "Pango" not in _PDF_PIP_ERROR  # pip arm names ONLY the extra, no Pango
 
 

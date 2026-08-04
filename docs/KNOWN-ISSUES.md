@@ -18,6 +18,16 @@ hosts; and the two feeds must agree on the host's name - if Zeek records a host 
 (a hostless line) while your files record its name, that host is treated as two and
 its events still count twice. Hostless (`unknown`) lines are never arbitrated.
 
+**A machine that changed its hostname is scored as two machines.** This one is about a
+single feed, not the two-feed case above: syslog rarity is counted per host and program,
+and the host is whatever the log line says. If a machine's name changed partway through
+the logs - renamed, or the short name replaced by the fully qualified one during setup -
+its earlier and later lines are counted separately. A line that is unremarkable under one
+name can look rare under the other because each name has its own, smaller history, and
+`sigwood digest` reports two hosts for the one box. sigwood has no way to know two names
+are the same machine. If you recognize the rename, read the two sets together; if the
+change was recent, a window that starts after it gives you one consistent name.
+
 **Beacon wants a week or more of data.** A jittered periodic beacon only clears the
 FFT score threshold intermittently over a single day, so a short window tends to
 surface the most machine-regular flows - which are often benign infrastructure (NTP,

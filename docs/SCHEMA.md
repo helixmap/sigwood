@@ -217,6 +217,81 @@ The digest consumes `severity` to define the error-rate kind on the Zeek
 feed (error-set `{EMERG, ALERT, CRIT, ERR}`); the flat feed retains the
 keyword-token heuristic, and the digest's insight wording forks with the feed.
 
+### Access-decision projection (auth extraction)
+
+Source: `parsers/auth.py` (shipped). Consumers: the `auth` detector (planned - the
+parser ships ahead of it, so this contract is stable before any detector reads it).
+
+A pure, grammar-only extractor over the canonical syslog lane: it consumes the
+`message` and `program` columns above and returns grammar-derived facts alone.
+Row timestamp, host, aggregation, and every scoring or severity decision live
+outside it. `extract_decision(message, *, program)` returns one `AuthDecision`
+or `None`.
+
+```
+outcome          - granted | denied | indeterminate (never absent)
+gate             - deciding mechanism (never absent); see the domain below
+actor            - the party whose attempt this is (str, nullable)
+actor_namespace  - unix_user | unix_auid | preauth_username (nullable)
+target           - the account being assumed, when a distinct one is named (nullable)
+source           - remote address, address only (nullable)
+auid             - audit login uid, verbatim (nullable)
+terminal         - tty / terminal, verbatim (nullable)
+exe              - executable path, verbatim (nullable)
+audit_type       - audit record type, verbatim (nullable)
+res              - audit result field, verbatim (nullable)
+session          - audit session id, verbatim (nullable)
+serial           - audit event serial, verbatim (nullable)
+```
+
+Every nullable field is textual. Audit carries unset markers and placeholders that
+are meaningful as written, so no value is coerced to an integer.
+
+`gate` domain, exactly six values: `sshd` · `dropbear` · `sudo` · `su` ·
+`runuser` · `audit`. The gate is the deciding mechanism, not the emitting process,
+so `sshd` and `sshd-session` share `sshd`, and both audit serializations share
+`audit`. A PAM line's gate is the service named inside its parentheses; a service
+outside the six returns `None` rather than minting a token.
+
+`outcome` is three-valued and the third value is load-bearing. `indeterminate`
+marks a line emitted by an authentication service during an authentication
+exchange where no grant or denial was reached - a preauth disconnect, a
+key-exchange failure, a session close. Such an observation is recorded but is
+never an eligible access decision: `is_eligible_decision` is False, and consumers
+must keep it out of attempt and denial denominators. Distinguishing it from `None`
+(no access-decision grammar present at all) is what makes extraction coverage
+measurable.
+
+Identity rules:
+- **At least one of `actor`, `target`, or `source` is always present.** A grammar
+  that names no party returns `None` rather than an unattributable decision. In
+  particular, a session opened *for* an account with no initiator named yields
+  `actor=None, target=<account>` - the extractor does not invent an initiator.
+- **Namespaces never merge.** A unix account name, an audit login uid, and an
+  unauthenticated pre-authentication username occupy different identifier spaces;
+  `actor_namespace` travels with the value and aggregates are never taken across
+  it. `target` is a unix-account identifier in every current grammar.
+- **Audit unset markers are not identities.** A bare `?` and the unset login-uid
+  marker are refused as `actor`, `target`, and `source` while still being carried
+  verbatim in their own fields - carrying a value and treating it as an identity
+  are separate questions.
+- **`source` is an address, never an endpoint.** A port is discarded, so two
+  connections from one address share one source identity. A whole valid address is
+  preserved before any port handling, so an unbracketed IPv6 literal is never
+  truncated.
+
+Extraction is dispatched on `program` over a fixed set - `sshd`, `sshd-session`,
+`dropbear`, `sudo`, `su`, `runuser`, and the two audit serializations. A line whose
+program is outside that set returns `None` before any grammar runs. A line whose
+program token is absent (canonical `"unknown"`) is matched only against anchored
+grammars, never a broad keyword scan; no such grammar ships today, so an untagged
+line currently returns `None`.
+
+Scope: this extractor recognises access-decision grammar and reports the outcome
+a line states. It does not decide which record types own a gate, does not collapse
+duplicate records of one attempt, and does not read command vocabulary - a sudo
+record contributes its decision, never the command it ran.
+
 ### Canonical CloudTrail event schema (v1)
 
 Source: `parsers/cloudtrail.py` (shipped). Consumers: `aws` detector (shipped),

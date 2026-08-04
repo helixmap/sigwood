@@ -25,6 +25,7 @@ from sigwood.parsers.syslog import (
     ADMIN_SESSION_OPEN_RE,
     UPDATE_RUN_ANCHOR_RE,
     is_reboot_signal,
+    normalize_pids,
     parse_line,
     parse_host,
     parse_program,
@@ -369,6 +370,19 @@ def test_parse_program(body: str, expected: str) -> None:
 def test_strip_program(body: str, expected: str) -> None:
     """Only a complete program/bracket/colon prefix is removed."""
     assert strip_program(body) == expected
+
+
+def test_normalize_pids_preserves_audit_key_value_fields() -> None:
+    """Audit event ids and plain pid fields are not bracketed process suffixes."""
+    message = (
+        "audisp-syslog[987]: type=USER_LOGIN "
+        "msg=audit(1700000000.125:42): pid=1234 acct=\"admin\""
+    )
+
+    assert normalize_pids(message) == (
+        "audisp-syslog[*]: type=USER_LOGIN "
+        "msg=audit(1700000000.125:42): pid=1234 acct=\"admin\""
+    )
 
 
 # ── load_syslog ────────────────────────────────────────────────────────────────

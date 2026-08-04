@@ -193,6 +193,16 @@ not worth making without more evidence.
 
 ## Ingestion and windows
 
+**A folder *inside* a CloudTrail tree that you lack permission to read is skipped without saying
+so.** If permissions stop sigwood listing the CloudTrail directory you configured, it now
+reports that and carries on. Native CloudTrail archives can use a nested tree, though -
+`AWSLogs/<account>/CloudTrail/<region>/<year>/...` - and sigwood searches downward with a
+recursive match that silently returns nothing for any folder it cannot open. So a permissions
+problem on a folder *below* the one you configured produces no error and no note: those events
+are simply missing, and the run looks normal. The permission check covers the directory you
+configured, not the folders beneath it. If your CloudTrail results seem short, check that every
+folder under the configured directory is readable by the user running sigwood.
+
 **A deliberately malformed log file can still stop a single run.** sigwood reads whatever
 you point it at, and a file crafted to be hostile rather than merely broken can exhaust
 memory or CPU badly enough to end that one run: a compressed archive that expands enormously,

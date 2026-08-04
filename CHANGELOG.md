@@ -8,6 +8,25 @@ All notable changes to sigwood are recorded here. The format follows
 
 ### Fixed
 
+- **A Pi-hole or CloudTrail directory you lack permission to read is no longer silently empty.**
+  Permission problems were already reported for Zeek and syslog. These two search their
+  directories a different way, one that returns no matches rather than reporting the problem, so
+  a folder the running user could not open looked exactly like a folder holding no logs - no
+  error, no note, and a detector reporting nothing at all. Both now check that they can list the
+  configured directory before searching it, and report a permission denial by naming the source
+  and the directory while the rest of the hunt continues. Only permission denials are reported
+  this way: a configured path that does not exist keeps its existing `not found` message, and
+  other listing failures keep their existing handling rather than being relabeled as a
+  permissions problem they are not. One limit remains and is written down in the known-issues
+  list: for CloudTrail this checks the directory you configured, not folders nested beneath it.
+- **A DNS run with a single query left to analyze no longer fails the whole run.** When the DNS
+  data reaching the detector came down to one row, the clustering step raised and the run reported
+  DNS as failed and exited 1 - a clean night reported as a broken one, which matters if you run
+  sigwood on a schedule and watch the exit code. One row can arrive through ordinary paths: a
+  quiet feed under the default window, a narrow `--since`, a new sensor, or a busy feed whose
+  queries are nearly all covered by the allowlist, since suppression happens before
+  analysis. That single query is now examined the same way two would be, and can still be
+  reported if it stands out. Nothing about how findings are scored has changed.
 - **The PDF error now names a command that works.** Asking for `--format=pdf` without the
   optional extra installed pointed at `pip install 'sigwood[pdf]'`. That fails twice over for
   anyone who followed the recommended install: a stock Ubuntu server may not have a `pip`

@@ -1632,7 +1632,7 @@ def test_registered_readable_directory_discovery_stays_byte_identical(
 def test_directory_listing_denial_records_once_and_yields_no_candidates(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Zeek and syslog contain EACCES at discovery and share sink dedup."""
+    """Every source family contains root EACCES and shares sink dedup."""
     shared = tmp_path / "shared"
     shared.mkdir()
     real_iterdir = Path.iterdir
@@ -1650,6 +1650,12 @@ def test_directory_listing_denial_records_once_and_yields_no_candidates(
     assert discover_for_source_key(
         "syslog_dir", shared, "*.log*", _directory_skips=skips,
     ) == []
+    assert discover_for_source_key(
+        "pihole_dir", shared, "pihole*.log*", _directory_skips=skips,
+    ) == []
+    assert discover_for_source_key(
+        "cloudtrail_dir", shared, "*.json*", _directory_skips=skips,
+    ) == []
     # Repeated probes overwrite nothing and disclose no exception text.
     assert discover_for_source_key(
         "zeek_dir", shared, "conn*.log*", _directory_skips=skips,
@@ -1657,7 +1663,102 @@ def test_directory_listing_denial_records_once_and_yields_no_candidates(
     assert list(skips) == [
         ("zeek_dir", shared.resolve()),
         ("syslog_dir", shared.resolve()),
+        ("pihole_dir", shared.resolve()),
+        ("cloudtrail_dir", shared.resolve()),
     ]
+
+
+@pytest.mark.parametrize("source_key, pattern", [
+    ("pihole_dir", "pihole*.log*"),
+    ("cloudtrail_dir", "*.json*"),
+])
+def test_glob_family_nonpermission_listing_error_is_not_a_permission_skip(
+    source_key: str,
+    pattern: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A storage/path error must not feed the hard-coded permission note."""
+    source = tmp_path / source_key
+    source.mkdir()
+    real_iterdir = Path.iterdir
+
+    def _fail(path: Path):
+        if path == source:
+            raise OSError(5, "synthetic I/O failure")
+        return real_iterdir(path)
+
+    monkeypatch.setattr(Path, "iterdir", _fail)
+    skips = {}
+
+    assert discover_for_source_key(
+        source_key, source, pattern, _directory_skips=skips,
+    ) == []
+    assert skips == {}
+
+
+def test_glob_family_explicit_files_bypass_denied_parent_probe(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Explicit Pi-hole and CloudTrail files stay ungated by parent listing."""
+    parent = tmp_path / "denied-parent"
+    parent.mkdir()
+    pihole = parent / "renamed-dnsmasq.txt"
+    pihole.write_text(
+        "Jun  5 12:00:00 dnsmasq[1]: query[A] a.test from 192.0.2.1\n",
+        encoding="utf-8",
+    )
+    cloudtrail = parent / "renamed-events.txt"
+    _ct_write_ndjson(cloudtrail, [_ct_event()])
+    real_iterdir = Path.iterdir
+
+    def _deny(path: Path):
+        if path == parent:
+            raise PermissionError(13, "synthetic denied")
+        return real_iterdir(path)
+
+    monkeypatch.setattr(Path, "iterdir", _deny)
+    skips = {}
+
+    assert discover_for_source_key(
+        "pihole_dir", pihole, "pihole*.log*", _directory_skips=skips,
+    ) == [pihole]
+    assert discover_for_source_key(
+        "cloudtrail_dir", cloudtrail, "*.json*", _directory_skips=skips,
+    ) == [cloudtrail]
+    assert len(load_pihole(pihole)) == 1
+    assert len(load_cloudtrail(cloudtrail)) == 1
+    assert skips == {}
+
+
+def test_cloudtrail_deep_listing_denial_remains_undisclosed_known_gap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The input-root probe cannot observe a denial swallowed inside rglob."""
+    root = tmp_path / "cloudtrail"
+    nested = root / "AWSLogs" / "000000000000" / "CloudTrail"
+    nested.mkdir(parents=True)
+    real_iterdir = Path.iterdir
+
+    def _deny_nested(path: Path):
+        if path == nested:
+            raise PermissionError(13, "synthetic nested denial")
+        return real_iterdir(path)
+
+    def _swallow_nested_denial(path: Path, pattern: str):
+        if path == root:
+            try:
+                next(iter(nested.iterdir()), None)
+            except PermissionError:
+                return iter(())
+        return iter(())
+
+    monkeypatch.setattr(Path, "iterdir", _deny_nested)
+    monkeypatch.setattr(Path, "rglob", _swallow_nested_denial)
+    skips = {}
+
+    assert discover_cloudtrail_files(root, _directory_skips=skips) == []
+    assert skips == {}
 
 
 def test_denied_zeek_layout_uses_universal_trim_not_flat_inference(

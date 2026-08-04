@@ -69,6 +69,25 @@ def _list_directory(
         raise _DirectoryListingDenied from None
 
 
+def _probe_directory_listable(
+    directory: Path,
+    source_key: str,
+    sink: dict[tuple[str, Path], DirectorySkipInfo] | None,
+) -> bool:
+    """Probe one child and record only a real permission-denied outcome."""
+    try:
+        next(iter(directory.iterdir()), None)
+    except PermissionError:
+        _record_directory_skip(source_key, directory, sink)
+        return False
+    except OSError:
+        # glob/rglob historically collapse other path and I/O failures to no
+        # matches. Preserve that containment without feeding the hard-coded
+        # "permission denied" operator note a false cause.
+        return False
+    return True
+
+
 def _zeek_date_subdirs(
     directory: Path,
     *,
@@ -384,7 +403,12 @@ def discover_zeek_files(
     return files
 
 
-def _syslog_files(path: Path, pattern: str = "*.log*") -> list[Path]:
+def _syslog_files(
+    path: Path,
+    pattern: str = "*.log*",
+    *,
+    _directory_skips: dict[tuple[str, Path], DirectorySkipInfo] | None = None,
+) -> list[Path]:
     """Return flat-source files to process by FILENAME glob: ``[path]`` if a file,
     else files matching ``pattern`` in the directory - ``._``-prefixed AppleDouble
     sidecars dropped, numeric rotation order.
@@ -401,6 +425,8 @@ def _syslog_files(path: Path, pattern: str = "*.log*") -> list[Path]:
     """
     if path.is_file():
         return [path]
+    if not _probe_directory_listable(path, "pihole_dir", _directory_skips):
+        return []
     files = [p for p in discover_files(path, pattern) if not p.name.startswith("._")]
     return sorted(files, key=lambda p: _rotation_base_and_index(p.name))
 
@@ -469,7 +495,11 @@ def _dir_has_regular_files(path: Path) -> bool:
         return False
 
 
-def discover_cloudtrail_files(path: Path) -> list[Path]:
+def discover_cloudtrail_files(
+    path: Path,
+    *,
+    _directory_skips: dict[tuple[str, Path], DirectorySkipInfo] | None = None,
+) -> list[Path]:
     """Discover CloudTrail event files for the loader and runner satisfiability check.
 
     File path → [path]. Directory → recursive sorted ``*.json*`` matches, excluding
@@ -486,6 +516,10 @@ def discover_cloudtrail_files(path: Path) -> list[Path]:
     if path.is_file():
         return [path]
     if not path.is_dir():
+        return []
+    if not _probe_directory_listable(
+        path, "cloudtrail_dir", _directory_skips,
+    ):
         return []
     files: list[Path] = []
     for candidate in sorted(path.rglob("*.json*")):

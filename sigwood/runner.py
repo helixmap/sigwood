@@ -1402,26 +1402,24 @@ def _any_input_yields_files(
     Per-family mapping (matches ``load_required_logs``):
 
     - ``zeek_dir``      → ``discover_zeek_files(input, pattern)`` per input
-    - ``cloudtrail_dir``→ ``discover_cloudtrail_files(input)`` per input
+    - ``cloudtrail_dir``→ its registered recursive discovery per input
     - ``syslog_dir``    → ``_discover_syslog_files(input)`` per input - the LOADER
       content-sniffs syslog DIRECTORY candidates (RHEL/Fedora streams carry no
       ``.log`` suffix; ``dnf.log`` etc. would be mis-claimed by a filename glob),
       so plan-time MUST too (one-universe rail). A ``/var/log`` holding only
       ``dnf.log`` reports syslog NOT satisfiable → the detector skips with its
       actionable "not found" message instead of garbage.
-    - ``pihole_dir``    → ``_syslog_files(input, pattern)`` per input - the LOADER
-      threads the detector's pattern (``pihole*.log*``) into ``_syslog_files``
-      for DIRECTORY discovery, so plan-time MUST too. An explicit FILE still
-      routes as ``[path]`` regardless of pattern, so a content-routed Pi-hole
-      input named e.g. ``events.log`` is NOT plan-rejected.
+    - ``pihole_dir``    → its registered ``_syslog_files(input, pattern)`` per
+      input - the LOADER threads the detector's pattern (``pihole*.log*``) into
+      ``_syslog_files`` for DIRECTORY discovery, so plan-time MUST too. An
+      explicit FILE still routes as ``[path]`` regardless of pattern, so a
+      content-routed Pi-hole input named e.g. ``events.log`` is NOT plan-rejected.
 
     Returns True iff ANY input yields at least one file.
     """
     from sigwood.common.loader import (
         _discover_syslog_files,
-        _syslog_files,
         discover_for_source_key,
-        discover_cloudtrail_files,
         discover_zeek_files,
     )
     for p in paths:
@@ -1435,7 +1433,12 @@ def _any_input_yields_files(
             ):
                 return True
         elif source == "cloudtrail_dir":
-            if discover_cloudtrail_files(p):
+            if discover_for_source_key(
+                source,
+                p,
+                pattern,
+                _directory_skips=_directory_skips,
+            ):
                 return True
         elif source == "syslog_dir":
             if _discover_syslog_files(
@@ -1443,7 +1446,12 @@ def _any_input_yields_files(
             ):
                 return True
         elif source == "pihole_dir":
-            if _syslog_files(p, pattern):
+            if discover_for_source_key(
+                source,
+                p,
+                pattern,
+                _directory_skips=_directory_skips,
+            ):
                 return True
         elif source == "journal":
             if discover_for_source_key(

@@ -68,6 +68,69 @@ def _good_worker(
     result_queue.put(("ok", np.zeros(len(X), dtype=np.int64)))
 
 
+# ── 0. Tiny-input preservation control ──────────────────────────────────────
+
+
+def test_two_samples_preserve_active_backend_labels() -> None:
+    """Two samples are a working backend input and must stay on the real path.
+
+    This control is green before the degenerate-input guard lands. Comparing
+    the shared helper to the active backend prevents a future guard from
+    swallowing the smallest input the backend can compute.
+    """
+    X = np.zeros((2, 4), dtype=np.float64)
+    expected = clustering.HDBSCAN(
+        min_cluster_size=25, min_samples=5,
+    ).fit_predict(X)
+
+    actual = clustering.fit_predict_interruptible(
+        X, min_cluster_size=25, min_samples=5,
+    )
+
+    assert np.array_equal(actual, expected)
+    assert actual.dtype.kind == expected.dtype.kind
+
+
+@pytest.mark.parametrize("config_path", ["zeek", "pihole"])
+@pytest.mark.parametrize("sample_count", [0, 1])
+def test_fewer_than_two_samples_return_noise_without_spawning(
+    monkeypatch: pytest.MonkeyPatch,
+    config_path: str,
+    sample_count: int,
+) -> None:
+    """Both DNS config pairs share the parent-side all-noise fast path."""
+    from sigwood.detectors.dns import DEFAULT_CONFIG
+
+    config = (
+        DEFAULT_CONFIG
+        if config_path == "zeek"
+        else DEFAULT_CONFIG["pihole"]
+    )
+    min_cluster_size = config["min_cluster_size"]
+    min_samples = config["min_samples"]
+    reference = clustering.HDBSCAN(
+        min_cluster_size=min_cluster_size,
+        min_samples=min_samples,
+    ).fit_predict(np.zeros((2, 4), dtype=np.float64))
+
+    def _spawn_is_a_failure(_method: str) -> None:
+        pytest.fail("degenerate input reached multiprocessing.get_context")
+
+    monkeypatch.setattr(
+        clustering.multiprocessing, "get_context", _spawn_is_a_failure,
+    )
+
+    labels = clustering.fit_predict_interruptible(
+        np.zeros((sample_count, 4), dtype=np.float64),
+        min_cluster_size=min_cluster_size,
+        min_samples=min_samples,
+    )
+
+    assert labels.shape == (sample_count,)
+    assert np.all(labels == -1)
+    assert labels.dtype.kind == reference.dtype.kind
+
+
 # ── 1. Interruptibility - KeyboardInterrupt propagates, child terminated ────
 
 

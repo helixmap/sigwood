@@ -130,10 +130,9 @@ class SourceLoader:
         this source's file path through ``LoadResult.file_spans``. Journal opts
         out because its private capture path must never leave the loader.
       - ``records_directory_denials``: whether ``discover`` accepts the private
-        caller-owned directory-denial sink. Only Zeek and syslog opt in: their
-        immediate-child discovery raises on EACCES. Pi-hole and CloudTrail
-        directory globs currently collapse unreadable inputs to no matches, so
-        ``False`` is a scoped disclosure gap, not a claim that denial is handled.
+        caller-owned directory-denial sink. All four filesystem families opt in
+        for their configured input root; CloudTrail recursive child denials stay
+        outside that root-probe contract.
     """
 
     discover: Callable[[Path, str, datetime | None, datetime | None], list[Path]]
@@ -177,8 +176,8 @@ class SourceLoader:
     # Whether this strategy may publish file-path timestamp spans in LoadResult.
     # Trailing/defaulted keeps ordinary file strategies and test constructions on.
     records_file_spans: bool = True
-    # See the class docstring: False preserves programmatic strategy callables
-    # and the still-silent glob-family behavior without claiming coverage.
+    # See the class docstring. False preserves programmatic strategy callables
+    # and non-filesystem strategies that do not accept the private sink.
     records_directory_denials: bool = False
 
     def discover_paths(
@@ -940,7 +939,9 @@ _SOURCE_LOADERS: dict[str, SourceLoader] = {
         records_directory_denials=True,
     ),
     "pihole_dir": SourceLoader(
-        discover=lambda p, pattern, since, until: _syslog_files(p, pattern),
+        discover=lambda p, pattern, since, until, *, _directory_skips=None: (
+            _syslog_files(p, pattern, _directory_skips=_directory_skips)
+        ),
         mode="stream",
         parse=_pihole_strategy_parse,
         ts_policy="keep",
@@ -950,9 +951,12 @@ _SOURCE_LOADERS: dict[str, SourceLoader] = {
         normalize=None,
         window_select=_rotation_windowed_files,
         resolve_window=_flat_resolve_window,
+        records_directory_denials=True,
     ),
     "cloudtrail_dir": SourceLoader(
-        discover=lambda p, pattern, since, until: discover_cloudtrail_files(p),
+        discover=lambda p, pattern, since, until, *, _directory_skips=None: (
+            discover_cloudtrail_files(p, _directory_skips=_directory_skips)
+        ),
         mode="stream",
         parse=_cloudtrail_strategy_parse,
         ts_policy="drop",
@@ -962,6 +966,7 @@ _SOURCE_LOADERS: dict[str, SourceLoader] = {
         # aws is baseline-relative - opt CloudTrail OUT of the auto-default window
         # (an explicit --since/--until still narrows it).
         default_window_eligible=False,
+        records_directory_denials=True,
     ),
     "journal": SourceLoader(
         # The producer's lock-protected active-capture registry is the gate;
@@ -1185,9 +1190,9 @@ def load_required_logs(
     permission-accounting path. It is keyed by pattern because one source
     family can load multiple patterns.
 
-    ``_directory_skips`` is the caller-owned plan sink for pre-candidate Zeek
-    and syslog listing denials. Discovery updates it by ``(source, realpath)``;
-    it is not copied into ``LoadResult``.
+    ``_directory_skips`` is the caller-owned plan sink for pre-candidate input-root
+    listing denials. Discovery updates it by ``(source, realpath)``; it is not
+    copied into ``LoadResult``. CloudTrail does not claim recursive-child coverage.
     """
     logs: dict[str, pd.DataFrame] = {}
     record_counts: dict[str, int] = {}

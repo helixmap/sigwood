@@ -1722,6 +1722,152 @@ def test_multi_input_directory_denial_runs_detector_and_adds_only_note(
     assert any("contents are absent from this run" in note for note in summary.notes)
 
 
+@pytest.mark.parametrize(
+    "source_key, source_kwarg, pattern, label",
+    [
+        ("pihole_dir", "pihole_dir", "pihole*.log*", "Pi-hole"),
+        ("cloudtrail_dir", "cloudtrail_dir", "*.json*", "CloudTrail"),
+    ],
+)
+def test_glob_family_directory_denial_keeps_readable_sibling_and_one_safe_note(
+    source_key: str,
+    source_kwarg: str,
+    pattern: str,
+    label: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capture_summary,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """New glob-family producers retain partial success and sink safety."""
+    denied = tmp_path / 'denied\x1b[31m<tag attr="x">&'
+    denied.mkdir()
+    readable = tmp_path / "readable"
+    readable.mkdir()
+    if source_key == "pihole_dir":
+        (readable / "pihole.log").write_text(
+            "Jun  5 12:00:00 dnsmasq[1]: query[A] a.test from 192.0.2.1\n",
+            encoding="utf-8",
+        )
+    else:
+        (readable / "events.json.log").write_text(
+            json.dumps(_ct_event("2026-06-01T12:00:00Z", "event-a")) + "\n",
+            encoding="utf-8",
+        )
+    _deny_directory_listing(monkeypatch, {denied})
+    detector = SimpleNamespace(
+        DETECTOR_NAME="probe",
+        STATUS="available",
+        IN_DEFAULT_HUNT=False,
+        REQUIRED_LOGS=[{"source": source_key, "pattern": pattern}],
+        OPTIONAL_LOGS=[],
+        DEFAULT_CONFIG={},
+        run=lambda _ctx: [],
+    )
+    monkeypatch.setattr(
+        runner, "discover_detectors", lambda **_: {"probe": detector},
+    )
+
+    rc = runner.run(
+        config={"sigwood": {"detect": "probe", "default_window": "all"}},
+        quiet=True,
+        **{source_kwarg: [denied, readable]},
+    )
+
+    summary = capture_summary["summary"]
+    notes = [note for note in summary.notes if "directory could not be listed" in note]
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert summary.detectors_run == ["probe"]
+    assert summary.detectors_skipped == {}
+    assert summary.detectors_failed == {}
+    assert len(notes) == 1
+    assert notes[0].startswith(f"{label}: directory could not be listed")
+    assert "denied[31m<tag" in notes[0]
+    assert all(ch not in notes[0] for ch in ("\x1b", "\x07", "\x7f", "\x9b"))
+    assert "none match" not in captured.err
+    assert "none match" not in captured.out
+
+
+def test_pihole_denial_has_directory_note_without_pattern_mismatch_warning(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One denied Pi-hole directory produces exactly one disclosure channel."""
+    from sigwood.common import loader
+
+    denied = tmp_path / "pihole"
+    denied.mkdir()
+    _deny_directory_listing(monkeypatch, {denied})
+    skips = {}
+
+    result = loader.load_required_logs(
+        {"pihole*.log*": "pihole_dir"},
+        {"pihole_dir": [denied]},
+        _directory_skips=skips,
+    )
+    plan = RunPlan(
+        detectors={},
+        selected=[],
+        will_run=[],
+        skipped={},
+        needed_logs={"pihole*.log*": "pihole_dir"},
+        directory_skips=skips,
+    )
+
+    notes = runner._directory_skip_notes(plan)
+    assert len(notes) == 1
+    assert notes[0].startswith("Pi-hole: directory could not be listed")
+    assert not any("none match" in warning for warning in result.warnings)
+
+
+@pytest.mark.parametrize(
+    "source_key, source_kwarg, pattern",
+    [
+        ("pihole_dir", "pihole_dir", "pihole*.log*"),
+        ("cloudtrail_dir", "cloudtrail_dir", "*.json*"),
+    ],
+)
+def test_glob_family_total_directory_denial_is_an_actionable_skip(
+    source_key: str,
+    source_kwarg: str,
+    pattern: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A sole denied root gets the existing truthful skip reason, not silence."""
+    denied = tmp_path / source_key
+    denied.mkdir()
+    _deny_directory_listing(monkeypatch, {denied})
+    detector = SimpleNamespace(
+        DETECTOR_NAME="probe",
+        STATUS="available",
+        IN_DEFAULT_HUNT=False,
+        REQUIRED_LOGS=[{"source": source_key, "pattern": pattern}],
+        OPTIONAL_LOGS=[],
+        DEFAULT_CONFIG={},
+        run=lambda _ctx: [],
+    )
+    monkeypatch.setattr(
+        runner, "discover_detectors", lambda **_: {"probe": detector},
+    )
+
+    rc = runner.run(
+        config={"sigwood": {"detect": "probe", "default_window": "all"}},
+        quiet=True,
+        **{source_kwarg: denied},
+    )
+
+    captured = capsys.readouterr()
+    assert rc == 1
+    assert (
+        f"{source_key} directory could not be listed (permission denied)"
+        in captured.err
+    )
+    assert "no detectors could run" in captured.err
+    assert "PermissionError" not in captured.err
+
+
 def test_directory_skip_sink_dedups_required_optional_window_and_load(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -4126,6 +4272,85 @@ def test_clean_run_has_empty_detectors_failed_and_exit_zero(
 
     assert capture_summary["summary"].detectors_failed == {}
     assert rc == 0
+
+
+def test_single_dns_row_is_a_clean_runner_result(
+    tmp_path: Path,
+    capture_summary,
+) -> None:
+    """A legitimate singleton DNS window must not become a failed detector."""
+    zeek_dir = tmp_path / "zeek"
+    zeek_dir.mkdir()
+    query = "x9q7v2k4m8.example.com"
+    _write_ndjson(zeek_dir / "dns.log", [{
+        "ts": _TS_JAN5,
+        "id.orig_h": "192.0.2.10",
+        "query": query,
+        "rcode": 3,
+    }])
+
+    rc = runner.run(
+        config={"sigwood": {"detect": "dns", "default_window": ""}},
+        zeek_dir=zeek_dir,
+        no_allowlist=True,
+    )
+
+    summary = capture_summary["summary"]
+    assert rc == 0
+    assert summary.detectors_failed == {}
+    assert summary.detectors_run == ["dns"]
+    assert [finding.title for finding in capture_summary["findings"]] == [query]
+
+
+def test_dns_allowlist_reduction_to_one_row_is_a_clean_runner_result(
+    tmp_path: Path,
+    capture_summary,
+) -> None:
+    """The real filter-before-analyze path may ordinarily leave one DNS row."""
+    zeek_dir = tmp_path / "zeek"
+    zeek_dir.mkdir()
+    suppressed = "telemetry.example.com"
+    survivor = "x9q7v2k4m8.example.com"
+    _write_ndjson(zeek_dir / "dns.log", [
+        {
+            "ts": _TS_JAN5,
+            "id.orig_h": "192.0.2.10",
+            "query": suppressed,
+            "rcode": 0,
+        },
+        {
+            "ts": _TS_JAN5 + 1,
+            "id.orig_h": "192.0.2.11",
+            "query": survivor,
+            "rcode": 3,
+        },
+    ])
+    domain_patterns = tmp_path / "domains_test"
+    domain_patterns.write_text(f"{suppressed}\n", encoding="utf-8")
+
+    rc = runner.run(
+        config={
+            "sigwood": {"detect": "dns", "default_window": ""},
+            "allowlist": {
+                "lists": {
+                    "common": False,
+                    "devices": False,
+                    "homelab": False,
+                },
+                "allowlist_dir": "",
+                "domain_patterns": [str(domain_patterns)],
+            },
+        },
+        zeek_dir=zeek_dir,
+    )
+
+    summary = capture_summary["summary"]
+    assert rc == 0
+    assert summary.detectors_failed == {}
+    assert summary.suppression is not None
+    assert summary.suppression.domains == 1
+    assert summary.suppression.domain_total == 2
+    assert [finding.title for finding in capture_summary["findings"]] == [survivor]
 
 
 def test_failure_reason_empty_message_falls_back_to_type_name() -> None:

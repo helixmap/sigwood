@@ -136,6 +136,30 @@ def test_run_minimal_schema_does_not_raise(monkeypatch) -> None:
     assert isinstance(result, list)
 
 
+def test_run_one_zeek_row_surfaces_through_existing_gate(monkeypatch) -> None:
+    """A singleton frame is all-noise and keeps the ordinary candidate gate."""
+    import sigwood.detectors.dns as dns_mod
+
+    monkeypatch.setattr(dns_mod, "_TLD_EXTRACT", _fake_extract)
+    query = "x9q7v2k4m8.example.com"
+    ctx = DetectorContext.unsuppressed(
+        logs={
+            "dns*.log*": pd.DataFrame([{
+                "ts": 1.0,
+                "src": "192.0.2.1",
+                "query": query,
+                "rcode": 3,
+            }]),
+        },
+        config={},
+        data_window=_WINDOW,
+    )
+
+    result = run(ctx)
+
+    assert [finding.title for finding in result] == [query]
+
+
 # ── Test 2 - _build_features minimal schema → query-derived only ─────────────
 
 def test_query_shape_uses_dns_labels_not_raw_split_fragments() -> None:

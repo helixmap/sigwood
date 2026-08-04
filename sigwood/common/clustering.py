@@ -29,6 +29,8 @@ regardless of the native call's GIL state. On ``KeyboardInterrupt`` the
 child is terminated, the queue is drained and closed, and the exception
 re-raises to the caller (the existing ``liveness()`` teardown + the
 ``cli.main()`` top-level handler print "Stopped." and exit 130).
+Inputs with fewer than two rows have a defined all-noise result and return
+that integer label array in the parent without spawning a child.
 
 For notebook / standalone callers (or any environment where ``spawn`` is
 fragile - Jupyter is the canonical case), the module-level switch
@@ -243,26 +245,34 @@ def fit_predict_interruptible(
     contract is a label int array, shape ``(len(X),)``; the detector logic
     above/below is unchanged.
 
-    When ``_CLUSTERING_ISOLATE_ENABLED`` is True (the CLI/runner default),
-    runs the compute in a spawned child process so SIGINT delivered to
-    the parent main thread is honoured regardless of the native call's
-    GIL state. On ``KeyboardInterrupt`` the child is terminated and the
-    exception re-raises to the caller (``liveness()`` teardown +
-    ``cli.main()``'s top-level handler print "Stopped." and exit 130).
+    Inputs with fewer than two rows return all-noise labels in the parent.
+    HDBSCAN cannot compute these degenerate matrices, but a single point
+    cannot form a cluster; avoiding the child also keeps the fast path cheap.
+
+    For inputs with at least two rows, when
+    ``_CLUSTERING_ISOLATE_ENABLED`` is True (the CLI/runner default), runs
+    the compute in a spawned child process so SIGINT delivered to the parent
+    main thread is honoured regardless of the native call's GIL state. On
+    ``KeyboardInterrupt`` the child is terminated and the exception re-raises
+    to the caller (``liveness()`` teardown + ``cli.main()``'s top-level
+    handler print "Stopped." and exit 130).
 
     When False (notebook / standalone escape hatch), runs in-process via
     ``_inline_fit_predict`` and preserves today's behaviour byte-for-byte.
 
     Raises:
-        ValueError: when the child reports a clustering failure
-            (degenerate input, etc.) - preserves the detector contract
-            that a clustering failure surfaces as a normal exception.
+        ValueError: when the child reports a clustering failure, preserving
+            the detector contract that a clustering failure surfaces as a
+            normal exception.
         RuntimeError: when the child dies without putting a result
             (segfault, OOM kill, etc.) - never silently hangs.
         KeyboardInterrupt: re-raised after child termination so the
             existing ``liveness()`` + ``cli.main()`` machinery handles
             teardown.
     """
+    if len(X) < 2:
+        return np.full(len(X), -1, dtype=int)
+
     if not _CLUSTERING_ISOLATE_ENABLED:
         return _inline_fit_predict(X, min_cluster_size, min_samples)
 

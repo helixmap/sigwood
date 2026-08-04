@@ -145,6 +145,16 @@ Run the curated default hunt (`sigwood hunt`), run everything available
 (`sigwood hunt --detect='all,!syslog'`). Each detector is also its own subcommand:
 `sigwood beacon ~/zeek`.
 
+**And what it doesn't hunt.** sigwood watches up to three flanks - your network, your
+system logs, and your cloud API activity - whichever of them you actually have, and with
+no agent on your machines, so some attacker behavior stays out of view however good the
+detectors get. The
+[roadmap](https://github.com/helixmap/sigwood/blob/main/docs/ROADMAP.md) maps both halves
+onto the [MITRE ATT&CK](https://attack.mitre.org/) matrix, tactic by tactic: what sigwood
+sees today, what could narrow each gap, and which gaps it will never close - some because
+closing them would mean shipping threat-intel feeds or signature packs instead of
+behavior, others because they sit outside its agentless, behavior-first design.
+
 ## Orient before the hunt: `digest`
 
 ```bash

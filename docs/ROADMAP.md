@@ -4,6 +4,11 @@ Where sigwood is and where it's headed. This is direction, not a dated schedule 
 some of it is committed, some is ideas worth chasing. sigwood is a single-maintainer
 project, so it moves as time allows.
 
+The middle section maps what sigwood can and cannot see onto the
+[MITRE ATT&CK](https://attack.mitre.org/) matrix, because that is the honest way to
+answer "what does this actually catch?" - including the parts of the answer that are
+"nothing, and here is why."
+
 ## Shipped
 
 What sigwood does today:
@@ -30,6 +35,55 @@ What sigwood does today:
 - **Exporters** that pull from Splunk, and from CloudTrail in S3, into local files
   when your logs live somewhere else.
 
+## Coverage: what sigwood actually sees
+
+sigwood can watch up to three flanks - your network (via Zeek), your system logs (the
+systemd journal, flat rsyslog, or Zeek's own syslog.log), and your cloud API activity
+(CloudTrail) - and it sees only the ones you actually have and point it at. It has no
+agent on your machines and never inspects process memory, so some attacker behavior is
+out of view however good the detectors get.
+
+**How to read the table.** *Today* means a shipped capability **when the relevant source
+is present**; where a row depends on a detector outside the default hunt, the cell names
+it. Naming an ATT&CK technique is an *association*, not a claim of full coverage - a
+signal can be the behavior itself, or merely consistent with it, or just a side effect of
+it, and those are very different things. The per-detector limits that qualify these rows
+- beacon's span and aliasing edges, DNS source fidelity, aws's window-relative
+first-seen behavior, duration's opt-in severity model - are catalogued in
+[Known issues](KNOWN-ISSUES.md) rather than repeated here. The mapping is pinned to
+**ATT&CK Enterprise v19.1** (checked 2026-08-04); a later ATT&CK release means this table
+needs re-checking.
+
+| Tactic | Today | What could narrow the gap |
+|---|---|---|
+| Reconnaissance | Sweeps against your estate (`scan`) | Web server logs |
+| Resource Development | Nothing - it happens on attacker infrastructure | Nothing in sigwood's own telemetry; only external intelligence, which it won't ship |
+| Initial Access | A window-first burst of new actions by one principal - compatible with stolen-key use, not proof of it (`aws`) | `auth`: failed logins ending in a success |
+| Execution | An occasional rare `sudo` line (`syslog`) | Linux audit records, where enabled |
+| Persistence | Rare account-management lines - `useradd` and kin (`syslog`) | Recognizing the edit itself: a crontab change, a new unit, a new SSH key |
+| Privilege Escalation | Rare `sudo`/`su`, by rarity not by meaning (`syslog`) | `auth`: denied, then granted |
+| Stealth | Very little - camouflage is a host-level behavior | Little. Endpoint territory, and we say so |
+| Defense Impairment | Nothing dedicated - a logging change may surface only incidentally, inside a broader unusual API burst (`aws`) | Naming it directly; noticing a host go quiet |
+| Credential Access | Little - steady failures look routine, by design | `auth`: guessing that *worked* |
+| Discovery | LAN sweeps (`scan`), cloud enumeration bursts (`aws`) | Already the best-served here |
+| Lateral Movement | Little, unless it looks like a sweep | `auth` topology; Zeek SMB and SSH logs |
+| Collection | Nothing claimed | Zeek SMB logs |
+| Command and Control | Check-in timing (`beacon`); generated-looking domains (`dns`), with the dense tunnel path Zeek-only | TLS anomalies, odd ports, tunnel log |
+| Exfiltration | DNS tunnelling shapes (`dns`, Zeek-only for the dense path) | Byte direction: loaded and summarized today, but no detector analyzes it for exfiltration |
+| Impact | No mining-specific verdict; generic check-ins (`beacon`) and opt-in long flows (`duration`) can be downstream clues | Cloud destruction events; SMB file activity |
+
+**The shape of it.** This roadmap weights one particular threat model - a self-hosted
+estate facing opportunistic internet attacks, compromised IoT devices and routers,
+cryptominers, info-stealers, and stolen cloud keys - and that weighting is an assumption,
+not a measured fact about the world. Against *that* model, sigwood's coverage is
+strongest at command and control, discovery, exfiltration, and, once `auth` lands,
+initial access. It is weak, and should stay weak, at the tactics that need an agent on
+the host: credential dumping from memory, exploitation of a local vulnerability, file
+encryption as it happens, and behavioral camouflage. Some of that darkness cannot be
+fixed from these flanks at all. One structural advantage worth naming: when Zeek runs on
+a separate sensor, an attacker with root on a machine can erase that machine's local logs
+but cannot reach the network record.
+
 ## Next up
 
 Actively being worked on or thought through:
@@ -45,35 +99,54 @@ Actively being worked on or thought through:
 
 Bigger pieces that need real experimentation first - sigwood's detectors are
 prototyped in the open, as scripts and notebooks under `notebooks/` run against
-real logs, before they ship (see [CONTRIBUTING.md](../CONTRIBUTING.md)):
+real logs, before they ship (see [CONTRIBUTING.md](../CONTRIBUTING.md)). Grouped by
+the gap each one could narrow:
 
-- **More detectors** - **dnsblock** (behavioral patterns in blocked Pi-hole queries:
-  who reaches for known-bad domains, how persistently, across how many clients),
-  authentication analysis from `auth.log`/`secure` (brute force, odd login times), TLS
-  and certificate anomalies from Zeek `ssl.log`, and Zeek's own
-  `weird.log`/`notice.log`. A future CloudTrail identity and privilege-escalation
-  detector is its own thing, separate from the behavioral `aws` detector. New
-  detectors join the default hunt only after the current defaults are reviewable.
-- **DNS, beyond label shape** - research directions under active consideration for the
-  DNS detector, each behavioral rather than list-driven: grouping generated-looking
-  failed-lookup campaigns per client into one finding, then searching the same client's
-  successful lookups for the structurally-related name that resolved (the rendezvous
-  lead); a published lossless-compression bound on how much information a query stream
-  could carry (catches fixed-codebook, record-type, and timing channels that no
-  randomness score can see); joining DNS answers to connection-log behavior so a
-  resolve-once lookup is corroborated by the flow that followed it; per-client union
-  across Zeek and Pi-hole so adding a sensor never shrinks coverage; and richer
-  per-transaction fidelity from dnsmasq's `--log-queries=extra` format. Each enters
-  through the same measured discipline: a baseline to beat, held-back data, and results
-  that earn the method its place.
+- **Credential access and initial access** - authentication analysis from the system
+  log lane (`auth`): the shape worth reporting is a run of denials that ends in a grant,
+  and one source or account reaching an unusual number of accounts or hosts. Counting
+  failed logins alone is not a detection; every internet-facing SSH port sees those
+  constantly.
+- **Command and control** - TLS and certificate anomalies from Zeek `ssl.log`, judged
+  against your own estate's norms rather than a fingerprint database; Zeek's
+  `weird.log`/`notice.log`; and a protocol classifier that notices a service running
+  somewhere it normally does not.
+- **Exfiltration** - byte direction over connection logs. sigwood already loads
+  responder bytes but no detector reads them, so "who is uploading, and to whom" is
+  currently an unasked question.
+- **DNS, beyond label shape** - research directions under active consideration, each
+  behavioral rather than list-driven: grouping generated-looking failed-lookup campaigns
+  per client into one finding, then searching the same client's successful lookups for
+  the structurally-related name that resolved (the rendezvous lead); a published
+  lossless-compression bound on how much information a query stream could carry (catches
+  fixed-codebook, record-type, and timing channels that no randomness score can see);
+  joining DNS answers to connection-log behavior so a resolve-once lookup is corroborated
+  by the flow that followed it; per-client union across Zeek and Pi-hole so adding a
+  sensor never shrinks coverage; and richer per-transaction fidelity from dnsmasq's
+  `--log-queries=extra` format.
+- **Known-bad access patterns** - **dnsblock**, over the domains your own Pi-hole
+  already blocks: who reaches for them, how persistently, across how many clients. It
+  uses your blocklist's verdicts, not a feed sigwood ships.
+- **Cloud identity and privilege** - a future CloudTrail identity and
+  privilege-escalation detector, separate from the behavioral `aws` detector and named
+  for its question.
+- **Corroboration across detectors** - today each detector reasons alone, which is why
+  beacon caps its own severity: regular timing is one kind of evidence, and severity
+  should rise only when independent kinds agree. Doing that honestly takes two steps, not
+  one. First, link records that refer to the same thing - a connection's destination to
+  the domain that resolved to it - and carry how *certain* that link is, because shared
+  hosting and stale answers make identity genuinely ambiguous. Only then, and only where
+  the signals are independent rather than two views of one fact, can severity rise. Being
+  confident that two records name the same host is not itself evidence of bad behavior.
 - **Beacon and aws, deeper on real evidence** - beacon recalibration is a full
   research branch (public C2 captures, a plain periodicity baseline to beat, the
   aliasing edges), not a quick tune; aws stays scored on the evidence actually
-  available to it. Ideas like per-detector windowing and seeding common monitoring
-  ports into the allowlist wait for that measured pass.
+  available to it.
 - **Exploratory ideas** - flagging scans of internal space at higher severity, a
-  protocol and application classifier over conn.log, a per-protocol anomaly model,
-  and an emailed-report output.
+  per-protocol anomaly model, and an emailed-report output.
+
+New detectors join the default hunt only after the current defaults are reviewable, and
+none of the above is a promise - each has to earn its place against real data first.
 
 ## By design, not on the roadmap
 
@@ -85,6 +158,21 @@ grow into any of these:
 - No real-time streaming or alerting pipeline - it runs over logs you already have.
 - Not a SIEM, and not trying to be - it sits between grep and a SIEM, a focused hunting
   tool that lives next to one.
+- **No threat-intel feeds, and no shipped lists of bad domains, IPs, or file hashes.**
+  Those are the cheapest thing for an attacker to change, so detections built on them
+  go stale quietly. sigwood looks for behavior instead - which is also why it will never
+  cover the Resource Development tactic above.
+- **No detector-per-event-ID catalogues.** A detector here answers one question
+  behaviorally, and does not grow into a signature pack to maintain. Narrow recognition of
+  stable, documented event semantics is fine - the `aws` work reads specific API verb
+  names that way - but the question comes first and the vocabulary stays small. What
+  sigwood rejects is signature-pack sprawl, not the use of semantic fields.
+
+Some things are left out for a plainer reason - there is no honest way to test them yet.
+Detections for Windows event logs, or for Active Directory protocols like Kerberos, are
+not ruled out on principle, but sigwood's current telemetry and measured corpora are
+Linux-heavy, and without real logs of that kind there is no way to measure whether a
+detector works or just makes noise. That measurement, not the idea, is the blocker.
 
 ---
 

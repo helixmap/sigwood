@@ -90,6 +90,14 @@ sigwood = ["data/**/*", "outputs/graph_player.html"]
 version = {attr = "sigwood.__version__"}
 
 [tool.pytest.ini_options]
+# The shipped suite is exactly `tests/`. Naming it here keeps a bare `pytest` on
+# that suite instead of walking the whole rootdir, so untracked working
+# directories cannot break collection - two ad-hoc files sharing a basename
+# import as one module name and abort the run before any product test loads.
+# Applies only when no path argument is given; an explicit path still collects
+# whatever it names.
+testpaths = ["tests"]
+
 # Dependency deprecations are errors, not noise: a FutureWarning/DeprecationWarning
 # fails CI instead of silently leaking into output. To consciously accept a
 # third-party warning we cannot fix, add one commented `ignore::…` entry below -

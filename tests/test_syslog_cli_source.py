@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -39,6 +40,24 @@ def _exit_one(argv: list[str]) -> None:
     with pytest.raises(SystemExit) as caught:
         cli.main(argv)
     assert caught.value.code == 1
+
+
+def _two_carrier_lane_mod() -> SimpleNamespace:
+    """Return a synthetic detector declaring both local system-log carriers."""
+    return SimpleNamespace(
+        DETECTOR_NAME="lane",
+        STATUS="available",
+        IN_DEFAULT_HUNT=False,
+        REQUIRED_LOGS=[],
+        OPTIONAL_LOGS=[
+            {"source": "syslog_dir", "pattern": "*.log*"},
+            {"source": "journal", "pattern": "*.log*"},
+        ],
+        REQUIRES_ONE_OF_OPTIONAL=True,
+        REQUIRES_ONE_OF_OPTIONAL_REASON="no local system-log source found",
+        DEFAULT_CONFIG={},
+        run=lambda _ctx: [],
+    )
 
 
 def test_flag_allowlist_is_hunt_and_syslog_only() -> None:
@@ -89,13 +108,32 @@ def test_forced_journal_with_flat_positional_conflicts_before_probe(
     assert "run 'sigwood --help' for usage" in err
 
 
-def test_explicit_active_mode_with_final_selection_excluding_syslog_is_usage_error(
+def test_explicit_active_mode_without_system_log_detector_is_usage_error(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     _exit_one(["hunt", "--detect=dns", "--syslog-source=files", "--dry-run"])
     err = capsys.readouterr().err
-    assert "requires the syslog detector in the final selection" in err
+    assert "requires a system-log detector in the final selection" in err
     assert "run 'sigwood --help' for usage" in err
+
+
+def test_forced_journal_accepts_a_synthetic_lane_detector(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    lane = _two_carrier_lane_mod()
+    config = _config(tmp_path, tmp_path, detect="lane")
+    monkeypatch.setattr(runner, "discover_detectors", lambda **_kwargs: {"lane": lane})
+    monkeypatch.setattr(
+        runner,
+        "probe_journal",
+        lambda **_kwargs: JournalProbeResult(JournalProbeCode.READY),
+    )
+
+    assert cli._main([
+        "hunt", "--detect=lane", "--syslog-source=journal", "--dry-run",
+        f"--config={config}",
+    ]) == 0
 
 
 def test_empty_detect_override_uses_default_before_syslog_intent_guard(

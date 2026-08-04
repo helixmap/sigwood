@@ -23,12 +23,23 @@ All notable changes to sigwood are recorded here. The format follows
 
 ### Changed
 
+- **The "working" spinner now uses the braille animation common to modern command-line
+  tools.** On a terminal that can encode it, the indicator beside a running phase cycles
+  through braille dots instead of `| / ─ \`. A terminal that cannot encode those
+  characters, and `TERM=dumb`, keep the ASCII spinner unchanged. The spin rate, the line
+  layout, and every other line of output are untouched. Encoding support is not the same
+  as font coverage, so a terminal missing braille glyphs may show placeholder boxes.
 - **A saved search named `default` no longer silently wins a bare `sigwood export`.**
   With several saved searches configured, `sigwood export` (or `sigwood export splunk`)
   now stops with the existing error naming them and the exact command to run instead of
   quietly picking the one called `default`. A single configured search still runs bare,
   whatever its name, and `default` remains a valid name to ask for explicitly. CloudTrail
   exports are unaffected. The example config and README no longer teach the old behavior.
+- **Two `--syslog-source` errors now name the requirement rather than one detector.** Asking
+  for an active system-log mode (`auto`, `journal`, `files`) when the final detector selection
+  contains no system-log detector reports `requires a system-log detector` - from the usage
+  error at the command line and from source resolution alike. For the shipped detector set,
+  no run behavior changes beyond the reworded errors.
 
 ### Added
 

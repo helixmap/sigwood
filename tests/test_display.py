@@ -377,14 +377,30 @@ def test_liveness_falls_back_to_ascii_spinner_on_non_unicode_stream(
         )
         ln.seal("done")
     assert any(f in fake.output for f in _ASCII_SPINNER_FRAMES)
-    # The | / \ frames are shared with the box-drawing set, so they appear in
-    # ASCII fallback too - only the box-exclusive glyph (the ─ horizontal bar)
-    # proves which set rendered. In fallback it must never reach the stream.
-    box_only = set(_SPINNER_FRAMES) - set(_ASCII_SPINNER_FRAMES)
-    assert not any(f in fake.output for f in box_only)
+    # The rich and ASCII sets are disjoint, so any rich frame proves that the
+    # fallback vocabulary leaked through.
+    rich_only = set(_SPINNER_FRAMES) - set(_ASCII_SPINNER_FRAMES)
+    assert not any(f in fake.output for f in rich_only)
 
 
-def test_spinner_frames_prefers_box_drawing_when_stream_can_encode(
+def test_rich_spinner_frames_use_exact_braille_cycle():
+    assert _SPINNER_FRAMES == (
+        "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏",
+    )
+
+
+def test_rich_spinner_frames_stay_in_braille_block():
+    assert all(
+        len(frame) == 1 and 0x2800 <= ord(frame) <= 0x28FF
+        for frame in _SPINNER_FRAMES
+    )
+
+
+def test_rich_spinner_frames_are_disjoint_from_ascii():
+    assert set(_SPINNER_FRAMES).isdisjoint(_ASCII_SPINNER_FRAMES)
+
+
+def test_spinner_frames_prefers_braille_when_stream_can_encode(
     monkeypatch,
 ):
     monkeypatch.delenv("TERM", raising=False)

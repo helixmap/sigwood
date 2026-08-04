@@ -61,6 +61,8 @@ from sigwood.common.syslog_mode import (
 _ALL_KEYS: tuple[str, ...] = (
     "zeek_dir", "syslog_dir", "pihole_dir", "cloudtrail_dir",
 )
+# Do NOT add zeek_dir: Zeek-only syslog must not make the runner probe journalctl.
+LOCAL_SYSLOG_SOURCES: frozenset[str] = frozenset({"syslog_dir", "journal"})
 
 _DIR_SNIFF_SAMPLE_LIMIT = 32
 _DIR_ORIGIN_PRIORITY: tuple[str, ...] = (
@@ -361,7 +363,7 @@ class SyslogIntent:
     mode: SyslogMode
     explicit_mode: bool
     explicit_path: bool
-    syslog_selected: bool
+    local_lane_selected: bool
     local_lane_eligible: bool
     report_local_lane: bool
     adjusted_scope: frozenset[str] | None
@@ -521,6 +523,24 @@ def _configured_syslog_mode(config: dict[str, Any]) -> ConfiguredSyslogMode:
     )
 
 
+def syslog_lane_detectors(
+    selected: Sequence[str], modules: Mapping[str, Any],
+) -> list[str]:
+    """Return selected detectors that declare a local system-log carrier."""
+    lane_detectors: list[str] = []
+    for name in selected:
+        mod = modules.get(name)
+        if mod is None:
+            continue
+        requirements = (
+            *getattr(mod, "REQUIRED_LOGS", ()),
+            *getattr(mod, "OPTIONAL_LOGS", ()),
+        )
+        if any(req.get("source") in LOCAL_SYSLOG_SOURCES for req in requirements):
+            lane_detectors.append(name)
+    return lane_detectors
+
+
 def _scope_with_syslog(
     scope: frozenset[str] | None, *, include: bool
 ) -> frozenset[str] | None:
@@ -540,7 +560,7 @@ def resolve_analyze_sources(
     overrides: dict[str, str | Path | Sequence[str | Path] | None],
     scope: frozenset[str] | None,
     syslog_source: object | None,
-    syslog_selected: bool,
+    local_lane_selected: bool,
 ) -> AnalyzeSources:
     """Resolve analyze paths once after classifying local-lane raw intent.
 
@@ -572,10 +592,10 @@ def resolve_analyze_sources(
     if (
         explicit_mode
         and mode in (SyslogMode.AUTO, SyslogMode.JOURNAL, SyslogMode.FILES)
-        and not syslog_selected
+        and not local_lane_selected
     ):
         raise ValueError(
-            f"syslog_source={mode.value} requires the syslog detector to be selected"
+            f"syslog_source={mode.value} requires a system-log detector to be selected"
         )
 
     initially_in_scope = scope is None or "syslog_dir" in scope
@@ -584,9 +604,11 @@ def resolve_analyze_sources(
         and mode in (SyslogMode.AUTO, SyslogMode.JOURNAL, SyslogMode.FILES)
     )
     local_lane_eligible = bool(
-        syslog_selected and (initially_in_scope or widens) and mode is not SyslogMode.OFF
+        local_lane_selected
+        and (initially_in_scope or widens)
+        and mode is not SyslogMode.OFF
     )
-    report_local_lane = bool(syslog_selected and (initially_in_scope or widens))
+    report_local_lane = bool(local_lane_selected and (initially_in_scope or widens))
     adjusted_scope = _scope_with_syslog(
         scope,
         include=local_lane_eligible and mode is not SyslogMode.OFF,
@@ -601,7 +623,7 @@ def resolve_analyze_sources(
         mode=mode,
         explicit_mode=explicit_mode,
         explicit_path=explicit_path,
-        syslog_selected=syslog_selected,
+        local_lane_selected=local_lane_selected,
         local_lane_eligible=local_lane_eligible,
         report_local_lane=report_local_lane,
         adjusted_scope=adjusted_scope,

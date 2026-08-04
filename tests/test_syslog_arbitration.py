@@ -11,6 +11,7 @@ import pandas as pd
 import pytest
 
 import sigwood.runner as runner
+import sigwood.common.sources as sources
 
 from sigwood.common.journal_probe import JournalProbeCode, JournalProbeResult
 from sigwood.common.loader import (
@@ -53,7 +54,7 @@ def _resolve(
         overrides={"syslog_dir": path},
         scope=scope,
         syslog_source=source,
-        syslog_selected=selected,
+        local_lane_selected=selected,
     )
 
 
@@ -71,6 +72,72 @@ def _capture(
         warnings=warnings,
         reason_codes=(),
     )
+
+
+def _declaring_mod(
+    *,
+    required: list[dict[str, str]] | None = None,
+    optional: list[dict[str, str]] | None = None,
+) -> SimpleNamespace:
+    """Build a minimal detector declaration for local-lane classification."""
+    return SimpleNamespace(
+        REQUIRED_LOGS=[] if required is None else required,
+        OPTIONAL_LOGS=[] if optional is None else optional,
+    )
+
+
+def test_syslog_lane_detectors_preserves_selected_order() -> None:
+    modules = {
+        "second": _declaring_mod(
+            optional=[{"source": "journal", "pattern": "*.log*"}],
+        ),
+        "first": _declaring_mod(
+            required=[{"source": "syslog_dir", "pattern": "auth.log*"}],
+        ),
+    }
+
+    assert sources.syslog_lane_detectors(["first", "second"], modules) == [
+        "first", "second",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("source", "slot"),
+    [
+        ("syslog_dir", "required"),
+        ("journal", "required"),
+        ("syslog_dir", "optional"),
+        ("journal", "optional"),
+    ],
+)
+def test_syslog_lane_detectors_recognizes_local_carrier_declarations(
+    source: str, slot: str,
+) -> None:
+    declaration = {"source": source, "pattern": "*.log*"}
+    mod = _declaring_mod(
+        required=[declaration] if slot == "required" else [],
+        optional=[declaration] if slot == "optional" else [],
+    )
+
+    assert sources.syslog_lane_detectors(["lane"], {"lane": mod}) == ["lane"]
+
+
+def test_syslog_lane_detectors_rejects_zeek_only_syslog_shape() -> None:
+    mod = _declaring_mod(
+        optional=[{"source": "zeek_dir", "pattern": "syslog*.log*"}],
+    )
+
+    assert sources.syslog_lane_detectors(["zeek-only"], {"zeek-only": mod}) == []
+
+
+def test_syslog_lane_detectors_skips_absent_selected_module() -> None:
+    lane = _declaring_mod(
+        optional=[{"source": "journal", "pattern": "*.log*"}],
+    )
+
+    assert sources.syslog_lane_detectors(["missing", "lane"], {"lane": lane}) == [
+        "lane",
+    ]
 
 
 def test_raw_mapping_without_mode_preserves_truthy_files_compat(tmp_path: Path) -> None:
@@ -158,16 +225,16 @@ def test_explicit_off_does_not_widen_scoped_run(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("mode", ["auto", "journal", "files"])
-def test_explicit_active_mode_requires_syslog_selection(
+def test_explicit_active_mode_requires_a_system_log_detector(
     tmp_path: Path, mode: str
 ) -> None:
-    with pytest.raises(ValueError, match="requires the syslog detector"):
+    with pytest.raises(ValueError, match="requires a system-log detector"):
         _resolve(_config(tmp_path), source=mode, selected=False)
 
 
 def test_explicit_off_is_legal_without_syslog_selection(tmp_path: Path) -> None:
     resolved = _resolve(_config(tmp_path), source="off", selected=False)
-    assert resolved.syslog.syslog_selected is False
+    assert resolved.syslog.local_lane_selected is False
 
 
 def test_auto_ready_selects_journal_and_never_files(tmp_path: Path) -> None:

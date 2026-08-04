@@ -1133,6 +1133,7 @@ def _run_hunt(
     sibling source-dirs suppressed.
     """
     import sigwood.runner as runner
+    from sigwood.common.sources import syslog_lane_detectors
 
     parsed = _parse_args(args, "hunt")
     syslog_mode = _cli_syslog_mode(parsed)
@@ -1161,9 +1162,12 @@ def _run_hunt(
         selection = runner.select_detectors(
             selection_spec
         )
-        if syslog_mode is not SyslogMode.OFF and "syslog" not in selection.selected:
+        if (
+            syslog_mode is not SyslogMode.OFF
+            and not syslog_lane_detectors(selection.selected, selection.detectors)
+        ):
             raise UsageError(
-                f"--syslog-source={syslog_mode.value} requires the syslog detector "
+                f"--syslog-source={syslog_mode.value} requires a system-log detector "
                 "in the final selection"
             )
 

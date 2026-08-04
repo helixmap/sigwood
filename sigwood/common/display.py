@@ -30,11 +30,23 @@ TEXT_RULE = "─" * TEXT_RULE_WIDTH
 TEXT_RULE_DOUBLE = "═" * TEXT_RULE_WIDTH
 _UNDERFILL_TOLERANCE = timedelta(hours=1)
 
-# Spinner frames cycle in this exact order. Only the horizontal frame upgrades
-# to the box-drawing bar (─) on capable terminals - the full box set (│ ╱ ╲)
-# left rendering artifacts on some terminals, so | / \ stay ASCII. Weak/minimal
-# terminals fall back to a plain ASCII hyphen.
-_SPINNER_FRAMES = ("|", "/", "─", "\\")
+# Spinner frames cycle in this exact order. Capable terminals use the
+# encode-gated Braille cycle; each frame is one code point and nominally one
+# cell. Weak/minimal terminals fall back to ASCII. Encoding does not prove font
+# coverage or actual cell metrics, so tofu on a UTF-8 terminal without Braille
+# glyphs is an accepted limitation.
+_SPINNER_FRAMES = (
+    "⠋",
+    "⠙",
+    "⠹",
+    "⠸",
+    "⠼",
+    "⠴",
+    "⠦",
+    "⠧",
+    "⠇",
+    "⠏",
+)
 _ASCII_SPINNER_FRAMES = ("|", "/", "-", "\\")
 # Per-frame interval. 120ms sits in the middle of the 100-150ms band that
 # reads as "alive" without thrashing the terminal.

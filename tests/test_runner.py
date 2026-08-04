@@ -21,6 +21,7 @@ from sigwood.common.display import (
     _CURSOR_SHOW,
     default_window_advisory,
 )
+from sigwood.common.journal_probe import JournalProbeCode, JournalProbeResult
 from sigwood.runner import (
     _DIGEST_TS_CONFIDENCE_FLOOR,
     _aws_no_interactive_note,
@@ -2895,6 +2896,146 @@ def _fake_detector(name: str, run_impl, *, in_default: bool = True):
         DEFAULT_CONFIG={},
         run=run_impl,
     )
+
+
+def _two_carrier_lane_detector() -> SimpleNamespace:
+    """Return a synthetic detector that can run from either local carrier."""
+    return SimpleNamespace(
+        DETECTOR_NAME="lane",
+        STATUS="available",
+        IN_DEFAULT_HUNT=False,
+        REQUIRED_LOGS=[],
+        OPTIONAL_LOGS=[
+            {"source": "syslog_dir", "pattern": "*.log*"},
+            {"source": "journal", "pattern": "*.log*"},
+        ],
+        REQUIRES_ONE_OF_OPTIONAL=True,
+        REQUIRES_ONE_OF_OPTIONAL_REASON="no local system-log source found",
+        DEFAULT_CONFIG={},
+        run=lambda _ctx: [],
+    )
+
+
+def test_lane_detector_reaches_probe_and_retains_flat_fallback_scope(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    lane = _two_carrier_lane_detector()
+    flat = tmp_path / "flat"
+    flat.mkdir()
+    (flat / "messages.log").write_text("synthetic system log\n", encoding="utf-8")
+    probes: list[dict[str, object]] = []
+    seen: dict[str, object] = {}
+    original_build_run_plan = runner.build_run_plan
+
+    def _probe(**kwargs: object) -> JournalProbeResult:
+        probes.append(kwargs)
+        return JournalProbeResult(JournalProbeCode.EXECUTABLE_MISSING)
+
+    def _recording_build_run_plan(**kwargs: object) -> runner.RunPlan:
+        seen["syslog_dir"] = kwargs["syslog_dir"]
+        return original_build_run_plan(**kwargs)
+
+    monkeypatch.setattr(runner, "discover_detectors", lambda **_kwargs: {"lane": lane})
+    monkeypatch.setattr(runner, "probe_journal", _probe)
+    monkeypatch.setattr(runner, "build_run_plan", _recording_build_run_plan)
+
+    assert runner.run(
+        config={"sigwood": {"detect": "lane", "root": "", "syslog_dir": str(flat)}},
+        dry_run=True,
+        quiet=True,
+        syslog_source="auto",
+    ) == 0
+    assert probes
+    assert seen["syslog_dir"] == [flat]
+
+
+def test_lane_skip_emits_one_local_off_diagnostic(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    lane = _two_carrier_lane_detector()
+    monkeypatch.setattr(runner, "discover_detectors", lambda **_kwargs: {"lane": lane})
+
+    assert runner.run(
+        config={
+            "sigwood": {
+                "detect": "lane",
+                "root": "",
+                "syslog_dir": str(tmp_path / "missing"),
+            },
+        },
+        quiet=True,
+        syslog_source="off",
+    ) == 1
+    assert capsys.readouterr().err.count("system logs: local lane off") == 1
+
+
+def test_non_lane_selection_skips_local_probe_and_flat_fallback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    non_lane = _fake_detector("nonlane", lambda _ctx: [])
+    flat = tmp_path / "flat"
+    flat.mkdir()
+    seen: dict[str, object] = {}
+    original_build_run_plan = runner.build_run_plan
+
+    def _recording_build_run_plan(**kwargs: object) -> runner.RunPlan:
+        seen["syslog_dir"] = kwargs["syslog_dir"]
+        return original_build_run_plan(**kwargs)
+
+    monkeypatch.setattr(
+        runner,
+        "discover_detectors",
+        lambda **_kwargs: {"nonlane": non_lane},
+    )
+    monkeypatch.setattr(
+        runner,
+        "probe_journal",
+        lambda **_kwargs: pytest.fail("non-lane selection must not probe"),
+    )
+    monkeypatch.setattr(runner, "build_run_plan", _recording_build_run_plan)
+
+    assert runner.run(
+        config={
+            "sigwood": {
+                "detect": "nonlane",
+                "root": "",
+                "syslog_dir": str(flat),
+                "syslog_source": "auto",
+            },
+        },
+        dry_run=True,
+        quiet=True,
+    ) == 0
+    assert seen["syslog_dir"] is None
+
+
+def test_import_failed_selected_name_does_not_break_lane_classification(
+    tmp_path: Path,
+) -> None:
+    lane = _two_carrier_lane_detector()
+    selection = runner.DetectorSelection(
+        detectors={"lane": lane},
+        selected=["missing", "lane"],
+        import_failures={"missing": "synthetic import failure"},
+    )
+
+    assert runner.run(
+        config={
+            "sigwood": {
+                "detect": "lane",
+                "root": "",
+                "syslog_dir": str(tmp_path / "flat"),
+            },
+        },
+        dry_run=True,
+        quiet=True,
+        syslog_source="off",
+        _detector_selection=selection,
+    ) == 0
 
 
 @pytest.mark.parametrize("detect_spec", [None, "default"])

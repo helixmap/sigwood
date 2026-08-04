@@ -81,6 +81,7 @@ from sigwood.common.sources import (
     resolve_digest_source,
     resolve_graph_source,
     resolve_analyze_sources,
+    syslog_lane_detectors,
 )
 from sigwood.common.sanitize import strip_control
 from sigwood.common.syslog_mode import SyslogMode
@@ -268,7 +269,9 @@ def _run_analyze(
         },
         scope=scope,
         syslog_source=syslog_source,
-        syslog_selected="syslog" in selection.selected,
+        local_lane_selected=bool(
+            syslog_lane_detectors(selection.selected, selection.detectors)
+        ),
     )
     resolved = analyze_sources.resolved
     syslog_intent = analyze_sources.syslog
@@ -811,8 +814,14 @@ def _emit_syslog_skip_diagnostic(
     decision: SyslogProviderDecision,
     intent: SyslogIntent,
 ) -> None:
-    """Explain the local-provider half before the combined syslog skip."""
-    if "syslog" not in plan.skipped or not intent.report_local_lane:
+    """Explain the local provider when a selected lane detector is skipped."""
+    if (
+        not any(
+            name in plan.skipped
+            for name in syslog_lane_detectors(plan.selected, plan.detectors)
+        )
+        or not intent.report_local_lane
+    ):
         return
     if decision.provider is SyslogProvider.OFF:
         _estderr("system logs: local lane off")

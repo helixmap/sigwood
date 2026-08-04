@@ -538,6 +538,60 @@ def test_detect_syslog_short_circuits_on_first_accepted_file(
     assert calls == [first.name]
 
 
+def test_detect_syslog_utmp_only_journald_tree_is_not_phantom_source(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An unreadable btmp cannot advertise flat syslog on a journal-only host."""
+    d = tmp_path / "var-log"
+    d.mkdir()
+    btmp = d / "btmp"
+    btmp.write_bytes(b"placeholder")
+    (d / "dpkg.log").write_text(
+        "2026-06-01 12:00:00 status installed placeholder\n",
+        encoding="utf-8",
+    )
+    (d / "journal").mkdir()
+    real_open = cli._open_log_head
+
+    def _deny(path: Path):
+        if path == btmp:
+            raise PermissionError(13, "synthetic denied")
+        return real_open(path)
+
+    monkeypatch.setattr(cli, "_SYSLOG_CANDIDATE", str(d))
+    monkeypatch.setattr(cli, "_open_log_head", _deny)
+
+    assert cli._detect_syslog() is None
+    assert cli._profile_dir(
+        str(d), (cli._SYSLOG_GLOB,), logs_label=None,
+        head_sniff=cli._looks_like_syslog_head,
+    ) is None
+
+
+def test_syslog_directory_name_filter_mirrors_loader() -> None:
+    """Behavioral drift tripwire for the stdlib-only init name mirror."""
+    from sigwood.common.loader import discovery
+
+    samples = {
+        "btmp": False,
+        "wtmp": False,
+        "utmp": False,
+        "lastlog": False,
+        "faillog": False,
+        "btmp.1": False,
+        "wtmp.2.gz": False,
+        "btmp.20260101": False,
+        "auth.log": True,
+        "messages": True,
+        "Btmp": True,
+        "._auth.log": False,
+        "._btmp": False,
+    }
+    for name, expected in samples.items():
+        assert cli._is_syslog_directory_candidate_name(name) is expected
+        assert discovery._is_syslog_directory_candidate_name(name) is expected
+
+
 def test_profile_human_bytes_kb(tmp_path: Path) -> None:
     _make_file(tmp_path / "conn.log", size=12 * 1024)
     p = cli._profile_dir(str(tmp_path), ("conn*.log*",), logs_label=None)

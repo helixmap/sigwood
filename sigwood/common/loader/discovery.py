@@ -405,6 +405,23 @@ def _syslog_files(path: Path, pattern: str = "*.log*") -> list[Path]:
     return sorted(files, key=lambda p: _rotation_base_and_index(p.name))
 
 
+_UTMP_FAMILY_NAMES = frozenset({"btmp", "wtmp", "utmp", "lastlog", "faillog"})
+
+
+def _is_syslog_directory_candidate_name(name: str) -> bool:
+    """Whether a directory child name may proceed to syslog content sniffing.
+
+    AppleDouble sidecars and the fixed utmp-family database names are
+    known-never-syslog. First-dot stem matching excludes rotations without
+    turning filenames into an inclusion rule. Explicit file inputs bypass this
+    predicate at ``_discover_syslog_files``'s early return.
+    """
+    return (
+        not name.startswith("._")
+        and name.split(".", 1)[0] not in _UTMP_FAMILY_NAMES
+    )
+
+
 def _discover_syslog_files(
     path: Path,
     *,
@@ -414,8 +431,9 @@ def _discover_syslog_files(
 
     FILE input → ``[path]`` UNGATED (the explicit-named-file rail: an explicitly
     named file always loads regardless of name; ``_syslog_should_skip`` still
-    guards a named NDJSON/Zeek-TSV at load). DIRECTORY input → all regular,
-    non-AppleDouble files that pass ``_looks_like_syslog``, in rotation order.
+    guards a named NDJSON/Zeek-TSV at load). DIRECTORY input → all regular files
+    whose names are neither AppleDouble nor utmp-family databases and whose
+    content passes ``_looks_like_syslog``, in rotation order.
     Non-recursive ``iterdir`` correctly skips the binary subdirs (``journal/``,
     ``audit/``, ``sa/``) - they are not regular files.
     A listing denial yields no candidates and records the source directory when
@@ -429,7 +447,11 @@ def _discover_syslog_files(
         return []
     files = [
         p for p in children
-        if p.is_file() and not p.name.startswith("._") and _looks_like_syslog(p)
+        if (
+            p.is_file()
+            and _is_syslog_directory_candidate_name(p.name)
+            and _looks_like_syslog(p)
+        )
     ]
     return sorted(files, key=lambda p: _rotation_base_and_index(p.name))
 

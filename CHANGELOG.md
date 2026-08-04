@@ -8,6 +8,18 @@ All notable changes to sigwood are recorded here. The format follows
 
 ### Fixed
 
+- **sigwood no longer suggests widening access to your failed-login database.** When scanning
+  a log directory, sigwood tried to read every file in it - including `btmp`, the binary record
+  of failed logins, which on most Linux systems an ordinary user cannot read. It then advised
+  granting that access, which is both a security downgrade and pointless: sigwood discards the
+  file as binary the moment it can read it. The utmp-family databases - `btmp`, `wtmp`, `utmp`,
+  `lastlog`, `faillog`, and their rotated copies - are now skipped when scanning a directory.
+  Naming one of them directly still reads it, and an unreadable file with an ordinary log name
+  still reports the permission problem exactly as before.
+- **`sigwood init` no longer reports flat syslog files on a machine that has none.** On a system
+  that logs only to the journal, the unreadable `btmp` above was by itself enough for setup to
+  detect a syslog directory - which the hunt then found empty. Detection and the file counts it
+  shows you now apply the same rule.
 - **An unreadable Zeek or syslog directory no longer costs you the whole hunt.** If sigwood
   could not list one of those source directories - a permissions problem on a single folder -
   the run stopped with a bare `Permission denied` and produced nothing at all, discarding every

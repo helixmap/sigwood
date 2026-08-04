@@ -93,6 +93,9 @@ _PROFILE_FILE_CAP: int = 5000
 _DOCS_URL: str = "https://github.com/helixmap/sigwood"
 _SYSLOG_SNIFF_BYTES: int = 8192
 _SYSLOG_SNIFF_PEEK_LINES: int = 32
+_UTMP_FAMILY_NAMES: frozenset[str] = frozenset(
+    {"btmp", "wtmp", "utmp", "lastlog", "faillog"}
+)
 _SYSLOG_PRI_RE: re.Pattern[str] = re.compile(r"^<\d+>")
 _SYSLOG_HDR_RE: re.Pattern[str] = re.compile(
     r"^\w{3}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}\s+\S+\s+"
@@ -237,6 +240,14 @@ def _looks_like_syslog_head(path: Path) -> bool:
     return False
 
 
+def _is_syslog_directory_candidate_name(name: str) -> bool:
+    """Stdlib mirror of the loader's directory-only syslog name exclusions."""
+    return (
+        not name.startswith("._")
+        and name.split(".", 1)[0] not in _UTMP_FAMILY_NAMES
+    )
+
+
 def _syslog_profile_files(
     path: Path,
     head_sniff: Callable[[Path], bool],
@@ -246,7 +257,7 @@ def _syslog_profile_files(
     """Return the syslog files the loader's directory discovery would accept."""
     matched: list[Path] = []
     for f in sorted(path.iterdir(), key=lambda p: p.name):
-        if not f.is_file() or f.name.startswith("._"):
+        if not f.is_file() or not _is_syslog_directory_candidate_name(f.name):
             continue
         if not head_sniff(f):
             continue

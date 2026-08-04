@@ -5616,6 +5616,145 @@ def test_syslog_gate_rejects_non_syslog_logs_silently(tmp_path: Path, capsys) ->
     assert "boot.log" not in err
 
 
+def test_syslog_directory_utmp_family_never_reaches_content_sniff(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Known utmp-family names and rotations are directory-only exclusions."""
+    d = tmp_path / "varlog"
+    d.mkdir()
+    names = [
+        "btmp", "wtmp", "utmp", "lastlog", "faillog",
+        "btmp.1", "wtmp.2.gz", "btmp.20260101",
+    ]
+    paths = {d / name for name in names}
+    for path in paths:
+        path.write_bytes(b"placeholder")
+    real_open = loader_module._open_log
+    sniffed: list[Path] = []
+
+    def _deny(path: Path):
+        if path in paths:
+            sniffed.append(path)
+            raise PermissionError(13, "synthetic denied")
+        return real_open(path)
+
+    monkeypatch.setattr(loader_module, "_open_log", _deny)
+
+    assert _discover_syslog_files(d) == []
+    assert sniffed == []
+
+
+def test_syslog_utmp_only_directory_discloses_no_matches_not_permission_advice(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A phantom btmp candidate becomes a truthful directory-level miss."""
+    d = tmp_path / "varlog"
+    d.mkdir()
+    btmp = d / "btmp"
+    btmp.write_bytes(b"placeholder")
+    (d / "dpkg.log").write_text(
+        "2026-06-01 12:00:00 status installed placeholder\n",
+        encoding="utf-8",
+    )
+    real_open = loader_module._open_log
+
+    def _deny(path: Path):
+        if path == btmp:
+            raise PermissionError(13, "synthetic denied")
+        return real_open(path)
+
+    monkeypatch.setattr(loader_module, "_open_log", _deny)
+    result = load_required_logs(
+        {"*.log*": "syslog_dir"}, {"syslog_dir": [d]}, show_progress=False,
+    )
+
+    assert result.record_counts == {}
+    assert result.permission_skips == {}
+    assert not any("grant your user read access" in w for w in result.warnings)
+    assert any(
+        f"nothing in {d} looks like syslog" in warning
+        for warning in result.warnings
+    )
+
+
+def test_syslog_explicit_readable_btmp_still_warn_skips_as_binary(
+    tmp_path: Path,
+) -> None:
+    """Explicit-file intent bypasses the directory name exclusion."""
+    btmp = tmp_path / "btmp"
+    btmp.write_bytes(b"\x00\x01\x02" * 64)
+
+    assert _discover_syslog_files(btmp) == [btmp]
+    result = load_required_logs(
+        {"*.log*": "syslog_dir"}, {"syslog_dir": [btmp]},
+        show_progress=False,
+    )
+    assert result.record_counts == {}
+    assert any(
+        "syslog_dir: skipping btmp - looks binary or won't decode as text"
+        in warning
+        for warning in result.warnings
+    )
+    assert not any("grant your user read access" in w for w in result.warnings)
+
+
+def test_syslog_explicit_unreadable_btmp_keeps_permission_advice(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A file the operator names but sigwood cannot read stays unclassified."""
+    btmp = tmp_path / "btmp"
+    btmp.write_bytes(b"placeholder")
+    real_open = loader_module._open_log
+
+    def _deny(path: Path):
+        if path == btmp:
+            raise PermissionError(13, "synthetic denied")
+        return real_open(path)
+
+    monkeypatch.setattr(loader_module, "_open_log", _deny)
+    assert _discover_syslog_files(btmp) == [btmp]
+    result = load_required_logs(
+        {"*.log*": "syslog_dir"}, {"syslog_dir": [btmp]},
+        show_progress=False,
+    )
+    assert result.permission_skips["*.log*"].denied == 1
+    assert any("grant your user read access" in w for w in result.warnings)
+    assert not any("looks binary" in w for w in result.warnings)
+
+
+def test_syslog_ordinary_unreadable_name_keeps_permission_advice(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The directory filter must not weaken conservative ordinary candidates."""
+    d = tmp_path / "varlog"
+    d.mkdir()
+    auth = d / "auth.log"
+    auth.write_bytes(b"placeholder")
+    real_open = loader_module._open_log
+
+    def _deny(path: Path):
+        if path == auth:
+            raise PermissionError(13, "synthetic denied")
+        return real_open(path)
+
+    monkeypatch.setattr(loader_module, "_open_log", _deny)
+    assert _discover_syslog_files(d) == [auth]
+    result = load_required_logs(
+        {"*.log*": "syslog_dir"}, {"syslog_dir": [d]}, show_progress=False,
+    )
+    assert result.permission_skips["*.log*"].denied == 1
+    assert any("grant your user read access" in w for w in result.warnings)
+
+
+def test_readable_utmp_family_candidate_list_stays_empty(tmp_path: Path) -> None:
+    """Readable wtmp/lastlog remain rejected, now before the NUL content read."""
+    d = tmp_path / "varlog"
+    d.mkdir()
+    (d / "wtmp").write_bytes(b"\x00\x01\x02")
+    (d / "lastlog").write_bytes(b"\x00\x03\x04")
+    assert _discover_syslog_files(d) == []
+
+
 def test_syslog_gate_read_is_byte_bounded(tmp_path: Path, monkeypatch) -> None:
     """The gate reads a BOUNDED `read(_SYSLOG_SNIFF_BYTES)` on an unclassified
     candidate and NEVER iterates / readlines it - a line-bounded read would scan

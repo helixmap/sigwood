@@ -58,6 +58,7 @@ from sigwood.common.loader import (
     load_pihole,
     load_required_logs,
     load_syslog,
+    resolve_load_windows,
 )
 from sigwood.exporters import _auto_filename
 from sigwood.parsers.syslog import parse_timestamp
@@ -1583,6 +1584,147 @@ def test_discover_zeek_files_single_file_summary_loads_ungated(
     summary = zeek_dir / "conn-summary.log"
     summary.touch()
     assert discover_zeek_files(summary, "conn*.log*") == [summary]
+
+
+def test_registered_readable_directory_discovery_stays_byte_identical(
+    tmp_path: Path,
+) -> None:
+    """The denial sink does not change any readable family candidate list."""
+    zeek = tmp_path / "zeek"
+    zeek.mkdir()
+    conn = zeek / "conn.log"
+    conn.touch()
+    (zeek / "conn-summary.log").touch()
+
+    syslog = tmp_path / "syslog"
+    syslog.mkdir()
+    messages = syslog / "messages"
+    messages.write_text(
+        "Jun  5 12:00:00 host kernel: accepted\n", encoding="utf-8",
+    )
+    (syslog / "dnf.log").write_text("not syslog\n", encoding="utf-8")
+
+    pihole = tmp_path / "pihole"
+    pihole.mkdir()
+    pihole_log = pihole / "pihole.log"
+    pihole_log.touch()
+    (pihole / "other.log").touch()
+
+    cloudtrail = tmp_path / "cloudtrail"
+    event_dir = cloudtrail / "AWSLogs" / "000000000000" / "CloudTrail"
+    event_dir.mkdir(parents=True)
+    event = event_dir / "event.json.gz"
+    event.touch()
+    digest_dir = cloudtrail / "CloudTrail-Digest"
+    digest_dir.mkdir()
+    (digest_dir / "digest.json.gz").touch()
+
+    assert discover_for_source_key("zeek_dir", zeek, "conn*.log*") == [conn]
+    assert discover_for_source_key("syslog_dir", syslog, "*.log*") == [messages]
+    assert discover_for_source_key(
+        "pihole_dir", pihole, "pihole*.log*",
+    ) == [pihole_log]
+    assert discover_for_source_key(
+        "cloudtrail_dir", cloudtrail, "*.json*",
+    ) == [event]
+
+
+def test_directory_listing_denial_records_once_and_yields_no_candidates(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Zeek and syslog contain EACCES at discovery and share sink dedup."""
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    real_iterdir = Path.iterdir
+
+    def _deny(path: Path):
+        if path == shared:
+            raise PermissionError(13, "synthetic denied")
+        return real_iterdir(path)
+
+    monkeypatch.setattr(Path, "iterdir", _deny)
+    skips = {}
+    assert discover_for_source_key(
+        "zeek_dir", shared, "conn*.log*", _directory_skips=skips,
+    ) == []
+    assert discover_for_source_key(
+        "syslog_dir", shared, "*.log*", _directory_skips=skips,
+    ) == []
+    # Repeated probes overwrite nothing and disclose no exception text.
+    assert discover_for_source_key(
+        "zeek_dir", shared, "conn*.log*", _directory_skips=skips,
+    ) == []
+    assert list(skips) == [
+        ("zeek_dir", shared.resolve()),
+        ("syslog_dir", shared.resolve()),
+    ]
+
+
+def test_denied_zeek_layout_uses_universal_trim_not_flat_inference(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No readable Zeek input means unclassifiable, never readable-flat."""
+    zeek = tmp_path / "2026-01-05"
+    zeek.mkdir()
+    real_iterdir = Path.iterdir
+
+    def _deny(path: Path):
+        if path == zeek:
+            raise PermissionError(13, "synthetic denied")
+        return real_iterdir(path)
+
+    monkeypatch.setattr(Path, "iterdir", _deny)
+    skips = {}
+    windows = resolve_load_windows(
+        {"conn*.log*": "zeek_dir"},
+        {"zeek_dir": [zeek]},
+        "7d",
+        since=None,
+        until=None,
+        load_all=False,
+        _directory_skips=skips,
+    )
+    assert len(windows) == 1
+    assert windows[0].select_window is None
+    assert windows[0].trim_span == timedelta(days=7)
+    assert list(skips) == [("zeek_dir", zeek.resolve())]
+
+
+def test_denied_zeek_input_does_not_flatten_readable_dated_sibling(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A readable dated sibling alone supplies the exact dated window."""
+    denied = tmp_path / "denied"
+    denied.mkdir()
+    readable = tmp_path / "readable"
+    day = readable / "2026-01-05"
+    day.mkdir(parents=True)
+    (day / "conn.log").touch()
+    real_iterdir = Path.iterdir
+
+    def _deny(path: Path):
+        if path == denied:
+            raise PermissionError(13, "synthetic denied")
+        return real_iterdir(path)
+
+    monkeypatch.setattr(Path, "iterdir", _deny)
+    skips = {}
+    windows = resolve_load_windows(
+        {"conn*.log*": "zeek_dir"},
+        {"zeek_dir": [denied, readable]},
+        "7d",
+        since=None,
+        until=None,
+        load_all=False,
+        _directory_skips=skips,
+    )
+    assert len(windows) == 1
+    assert windows[0].select_window == (
+        datetime(2026, 1, 5, tzinfo=timezone.utc),
+        datetime(2026, 1, 5, 23, 59, 59, tzinfo=timezone.utc),
+    )
+    assert windows[0].trim_span is None
+    assert list(skips) == [("zeek_dir", denied.resolve())]
 
 
 @pytest.mark.skipif(os.geteuid() == 0, reason="root ignores permission bits")

@@ -244,6 +244,19 @@ class PermissionSkipInfo:
 
 
 @dataclass(frozen=True)
+class DirectorySkipInfo:
+    """One source directory whose immediate children could not be listed.
+
+    This is plan/discovery metadata, distinct from ``PermissionSkipInfo``:
+    no file candidates exist yet, so no file-level ``LoadResult`` accounting
+    can represent the omission honestly.
+    """
+
+    source_key: str
+    path: Path
+
+
+@dataclass(frozen=True)
 class FileSpan:
     """Finite timestamp extrema of one file's kept rows."""
 

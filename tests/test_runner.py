@@ -5,6 +5,7 @@ from __future__ import annotations
 import gzip
 import io
 import json
+import os
 import threading
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
@@ -1246,9 +1247,14 @@ def test_runner_mixed_data_and_permission_denied_source_does_not_abort(
     capture_summary,
     mock_load_required_logs,
     capsys,
+    monkeypatch,
 ):
     """Loaded data wins: permission-denied siblings warn without aborting."""
     from sigwood.common.loader import LoadResult, PermissionSkipInfo
+    from sigwood.detectors import dns as dns_detector
+
+    # Isolate the runner contract from detector behavior.
+    monkeypatch.setattr(dns_detector, "run", lambda _ctx: [])
 
     zeek_dir = tmp_path / "zeek"
     zeek_dir.mkdir()
@@ -1291,7 +1297,7 @@ def test_runner_mixed_data_and_permission_denied_source_does_not_abort(
     )
     mock_load_required_logs(fake_lr)
 
-    runner.run(
+    rc = runner.run(
         config={"sigwood": {"detect": "dns", "default_window": ""}},
         zeek_dir=zeek_dir,
         pihole_dir=pihole_dir,
@@ -1300,8 +1306,545 @@ def test_runner_mixed_data_and_permission_denied_source_does_not_abort(
     s = capture_summary["summary"]
     err = capsys.readouterr().err
     assert s is not None
+    assert rc == 0, s.detectors_failed
+    assert "dns" in s.detectors_run
     assert s.record_counts == {"dns*.log*": 1}
+    expected_note = (
+        "Pi-hole: all 1 discovered file permission denied - "
+        f"no rows loaded from this source ({denied})"
+    )
+    assert expected_note in s.notes
     assert "pihole.log: permission denied" in err
+
+
+def test_permission_skip_notes_report_partial_pattern_rows_missing() -> None:
+    """A partly denied pattern discloses that only those rows are missing."""
+    from sigwood.common.loader import LoadResult, PermissionSkipInfo
+
+    denied = Path("/placeholder/pihole.log.2")
+    load_result = LoadResult(
+        logs={},
+        record_counts={"pihole*.log*": 2},
+        permission_skips={
+            "pihole*.log*": PermissionSkipInfo(
+                discovered=3,
+                denied=1,
+                paths=(denied,),
+            ),
+        },
+    )
+    plan = RunPlan(
+        detectors={},
+        selected=[],
+        will_run=[],
+        skipped={},
+        needed_logs={"pihole*.log*": "pihole_dir"},
+    )
+
+    assert runner._permission_skip_notes(load_result, plan) == [
+        "Pi-hole: 1 of 3 discovered files permission denied - "
+        "those rows are missing from this run (/placeholder/pihole.log.2)"
+    ]
+
+
+def _permission_output_case(tmp_path: Path):
+    """Build one loaded DNS source plus a denied Pi-hole sibling."""
+    from sigwood.common.loader import LoadResult, PermissionSkipInfo
+
+    zeek_dir = tmp_path / "zeek"
+    zeek_dir.mkdir()
+    _write_ndjson(zeek_dir / "dns.log", [{
+        "ts": _TS_JAN5,
+        "id.orig_h": "192.0.2.10",
+        "query": "example.test",
+        "qclass": 1,
+    }])
+    pihole_dir = tmp_path / "pihole"
+    pihole_dir.mkdir()
+    (pihole_dir / "pihole.log").write_text(
+        "unreadable placeholder\n", encoding="utf-8",
+    )
+    denied = pihole_dir / 'denied\x1b[31m\x07\x7f\x9b<tag attr="x">&.log'
+    dns_df = pd.DataFrame([{
+        "ts": _TS_JAN5,
+        "src": "192.0.2.10",
+        "query": "example.test",
+        "qtype": 1,
+    }])
+    pihole_df = pd.DataFrame(
+        columns=[
+            "ts", "src", "query", "event_type", "qtype", "dst",
+            "answer", "validation", "host", "raw", "message",
+        ],
+    )
+    load_result = LoadResult(
+        logs={"dns*.log*": dns_df, "pihole*.log*": pihole_df},
+        record_counts={"dns*.log*": 1},
+        data_window=(
+            datetime.fromtimestamp(_TS_JAN5, tz=timezone.utc),
+            datetime.fromtimestamp(_TS_JAN5, tz=timezone.utc),
+        ),
+        warnings=["pihole.log: permission denied"],
+        permission_skips={
+            "pihole*.log*": PermissionSkipInfo(
+                discovered=1,
+                denied=1,
+                paths=(denied,),
+            ),
+        },
+    )
+    return zeek_dir, pihole_dir, denied, load_result
+
+
+def test_runner_permission_note_is_report_stdout_not_stderr(
+    tmp_path,
+    mock_load_required_logs,
+    monkeypatch,
+    capsys,
+) -> None:
+    """The report note reaches text stdout while the load warning stays stderr."""
+    from sigwood.detectors import dns as dns_detector
+
+    zeek_dir, pihole_dir, denied, load_result = _permission_output_case(tmp_path)
+    mock_load_required_logs(load_result)
+    monkeypatch.setattr(dns_detector, "run", lambda _ctx: [])
+
+    rc = runner.run(
+        config={"sigwood": {"detect": "dns", "default_window": ""}},
+        zeek_dir=zeek_dir,
+        pihole_dir=pihole_dir,
+        quiet=True,
+    )
+
+    captured = capsys.readouterr()
+    normalized_out = " ".join(captured.out.split())
+    assert rc == 0
+    assert "Pi-hole: all 1 discovered file permission denied" in normalized_out
+    assert "no rows loaded from this source" in normalized_out
+    assert 'denied[31m<tag attr="x">&.log' in normalized_out
+    assert "no rows loaded from" not in captured.err
+    assert "pihole.log: permission denied" in captured.err
+    assert all(ch not in captured.out for ch in ("\x1b", "\x07", "\x7f", "\x9b"))
+    assert str(denied) not in captured.out
+
+
+@pytest.mark.parametrize("output_format", ["html", "json"])
+def test_runner_permission_note_reaches_structured_report_sinks(
+    output_format,
+    tmp_path,
+    mock_load_required_logs,
+    monkeypatch,
+) -> None:
+    """Hostile denied paths traverse each real report sink safely."""
+    from sigwood.detectors import dns as dns_detector
+
+    zeek_dir, pihole_dir, _denied, load_result = _permission_output_case(tmp_path)
+    mock_load_required_logs(load_result)
+    monkeypatch.setattr(dns_detector, "run", lambda _ctx: [])
+    target = tmp_path / f"report.{output_format}"
+
+    rc = runner.run(
+        config={"sigwood": {"detect": "dns", "default_window": ""}},
+        zeek_dir=zeek_dir,
+        pihole_dir=pihole_dir,
+        output_format=output_format,
+        output_file=target,
+        quiet=True,
+    )
+
+    rendered = target.read_text(encoding="utf-8")
+    assert rc == 0
+    assert all(ch not in rendered for ch in ("\x1b", "\x07", "\x7f", "\x9b"))
+    if output_format == "html":
+        assert "denied[31m&lt;tag attr=&quot;x&quot;&gt;&amp;.log" in rendered
+    else:
+        payload = json.loads(rendered)
+        assert any(
+            'denied[31m<tag attr="x">&.log' in note
+            for note in payload["run_summary"]["notes"]
+        )
+
+
+def test_runner_permission_note_does_not_create_csv_row(
+    tmp_path,
+    mock_load_required_logs,
+    monkeypatch,
+) -> None:
+    """Run-summary disclosure remains absent from the fixed CSV worklist."""
+    from sigwood.detectors import dns as dns_detector
+
+    zeek_dir, pihole_dir, _denied, load_result = _permission_output_case(tmp_path)
+    mock_load_required_logs(load_result)
+    monkeypatch.setattr(dns_detector, "run", lambda _ctx: [])
+    target = tmp_path / "report.csv"
+
+    rc = runner.run(
+        config={"sigwood": {"detect": "dns", "default_window": ""}},
+        zeek_dir=zeek_dir,
+        pihole_dir=pihole_dir,
+        output_format="csv",
+        output_file=target,
+        quiet=True,
+    )
+
+    assert rc == 0
+    assert target.read_text(encoding="utf-8").splitlines() == [
+        "severity,detector,finding,next_steps,description,signals,"
+        "data_window_start,data_window_end,status,notes"
+    ]
+
+
+def test_cli_total_permission_denial_exits_before_note_assembly(
+    tmp_path,
+    mock_load_required_logs,
+    monkeypatch,
+    capsys,
+) -> None:
+    """Total denial stays an exit-1 error and never reaches report notes."""
+    from sigwood import cli
+    from sigwood.common import config as cfg
+    from sigwood.common.loader import LoadResult, PermissionSkipInfo
+
+    pihole_dir = tmp_path / "pihole"
+    pihole_dir.mkdir()
+    denied = pihole_dir / "pihole.log"
+    denied.write_text("unreadable placeholder\n", encoding="utf-8")
+    mock_load_required_logs(LoadResult(
+        logs={"pihole*.log*": pd.DataFrame()},
+        record_counts={},
+        warnings=["pihole.log: permission denied"],
+        permission_skips={
+            "pihole*.log*": PermissionSkipInfo(
+                discovered=1,
+                denied=1,
+                paths=(denied,),
+            ),
+        },
+    ))
+    monkeypatch.setattr(cfg, "SEARCH_PATHS", [])
+    monkeypatch.delenv("SIGWOOD_ROOT", raising=False)
+
+    def _notes_must_not_run(*_args, **_kwargs):
+        pytest.fail("permission note assembly reached after total denial")
+
+    monkeypatch.setattr(runner, "_permission_skip_notes", _notes_must_not_run)
+
+    with pytest.raises(SystemExit) as exc:
+        cli.main(["dns", f"--pihole-dir={pihole_dir}", "--all", "-q"])
+
+    captured = capsys.readouterr()
+    assert exc.value.code == 1
+    assert (
+        "sigwood: Pi-hole: all 1 discovered file permission denied - "
+        "grant your user read access and retry"
+    ) in captured.err
+    assert "no rows loaded from this source" not in captured.out
+
+
+def _deny_directory_listing(
+    monkeypatch: pytest.MonkeyPatch, denied: set[Path],
+) -> None:
+    """Make selected directories raise EACCES while preserving every sibling."""
+    real_iterdir = Path.iterdir
+
+    def _iterdir(path: Path):
+        if path in denied:
+            raise PermissionError(13, "synthetic denied")
+        return real_iterdir(path)
+
+    monkeypatch.setattr(Path, "iterdir", _iterdir)
+
+
+def _write_beacon_conn_log(path: Path) -> None:
+    """Write one deterministic periodic flow that the real beacon detector finds."""
+    start = datetime(2026, 1, 1, tzinfo=timezone.utc).timestamp()
+    _write_ndjson(
+        path,
+        [_conn_full(start + i * 600.0) for i in range(144)],
+    )
+
+
+def test_unlistable_syslog_is_partial_success_with_real_beacon_report(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Marquee path: one denied family cannot abort a real readable hunt."""
+    zeek = tmp_path / "zeek"
+    zeek.mkdir()
+    _write_beacon_conn_log(zeek / "conn.log")
+    denied = tmp_path / "syslog"
+    denied.mkdir()
+    _deny_directory_listing(monkeypatch, {denied})
+
+    rc = runner.run(
+        config={
+            "sigwood": {
+                "detect": "beacon,syslog",
+                "default_window": "all",
+            },
+        },
+        zeek_dir=zeek,
+        syslog_dir=denied,
+        syslog_source="files",
+        load_all=True,
+        no_allowlist=True,
+        quiet=True,
+    )
+
+    captured = capsys.readouterr()
+    normalized = " ".join(captured.out.split())
+    assert rc == 0
+    assert "192.0.2.10" in captured.out
+    assert "syslog - syslog_dir directory could not be listed" in normalized
+    assert "syslog: directory could not be listed" in normalized
+    assert "its contents are absent from this run" in normalized
+    assert "PermissionError" not in captured.err
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores permission bits")
+def test_unlistable_syslog_chmod_reproduction_does_not_abort_beacon(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The real chmod-000 path matches the synthetic, always-running witness."""
+    zeek = tmp_path / "zeek"
+    zeek.mkdir()
+    _write_beacon_conn_log(zeek / "conn.log")
+    denied = tmp_path / "syslog"
+    denied.mkdir()
+    denied.chmod(0o000)
+    try:
+        rc = runner.run(
+            config={
+                "sigwood": {
+                    "detect": "beacon,syslog",
+                    "default_window": "all",
+                },
+            },
+            zeek_dir=zeek,
+            syslog_dir=denied,
+            syslog_source="files",
+            load_all=True,
+            no_allowlist=True,
+            quiet=True,
+        )
+    finally:
+        denied.chmod(0o755)
+
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert "192.0.2.10" in captured.out
+    assert "directory could not be listed" in captured.out
+    assert "PermissionError" not in captured.err
+
+
+def test_unlistable_only_source_keeps_exit_one_and_generic_tail(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    denied = tmp_path / "syslog"
+    denied.mkdir()
+    _deny_directory_listing(monkeypatch, {denied})
+
+    rc = runner.run(
+        config={"sigwood": {"detect": "syslog", "default_window": "all"}},
+        syslog_dir=denied,
+        syslog_source="files",
+        quiet=True,
+    )
+
+    captured = capsys.readouterr()
+    assert rc == 1
+    assert "syslog_dir directory could not be listed (permission denied)" in captured.err
+    assert (
+        "no detectors could run - check required log source paths in config "
+        "or CLI overrides"
+    ) in captured.err
+    assert "PermissionError" not in captured.err
+
+
+def test_unlistable_source_dry_run_reports_skip_without_raise(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    denied = tmp_path / "syslog"
+    denied.mkdir()
+    _deny_directory_listing(monkeypatch, {denied})
+
+    rc = runner.run(
+        config={"sigwood": {"detect": "syslog", "default_window": "all"}},
+        syslog_dir=denied,
+        syslog_source="files",
+        dry_run=True,
+        quiet=True,
+    )
+
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert "permission denied" in captured.out
+    assert "syslog" in captured.out
+    assert "PermissionError" not in captured.err
+
+
+def test_multi_input_directory_denial_runs_detector_and_adds_only_note(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capture_summary,
+) -> None:
+    from sigwood.detectors import syslog as syslog_detector
+
+    denied = tmp_path / "denied"
+    denied.mkdir()
+    readable = tmp_path / "readable"
+    readable.mkdir()
+    (readable / "messages").write_text(
+        "Jun  5 12:00:00 host kernel: booted\n", encoding="utf-8",
+    )
+    _deny_directory_listing(monkeypatch, {denied})
+    monkeypatch.setattr(syslog_detector, "run", lambda _ctx: [])
+
+    rc = runner.run(
+        config={"sigwood": {"detect": "syslog", "default_window": "all"}},
+        syslog_dir=[denied, readable],
+        syslog_source="files",
+        quiet=True,
+    )
+
+    summary = capture_summary["summary"]
+    assert rc == 0
+    assert summary.detectors_run == ["syslog"]
+    assert "syslog" not in summary.detectors_skipped
+    assert summary.detectors_failed == {}
+    assert any(str(denied) in note for note in summary.notes)
+    assert any("contents are absent from this run" in note for note in summary.notes)
+
+
+def test_directory_skip_sink_dedups_required_optional_window_and_load(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from sigwood.common import loader
+
+    denied = tmp_path / "denied"
+    denied.mkdir()
+    readable = tmp_path / "readable"
+    readable.mkdir()
+    (readable / "messages").write_text(
+        "Jun  5 12:00:00 host kernel: accepted\n", encoding="utf-8",
+    )
+    _deny_directory_listing(monkeypatch, {denied})
+    detector = SimpleNamespace(
+        REQUIRED_LOGS=[{"source": "syslog_dir", "pattern": "*.log*"}],
+        OPTIONAL_LOGS=[{"source": "syslog_dir", "pattern": "*.log*"}],
+    )
+    plan = build_run_plan(
+        "probe",
+        syslog_dir=[denied, readable],
+        detectors={"probe": detector},
+    )
+    source_dirs = {"syslog_dir": [denied, readable]}
+    loader.resolve_load_windows(
+        plan.needed_logs,
+        source_dirs,
+        "1d",
+        since=None,
+        until=None,
+        load_all=False,
+        _directory_skips=plan.directory_skips,
+    )
+    load_result = loader.load_required_logs(
+        plan.needed_logs,
+        source_dirs,
+        show_progress=False,
+        _directory_skips=plan.directory_skips,
+    )
+
+    assert list(plan.directory_skips) == [
+        ("syslog_dir", denied.resolve()),
+    ]
+    assert not hasattr(load_result, "directory_skips")
+
+
+def test_graph_date_directory_helper_does_not_classify_denial(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    denied = tmp_path / "2026-01-05"
+    denied.mkdir()
+    _deny_directory_listing(monkeypatch, {denied})
+
+    assert runner._graph_date_dir_window([denied], use_utc=True) is None
+
+
+def test_directory_skip_notes_use_operator_labels_at_directory_granularity() -> None:
+    from sigwood.common.loader import DirectorySkipInfo
+
+    zeek = Path("/placeholder/zeek")
+    syslog = Path("/placeholder/syslog")
+    plan = RunPlan(
+        detectors={},
+        selected=[],
+        will_run=[],
+        skipped={},
+        needed_logs={},
+        directory_skips={
+            ("zeek_dir", zeek): DirectorySkipInfo("zeek_dir", zeek),
+            ("syslog_dir", syslog): DirectorySkipInfo("syslog_dir", syslog),
+        },
+    )
+
+    notes = runner._directory_skip_notes(plan)
+    assert notes[0].startswith("Zeek: directory could not be listed")
+    assert notes[1].startswith("syslog: directory could not be listed")
+    assert all("_dir:" not in note for note in notes)
+
+
+@pytest.mark.parametrize("output_format", ["text", "json", "html"])
+def test_directory_skip_note_is_safe_in_real_report_handlers(
+    output_format: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from sigwood.detectors import syslog as syslog_detector
+
+    denied = tmp_path / 'denied\x1b[31m<tag attr="x">&'
+    denied.mkdir()
+    readable = tmp_path / "readable"
+    readable.mkdir()
+    (readable / "messages").write_text(
+        "Jun  5 12:00:00 host kernel: accepted\n", encoding="utf-8",
+    )
+    _deny_directory_listing(monkeypatch, {denied})
+    monkeypatch.setattr(syslog_detector, "run", lambda _ctx: [])
+    target = tmp_path / f"report.{output_format}"
+
+    rc = runner.run(
+        config={"sigwood": {"detect": "syslog", "default_window": "all"}},
+        syslog_dir=[denied, readable],
+        syslog_source="files",
+        output_format=output_format,
+        output_file=target,
+        quiet=True,
+    )
+
+    rendered = target.read_text(encoding="utf-8")
+    assert rc == 0
+    assert all(ch not in rendered for ch in ("\x1b", "\x07", "\x7f", "\x9b"))
+    if output_format == "json":
+        payload = json.loads(rendered)
+        summary = payload["run_summary"]
+        assert summary["detectors_skipped"] == {}
+        assert any(
+            'denied[31m<tag attr="x">&' in note
+            for note in summary["notes"]
+        )
+    elif output_format == "html":
+        assert "denied[31m&lt;tag attr=&quot;x&quot;&gt;&amp;" in rendered
+    else:
+        assert 'denied[31m<tag attr="x">&' in " ".join(rendered.split())
 
 
 def test_runner_appends_disclosure_after_home_net_note(

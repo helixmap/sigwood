@@ -417,7 +417,7 @@ def test_provider_path_disclosure_is_control_safe_and_bounded() -> None:
         Path(f"/placeholder/path-{index}\x1b[31m")
         for index in range(5)
     )
-    rendered = runner._compact_syslog_paths(paths)
+    rendered = runner._compact_path_list(paths)
     assert "\x1b" not in rendered
     assert "path-0[31m" in rendered
     assert "path-2[31m" in rendered

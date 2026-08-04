@@ -59,6 +59,7 @@ from sigwood.common.loader.types import (
     _PIHOLE_COLUMNS,
     _SYSLOG_COLUMNS,
     CoverageTracker,
+    DirectorySkipInfo,
     FileSpan,
     LoadResult,
     PermissionSkipInfo,
@@ -128,6 +129,11 @@ class SourceLoader:
       - ``records_file_spans``: whether kept finite timestamp extrema may expose
         this source's file path through ``LoadResult.file_spans``. Journal opts
         out because its private capture path must never leave the loader.
+      - ``records_directory_denials``: whether ``discover`` accepts the private
+        caller-owned directory-denial sink. Only Zeek and syslog opt in: their
+        immediate-child discovery raises on EACCES. Pi-hole and CloudTrail
+        directory globs currently collapse unreadable inputs to no matches, so
+        ``False`` is a scoped disclosure gap, not a claim that denial is handled.
     """
 
     discover: Callable[[Path, str, datetime | None, datetime | None], list[Path]]
@@ -171,6 +177,31 @@ class SourceLoader:
     # Whether this strategy may publish file-path timestamp spans in LoadResult.
     # Trailing/defaulted keeps ordinary file strategies and test constructions on.
     records_file_spans: bool = True
+    # See the class docstring: False preserves programmatic strategy callables
+    # and the still-silent glob-family behavior without claiming coverage.
+    records_directory_denials: bool = False
+
+    def discover_paths(
+        self,
+        path: Path,
+        pattern: str,
+        since: datetime | None,
+        until: datetime | None,
+        *,
+        _directory_skips: (
+            dict[tuple[str, Path], DirectorySkipInfo] | None
+        ) = None,
+    ) -> list[Path]:
+        """Invoke this strategy's discovery with its declared sink capability."""
+        if self.records_directory_denials:
+            return self.discover(
+                path,
+                pattern,
+                since,
+                until,
+                _directory_skips=_directory_skips,
+            )
+        return self.discover(path, pattern, since, until)
 
 
 def _zeek_records_from_lines(line_iter: Any) -> list[dict[str, Any]]:
@@ -888,11 +919,14 @@ _SOURCE_LOADERS: dict[str, SourceLoader] = {
         normalize=_zeek_normalize,
         # Dated dirs → precise window, no trim; flat / mixed → load full + trim.
         resolve_window=_zeek_resolve_window,
+        records_directory_denials=True,
     ),
     "syslog_dir": SourceLoader(
         # Content-gated discovery - the strategy lambda only adapts the
         # signature; _discover_syslog_files is the single discovery body.
-        discover=lambda p, pattern, since, until: _discover_syslog_files(p),
+        discover=lambda p, pattern, since, until, *, _directory_skips=None: (
+            _discover_syslog_files(p, _directory_skips=_directory_skips)
+        ),
         mode="stream",
         parse=_syslog_strategy_parse,
         ts_policy="keep",
@@ -903,6 +937,7 @@ _SOURCE_LOADERS: dict[str, SourceLoader] = {
         window_select=_rotation_windowed_files,
         # Peek rotation candidates → conservative (floor, None) + post-load trim.
         resolve_window=_flat_resolve_window,
+        records_directory_denials=True,
     ),
     "pihole_dir": SourceLoader(
         discover=lambda p, pattern, since, until: _syslog_files(p, pattern),
@@ -949,6 +984,10 @@ def discover_for_source_key(
     source_key: str,
     directory: Path,
     pattern: str,
+    *,
+    _directory_skips: (
+        dict[tuple[str, Path], DirectorySkipInfo] | None
+    ) = None,
 ) -> list[Path]:
     """Discover one source family's matching files without a time window.
 
@@ -961,7 +1000,18 @@ def discover_for_source_key(
         raise ValueError(
             f"unknown source key {source_key!r} - no loader is registered"
         )
-    return strategy.discover(directory, pattern, None, None)
+    discover_paths = getattr(strategy, "discover_paths", None)
+    if discover_paths is None:
+        # Preserve the lightweight registry seam used by graph contributors;
+        # only SourceLoader declarations participate in denial metadata.
+        return strategy.discover(directory, pattern, None, None)
+    return discover_paths(
+        directory,
+        pattern,
+        None,
+        None,
+        _directory_skips=_directory_skips,
+    )
 
 
 def load_logs(
@@ -1099,6 +1149,9 @@ def load_required_logs(
     show_progress: bool = True,
     file_select_windows: dict[str, tuple[datetime | None, datetime | None]] | None = None,
     trusted_files: Mapping[str, Sequence[Path]] | None = None,
+    _directory_skips: (
+        dict[tuple[str, Path], DirectorySkipInfo] | None
+    ) = None,
 ) -> LoadResult:
     """Load all patterns required by a run plan and return data plus metadata.
 
@@ -1131,6 +1184,10 @@ def load_required_logs(
     parse, window, normalization, warning, coverage, byte-accounting, and
     permission-accounting path. It is keyed by pattern because one source
     family can load multiple patterns.
+
+    ``_directory_skips`` is the caller-owned plan sink for pre-candidate Zeek
+    and syslog listing denials. Discovery updates it by ``(source, realpath)``;
+    it is not copied into ``LoadResult``.
     """
     logs: dict[str, pd.DataFrame] = {}
     record_counts: dict[str, int] = {}
@@ -1169,7 +1226,13 @@ def load_required_logs(
             trusted_resolved = {_safe_resolve(p) for p in trusted}
             files_per_input = [
                 [p] if _safe_resolve(p) in trusted_resolved
-                else strategy.discover(p, pattern, s_since, s_until)
+                else strategy.discover_paths(
+                    p,
+                    pattern,
+                    s_since,
+                    s_until,
+                    _directory_skips=_directory_skips,
+                )
                 for p in paths
             ]
             input_resolved = {_safe_resolve(p) for p in paths}
@@ -1188,7 +1251,14 @@ def load_required_logs(
             ])
             dir_inputs = [p for p in paths if p.is_dir()]
             dir_candidates = _union_dedupe([
-                strategy.discover(d, pattern, s_since, s_until) for d in dir_inputs
+                strategy.discover_paths(
+                    d,
+                    pattern,
+                    s_since,
+                    s_until,
+                    _directory_skips=_directory_skips,
+                )
+                for d in dir_inputs
             ])
             # Silent-miss disclosure, forked by source. syslog discovery is
             # content-gated, so "zero candidates from a dir that holds files"
@@ -1293,6 +1363,9 @@ def resolve_load_windows(
     until: datetime | None,
     load_all: bool,
     pre_resolved_windows: Mapping[str, LoadWindow] | None = None,
+    _directory_skips: (
+        dict[tuple[str, Path], DirectorySkipInfo] | None
+    ) = None,
 ) -> list[LoadWindow]:
     """Resolve the universal default window into ONE ``LoadWindow`` per family.
 
@@ -1313,6 +1386,10 @@ def resolve_load_windows(
     ``needed_sources`` carries the pattern→source map so the flat resolver recovers
     the detector glob per family (``pattern``) - first pattern per family, without
     reintroducing a source-name branch.
+
+    ``_directory_skips`` is the same caller-owned sink used at plan and load
+    time; denial-aware resolvers update it without changing custom strategy
+    call signatures.
     """
     if load_all or since is not None or until is not None:
         return []
@@ -1363,7 +1440,20 @@ def resolve_load_windows(
             (p for p, s in needed_sources.items() if s == source), "*.log*"
         )
         resolver = strategy.resolve_window or _default_resolve_window
-        select_window, trim_span = resolver(strategy, dirs, pattern, span)
+        if (
+            _directory_skips is None
+            or not strategy.records_directory_denials
+        ):
+            # Preserve the callable contract for programmatic/custom strategies.
+            select_window, trim_span = resolver(strategy, dirs, pattern, span)
+        else:
+            select_window, trim_span = resolver(
+                strategy,
+                dirs,
+                pattern,
+                span,
+                _directory_skips=_directory_skips,
+            )
         keep_null = strategy.ts_policy == "keep"
         windows.append(LoadWindow(source, select_window, trim_span, keep_null))
     return windows

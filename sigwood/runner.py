@@ -60,7 +60,7 @@ from sigwood.common.errors import (
 )
 from sigwood.common.finding import DetectorContext, Finding, RunSummary
 from sigwood.common.journal_probe import probe_journal
-from sigwood.common.loader import FileSpan, JournalCaptureOutcome
+from sigwood.common.loader import DirectorySkipInfo, FileSpan, JournalCaptureOutcome
 from sigwood.common.output import OutputHandler, Reporter
 from sigwood.common.paths import (
     private_mkdir,
@@ -102,13 +102,16 @@ _RICH_DNS_SOURCES = {"zeek_dns"}
 
 @dataclass(frozen=True)
 class RunPlan:
-    """Detector execution plan produced before loading any log data."""
+    """Detector plan plus pre-load source-directory omission facts."""
 
     detectors: dict[str, Any]
     selected: list[str]
     will_run: list[str]
     skipped: dict[str, str]
     needed_logs: dict[str, str]
+    directory_skips: dict[tuple[str, Path], DirectorySkipInfo] = field(
+        default_factory=dict,
+    )
 
 
 @dataclass(frozen=True)
@@ -571,11 +574,17 @@ def _run_analyze(
     notes.extend(_source_overlap_notes(source_dirs, plan))
     # Source-coverage disclosure: for each planned source that contributed 0
     # in-window rows, append a note (SPAN / BARE / silent per the parse-gap
-    # vs window-gap tri-state in CoverageTracker). Appended LAST so the
-    # existing notes' relative order is preserved and the disclosure is
-    # additive only. Reads the merged coverage written by the runner-side
-    # flat-default block above (when fired).
+    # vs window-gap tri-state in CoverageTracker). Reads the merged coverage
+    # written by the runner-side flat-default block above (when fired).
     notes.extend(_zero_window_coverage_notes(load_result, plan))
+    # A source directory omitted before file discovery is a plan fact rather
+    # than LoadResult metadata. Partial runs remain successful, but every
+    # report format with notes must disclose that the directory was absent.
+    notes.extend(_directory_skip_notes(plan))
+    # Partial permission denial remains a successful run, but the saved report
+    # must disclose rows that could not be read. Total denial raised above,
+    # before summary assembly can reach this helper.
+    notes.extend(_permission_skip_notes(load_result, plan))
     # Flat rotation-peek disclosure: one note per windowed pattern that fell back
     # to a full read or skipped out-of-window rotation files. Additive, appended last.
     notes.extend(_rotation_skip_notes(load_result, plan))
@@ -879,6 +888,7 @@ def _plan_and_load(
         since=since,
         until=until,
         pre_resolved_windows=pre_resolved_windows,
+        _directory_skips=plan.directory_skips,
     )
     source_windows = (
         {
@@ -907,6 +917,7 @@ def _plan_and_load(
         source_windows=source_windows,
         show_progress=not quiet,
         file_select_windows=file_select_windows,
+        _directory_skips=plan.directory_skips,
     )
     return _LoadedPlan(
         plan=plan,
@@ -1103,6 +1114,9 @@ def build_run_plan(
     silently dropped, never reported as unknown. ``scope`` (the run's
     positional-scoping signal) only refines skip WORDING - a family scoped out
     by positional targets reads as out-of-scope, not "not configured".
+    Zeek/syslog directory listing denials accumulate in the plan-owned sink so
+    skipped detectors get the permission cause and partial reports retain the
+    missing-directory disclosure through later window/load probes.
     """
     resolved_selection = selection or select_detectors(detect_spec, detectors)
     import_failures = resolved_selection.import_failures
@@ -1128,6 +1142,7 @@ def build_run_plan(
 
     will_run: list[str] = []
     skipped: dict[str, str] = {}
+    directory_skips: dict[tuple[str, Path], DirectorySkipInfo] = {}
     for name in selected:
         # An import-failed name is absent from all_detectors - skip it before
         # the required-logs check (which would KeyError). The reason does not
@@ -1136,7 +1151,11 @@ def build_run_plan(
             skipped[name] = f"import failed - {import_failures[name]}"
             continue
         reason = _check_required_logs(
-            all_detectors[name], source_map, scope, virtual_sources
+            all_detectors[name],
+            source_map,
+            scope,
+            virtual_sources,
+            _directory_skips=directory_skips,
         )
         if reason:
             skipped[name] = reason
@@ -1152,7 +1171,12 @@ def build_run_plan(
         for req in getattr(mod, "REQUIRED_LOGS", []):
             _claim_needed_log(needed_logs, req["pattern"], req["source"])
         for req in getattr(mod, "OPTIONAL_LOGS", []):
-            if _is_optional_satisfiable(req, source_map, virtual_sources):
+            if _is_optional_satisfiable(
+                req,
+                source_map,
+                virtual_sources,
+                _directory_skips=directory_skips,
+            ):
                 _claim_needed_log(needed_logs, req["pattern"], req["source"])
 
     return RunPlan(
@@ -1161,6 +1185,7 @@ def build_run_plan(
         will_run=will_run,
         skipped=skipped,
         needed_logs=needed_logs,
+        directory_skips=directory_skips,
     )
 
 
@@ -1364,7 +1389,13 @@ def resolve_detect(
 
 
 def _any_input_yields_files(
-    source: str, paths: list[Path], pattern: str,
+    source: str,
+    paths: list[Path],
+    pattern: str,
+    *,
+    _directory_skips: (
+        dict[tuple[str, Path], DirectorySkipInfo] | None
+    ) = None,
 ) -> bool:
     """Plan-time discovery lockstep with the LOADER for one family.
 
@@ -1397,19 +1428,30 @@ def _any_input_yields_files(
         if not p.exists():
             continue
         if source == "zeek_dir":
-            if discover_zeek_files(p, pattern):
+            if discover_zeek_files(
+                p,
+                pattern,
+                _directory_skips=_directory_skips,
+            ):
                 return True
         elif source == "cloudtrail_dir":
             if discover_cloudtrail_files(p):
                 return True
         elif source == "syslog_dir":
-            if _discover_syslog_files(p):
+            if _discover_syslog_files(
+                p, _directory_skips=_directory_skips,
+            ):
                 return True
         elif source == "pihole_dir":
             if _syslog_files(p, pattern):
                 return True
         elif source == "journal":
-            if discover_for_source_key("journal", p, pattern):
+            if discover_for_source_key(
+                "journal",
+                p,
+                pattern,
+                _directory_skips=_directory_skips,
+            ):
                 return True
         else:
             # Defensive: unknown source key. Fall back to plain glob over
@@ -1426,6 +1468,10 @@ def _is_optional_satisfiable(
     req: dict[str, str],
     source_map: dict[str, Path | list[Path]],
     virtual_sources: frozenset[tuple[str, str]] = frozenset(),
+    *,
+    _directory_skips: (
+        dict[tuple[str, Path], DirectorySkipInfo] | None
+    ) = None,
 ) -> bool:
     """Return True if an OPTIONAL_LOGS entry has files available to load."""
     source = req["source"]
@@ -1434,7 +1480,45 @@ def _is_optional_satisfiable(
     paths = _as_path_list(source_map.get(source))
     if not paths:
         return False
-    return _any_input_yields_files(source, paths, req["pattern"])
+    return _any_input_yields_files(
+        source,
+        paths,
+        req["pattern"],
+        _directory_skips=_directory_skips,
+    )
+
+
+def _directory_denial_reason(
+    source: str,
+    paths: Sequence[Path],
+    directory_skips: dict[tuple[str, Path], DirectorySkipInfo] | None,
+) -> str | None:
+    """Return bounded skip copy when a configured input was unlistable."""
+    if not directory_skips:
+        return None
+    configured: set[Path] = set()
+    for path in paths:
+        try:
+            configured.add(path.resolve())
+        except OSError:
+            configured.add(path)
+    denied = [
+        info.path
+        for (source_key, resolved), info in directory_skips.items()
+        if source_key == source and resolved in configured
+    ]
+    if not denied:
+        return None
+    rendered = _compact_path_list(denied)
+    if len(denied) == 1:
+        return (
+            f"{source} directory could not be listed (permission denied): "
+            f"{rendered}"
+        )
+    return (
+        f"{source} directories could not be listed (permission denied): "
+        f"{rendered}"
+    )
 
 
 def _check_required_logs(
@@ -1442,6 +1526,10 @@ def _check_required_logs(
     source_map: dict[str, Path | list[Path]],
     scope: frozenset[str] | None = None,
     virtual_sources: frozenset[tuple[str, str]] = frozenset(),
+    *,
+    _directory_skips: (
+        dict[tuple[str, Path], DirectorySkipInfo] | None
+    ) = None,
 ) -> str | None:
     """Return None if all REQUIRED_LOGS are available, or a human-readable reason if not.
 
@@ -1469,7 +1557,17 @@ def _check_required_logs(
         # is "ANY input yields files" - _any_input_yields_files handles
         # per-input existence checks (skips non-existent), so we only emit a
         # not-found skip when NO input yields anything.
-        if not _any_input_yields_files(source, paths, pattern):
+        if not _any_input_yields_files(
+            source,
+            paths,
+            pattern,
+            _directory_skips=_directory_skips,
+        ):
+            denial_reason = _directory_denial_reason(
+                source, paths, _directory_skips,
+            )
+            if denial_reason is not None:
+                return denial_reason
             if len(paths) == 1:
                 p = paths[0]
                 if not p.exists():
@@ -1486,8 +1584,22 @@ def _check_required_logs(
 
     if getattr(detector_module, "REQUIRES_ONE_OF_OPTIONAL", False):
         for opt in getattr(detector_module, "OPTIONAL_LOGS", []):
-            if _is_optional_satisfiable(opt, source_map, virtual_sources):
+            if _is_optional_satisfiable(
+                opt,
+                source_map,
+                virtual_sources,
+                _directory_skips=_directory_skips,
+            ):
                 return None
+        for opt in getattr(detector_module, "OPTIONAL_LOGS", []):
+            source = opt["source"]
+            denial_reason = _directory_denial_reason(
+                source,
+                _as_path_list(source_map.get(source)),
+                _directory_skips,
+            )
+            if denial_reason is not None:
+                return denial_reason
         # The reason NEVER embeds the detector name - both render surfaces prefix
         # it (the doubled-name skip-line bug class), so the fallback carries none.
         return getattr(
@@ -1690,7 +1802,7 @@ def _dry_syslog_display(
     decision: SyslogProbeDecision,
 ) -> tuple[str, str | None]:
     """Return dry-run provider and optional not-loaded fallback copy."""
-    paths = _compact_syslog_paths(intent.flat_paths)
+    paths = _compact_path_list(intent.flat_paths)
     fallback = f"{paths} (not loaded)" if paths else None
     reason = decision.reason
     if decision.provider is SyslogProvider.OFF:
@@ -1786,7 +1898,9 @@ def _derive_data_sources(
 def _pattern_human_label(source_key: str, pattern: str) -> str:
     """Operator-language label for one (source_key, pattern) tuple.
 
-    USED BY: the source-coverage disclosure note (``_zero_window_coverage_notes``).
+    USED BY: source-coverage, directory-skip, and file-permission disclosure
+    notes (``_zero_window_coverage_notes`` / ``_directory_skip_notes`` /
+    ``_permission_skip_notes``).
     DISTINCT FROM: ``_derive_data_sources``, which emits internal
     ``data_sources`` tokens (``"zeek_dns"`` / ``"dnsmasq_dns"`` / ``"syslog_raw"``
     / ``"cloudtrail_raw"``) consumed by the Zeek-evangelization nudge matcher and
@@ -1908,6 +2022,59 @@ def _permission_denied_run_error(
     return None
 
 
+def _permission_skip_notes(
+    load_result: "loader.LoadResult",
+    plan: RunPlan,
+) -> list[str]:
+    """Return report notes for permission-denied files in a partial run."""
+    out: list[str] = []
+    for pattern, source_key in plan.needed_logs.items():
+        info = load_result.permission_skips.get(pattern)
+        if info is None or info.denied <= 0:
+            continue
+        label = _pattern_human_label(source_key, pattern)
+        paths = _compact_path_list(info.paths)
+        if info.denied == info.discovered:
+            n = info.discovered
+            out.append(
+                f"{label}: all {n} discovered {plural(n, 'file')} "
+                "permission denied - no rows loaded from this source "
+                f"({paths})"
+            )
+        else:
+            out.append(
+                f"{label}: {info.denied} of {info.discovered} discovered "
+                f"{plural(info.discovered, 'file')} permission denied - "
+                f"those rows are missing from this run ({paths})"
+            )
+    return out
+
+
+def _directory_skip_notes(plan: RunPlan) -> list[str]:
+    """Return one bounded report note per unlistable source family."""
+    grouped: dict[str, list[Path]] = {}
+    for info in plan.directory_skips.values():
+        grouped.setdefault(info.source_key, []).append(info.path)
+
+    out: list[str] = []
+    for source_key, paths in grouped.items():
+        label = _pattern_human_label(source_key, "")
+        rendered = _compact_path_list(paths)
+        if len(paths) == 1:
+            out.append(
+                f"{label}: directory could not be listed "
+                "(permission denied) - its contents are absent from this run "
+                f"({rendered})"
+            )
+        else:
+            out.append(
+                f"{label}: {len(paths)} directories could not be listed "
+                "(permission denied) - their contents are absent from this run "
+                f"({rendered})"
+            )
+    return out
+
+
 def _rotation_fallback_line(label: str, info: "loader.RotationSkipInfo") -> str:
     """The one fallback-disclosure string, shared by the report note
     (``_rotation_skip_notes``) and the post-load stderr signal
@@ -1987,15 +2154,15 @@ def _rotation_fallback_lines(
     return out
 
 
-_SYSLOG_PATH_DISPLAY_CAP = 3
-_SYSLOG_PATH_CHAR_CAP = 256
+_PATH_DISPLAY_CAP = 3
+_PATH_CHAR_CAP = 256
 
 
-def _compact_syslog_paths(paths: Sequence[Path]) -> str:
-    """Render a bounded, terminal-safe local file-fallback path list."""
+def _compact_path_list(paths: Sequence[Path]) -> str:
+    """Render a bounded, terminal-safe path list."""
     rendered = [
-        strip_control(compact_home(path))[:_SYSLOG_PATH_CHAR_CAP]
-        for path in paths[:_SYSLOG_PATH_DISPLAY_CAP]
+        strip_control(compact_home(path))[:_PATH_CHAR_CAP]
+        for path in paths[:_PATH_DISPLAY_CAP]
     ]
     text = ", ".join(rendered)
     omitted = len(paths) - len(rendered)
@@ -2022,7 +2189,7 @@ def _syslog_provider_note(
     """Return the one bounded system-log provider disclosure for the report."""
     if not intent.report_local_lane:
         return None
-    paths = _compact_syslog_paths(intent.flat_paths)
+    paths = _compact_path_list(intent.flat_paths)
     fallback = f"{paths} fallback not loaded" if paths else "no file fallback configured"
     warning = _bounded_warning_rider(decision.warnings)
 

@@ -8,6 +8,26 @@ All notable changes to sigwood are recorded here. The format follows
 
 ### Fixed
 
+- **An unreadable Zeek or syslog directory no longer costs you the whole hunt.** If sigwood
+  could not list one of those source directories - a permissions problem on a single folder -
+  the run stopped with a bare `Permission denied` and produced nothing at all, discarding every
+  other source it could read perfectly well. That directory is now skipped and the rest of the
+  hunt runs. The report carries a note naming the source and up to three of the directories it
+  could not list, with a count of any remainder, and saying their contents are absent from the
+  run. A detector with another readable source keeps running; a detector left with no readable
+  source is reported as skipped, and its reason names the permission problem instead of only
+  the generic advice to check your source paths. A run where nothing at all could be read still
+  stops, as before.
+- **A log source sigwood could not read now says so in the report, not only on the
+  terminal.** When some files are unreadable but other data still loads - a whole source
+  denied, or part of one - the run completes and still exits 0; that tolerance is
+  deliberate and unchanged. What was missing is the disclosure: the affected detector
+  appeared in the report as having run and found nothing, which reads exactly like a clean
+  result. The denial now appears as a note naming the source, how many of its files were
+  unreadable, and up to three of their paths, with a count of any remainder. It rides the
+  same channel as every other run note, so it reaches the text, html and pdf reports and
+  the json feed; csv is a fixed worklist and carries no notes, as before. A run where
+  nothing at all could be read still stops with the existing error.
 - **A pipeline reading the merged stream now gets the promised broken-pipe exit code.**
   `sigwood ... 2>&1 | head` exited 120 when the reader closed early - the closed-pipe
   handler quieted stdout but not stderr, so the interpreter's final flush crashed on the

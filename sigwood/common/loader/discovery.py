@@ -18,9 +18,9 @@ import re
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
-from sigwood.common.loader.io import _union_dedupe
+from sigwood.common.loader.io import _safe_resolve, _union_dedupe
 from sigwood.common.loader.sniff import _looks_like_syslog
-from sigwood.common.loader.types import _LOG_SUFFIXES
+from sigwood.common.loader.types import DirectorySkipInfo, _LOG_SUFFIXES
 from sigwood.common.loader.windowing import _peek_first_ts, _rotation_base_and_index
 
 
@@ -34,10 +34,55 @@ def discover_files(directory: Path, pattern: str) -> list[Path]:
 _DATE_DIR_RE = re.compile(r"^\d{4}-\d{2}-\d{2}")
 
 
-def _zeek_date_subdirs(directory: Path) -> list[Path]:
-    """Return immediate child directories whose names begin with YYYY-MM-DD, sorted."""
+class _DirectoryListingDenied(PermissionError):
+    """Private control signal: directory listing failed with EACCES."""
+
+
+_ZEEK_DATED_DENIED = object()
+
+
+def _record_directory_skip(
+    source_key: str,
+    directory: Path,
+    sink: dict[tuple[str, Path], DirectorySkipInfo] | None,
+) -> None:
+    """Record one source/directory denial in a caller-owned dedupe sink."""
+    if sink is None:
+        return
+    resolved = _safe_resolve(directory)
+    sink.setdefault(
+        (source_key, resolved),
+        DirectorySkipInfo(source_key=source_key, path=resolved),
+    )
+
+
+def _list_directory(
+    directory: Path,
+    source_key: str,
+    sink: dict[tuple[str, Path], DirectorySkipInfo] | None,
+) -> list[Path]:
+    """List immediate children or raise the typed, already-recorded denial."""
+    try:
+        return list(directory.iterdir())
+    except PermissionError:
+        _record_directory_skip(source_key, directory, sink)
+        raise _DirectoryListingDenied from None
+
+
+def _zeek_date_subdirs(
+    directory: Path,
+    *,
+    _directory_skips: dict[tuple[str, Path], DirectorySkipInfo] | None = None,
+    _children: list[Path] | None = None,
+) -> list[Path]:
+    """Return dated child directories, or raise the typed listing-denial signal."""
     result = []
-    for child in directory.iterdir():
+    children = (
+        _children
+        if _children is not None
+        else _list_directory(directory, "zeek_dir", _directory_skips)
+    )
+    for child in children:
         if child.is_dir() and _DATE_DIR_RE.match(child.name):
             result.append(child)
     return sorted(result, key=lambda p: p.name)
@@ -61,21 +106,25 @@ def _is_primary_zeek_name(name: str, pattern: str) -> bool:
 
 
 def _zeek_dated_window(
-    paths: list[Path], span: timedelta
-) -> tuple[datetime, datetime] | None:
+    paths: list[Path],
+    span: timedelta,
+    *,
+    _directory_skips: dict[tuple[str, Path], DirectorySkipInfo] | None = None,
+) -> tuple[datetime, datetime] | object | None:
     """Compute the default analysis window for a union of Zeek inputs.
 
-    PURELY-DATED predicate: every input is a directory AND every directory has
-    non-empty YYYY-MM-DD subdirs. When that predicate holds, generalizes the
-    single-input selection across the union - gather every discovered date
-    subdir across all inputs, dedupe by date prefix, sort by date, select the
-    newest ``N = ceil(span_days)`` (min 1), and return ``00:00:00`` UTC of the
-    earliest selected → ``23:59:59`` UTC of the newest selected.
+    PURELY-DATED predicate: every READABLE input is a directory with non-empty
+    YYYY-MM-DD subdirs. Denied inputs are omitted from inference rather than
+    represented as empty. When the predicate holds, generalizes the single-input
+    selection across the union - gather every discovered date subdir, dedupe by
+    date prefix, sort by date, select the newest ``N = ceil(span_days)`` (min 1),
+    and return ``00:00:00`` UTC of the earliest selected → ``23:59:59`` UTC of
+    the newest selected.
 
-    Returns ``None`` when ANY input is a file (file + dated-dir mix) or ANY
-    directory is flat (mixed/flat present) - the caller falls through to the
-    flat-layout default path, which computes the window post-load from the
-    COMBINED loaded Zeek frame's max-ts.
+    Returns ``None`` when ANY readable input is a file (file + dated-dir mix) or
+    any readable directory is flat (mixed/flat present). Returns the private
+    denial sentinel only when no readable input remains. The resolver maps that
+    sentinel to the universal post-load trim without claiming a flat layout.
 
     Single-input behavior is BYTE-IDENTICAL with the prior scalar helper: a
     one-element list of a single dated dir runs the same selection
@@ -89,13 +138,24 @@ def _zeek_dated_window(
     if not paths:
         return None
     all_date_dirs: list[Path] = []
+    readable_inputs = 0
+    denied_input = False
     for p in paths:
         if not p.is_dir():
             return None
-        date_dirs = _zeek_date_subdirs(p)
+        try:
+            date_dirs = _zeek_date_subdirs(
+                p, _directory_skips=_directory_skips,
+            )
+        except _DirectoryListingDenied:
+            denied_input = True
+            continue
+        readable_inputs += 1
         if not date_dirs:
             return None
         all_date_dirs.extend(date_dirs)
+    if denied_input and readable_inputs == 0:
+        return _ZEEK_DATED_DENIED
     # Dedup by date prefix so N counts DISTINCT dates across the union, not
     # duplicates contributed by multiple inputs carrying the same day.
     seen: set[str] = set()
@@ -142,24 +202,44 @@ def _default_resolve_window(
 
 
 def _zeek_resolve_window(
-    strategy, dirs: list[Path], pattern: str, span: timedelta
+    strategy,
+    dirs: list[Path],
+    pattern: str,
+    span: timedelta,
+    *,
+    _directory_skips: dict[tuple[str, Path], DirectorySkipInfo] | None = None,
 ) -> tuple[tuple[datetime, datetime] | None, timedelta | None]:
     """Zeek strategy resolver. Dated layout → a precise ``(since, until)``
     ``select_window`` and NO post-load trim (the load-time window already cut
-    exactly). Flat / mixed / file → ``(None, span)`` (load full, trim post-load).
+    exactly). Flat / mixed / file and all-denied/unclassifiable → ``(None, span)``
+    (load full, trim post-load); the latter has no rows for the trim to affect.
     """
-    dated = _zeek_dated_window(dirs, span)
+    dated = _zeek_dated_window(
+        dirs, span, _directory_skips=_directory_skips,
+    )
+    if dated is _ZEEK_DATED_DENIED:
+        # No readable input exists from which to infer layout. Preserve the
+        # universal default-window invariant (trim_span is None only when an
+        # exact dated select_window already cut the load); an empty load makes
+        # this post-load trim behaviorally inert.
+        return None, span
     if dated is not None:
+        assert isinstance(dated, tuple)
         return dated, None
     return None, span
 
 
 def _flat_default_floor(
-    strategy, dir_paths: list[Path], pattern: str, span: timedelta
+    strategy,
+    dir_paths: list[Path],
+    pattern: str,
+    span: timedelta,
+    *,
+    _directory_skips: dict[tuple[str, Path], DirectorySkipInfo] | None = None,
 ) -> tuple[datetime, None] | None:
     """Conservative default-window floor for a flat family (syslog / pihole).
 
-    Discovers the family's DIRECTORY candidates via the passed ``strategy.discover``
+    Discovers the family's DIRECTORY candidates via ``strategy.discover_paths``
     over the ``is_dir()`` inputs (``_union_dedupe``d - the same universe as
     :func:`load_required_logs`, explicit files excluded) and peeks each candidate's
     first-ts (``_peek_first_ts`` - clock-parity with the loader's own filter).
@@ -169,7 +249,12 @@ def _flat_default_floor(
     Returns ``None`` when nothing is peekable (load-full fallback).
     """
     candidates = _union_dedupe(
-        [strategy.discover(d, pattern, None, None) for d in dir_paths if d.is_dir()]
+        [
+            strategy.discover_paths(
+                d, pattern, None, None, _directory_skips=_directory_skips,
+            )
+            for d in dir_paths if d.is_dir()
+        ]
     )
     peeked = [ts for ts in (_peek_first_ts(p) for p in candidates) if ts is not None]
     if not peeked:
@@ -178,13 +263,27 @@ def _flat_default_floor(
 
 
 def _flat_resolve_window(
-    strategy, dirs: list[Path], pattern: str, span: timedelta
+    strategy,
+    dirs: list[Path],
+    pattern: str,
+    span: timedelta,
+    *,
+    _directory_skips: dict[tuple[str, Path], DirectorySkipInfo] | None = None,
 ) -> tuple[tuple[datetime, None] | None, timedelta]:
     """Flat strategy resolver (syslog / pihole). Peek the directory candidates →
     conservative ``(floor, None)`` ``select_window`` + precise post-load
     ``trim_span``; unpeekable → ``(None, span)`` (load full, trim post-load).
     """
-    return _flat_default_floor(strategy, dirs, pattern, span), span
+    return (
+        _flat_default_floor(
+            strategy,
+            dirs,
+            pattern,
+            span,
+            _directory_skips=_directory_skips,
+        ),
+        span,
+    )
 
 
 def discover_zeek_files(
@@ -192,6 +291,8 @@ def discover_zeek_files(
     pattern: str,
     since: datetime | None = None,
     until: datetime | None = None,
+    *,
+    _directory_skips: dict[tuple[str, Path], DirectorySkipInfo] | None = None,
 ) -> list[Path]:
     """Return Zeek log files matching pattern from a flat or dated-layout directory.
 
@@ -210,11 +311,18 @@ def discover_zeek_files(
     Mixed-root policy: if any immediate child is a YYYY-MM-DD directory, dated layout
     is used and root-level files are not included. Zeek does not produce root-level files
     alongside date subdirs; the hybrid is ambiguous and therefore unsupported.
+
+    A directory-listing denial returns no candidates for that input and records
+    the omission when a caller-owned sink is supplied; it never enters the flat arm.
     """
     if directory.is_file():
         return [directory] if _file_matches_pattern(directory, pattern) else []
 
-    date_dirs = _zeek_date_subdirs(directory)
+    try:
+        children = _list_directory(directory, "zeek_dir", _directory_skips)
+    except _DirectoryListingDenied:
+        return []
+    date_dirs = _zeek_date_subdirs(directory, _children=children)
 
     if not date_dirs:
         # Flat layout. Keep only primary Zeek logs (conn.log, conn.<ts>.log.gz),
@@ -228,7 +336,7 @@ def discover_zeek_files(
     # non-date CHILD DIRS (current/, export/) join the candidate set in BOTH
     # branches - the live spool must stay discoverable under a window.
     non_date_children = [
-        c for c in directory.iterdir()
+        c for c in children
         if c.is_dir() and not _DATE_DIR_RE.match(c.name)
     ]
     if since is not None or until is not None:
@@ -297,7 +405,11 @@ def _syslog_files(path: Path, pattern: str = "*.log*") -> list[Path]:
     return sorted(files, key=lambda p: _rotation_base_and_index(p.name))
 
 
-def _discover_syslog_files(path: Path) -> list[Path]:
+def _discover_syslog_files(
+    path: Path,
+    *,
+    _directory_skips: dict[tuple[str, Path], DirectorySkipInfo] | None = None,
+) -> list[Path]:
     """The SINGLE syslog discovery universe - content-gated.
 
     FILE input → ``[path]`` UNGATED (the explicit-named-file rail: an explicitly
@@ -306,11 +418,17 @@ def _discover_syslog_files(path: Path) -> list[Path]:
     non-AppleDouble files that pass ``_looks_like_syslog``, in rotation order.
     Non-recursive ``iterdir`` correctly skips the binary subdirs (``journal/``,
     ``audit/``, ``sa/``) - they are not regular files.
+    A listing denial yields no candidates and records the source directory when
+    a caller-owned sink is supplied.
     """
     if path.is_file():
         return [path]
+    try:
+        children = _list_directory(path, "syslog_dir", _directory_skips)
+    except _DirectoryListingDenied:
+        return []
     files = [
-        p for p in path.iterdir()
+        p for p in children
         if p.is_file() and not p.name.startswith("._") and _looks_like_syslog(p)
     ]
     return sorted(files, key=lambda p: _rotation_base_and_index(p.name))

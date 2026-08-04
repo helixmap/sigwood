@@ -6,6 +6,20 @@ All notable changes to sigwood are recorded here. The format follows
 
 ## [Unreleased]
 
+### Security
+
+- **sigwood no longer writes through a symbolic link at its output path.** If the file sigwood
+  was about to write turned out to be a symbolic link, it followed the link and wrote to
+  whatever the link pointed at: that file was emptied, replaced with the run's findings, and had
+  its permissions tightened to owner-only - and sigwood reported success. On a directory another
+  account can write to, a symbolic link planted ahead of time therefore let someone else choose
+  where a report landed, which is a way of taking the contents as much as destroying the file
+  already there. sigwood now refuses at the moment it opens the file, leaves the existing file
+  untouched, and reports the target it declined to write to. Ordinary use is unaffected,
+  including a reports directory that is itself a symbolic link to another disk - only the final
+  file name is checked. Two limits are written down in the known-issues list: a hard link is not
+  covered, and neither is a symbolic link among the parent directories.
+
 ### Fixed
 
 - **A Pi-hole or CloudTrail directory you lack permission to read is no longer silently empty.**

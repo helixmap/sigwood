@@ -65,8 +65,12 @@ def test_decision_type_contract_is_exact_frozen_and_slotted() -> None:
     assert decision.is_eligible_decision is True
     with pytest.raises(FrozenInstanceError):
         decision.gate = "sudo"  # type: ignore[misc]
-    with pytest.raises(AttributeError):
-        decision.extra = "not slotted"  # type: ignore[attr-defined]
+    # Slotting is proved by the declared __slots__ above and by the absent
+    # instance dict here. Assigning an UNKNOWN attribute proves neither: a
+    # frozen dataclass refuses every assignment before slots are consulted,
+    # so an unslotted class refuses it too, and which exception that path
+    # raises is not stable across the supported interpreter range.
+    assert not hasattr(decision, "__dict__")
 
     assert _decision(
         AuthOutcome.INDETERMINATE,

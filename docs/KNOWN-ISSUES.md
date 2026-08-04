@@ -330,6 +330,23 @@ ranked summary and the dns scan summary - carry no event timestamp at all, by de
 `jq` timeline therefore has to know which key a given finding type uses. Every finding
 also carries the run's data window.
 
+**Symbolic-link refusal covers only the final file name, not hard links or parent
+directories.** sigwood checks, at the moment it opens the file, that
+the final name it was asked to write is not a symbolic link, and refuses rather than
+following it. Two shapes are outside that check. A **hard link** is not a link sigwood can
+detect this way — it is a second name for the same file, so opening it is opening that
+file, and its contents would be replaced. A **symbolic link among the parent directories**
+is followed normally, which is deliberate: a reports directory pointing at another disk is
+an ordinary thing to set up, and only the last component is checked.
+
+Both need the same thing to matter: another account able to create or replace a name in one
+of the directories along your output path. If every such directory is one only you can write
+to, neither applies. They need different fixes, and neither is a small one. Avoiding a hard
+link means not emptying the destination before knowing what it is — writing to a temporary
+name and moving it into place. A symbolic link among the parent directories is not addressed
+by that at all, because the temporary file would be created inside the substituted directory
+too; it needs each directory along the path opened without following links.
+
 **The conn digest is slow on very large frames.** The connection digest walks every
 row to build its histogram and per-flow summary, so a multi-million-row `conn.log`
 takes a while. It's correct, just not yet optimized; performance work is on the list.

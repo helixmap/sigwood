@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import errno
 import io
 import json
 import os
@@ -44,6 +45,13 @@ _CONN_LINE = (
 
 def _mode(path: Path) -> int:
     return stat.S_IMODE(path.stat().st_mode)
+
+
+def _symlink_refusal(path: Path) -> str:
+    return (
+        f"{path} is a symbolic link - refusing to write through it; "
+        "remove it or choose another target"
+    )
 
 
 @contextmanager
@@ -131,6 +139,148 @@ def test_public_policy_remains_ambient_umask_governed(tmp_path: Path) -> None:
     assert _mode(parent) == 0o755
     assert _mode(target) == 0o644
     assert target.read_bytes() == b"value\r\n"
+
+
+@_POSIX_ONLY
+def test_cli_refuses_final_component_symlink_without_touching_victim(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(cli.cfg, "SEARCH_PATHS", [])
+    source = tmp_path / "conn.log"
+    source.write_text(_CONN_LINE, encoding="utf-8")
+    victim = tmp_path / "victim.conf"
+    original = b"keep this configuration\n"
+    victim.write_bytes(original)
+    victim.chmod(0o644)
+    target = tmp_path / "report.txt"
+    target.symlink_to(victim)
+
+    try:
+        cli.main(["beacon", str(source), "--all", "-q", f"--out={target}"])
+    except SystemExit as exc:
+        exit_code = exc.code
+    else:
+        exit_code = 0
+
+    captured = capsys.readouterr()
+    assert (victim.read_bytes(), _mode(victim), exit_code) == (
+        original,
+        0o644,
+        1,
+    )
+    assert captured.out == ""
+    assert captured.err == f"sigwood: {_symlink_refusal(target)}\n"
+    assert captured.err.count("sigwood:") == 1
+    assert "run 'sigwood --help' for usage" not in captured.err
+
+
+@_POSIX_ONLY
+@pytest.mark.parametrize("private", [True, False])
+def test_write_fd_refuses_final_component_symlink(
+    tmp_path: Path, private: bool,
+) -> None:
+    import sigwood.common.paths as paths_mod
+
+    victim = tmp_path / "victim"
+    original = b"preserve me"
+    victim.write_bytes(original)
+    victim.chmod(0o644)
+    target = tmp_path / "artifact"
+    target.symlink_to(victim)
+    opened_fd: int | None = None
+
+    try:
+        with pytest.raises(ValueError) as exc_info:
+            opened_fd = paths_mod._write_fd(target, private=private)
+    finally:
+        # Close an unexpected fd before pytest reports the missing exception.
+        if opened_fd is not None:
+            os.close(opened_fd)
+
+    assert str(exc_info.value) == _symlink_refusal(target)
+    assert victim.read_bytes() == original
+    assert _mode(victim) == 0o644
+
+
+@_POSIX_ONLY
+def test_write_preserves_intermediate_symlink_loop_oserror(tmp_path: Path) -> None:
+    loop = tmp_path / "loop"
+    loop.symlink_to("loop", target_is_directory=True)
+    target = loop / "artifact"
+
+    with pytest.raises(OSError) as exc_info:
+        private_write_text(target, "never written")
+
+    assert exc_info.value.errno == errno.ELOOP
+    assert _symlink_refusal(target) not in str(exc_info.value)
+
+
+@_POSIX_ONLY
+def test_write_fd_propagates_non_eloop_without_leaf_classification(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import sigwood.common.paths as paths_mod
+
+    target = tmp_path / "artifact"
+    open_error = PermissionError(errno.EACCES, "denied", str(target))
+
+    def _fail_open(*_args: object, **_kwargs: object) -> int:
+        raise open_error
+
+    def _unexpected_lstat(*_args: object, **_kwargs: object) -> os.stat_result:
+        raise AssertionError("non-ELOOP failure must not classify the leaf")
+
+    monkeypatch.setattr(paths_mod.os, "open", _fail_open)
+    monkeypatch.setattr(paths_mod.os, "lstat", _unexpected_lstat)
+
+    with pytest.raises(PermissionError) as exc_info:
+        paths_mod._write_fd(target, private=True)
+
+    assert exc_info.value is open_error
+
+
+@_POSIX_ONLY
+def test_write_fd_propagates_original_eloop_when_leaf_classification_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import sigwood.common.paths as paths_mod
+
+    target = tmp_path / "loop" / "artifact"
+    open_error = OSError(errno.ELOOP, "open loop", str(target))
+
+    def _fail_open(*_args: object, **_kwargs: object) -> int:
+        raise open_error
+
+    def _fail_lstat(*_args: object, **_kwargs: object) -> os.stat_result:
+        raise PermissionError(errno.EACCES, "classification denied", str(target))
+
+    monkeypatch.setattr(paths_mod.os, "open", _fail_open)
+    monkeypatch.setattr(paths_mod.os, "lstat", _fail_lstat)
+
+    with pytest.raises(OSError) as exc_info:
+        paths_mod._write_fd(target, private=True)
+
+    assert exc_info.value is open_error
+
+
+@_POSIX_ONLY
+def test_write_through_symlinked_parent_directory_remains_supported(
+    tmp_path: Path,
+) -> None:
+    relocated = tmp_path / "relocated-reports"
+    relocated.mkdir()
+    reports = tmp_path / "reports"
+    reports.symlink_to(relocated, target_is_directory=True)
+
+    # Final-component refusal intentionally does not close the residual risk in
+    # parent components; ordinary relocated report directories remain supported.
+    private_write_text(reports / "report.txt", "relocated\r\n", newline="")
+
+    written = relocated / "report.txt"
+    assert written.read_bytes() == b"relocated\r\n"
+    assert _mode(written) == 0o600
 
 
 @_POSIX_ONLY

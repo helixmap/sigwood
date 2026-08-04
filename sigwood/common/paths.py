@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import errno
 import os
+import stat
 from pathlib import Path
 from typing import Any, NamedTuple, TextIO
 
@@ -73,13 +74,27 @@ def private_mkdir(
 
 
 def _write_fd(path: str | os.PathLike[str], *, private: bool) -> int:
-    """Open one write-truncate fd and apply the selected permission policy."""
+    """Open one write-truncate fd, refuse a symlink leaf, and apply its mode."""
     requested_mode = 0o600 if private else 0o666
-    fd = os.open(
-        path,
-        os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
-        requested_mode,
-    )
+    try:
+        fd = os.open(
+            path,
+            os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW,
+            requested_mode,
+        )
+    except OSError as exc:
+        if exc.errno != errno.ELOOP:
+            raise
+        try:
+            leaf_is_symlink = stat.S_ISLNK(os.lstat(path).st_mode)
+        except OSError:
+            leaf_is_symlink = False
+        if not leaf_is_symlink:
+            raise
+        raise ValueError(
+            f"{path} is a symbolic link - refusing to write through it; "
+            "remove it or choose another target"
+        ) from exc
     try:
         if private:
             os.fchmod(fd, 0o600)

@@ -11,6 +11,7 @@ import pytest
 import sigwood.parsers.auth as auth_parser
 from sigwood.detectors import auth as auth_detector
 from sigwood.parsers.auth import AuthDecision, AuthOutcome, extract_decision
+from sigwood.parsers.syslog import parse_line
 
 
 def _decision(
@@ -82,10 +83,14 @@ def test_dispatch_and_emitted_gate_vocabularies_are_exact() -> None:
     assert auth_parser._RECOGNIZED_PROGRAMS == {
         "sshd",
         "sshd-session",
+        "sshd(pam_unix)",
         "dropbear",
         "sudo",
         "su",
         "runuser",
+        "kscreenlocker_greet",
+        "gdm-password]",
+        "--",
         "audisp-syslog",
         "audit",
     }
@@ -95,8 +100,14 @@ def test_dispatch_and_emitted_gate_vocabularies_are_exact() -> None:
         "sudo",
         "su",
         "runuser",
+        "login",
         "audit",
     }
+    assert all(
+        auth_parser.is_recognized_program(program)
+        for program in auth_parser._RECOGNIZED_PROGRAMS
+    )
+    assert auth_parser.is_recognized_program("sshd(pam_other)") is False
 
 
 @pytest.mark.parametrize(
@@ -320,6 +331,79 @@ def test_dispatch_and_emitted_gate_vocabularies_are_exact() -> None:
                 source="198.51.100.25",
             ),
         ),
+        (
+            "sshd(pam_unix)",
+            "sshd(pam_unix)[*]: authentication failure; "
+            "logname= uid=0 euid=0 tty=NODEVssh ruser= "
+            "rhost=router.example user=admin",
+            _decision(
+                AuthOutcome.DENIED,
+                "sshd",
+                actor="admin",
+                actor_namespace="unix_user",
+                source="router.example",
+            ),
+        ),
+        (
+            "sshd(pam_unix)",
+            "sshd(pam_unix)[*]: authentication failure; "
+            "logname= uid=0 euid=0 tty=NODEVssh ruser= "
+            "rhost=203.0.113.25",
+            _decision(
+                AuthOutcome.DENIED,
+                "sshd",
+                source="203.0.113.25",
+            ),
+        ),
+        (
+            "kscreenlocker_greet",
+            "kscreenlocker_greet[*]: pam_unix(kde:auth): "
+            "authentication failure; logname=admin uid=1000 euid=1000 "
+            "tty=:0 ruser= rhost=192.0.2.26 user=admin",
+            _decision(
+                AuthOutcome.DENIED,
+                "kde",
+                actor="admin",
+                actor_namespace="unix_user",
+                source="192.0.2.26",
+            ),
+        ),
+        (
+            "gdm-password]",
+            "gdm-password][*]: pam_unix(gdm-password:auth): "
+            "authentication failure; logname= uid=0 euid=0 tty=:0 "
+            "ruser= rhost=198.51.100.27 user=guest",
+            _decision(
+                AuthOutcome.DENIED,
+                "gdm-password",
+                actor="guest",
+                actor_namespace="unix_user",
+                source="198.51.100.27",
+            ),
+        ),
+        (
+            "--",
+            "-- root[*]: ROOT LOGIN ON tty2",
+            _decision(
+                AuthOutcome.GRANTED,
+                "login",
+                actor="root",
+                actor_namespace="unix_user",
+                terminal="tty2",
+            ),
+        ),
+        (
+            "su",
+            "su[*]: (to root) admin on pts/4",
+            _decision(
+                AuthOutcome.GRANTED,
+                "su",
+                actor="admin",
+                actor_namespace="unix_user",
+                target="root",
+                terminal="pts/4",
+            ),
+        ),
     ],
 )
 def test_text_grammar_matrix(
@@ -328,6 +412,58 @@ def test_text_grammar_matrix(
     expected: AuthDecision,
 ) -> None:
     assert extract_decision(message, program=program) == expected
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected_program", "expected_gate", "expected_outcome"),
+    [
+        (
+            "Aug  7 08:58:56 host.example sshd(pam_unix)[16455]: "
+            "authentication failure; logname= uid=0 euid=0 tty=NODEVssh "
+            "ruser= rhost=192.0.2.80 user=root",
+            "sshd(pam_unix)",
+            "sshd",
+            AuthOutcome.DENIED,
+        ),
+        (
+            "Aug  7 08:58:57 host.example kscreenlocker_greet[25]: "
+            "pam_unix(kde:auth): authentication failure; "
+            "rhost=198.51.100.80 user=admin",
+            "kscreenlocker_greet",
+            "kde",
+            AuthOutcome.DENIED,
+        ),
+        (
+            "Aug  7 08:58:58 host.example gdm-password][26]: "
+            "pam_unix(gdm-password:auth): authentication failure; "
+            "rhost=203.0.113.80 user=guest",
+            "gdm-password]",
+            "gdm-password",
+            AuthOutcome.DENIED,
+        ),
+        (
+            "Dec  9 09:41:52 host.example  -- root[2419]: ROOT LOGIN ON tty2",
+            "--",
+            "login",
+            AuthOutcome.GRANTED,
+        ),
+    ],
+)
+def test_successor_grammars_survive_real_syslog_routing(
+    raw: str,
+    expected_program: str,
+    expected_gate: str,
+    expected_outcome: AuthOutcome,
+) -> None:
+    parsed = parse_line(raw)
+    assert parsed is not None
+    assert parsed["program"] == expected_program
+
+    decision = extract_decision(parsed["message"], program=parsed["program"])
+
+    assert decision is not None
+    assert decision.gate == expected_gate
+    assert decision.outcome is expected_outcome
 
 
 def test_missing_session_initiator_is_not_fabricated() -> None:
@@ -436,6 +572,8 @@ def test_closure_observations_require_a_source(message: str) -> None:
 
 
 _AUDIT_A_TYPES = (
+    "USER_AUTH",
+    "USER_ERR",
     "USER_LOGIN",
     "USER_START",
     "USER_END",
@@ -464,6 +602,58 @@ def test_audisp_accepts_the_exact_record_type_inventory(audit_type: str) -> None
         res="success",
         serial="42",
     )
+
+
+@pytest.mark.parametrize(
+    ("audit_type", "identity_fields", "res", "expected"),
+    [
+        (
+            "USER_AUTH",
+            "acct=alice addr=192.0.2.10",
+            "success",
+            _decision(
+                AuthOutcome.GRANTED,
+                "audit",
+                actor="alice",
+                actor_namespace="unix_user",
+                source="192.0.2.10",
+                audit_type="USER_AUTH",
+                res="success",
+                serial="91",
+            ),
+        ),
+        (
+            "USER_ERR",
+            "acct=? auid=1001 addr=198.51.100.20",
+            "failed",
+            _decision(
+                AuthOutcome.DENIED,
+                "audit",
+                actor="1001",
+                actor_namespace="unix_auid",
+                source="198.51.100.20",
+                auid="1001",
+                audit_type="USER_ERR",
+                res="failed",
+                serial="91",
+            ),
+        ),
+    ],
+)
+def test_audisp_auth_and_error_types_match_real_field_shapes(
+    audit_type: str,
+    identity_fields: str,
+    res: str,
+    expected: AuthDecision,
+) -> None:
+    decision = extract_decision(
+        f"audisp-syslog[*]: type={audit_type} "
+        "msg=audit(1700000000.125:91): op=PAM:authentication "
+        f"{identity_fields} res={res}",
+        program="audisp-syslog",
+    )
+
+    assert decision == expected
 
 
 def test_audisp_nested_payload_fills_only_missing_outer_fields() -> None:
@@ -557,6 +747,24 @@ def test_sentinel_acct_falls_through_to_real_auid() -> None:
     assert decision.actor == "1000"
     assert decision.actor_namespace == "unix_auid"
     assert decision.auid == "1000"
+
+
+def test_unknown_audit_actor_sentinel_preserves_real_denial_source() -> None:
+    decision = extract_decision(
+        "audisp-syslog[*]: type=USER_LOGIN "
+        "msg=audit(1700000000.125:84): acct=\"(unknown)\" "
+        "addr=192.0.2.84 res=failed",
+        program="audisp-syslog",
+    )
+
+    assert decision == _decision(
+        AuthOutcome.DENIED,
+        "audit",
+        source="192.0.2.84",
+        audit_type="USER_LOGIN",
+        res="failed",
+        serial="84",
+    )
 
 
 @pytest.mark.parametrize(
@@ -672,6 +880,46 @@ def test_program_dispatch_has_three_structural_arms(monkeypatch: pytest.MonkeyPa
         "dnf[*]: Permission denied while updating metadata",
         program="dnf",
     ) is None
+
+
+@pytest.mark.parametrize(
+    ("program", "message"),
+    [
+        (
+            "sshd(pam_unix)",
+            "sshd(pam_unix)[*]: 7 more authentication failures; "
+            "logname= uid=0 euid=0 tty=NODEVssh ruser= "
+            "rhost=192.0.2.60 user=root",
+        ),
+        (
+            "sshd",
+            "sshd[*]: PAM 5 more authentication failures; "
+            "logname= uid=0 euid=0 tty=ssh ruser= "
+            "rhost=198.51.100.60 user=root",
+        ),
+        (
+            "sshd(pam_other)",
+            "sshd(pam_other)[*]: authentication failure; "
+            "rhost=203.0.113.60 user=root",
+        ),
+        (
+            "kscreenlocker_greet",
+            "kscreenlocker_greet[*]: pam_unix(other:auth): "
+            "authentication failure; rhost=192.0.2.61 user=admin",
+        ),
+        (
+            "gdm-password",
+            "gdm-password[*]: pam_unix(gdm-password:auth): "
+            "authentication failure; rhost=192.0.2.62 user=guest",
+        ),
+        ("--", "-- root[*]: SESSION OPENED ON tty2"),
+        ("su", "su[*]: (to root) admin"),
+    ],
+)
+def test_successor_grammar_negative_neighbours_do_not_extract(
+    program: str, message: str
+) -> None:
+    assert extract_decision(message, program=program) is None
 
 
 @pytest.mark.parametrize(

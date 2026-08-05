@@ -51,18 +51,29 @@ _RECOGNIZED_PROGRAMS = frozenset(
     {
         "sshd",
         "sshd-session",
+        "sshd(pam_unix)",
         "dropbear",
         "sudo",
         "su",
         "runuser",
+        "kscreenlocker_greet",
+        "gdm-password]",
+        "--",
         "audisp-syslog",
         "audit",
     }
 )
 
-_GATE_TOKENS = frozenset({"sshd", "dropbear", "sudo", "su", "runuser", "audit"})
-_PAM_GATES = _GATE_TOKENS - {"audit"}
-_IDENTITY_SENTINELS = frozenset({"?", "4294967295"})
+_GATE_TOKENS = frozenset(
+    {"sshd", "dropbear", "sudo", "su", "runuser", "login", "audit"}
+)
+_PAM_GATES = frozenset({"sshd", "dropbear", "sudo", "su", "runuser"})
+_IDENTITY_SENTINELS = frozenset({"?", "(unknown)", "4294967295"})
+
+
+def is_recognized_program(program: str) -> bool:
+    """Return whether ``program`` may reach an authentication grammar."""
+    return program in _RECOGNIZED_PROGRAMS
 
 _IDENTITY = r'(?P<{name}>"[^"]+"|\S+)'
 _SOURCE_TOKEN = r"(?P<source>\[[^\]]+\](?::\d+)?|[0-9A-Fa-f:.]+)"
@@ -117,6 +128,15 @@ _PAM_AUTH_RE = re.compile(
     r"^pam_unix\((?P<service>[^:()]+):auth\): "
     r"authentication failure;(?P<fields>.*)$"
 )
+_LEGACY_PAM_AUTH_RE = re.compile(
+    r"^authentication failure;(?P<fields>.*)$"
+)
+_LEGACY_PAM_MORE_RE = re.compile(
+    r"^\d+ more authentication failures;(?P<fields>.*)$"
+)
+_MODERN_PAM_MORE_RE = re.compile(
+    r"^PAM \d+ more authentication failures;(?P<fields>.*)$"
+)
 _SUDO_PREFIX_RE = re.compile(
     rf"^{_IDENTITY.format(name='actor')}\s*:\s*(?P<body>.*)$"
 )
@@ -125,9 +145,19 @@ _FAILED_SU_RE = re.compile(
     rf"^FAILED SU \(to {_IDENTITY.format(name='target')}\) "
     rf"{_IDENTITY.format(name='actor')} on (?P<terminal>\S+)$"
 )
+_SU_GRANT_RE = re.compile(
+    rf"^\(to {_IDENTITY.format(name='target')}\) "
+    rf"{_IDENTITY.format(name='actor')} on (?P<terminal>\S+)$"
+)
+_ROOT_LOGIN_RE = re.compile(
+    rf"^-- {_IDENTITY.format(name='actor')}\[\*\]: "
+    r"ROOT LOGIN ON (?P<terminal>\S+)$"
+)
 
 _AUDIT_A_TYPES = frozenset(
     {
+        "USER_AUTH",
+        "USER_ERR",
         "USER_LOGIN",
         "USER_START",
         "USER_END",
@@ -342,9 +372,13 @@ def _extract_pam_session(body: str) -> AuthDecision | None:
     )
 
 
-def _extract_pam_auth(body: str) -> AuthDecision | None:
+def _extract_pam_auth(
+    body: str,
+    *,
+    services: frozenset[str] = _PAM_GATES,
+) -> AuthDecision | None:
     match = _PAM_AUTH_RE.fullmatch(body)
-    if match is None or match.group("service") not in _PAM_GATES:
+    if match is None or match.group("service") not in services:
         return None
     values = {
         field.group("key"): field.group("value")
@@ -353,6 +387,23 @@ def _extract_pam_auth(body: str) -> AuthDecision | None:
     return _text_decision(
         AuthOutcome.DENIED,
         match.group("service"),
+        actor=values.get("user"),
+        actor_namespace="unix_user",
+        source=values.get("rhost"),
+    )
+
+
+def _extract_legacy_pam_auth(body: str) -> AuthDecision | None:
+    match = _LEGACY_PAM_AUTH_RE.fullmatch(body)
+    if match is None:
+        return None
+    values = {
+        field.group("key"): field.group("value")
+        for field in _INLINE_FIELD_RE.finditer(match.group("fields"))
+    }
+    return _text_decision(
+        AuthOutcome.DENIED,
+        "sshd",
         actor=values.get("user"),
         actor_namespace="unix_user",
         source=values.get("rhost"),
@@ -408,6 +459,33 @@ def _extract_failed_su(body: str) -> AuthDecision | None:
         actor=match.group("actor"),
         actor_namespace="unix_user",
         target=match.group("target"),
+        terminal=match.group("terminal"),
+    )
+
+
+def _extract_su_grant(body: str) -> AuthDecision | None:
+    match = _SU_GRANT_RE.fullmatch(body)
+    if match is None:
+        return None
+    return _text_decision(
+        AuthOutcome.GRANTED,
+        "su",
+        actor=match.group("actor"),
+        actor_namespace="unix_user",
+        target=match.group("target"),
+        terminal=match.group("terminal"),
+    )
+
+
+def _extract_root_login(body: str) -> AuthDecision | None:
+    match = _ROOT_LOGIN_RE.fullmatch(body)
+    if match is None:
+        return None
+    return _text_decision(
+        AuthOutcome.GRANTED,
+        "login",
+        actor=match.group("actor"),
+        actor_namespace="unix_user",
         terminal=match.group("terminal"),
     )
 
@@ -510,16 +588,31 @@ def _extract_known(message: str, program: str) -> AuthDecision | None:
     body = strip_program(message)
     if program in {"sshd", "sshd-session"}:
         return _extract_sshd(body) or _extract_pam_auth(body)
+    if program == "sshd(pam_unix)":
+        return _extract_legacy_pam_auth(body)
     if program == "dropbear":
         return _extract_dropbear(body) or _extract_pam_auth(body)
     if program == "sudo":
         return _extract_pam_session(body) or _extract_pam_auth(body) or _extract_sudo(body)
-    if program in {"su", "runuser"}:
+    if program == "su":
+        return (
+            _extract_pam_session(body)
+            or _extract_pam_auth(body)
+            or _extract_su_grant(body)
+            or _extract_failed_su(body)
+        )
+    if program == "runuser":
         return (
             _extract_pam_session(body)
             or _extract_pam_auth(body)
             or _extract_failed_su(body)
         )
+    if program == "kscreenlocker_greet":
+        return _extract_pam_auth(body, services=frozenset({"kde"}))
+    if program == "gdm-password]":
+        return _extract_pam_auth(body, services=frozenset({"gdm-password"}))
+    if program == "--":
+        return _extract_root_login(body)
     if program == "audisp-syslog":
         return _extract_audit_a(body)
     if program == "audit":
@@ -539,6 +632,6 @@ def extract_decision(message: str, *, program: str) -> AuthDecision | None:
     """
     if program == "unknown":
         return _extract_untagged(message)
-    if program not in _RECOGNIZED_PROGRAMS:
+    if not is_recognized_program(program):
         return None
     return _extract_known(message, program)

@@ -1,0 +1,25 @@
+Aug  4 00:00:43 host01.example.test sshd[1000]: pam_unix(sshd:auth): authentication failure; logname= uid=0 euid=0 tty=ssh ruser= rhost=192.0.2.10  user=alice
+Aug  4 00:00:43 host01.example.test sshd[1000]: Failed password for alice from 192.0.2.10 port 40300 ssh2
+Aug  4 00:00:43 host01.example.test audisp-syslog[823]: type=USER_AUTH msg=audit(1785819600.012:100): pid=1000 uid=0 auid=4294967295 ses=4294967295 msg='op=PAM:authentication grantors=? acct="alice" exe="/usr/sbin/sshd" hostname=192.0.2.10 addr=192.0.2.10 terminal=ssh res=failed'
+Aug  4 00:00:43 host01.example.test audisp-syslog[823]: type=USER_LOGIN msg=audit(1785819600.512:110): pid=1000 uid=0 auid=4294967295 ses=4294967295 msg='op=login acct="alice" exe="/usr/sbin/sshd" hostname=192.0.2.10 addr=192.0.2.10 terminal=sshd res=failed'
+Aug  4 00:01:43 host01.example.test sshd[1001]: pam_unix(sshd:auth): authentication failure; logname= uid=0 euid=0 tty=ssh ruser= rhost=192.0.2.10  user=alice
+Aug  4 00:01:43 host01.example.test sshd[1001]: Failed password for alice from 192.0.2.10 port 40301 ssh2
+Aug  4 00:01:43 host01.example.test audisp-syslog[823]: type=USER_AUTH msg=audit(1785819630.012:101): pid=1001 uid=0 auid=4294967295 ses=4294967295 msg='op=PAM:authentication grantors=? acct="alice" exe="/usr/sbin/sshd" hostname=192.0.2.10 addr=192.0.2.10 terminal=ssh res=failed'
+Aug  4 00:01:43 host01.example.test audisp-syslog[823]: type=USER_LOGIN msg=audit(1785819630.512:111): pid=1001 uid=0 auid=4294967295 ses=4294967295 msg='op=login acct="alice" exe="/usr/sbin/sshd" hostname=192.0.2.10 addr=192.0.2.10 terminal=sshd res=failed'
+Aug  4 00:02:43 host01.example.test sshd[1002]: pam_unix(sshd:auth): authentication failure; logname= uid=0 euid=0 tty=ssh ruser= rhost=192.0.2.10  user=alice
+Aug  4 00:02:43 host01.example.test sshd[1002]: Failed password for alice from 192.0.2.10 port 40302 ssh2
+Aug  4 00:02:43 host01.example.test audisp-syslog[823]: type=USER_AUTH msg=audit(1785819660.012:102): pid=1002 uid=0 auid=4294967295 ses=4294967295 msg='op=PAM:authentication grantors=? acct="alice" exe="/usr/sbin/sshd" hostname=192.0.2.10 addr=192.0.2.10 terminal=ssh res=failed'
+Aug  4 00:02:43 host01.example.test audisp-syslog[823]: type=USER_LOGIN msg=audit(1785819660.512:112): pid=1002 uid=0 auid=4294967295 ses=4294967295 msg='op=login acct="alice" exe="/usr/sbin/sshd" hostname=192.0.2.10 addr=192.0.2.10 terminal=sshd res=failed'
+Aug  4 00:03:43 host01.example.test sshd[1003]: pam_unix(sshd:auth): authentication failure; logname= uid=0 euid=0 tty=ssh ruser= rhost=192.0.2.10  user=alice
+Aug  4 00:03:43 host01.example.test sshd[1003]: Failed password for alice from 192.0.2.10 port 40303 ssh2
+Aug  4 00:03:43 host01.example.test audisp-syslog[823]: type=USER_AUTH msg=audit(1785819690.012:103): pid=1003 uid=0 auid=4294967295 ses=4294967295 msg='op=PAM:authentication grantors=? acct="alice" exe="/usr/sbin/sshd" hostname=192.0.2.10 addr=192.0.2.10 terminal=ssh res=failed'
+Aug  4 00:03:43 host01.example.test audisp-syslog[823]: type=USER_LOGIN msg=audit(1785819690.512:113): pid=1003 uid=0 auid=4294967295 ses=4294967295 msg='op=login acct="alice" exe="/usr/sbin/sshd" hostname=192.0.2.10 addr=192.0.2.10 terminal=sshd res=failed'
+Aug  4 00:04:43 host01.example.test sshd[1004]: pam_unix(sshd:auth): authentication failure; logname= uid=0 euid=0 tty=ssh ruser= rhost=192.0.2.10  user=alice
+Aug  4 00:04:43 host01.example.test sshd[1004]: Failed password for alice from 192.0.2.10 port 40304 ssh2
+Aug  4 00:04:43 host01.example.test audisp-syslog[823]: type=USER_AUTH msg=audit(1785819720.012:104): pid=1004 uid=0 auid=4294967295 ses=4294967295 msg='op=PAM:authentication grantors=? acct="alice" exe="/usr/sbin/sshd" hostname=192.0.2.10 addr=192.0.2.10 terminal=ssh res=failed'
+Aug  4 00:04:43 host01.example.test audisp-syslog[823]: type=USER_LOGIN msg=audit(1785819720.512:114): pid=1004 uid=0 auid=4294967295 ses=4294967295 msg='op=login acct="alice" exe="/usr/sbin/sshd" hostname=192.0.2.10 addr=192.0.2.10 terminal=sshd res=failed'
+Aug  4 00:05:43 host01.example.test sshd[1005]: pam_unix(sshd:auth): authentication failure; logname= uid=0 euid=0 tty=ssh ruser= rhost=192.0.2.10  user=alice
+Aug  4 00:05:43 host01.example.test sshd[1005]: Failed password for alice from 192.0.2.10 port 40305 ssh2
+Aug  4 00:05:43 host01.example.test audisp-syslog[823]: type=USER_AUTH msg=audit(1785819750.012:105): pid=1005 uid=0 auid=4294967295 ses=4294967295 msg='op=PAM:authentication grantors=? acct="alice" exe="/usr/sbin/sshd" hostname=192.0.2.10 addr=192.0.2.10 terminal=ssh res=failed'
+Aug  4 00:05:43 host01.example.test audisp-syslog[823]: type=USER_LOGIN msg=audit(1785819750.512:115): pid=1005 uid=0 auid=4294967295 ses=4294967295 msg='op=login acct="alice" exe="/usr/sbin/sshd" hostname=192.0.2.10 addr=192.0.2.10 terminal=sshd res=failed'
+Aug  4 04:00:50 host01.example.test sshd[2000]: Accepted publickey for alice from 192.0.2.10 port 48144 ssh2: ED25519 SHA256:AAAAC3NzaC1lZDI1NTE5

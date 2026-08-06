@@ -133,19 +133,19 @@ def _prepare(context: DetectorContext) -> _PreparedAuth:
 
 def _facts(prepared: _PreparedAuth) -> AuthSummaryFacts:
     """Count disclosure magnitudes from an extracted analysis population."""
-    arbitrated = core.arbitrate_producers(prepared.decisions)
+    counted = core.counted_decisions(prepared.decisions)
     eligible_count = 0
     identities: set[core.EpisodeKey] = set()
     services: set[str] = set()
     remote_sources: set[str] = set()
-    for decision in arbitrated:
+    for decision in counted:
         if not prepared.window.contains(decision.ts):
             continue
         eligible_count += 1
         key = core.episode_key(decision)
         if key is not None:
             identities.add(key)
-        services.add(decision.gate)
+        services.add(core.canonical_service(decision.gate))
         if decision.source is not None:
             remote_sources.add(decision.source)
     facts = AuthSummaryFacts(
@@ -182,7 +182,7 @@ def _common_evidence(
 ) -> dict[str, Any]:
     return {
         "signal": signal,
-        "attempt_count": int(result.attempt_count),
+        "decision_record_count": int(result.decision_record_count),
         "denial_count": int(result.denial_count),
         "host_count": int(result.host_count),
         "real_account_count": int(result.real_account_count),
@@ -314,12 +314,7 @@ def _entity_title(
     return source
 
 
-def _description(signal: str, *, high: bool = False) -> str:
-    if high:
-        return (
-            "A successful authentication followed sustained failures for the "
-            "same source and account across multiple hosts."
-        )
+def _description(signal: str) -> str:
     return {
         "concentration": (
             "A concentrated run of authentication failures was observed for one service."
@@ -350,13 +345,12 @@ def _finding(
     evidence: dict[str, Any],
     now: datetime,
     data_window: tuple[datetime, datetime],
-    high: bool = False,
 ) -> Finding:
     return Finding(
         detector=DETECTOR_NAME,
         severity=severity,
         title=title,
-        description=_description(signal, high=high),
+        description=_description(signal),
         evidence=evidence,
         next_steps=[
             "Review the affected hosts and service logs",
@@ -397,9 +391,8 @@ def _entity_finding(
     landings: list[core.EpisodeResult] | None = None,
 ) -> Finding:
     signal = _ENTITY_SIGNAL[result.lens]
-    high = bool(landings)
-    basis = ["host_spread", "landing"] if high else [signal]
-    evidence = _common_evidence(result, signal, basis)
+    has_landing = bool(landings)
+    evidence = _common_evidence(result, signal, [signal])
     if result.lens is core.EntityLens.SOURCE_VOLUME:
         evidence["source"] = result.key[0]
     elif result.lens is core.EntityLens.ACCOUNT_VOLUME:
@@ -422,13 +415,63 @@ def _entity_finding(
     return _finding(
         result=result,
         signal=signal,
-        severity=Severity.HIGH if high else Severity.MEDIUM,
-        title=_entity_title(result, has_landing=high),
+        severity=Severity.MEDIUM,
+        title=_entity_title(result, has_landing=has_landing),
         evidence=evidence,
         now=now,
         data_window=data_window,
-        high=high,
     )
+
+
+def _add_overlap_evidence(findings: list[Finding]) -> None:
+    """Cross-link co-reportable volume/spread findings at exact identities."""
+    sources: dict[str, list[Finding]] = defaultdict(list)
+    accounts: dict[tuple[str, str], list[Finding]] = defaultdict(list)
+    spreads: list[Finding] = []
+    for finding in findings:
+        evidence = finding.evidence
+        signal = evidence.get("signal")
+        if signal == "source_volume" and evidence.get("source") is not None:
+            sources[str(evidence["source"])].append(finding)
+        elif signal == "account_volume":
+            namespace = evidence.get("account_namespace")
+            account = evidence.get("account")
+            if namespace is not None and account is not None:
+                accounts[(str(namespace), str(account))].append(finding)
+        elif signal == "host_spread":
+            spreads.append(finding)
+
+    related: dict[int, list[Finding]] = defaultdict(list)
+    for spread in spreads:
+        evidence = spread.evidence
+        source = evidence.get("source")
+        namespace = evidence.get("account_namespace")
+        account = evidence.get("account")
+        siblings = [
+            *sources.get(str(source), ()),
+            *accounts.get((str(namespace), str(account)), ()),
+        ]
+        for sibling in siblings:
+            related[id(spread)].append(sibling)
+            related[id(sibling)].append(spread)
+
+    for finding in findings:
+        siblings = related.get(id(finding), ())
+        if not siblings:
+            continue
+        finding.evidence["overlaps"] = [
+            {
+                "signal": str(sibling.evidence["signal"]),
+                "title": sibling.title,
+            }
+            for sibling in sorted(
+                siblings,
+                key=lambda item: (
+                    _SIGNAL_ORDER[str(item.evidence["signal"])],
+                    item.title,
+                ),
+            )
+        ]
 
 
 def _sort_key(finding: Finding) -> tuple[Any, ...]:
@@ -513,5 +556,6 @@ def run(
                 )
             )
 
+    _add_overlap_evidence(findings)
     findings.sort(key=_sort_key)
     return findings

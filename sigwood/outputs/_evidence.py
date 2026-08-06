@@ -126,7 +126,7 @@ def curated_evidence(finding: Finding) -> dict[str, Any]:
     elif det == "auth":
         keys = (
             "severity_basis",
-            "attempt_count",
+            "decision_record_count",
             "denial_count",
             "host_count",
             "first_seen",

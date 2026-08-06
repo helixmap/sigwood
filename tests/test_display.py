@@ -385,13 +385,23 @@ def test_liveness_falls_back_to_ascii_spinner_on_non_unicode_stream(
 
 def test_rich_spinner_frames_use_exact_braille_cycle():
     assert _SPINNER_FRAMES == (
-        "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏",
+        "⣷", "⣯", "⣟", "⡿", "⢿", "⣻", "⣽", "⣾",
     )
 
 
 def test_rich_spinner_frames_stay_in_braille_block():
     assert all(
         len(frame) == 1 and 0x2800 <= ord(frame) <= 0x28FF
+        for frame in _SPINNER_FRAMES
+    )
+
+
+def test_rich_spinner_frames_span_all_four_braille_rows():
+    top_row_mask = 0b00001001
+    bottom_row_mask = 0b11000000
+    assert all(
+        ord(frame) - 0x2800 & top_row_mask
+        and ord(frame) - 0x2800 & bottom_row_mask
         for frame in _SPINNER_FRAMES
     )
 

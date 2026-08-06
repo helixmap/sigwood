@@ -1,4 +1,4 @@
-"""Product-core regressions for authentication producer arbitration."""
+"""Product-core regressions for authentication producer counting."""
 
 from __future__ import annotations
 
@@ -76,6 +76,8 @@ def _decision(
     actor_namespace: str | None = "unix_user",
     actor: str | None = "alice",
     source: str | None = "192.0.2.10",
+    audit_type: str | None = None,
+    audit_event_id: str | None = None,
 ) -> core.DecisionRow:
     return core.DecisionRow(
         record_id=("synthetic", "manual.log", number),
@@ -88,7 +90,8 @@ def _decision(
         actor=actor,
         target=None,
         source=source,
-        audit_type=None,
+        audit_type=audit_type,
+        audit_event_id=audit_event_id,
     )
 
 
@@ -123,7 +126,7 @@ def _entity(
     )
 
 
-def test_three_paired_denials_then_grant_are_silent_with_near_miss_three() -> None:
+def test_three_paired_denials_then_grant_are_silent_with_record_near_miss_six() -> None:
     rows = _paired_rows(3)
     decisions = core.project_decisions(rows)
 
@@ -132,8 +135,8 @@ def test_three_paired_denials_then_grant_are_silent_with_near_miss_three() -> No
 
     assert result.landing_keys == frozenset()
     assert result.landing_transitions == ()
-    assert result.concentration_near_miss == 3
-    assert result.eligible_count == 4
+    assert result.concentration_near_miss == 6
+    assert result.eligible_count == 7
 
 
 def test_eight_paired_denials_then_grant_establish_exact_run_length() -> None:
@@ -146,28 +149,159 @@ def test_eight_paired_denials_then_grant_establish_exact_run_length() -> None:
         "established"
     ]
     assert [entry["run_length"] for entry in result.landing_transitions] == [8]
-    assert result.eligible_count == 9
+    assert result.eligible_count == 17
 
 
-def test_four_producer_fixture_collapses_to_attempt_count_and_one_key() -> None:
+def test_concentration_facts_exclude_colocated_grant_records() -> None:
+    decisions = tuple(
+        _decision(
+            index,
+            producer=core.Producer.SSHD_TEXT,
+            ts=float(index),
+        )
+        for index in range(1, 101)
+    ) + (
+        _decision(
+            101,
+            producer=core.Producer.SSHD_TEXT,
+            outcome="granted",
+            ts=101.0,
+        ),
+    )
+
+    result = core.run_lenses(
+        decisions,
+        _canonical_decisions(decisions),
+        core.Window(0.0, 102.0),
+    )
+    concentration = next(
+        episode
+        for episode in result.episode_results
+        if episode.lens is core.EpisodeLens.CONCENTRATION
+    )
+
+    assert result.eligible_count == 101
+    assert concentration.decision_record_count == 100
+    assert concentration.denial_count == 100
+
+
+def test_partial_observer_coverage_is_unioned_before_concentration() -> None:
+    sshd = tuple(
+        _decision(
+            index,
+            producer=core.Producer.SSHD_TEXT,
+            ts=float(index),
+        )
+        for index in range(1, 61)
+    )
+    audit = tuple(
+        _decision(
+            100 + index,
+            producer=core.Producer.AUDISP_TYPE,
+            ts=float(60 + index),
+            audit_type="USER_AUTH",
+        )
+        for index in range(1, 71)
+    )
+    decisions = (*sshd, *audit)
+
+    counted = core.counted_decisions(decisions)
+    keys, _near, _fidelity = core.concentration(
+        counted,
+        core.Window(0.0, 131.0),
+    )
+
+    assert len(counted) == 130
+    assert len(keys) == 1
+
+
+def test_landing_floor_counts_exact_audit_events_not_type_records() -> None:
+    def run(attempts: int) -> core.LensResult:
+        decisions: list[core.DecisionRow] = []
+        for index in range(1, attempts + 1):
+            event_id = f"1785819600.000:{index}"
+            decisions.extend(
+                [
+                    _decision(
+                        index * 2,
+                        producer=core.Producer.AUDISP_TYPE,
+                        ts=float(index),
+                        audit_type="USER_AUTH",
+                        audit_event_id=event_id,
+                    ),
+                    _decision(
+                        index * 2 + 1,
+                        producer=core.Producer.AUDISP_TYPE,
+                        ts=float(index),
+                        audit_type="USER_LOGIN",
+                        audit_event_id=event_id,
+                    ),
+                ]
+            )
+        decisions.append(
+            _decision(
+                100,
+                producer=core.Producer.AUDISP_TYPE,
+                outcome="granted",
+                ts=float(attempts + 1),
+                audit_type="USER_LOGIN",
+                audit_event_id="1785819600.000:100",
+            )
+        )
+        frozen = tuple(decisions)
+        return core.run_lenses(
+            frozen,
+            _canonical_decisions(frozen),
+            core.Window(0.0, float(attempts + 2)),
+        )
+
+    below = run(3)
+    firing = run(6)
+
+    assert below.landing_keys == frozenset()
+    assert [item["run_length"] for item in firing.landing_transitions] == [6]
+
+
+def test_four_producer_fixture_union_keeps_all_records_and_pam_exclusive() -> None:
     rows = _fixture_rows("synth-4x-120.txt")
     decisions = core.project_decisions(rows)
+    seed = next(
+        decision
+        for decision in decisions
+        if decision.producer is core.Producer.PAM_TEXT
+    )
+    exclusive = core.DecisionRow(
+        record_id=("synthetic", "pam-exclusive.log", 1),
+        ts=max(decision.ts for decision in decisions) + 1.0,
+        host=seed.host,
+        producer=seed.producer,
+        gate=seed.gate,
+        outcome=seed.outcome,
+        actor_namespace=seed.actor_namespace,
+        actor=seed.actor,
+        target=seed.target,
+        source=seed.source,
+        audit_type=seed.audit_type,
+        audit_event_id=seed.audit_event_id,
+    )
 
     assert len(decisions) == 480
-    assert len(core.arbitrate_producers(decisions)) == 120
+    counted = core.counted_decisions((*decisions, exclusive))
+    assert len(counted) == 481
+    assert counted[-1] is exclusive
 
     result = core.run_lenses(decisions, rows, _window(rows))
-    assert result.eligible_count == 120
+    assert result.eligible_count == 480
     assert len(result.concentration_keys) == 1
 
 
-def test_four_producer_floor_fixture_preserves_exact_six_attempt_run() -> None:
+def test_four_producer_floor_fixture_splits_25_records_from_six_event_run() -> None:
     rows = _fixture_rows("synth-4x-6.txt")
     decisions = core.project_decisions(rows)
     result = core.run_lenses(decisions, rows, _window(rows))
 
     assert len(decisions) == 25
-    assert result.eligible_count == 7
+    assert result.eligible_count == 25
     assert [entry["run_length"] for entry in result.landing_transitions] == [6]
 
 
@@ -177,13 +311,13 @@ def test_lower_precedence_only_pair_preserves_decision_objects() -> None:
         _decision(2, producer=core.Producer.PAM_TEXT, outcome="granted"),
     )
 
-    arbitrated = core.arbitrate_producers(decisions)
+    counted = core.counted_decisions(decisions)
 
-    assert arbitrated == decisions
-    assert all(after is before for after, before in zip(arbitrated, decisions))
+    assert counted == decisions
+    assert all(after is before for after, before in zip(counted, decisions))
 
 
-def test_single_producer_run_lenses_matches_each_unarbitrated_lens() -> None:
+def test_single_producer_run_lenses_matches_each_direct_lens() -> None:
     decisions = tuple(
         _decision(number, producer=core.Producer.PAM_TEXT)
         for number in range(1, 7)
@@ -258,19 +392,108 @@ def test_single_producer_run_lenses_matches_each_unarbitrated_lens() -> None:
     )
 
 
+def test_landing_uses_lower_observer_when_higher_has_no_transition() -> None:
+    high_grant = _decision(
+        1,
+        producer=core.Producer.SSHD_TEXT,
+        outcome="granted",
+        ts=20.0,
+    )
+    audit = tuple(
+        _decision(
+            10 + index,
+            producer=core.Producer.AUDISP_TYPE,
+            ts=float(index),
+            audit_type="USER_AUTH",
+        )
+        for index in range(1, 7)
+    ) + (
+        _decision(
+            20,
+            producer=core.Producer.AUDISP_TYPE,
+            outcome="granted",
+            ts=7.0,
+            audit_type="USER_LOGIN",
+        ),
+    )
+    decisions = (high_grant, *audit)
+
+    result = core.run_lenses(
+        decisions,
+        _canonical_decisions(decisions),
+        core.Window(0.0, 21.0),
+    )
+
+    assert len(result.landing_keys) == 1
+    assert [item["status"] for item in result.landing_transitions] == [
+        "established"
+    ]
+    landing_result = next(
+        item
+        for item in result.episode_results
+        if item.lens is core.EpisodeLens.LANDING
+    )
+    assert landing_result.decision_record_count == 7
+
+
+def test_higher_rank_tie_owns_bundle_over_lower_rank_establishment() -> None:
+    sshd = tuple(
+        _decision(index, producer=core.Producer.SSHD_TEXT, ts=float(index))
+        for index in range(1, 7)
+    ) + (
+        _decision(7, producer=core.Producer.SSHD_TEXT, ts=7.0),
+        _decision(
+            8,
+            producer=core.Producer.SSHD_TEXT,
+            outcome="granted",
+            ts=7.0,
+        ),
+    )
+    audit = tuple(
+        _decision(
+            20 + index,
+            producer=core.Producer.AUDISP_TYPE,
+            ts=float(index),
+            audit_type="USER_AUTH",
+        )
+        for index in range(1, 7)
+    ) + (
+        _decision(
+            27,
+            producer=core.Producer.AUDISP_TYPE,
+            outcome="granted",
+            ts=7.0,
+            audit_type="USER_LOGIN",
+        ),
+    )
+    decisions = (*sshd, *audit)
+
+    result = core.run_lenses(
+        decisions,
+        _canonical_decisions(decisions),
+        core.Window(0.0, 8.0),
+    )
+
+    assert result.landing_keys == frozenset()
+    assert result.landing_tie_unresolved == 1
+    assert [item["status"] for item in result.landing_transitions] == [
+        "tie-unresolved"
+    ]
+
+
 def test_sudo_and_su_single_producer_gates_are_unchanged() -> None:
     decisions = (
         _decision(1, producer=core.Producer.PAM_TEXT, gate="sudo"),
         _decision(2, producer=core.Producer.PAM_TEXT, gate="su"),
     )
 
-    arbitrated = core.arbitrate_producers(decisions)
+    counted = core.counted_decisions(decisions)
 
-    assert arbitrated == decisions
-    assert all(after is before for after, before in zip(arbitrated, decisions))
+    assert counted == decisions
+    assert all(after is before for after, before in zip(counted, decisions))
 
 
-def test_pair_wide_precedence_is_not_event_level_deduplication() -> None:
+def test_union_preserves_every_observer_row_in_original_order() -> None:
     high = _decision(1, producer=core.Producer.SSHD_TEXT)
     lower_unique = _decision(2, producer=core.Producer.PAM_TEXT)
     other_host = _decision(
@@ -279,11 +502,12 @@ def test_pair_wide_precedence_is_not_event_level_deduplication() -> None:
         host="other.example.test",
     )
 
-    arbitrated = core.arbitrate_producers((high, lower_unique, other_host))
+    counted = core.counted_decisions((high, lower_unique, other_host))
 
-    assert arbitrated == (high, other_host)
-    assert arbitrated[0] is high
-    assert arbitrated[1] is other_host
+    assert counted == (high, lower_unique, other_host)
+    assert counted[0] is high
+    assert counted[1] is lower_unique
+    assert counted[2] is other_host
 
 
 def test_mixed_audit_encodings_share_rank_and_preserve_all_events() -> None:
@@ -307,10 +531,10 @@ def test_mixed_audit_encodings_share_rank_and_preserve_all_events() -> None:
     ]
     assert [decision.gate for decision in decisions] == ["sshd", "sshd"]
 
-    arbitrated = core.arbitrate_producers(decisions)
+    counted = core.counted_decisions(decisions)
 
-    assert arbitrated == decisions
-    assert all(after is before for after, before in zip(arbitrated, decisions))
+    assert counted == decisions
+    assert all(after is before for after, before in zip(counted, decisions))
 
 
 def test_missing_audit_executable_falls_back_to_audit_service() -> None:
@@ -329,12 +553,275 @@ def test_missing_audit_executable_falls_back_to_audit_service() -> None:
     assert decisions[0].gate == "audit"
 
 
+def test_accepted_login_does_not_erase_denials_for_the_same_service() -> None:
+    grant = _decision(1, producer=core.Producer.SSHD_TEXT, outcome="granted")
+    denials = tuple(
+        _decision(
+            index,
+            producer=core.Producer.AUDISP_TYPE,
+            outcome="denied",
+            source="198.51.100.7",
+            ts=float(10 + index),
+            audit_type="USER_AUTH",
+        )
+        for index in range(2, 102)
+    )
+
+    counted = core.counted_decisions((grant, *denials))
+
+    assert sum(row.outcome == "denied" for row in counted) == 100
+
+
+def test_diverging_service_names_share_one_concentration_key() -> None:
+    decisions: list[core.DecisionRow] = []
+    for index in range(100):
+        decisions.append(
+            _decision(index * 2, producer=core.Producer.SSHD_TEXT, ts=float(index))
+        )
+        decisions.append(
+            _decision(
+                index * 2 + 1,
+                producer=core.Producer.AUDISP_TYPE,
+                gate="sshd-session",
+                ts=float(index),
+                audit_type="USER_AUTH",
+            )
+        )
+
+    counted = core.counted_decisions(tuple(decisions))
+    keys, _near, _fidelity = core.concentration(
+        counted,
+        core.Window(0.0, 100.0, right_closed=True),
+    )
+
+    assert len(counted) == 200
+    assert len(keys) == 1
+    assert {
+        core.episode_key(row)[1]
+        for row in decisions
+        if core.episode_key(row) is not None
+    } == {"ssh"}
+
+
+def test_real_parser_projector_canonicalizes_sshd_and_sshd_session() -> None:
+    rows = _canonical_lines(
+        [
+            "Aug  4 01:00:00 host.example.test sshd[3000]: "
+            "Failed password for alice from 192.0.2.10 port 40000 ssh2",
+            "Aug  4 01:00:00 host.example.test audisp-syslog[3001]: "
+            "type=USER_AUTH msg=audit(1785819600.000:200): "
+            'acct="alice" exe="/usr/libexec/openssh/sshd-session" '
+            "addr=192.0.2.10 res=failed",
+        ],
+        name="sshd-session-mirror.log",
+    )
+    decisions = core.project_decisions(rows)
+
+    assert [row.gate for row in decisions] == ["sshd", "sshd-session"]
+    assert [row.audit_event_id for row in decisions] == [
+        None,
+        "1785819600.000:200",
+    ]
+    assert len(core.counted_decisions(decisions)) == 2
+    assert {core.episode_key(decision)[:2] for decision in decisions} == {(
+        "host.example.test",
+        "ssh",
+    )}
+
+
+def test_audit_record_shipped_under_two_identifiers_counts_once() -> None:
+    rows = _canonical_lines(
+        [
+            "Aug  4 01:00:00 host.example.test audisp-syslog[3000]: "
+            "type=USER_LOGIN msg=audit(1785819600.000:200): "
+            'acct="alice" exe="/usr/sbin/sshd" '
+            "addr=192.0.2.10 res=success",
+            "Aug  4 01:00:00 host.example.test audit[3001]: "
+            'AUDIT1112 pid=3001 acct=alice exe="/usr/sbin/sshd" '
+            "addr=192.0.2.10 res=success",
+        ],
+        name="duplicate-shipped-audit.log",
+    )
+    decisions = core.project_decisions(rows)
+
+    assert len(decisions) == 2
+    assert [row.audit_event_id for row in decisions] == [
+        "1785819600.000:200",
+        None,
+    ]
+    assert len(core.counted_decisions(decisions)) == 1
+
+
+def test_repeated_denials_from_one_producer_all_survive() -> None:
+    denials = tuple(
+        _decision(
+            index,
+            producer=core.Producer.AUDISP_TYPE,
+            outcome="denied",
+            ts=float(100 + index),
+            audit_type="USER_AUTH",
+        )
+        for index in range(100)
+    )
+
+    assert len(core.counted_decisions(denials)) == 100
+
+
+def test_distinct_audit_record_types_both_survive() -> None:
+    decisions = (
+        _decision(
+            1,
+            producer=core.Producer.AUDISP_TYPE,
+            audit_type="USER_AUTH",
+            audit_event_id="1700000000.000:1",
+        ),
+        _decision(
+            2,
+            producer=core.Producer.AUDISP_TYPE,
+            audit_type="USER_LOGIN",
+            audit_event_id="1700000000.000:1",
+        ),
+    )
+
+    assert core.counted_decisions(decisions) == decisions
+
+
+def test_exact_full_audit_event_id_dedups_but_missing_ids_never_do() -> None:
+    exact = (
+        _decision(
+            1,
+            producer=core.Producer.AUDISP_TYPE,
+            audit_type="USER_AUTH",
+            audit_event_id="1700000000.000:42",
+        ),
+        _decision(
+            2,
+            producer=core.Producer.AUDISP_TYPE,
+            audit_type="USER_AUTH",
+            audit_event_id="1700000000.000:42",
+        ),
+    )
+    reused_serial = _decision(
+        3,
+        producer=core.Producer.AUDISP_TYPE,
+        audit_type="USER_AUTH",
+        audit_event_id="1700003600.000:42",
+    )
+    idless = (
+        _decision(4, producer=core.Producer.AUDISP_TYPE, audit_type="USER_AUTH"),
+        _decision(5, producer=core.Producer.AUDISP_TYPE, audit_type="USER_AUTH"),
+    )
+
+    counted = core.counted_decisions((*exact, reused_serial, *idless))
+
+    assert counted == (exact[0], reused_serial, *idless)
+
+
+def test_exact_audit_event_id_never_dedups_across_hosts() -> None:
+    shared_id = "1700000000.000:42"
+    decisions = (
+        _decision(
+            1,
+            producer=core.Producer.AUDISP_TYPE,
+            host="host-a.example.test",
+            audit_type="USER_AUTH",
+            audit_event_id=shared_id,
+        ),
+        _decision(
+            2,
+            producer=core.Producer.AUDISP_TYPE,
+            host="host-b.example.test",
+            audit_type="USER_AUTH",
+            audit_event_id=shared_id,
+        ),
+    )
+
+    assert core._dedupe_audit_event_ids(decisions) == decisions
+
+
+def test_mirror_collapse_does_not_depend_on_timestamp_distance() -> None:
+    def survivors(offset: float) -> int:
+        pair = (
+            _decision(
+                1,
+                producer=core.Producer.AUDISP_TYPE,
+                ts=0.0,
+                audit_type="USER_AUTH",
+            ),
+            _decision(
+                2,
+                producer=core.Producer.AUDIT_TYPELESS,
+                ts=offset,
+                audit_type="AUDIT1100",
+            ),
+        )
+        return len(core.counted_decisions(pair))
+
+    assert survivors(0.0) == survivors(3600.0) == 1
+
+
+def test_larger_dialect_candidate_retains_its_unmatched_record() -> None:
+    audisp = tuple(
+        _decision(
+            index,
+            producer=core.Producer.AUDISP_TYPE,
+            audit_type="USER_AUTH",
+        )
+        for index in range(1, 3)
+    )
+    typeless = tuple(
+        _decision(
+            index,
+            producer=core.Producer.AUDIT_TYPELESS,
+            audit_type="AUDIT1100",
+        )
+        for index in range(3, 6)
+    )
+
+    assert core.counted_decisions((*audisp, *typeless)) == typeless
+
+
+@pytest.mark.parametrize("overlapping", [False, True], ids=["disjoint", "overlapping"])
+def test_counting_keeps_both_distinct_audit_types_at_firing_scale(
+    overlapping: bool,
+) -> None:
+    decisions: list[core.DecisionRow] = []
+    for index in range(60):
+        first_serial = index
+        second_serial = index if overlapping else index + 1000
+        decisions.extend(
+            [
+                _decision(
+                    index * 2,
+                    producer=core.Producer.AUDISP_TYPE,
+                    audit_type="USER_AUTH",
+                    audit_event_id=f"1700000000.000:{first_serial}",
+                ),
+                _decision(
+                    index * 2 + 1,
+                    producer=core.Producer.AUDISP_TYPE,
+                    audit_type="USER_LOGIN",
+                    audit_event_id=f"1700000000.000:{second_serial}",
+                ),
+            ]
+        )
+
+    counted = core.counted_decisions(decisions)
+    keys, _near, _fidelity = core.concentration(
+        counted,
+        core.Window(0.0, 121.0),
+    )
+
+    assert len(counted) == 120
+    assert len(keys) == 1
+
+
 @pytest.mark.parametrize("producer", tuple(core.Producer))
-def test_arbitration_preserves_single_producer_identity(
+def test_counting_preserves_single_producer_identity(
     producer: core.Producer,
 ) -> None:
     decision = _decision(1, producer=producer)
-    assert core.arbitrate_producers((decision,)) == (decision,)
+    assert core.counted_decisions((decision,)) == (decision,)
 
 
 @pytest.mark.parametrize(
@@ -462,7 +949,7 @@ def test_source_volume_evidence_partitions_accounts_and_live_join_exactly() -> N
         unknown_account_count=1,
         live_account_count=1,
         host_count=1,
-        attempt_count=21,
+        decision_record_count=21,
         first_ts=1.0,
         last_ts=21.0,
         span_seconds=20.0,
@@ -578,7 +1065,7 @@ def test_host_spread_has_no_volume_floor_and_fires_at_three_hosts() -> None:
         unknown_account_count=0,
         live_account_count=0,
         host_count=3,
-        attempt_count=3,
+        decision_record_count=3,
         first_ts=1.0,
         last_ts=3.0,
         span_seconds=2.0,
@@ -587,32 +1074,35 @@ def test_host_spread_has_no_volume_floor_and_fires_at_three_hosts() -> None:
     )
 
 
-def test_four_producer_floor_fixture_does_not_cross_volume_floor_after_arbitration() -> None:
+def test_four_producer_floor_fixture_crosses_record_volume_floor() -> None:
     rows = _fixture_rows("synth-4x-6.txt")
     decisions = core.project_decisions(rows)
 
     assert sum(decision.outcome == "denied" for decision in decisions) == 24
     result = core.run_lenses(decisions, rows, _window(rows))
 
-    assert result.entity_results == ()
+    assert [(entity.lens, entity.denial_count) for entity in result.entity_results] == [
+        (core.EntityLens.SOURCE_VOLUME, 24),
+        (core.EntityLens.ACCOUNT_VOLUME, 24),
+    ]
 
 
-def test_four_producer_large_fixture_volume_evidence_uses_120_arbitrated_rows() -> None:
+def test_four_producer_large_fixture_volume_evidence_uses_all_480_rows() -> None:
     rows = _fixture_rows("synth-4x-120.txt")
     decisions = core.project_decisions(rows)
-    arbitrated = core.arbitrate_producers(decisions)
-    live = core.live_accounts(arbitrated, _window(rows))
+    counted = core.counted_decisions(decisions)
+    live = core.live_accounts(counted, _window(rows))
 
     entities = core.volume_entities(
-        arbitrated,
+        counted,
         _window(rows),
         concentration_keys=frozenset(),
         live=live,
     )
 
     assert [(entity.lens, entity.denial_count) for entity in entities] == [
-        (core.EntityLens.SOURCE_VOLUME, 120),
-        (core.EntityLens.ACCOUNT_VOLUME, 120),
+        (core.EntityLens.SOURCE_VOLUME, 480),
+        (core.EntityLens.ACCOUNT_VOLUME, 480),
     ]
 
 
@@ -850,7 +1340,7 @@ def test_run_lenses_exposes_uniform_typed_firing_facts() -> None:
         for episode in result.episode_results
         if episode.lens is core.EpisodeLens.LANDING
     )
-    assert landing.attempt_count == 7
+    assert landing.decision_record_count == 7
     assert landing.denial_count == 6
     assert landing.real_account_count == 1
     assert landing.nonexistent_account_count == 0
@@ -869,7 +1359,7 @@ def test_run_lenses_exposes_uniform_typed_firing_facts() -> None:
         ("192.0.2.10", "unix_user", "alice"),
     )
     assert spread is not None
-    assert spread.attempt_count == 9
+    assert spread.decision_record_count == 9
     assert spread.denial_count == 8
     assert spread.host_count == 3
     assert spread.first_ts == 1.0

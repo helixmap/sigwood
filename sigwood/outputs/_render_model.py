@@ -631,16 +631,22 @@ def _project_auth(f: Finding) -> list[Cell]:
     ):
         shape = "multi-host failures + success"
 
-    attempts = int(ev.get("attempt_count", 0))
+    records = int(ev.get("decision_record_count", 0))
     failures = int(ev.get("denial_count", 0))
     hosts = int(ev.get("host_count", 0))
     landings = ev.get("landing_episodes")
     success_count = len(landings) if isinstance(landings, (list, tuple)) else 0
+    overlaps = ev.get("overlaps")
+    related_count = len(overlaps) if isinstance(overlaps, (list, tuple)) else 0
     span = max(0.0, float(ev.get("span_seconds", 0.0)))
-    return [
+    cells = [
         Cell(None, f.title),
         Cell("shape", shape),
-        Cell("failed", f"{failures:,}/{attempts:,} failed", align="right"),
+        Cell(
+            "failed",
+            f"{failures:,} failed / {records:,} records",
+            align="right",
+        ),
         Cell("hosts", f"{hosts:,} {plural(hosts, 'host')}", align="right"),
         Cell(
             "successes",
@@ -652,8 +658,20 @@ def _project_auth(f: Finding) -> list[Cell]:
             align="right",
             optional=True,
         ),
-        Cell("span", fmt_compact_span(timedelta(seconds=span)), align="right"),
     ]
+    cells.append(
+        Cell("span", fmt_compact_span(timedelta(seconds=span)), align="right")
+    )
+    if related_count:
+        cells.append(
+            Cell(
+                "related",
+                f"{related_count:,} related",
+                align="right",
+                optional=True,
+            )
+        )
+    return cells
 
 
 _PROJECTORS = {

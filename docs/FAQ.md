@@ -555,11 +555,19 @@ surface five single-category signals at MEDIUM: **concentrated failures** agains
 unusual **source volume**, unusual **account volume**, **multi-host failures** for one source and
 account combination, and **failures followed by a success** for the same service identity.
 Counting failures alone never proves an intrusion; these are review leads with the measured
-attempt, failure, host, and time-span facts attached.
+eligible-record, failure, host, and time-span facts attached. An eligible-record count is not a
+claim about the number of human login attempts.
 
-There is one HIGH path. Exact multi-host failure evidence must coincide with a success after the
-failure run for the same source and account. The host-spread unit owns that corroborated result,
-including its matching landing episodes, so the report does not print the same event twice.
+Every `auth` finding caps at MEDIUM. Failures followed by a success still ride along as
+evidence on the multi-host finding that covers the same source and account — so the report
+does not print one event twice — but that corroboration does not raise a severity today. A
+higher tier has to earn its way back on evidence, and this detector's counting is deliberately
+plain.
+
+Counts are decision records as each source logged them. A host that reports through more than
+one source — sshd's own log and the audit system, say — can record one event in each, so a
+magnitude here is what the logs contain rather than a count of human attempts.
+
 `auth` is opt-in rather than part of the curated default hunt: run `sigwood auth PATH`, name it in
 `--detect`, or use `--detect=all`.
 

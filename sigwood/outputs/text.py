@@ -672,6 +672,7 @@ class TextHandler(OutputHandler):
                     keyed["hosts"],
                     keyed["successes"],
                     keyed["span"],
+                    keyed.get("related", ""),
                     finding,
                 )
             )
@@ -682,10 +683,12 @@ class TextHandler(OutputHandler):
         hosts_w = max(len(row[4]) for row in rows)
         successes_w = max(len(row[5]) for row in rows)
         span_w = max(len(row[6]) for row in rows)
+        related_w = max(len(row[7]) for row in rows)
         show_successes = successes_w > 0
+        show_related = related_w > 0
 
         out: list[str] = []
-        for tag, title, shape, failed, hosts, successes, span, finding in rows:
+        for tag, title, shape, failed, hosts, successes, span, related, finding in rows:
             line = (
                 f"{tag:<4}  {title:<{title_w}}  {shape:<{shape_w}}  "
                 f"{failed:>{failed_w}}  {hosts:>{hosts_w}}"
@@ -693,6 +696,8 @@ class TextHandler(OutputHandler):
             if show_successes:
                 line += f"  {successes:>{successes_w}}"
             line += f"  {span:>{span_w}}"
+            if show_related and related:
+                line += f"  {related:>{related_w}}"
             tail = _level_tail(finding, indent, self._verbose_level)
             if tail:
                 out.append(line + "\n" + "\n".join(tail))

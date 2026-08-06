@@ -22,6 +22,16 @@ All notable changes to sigwood are recorded here. The format follows
 
 ### Fixed
 
+- **Authentication counting no longer discards one log source's records in favour of another's.**
+  Every source that observed an authentication now contributes its records: a benign SSH login can
+  no longer hide audit-only failures for the same service, and a source that saw failures no other
+  source recorded can no longer be dropped for being the smaller witness — either behaviour could
+  make a real brute force vanish from the report. `sshd` and `sshd-session` share one service
+  identity, and named and numeric renderings of the same audit record are reconciled to one
+  without collapsing genuine repetition. Reports label the magnitude as decision records rather
+  than implying a count of human attempts, and every run discloses that a host reporting through
+  more than one source can record one event in each. The numeric floors are unchanged.
+
 - **A Pi-hole or CloudTrail directory you lack permission to read is no longer silently empty.**
   Permission problems were already reported for Zeek and syslog. These two search their
   directories a different way, one that returns no matches rather than reporting the problem, so
@@ -96,6 +106,14 @@ All notable changes to sigwood are recorded here. The format follows
 
 ### Changed
 
+- **Every `auth` finding now caps at MEDIUM.** Failures followed by a success are still reported,
+  as evidence attached to the multi-host finding covering the same source and account, but they no
+  longer raise a finding to HIGH. The counting this detector does is deliberately plain, and a
+  higher tier has to earn its way back on evidence. `auth` remains opt-in.
+- **Auth findings that describe the same activity from different angles now say so.** Source
+  volume, account volume, and multi-host spread continue to report separately — they answer
+  different questions — and each now names the related findings, with a count shown in the report
+  row, so three rows are not read as three separate incidents.
 - **The "working" spinner now uses the braille animation common to modern command-line
   tools.** On a terminal that can encode it, the indicator beside a running phase cycles
   through braille dots instead of `| / ─ \`. A terminal that cannot encode those

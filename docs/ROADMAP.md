@@ -65,7 +65,7 @@ needs re-checking.
 | Privilege Escalation | Rare `sudo`/`su`, by rarity not by meaning (`syslog`); failed attempts followed by a success (`auth`) | Linux audit records beyond authentication outcomes |
 | Stealth | Very little - camouflage is a host-level behavior | Little. Endpoint territory, and we say so |
 | Defense Impairment | Nothing dedicated - a logging change may surface only incidentally, inside a broader unusual API burst (`aws`) | Naming it directly; noticing a host go quiet |
-| Credential Access | Failure concentration and volume, with success-after-failures as corroboration (`auth`) | Host-native evidence beyond authentication logs |
+| Credential Access | Failure concentration and volume, with success-after-failures reported alongside them (`auth`) | Host-native evidence beyond authentication logs |
 | Discovery | LAN sweeps (`scan`), cloud enumeration bursts (`aws`) | Already the best-served here |
 | Lateral Movement | Multi-host authentication failures for one source and account (`auth`) | Zeek SMB and SSH logs |
 | Collection | Nothing claimed | Zeek SMB logs |

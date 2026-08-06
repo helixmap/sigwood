@@ -1,10 +1,9 @@
 """Product-owned authentication lens core for the auth detector.
 
-Producer precedence ranks independent observers, not encodings. Named and
-numeric Linux-audit records are sibling encodings of one observer and therefore
-share a rank. A future producer belongs in the ladder only after measurement
-shows that it mirrors the higher-ranked observer instead of contributing
-different events.
+Counting unions the independent SSHD, PAM, and reconstructed Linux-audit
+observers so one observer cannot erase another's exclusive decisions. Named
+and numeric Linux-audit records remain sibling encodings of one observer and
+are reconciled before that union.
 
 The detector adapter owns finding construction; this core owns the measured lenses.
 """
@@ -22,6 +21,7 @@ from pathlib import PurePosixPath
 from typing import Any, Sequence
 
 from sigwood.parsers import auth as auth_parser
+from sigwood.parsers.audit_event import extract_audit_event_id
 from sigwood.parsers.auth import AuthDecision, AuthOutcome, extract_decision
 from sigwood.parsers.syslog import strip_program
 
@@ -123,6 +123,7 @@ class DecisionRow:
     target: str | None
     source: str | None
     audit_type: str | None
+    audit_event_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -152,7 +153,7 @@ class EntityResult:
     unknown_account_count: int
     live_account_count: int
     host_count: int
-    attempt_count: int
+    decision_record_count: int
     first_ts: float
     last_ts: float
     span_seconds: float
@@ -184,7 +185,7 @@ class EpisodeResult:
     unknown_account_count: int
     live_account_count: int
     host_count: int
-    attempt_count: int
+    decision_record_count: int
     first_ts: float
     last_ts: float
     span_seconds: float
@@ -197,7 +198,7 @@ class EpisodeResult:
 class FiringFacts:
     """Uniform aggregate facts computed once at an exact firing grain."""
 
-    attempt_count: int
+    decision_record_count: int
     denial_count: int
     real_account_count: int
     nonexistent_account_count: int
@@ -329,6 +330,7 @@ def project_decision(row: CanonicalRow) -> DecisionRow | None:
         target=decision.target,
         source=decision.source,
         audit_type=decision.audit_type,
+        audit_event_id=extract_audit_event_id(row.message),
     )
 
 
@@ -342,22 +344,109 @@ def project_decisions(rows: Sequence[CanonicalRow]) -> tuple[DecisionRow, ...]:
     return tuple(projected)
 
 
-def arbitrate_producers(
+def canonical_service(gate: str) -> str:
+    """Return only the closed service aliases ratified for reconciliation."""
+    token = gate.casefold()
+    if token in {"sshd", "sshd-session", "dropbear"}:
+        return "ssh"
+    if token in {"sudo", "su", "runuser", "login", "audit"}:
+        return token
+    return gate
+
+
+def _canonical_audit_type(audit_type: str | None) -> str | None:
+    """Reconcile the two frozen numeric/named eligible audit equivalents."""
+    return {
+        "AUDIT1100": "USER_AUTH",
+        "AUDIT1112": "USER_LOGIN",
+    }.get(audit_type, audit_type)
+
+
+def _count_key(decision: DecisionRow) -> tuple[object, ...]:
+    return (
+        decision.host.casefold(),
+        canonical_service(decision.gate),
+        decision.outcome,
+        decision.actor_namespace,
+        decision.actor,
+        decision.target,
+        decision.source,
+    )
+
+
+def _dedupe_audit_event_ids(
+    rows: Sequence[DecisionRow],
+) -> tuple[DecisionRow, ...]:
+    """Suppress exact host/event-id duplicates; id-less records remain distinct."""
+    seen: set[tuple[str, str]] = set()
+    kept: list[DecisionRow] = []
+    for row in rows:
+        event_id = row.audit_event_id
+        if event_id is not None:
+            key = (row.host.casefold(), event_id)
+            if key in seen:
+                continue
+            seen.add(key)
+        kept.append(row)
+    return tuple(kept)
+
+
+def _reconciled_audit_rows(
     decisions: Sequence[DecisionRow],
 ) -> tuple[DecisionRow, ...]:
-    """Keep every row from the best observer rank present per host/service."""
-    best_rank: dict[tuple[str, str], int] = {}
+    """Build one all-type audit observer after dialect reconciliation."""
+    groups: dict[
+        tuple[tuple[object, ...], str | None],
+        dict[Producer, list[DecisionRow]],
+    ] = defaultdict(lambda: defaultdict(list))
     for decision in decisions:
-        key = (decision.host.casefold(), decision.gate)
-        rank = _PRODUCER_RANK[decision.producer]
-        best_rank[key] = min(best_rank.get(key, rank), rank)
+        if decision.producer not in {
+            Producer.AUDISP_TYPE,
+            Producer.AUDIT_TYPELESS,
+        }:
+            continue
+        group_key = (_count_key(decision), _canonical_audit_type(decision.audit_type))
+        groups[group_key][decision.producer].append(decision)
 
-    return tuple(
-        decision
-        for decision in decisions
-        if _PRODUCER_RANK[decision.producer]
-        == best_rank[(decision.host.casefold(), decision.gate)]
+    selected_ids: set[int] = set()
+    for dialects in groups.values():
+        audisp = _dedupe_audit_event_ids(dialects.get(Producer.AUDISP_TYPE, ()))
+        typeless = _dedupe_audit_event_ids(
+            dialects.get(Producer.AUDIT_TYPELESS, ())
+        )
+        winner = audisp if len(audisp) >= len(typeless) else typeless
+        selected_ids.update(id(row) for row in winner)
+    return tuple(row for row in decisions if id(row) in selected_ids)
+
+
+def _observer_streams(
+    decisions: Sequence[DecisionRow],
+) -> tuple[tuple[int, tuple[DecisionRow, ...]], ...]:
+    """Return coherent text/PAM/audit streams in observer-rank order."""
+    return (
+        (
+            _PRODUCER_RANK[Producer.SSHD_TEXT],
+            tuple(row for row in decisions if row.producer is Producer.SSHD_TEXT),
+        ),
+        (
+            _PRODUCER_RANK[Producer.PAM_TEXT],
+            tuple(row for row in decisions if row.producer is Producer.PAM_TEXT),
+        ),
+        (
+            _PRODUCER_RANK[Producer.AUDISP_TYPE],
+            _reconciled_audit_rows(decisions),
+        ),
     )
+
+
+def counted_decisions(
+    decisions: Sequence[DecisionRow],
+) -> tuple[DecisionRow, ...]:
+    """Union observer streams without dropping another observer's decisions."""
+    selected_ids: set[int] = set()
+    for _rank, stream in _observer_streams(decisions):
+        selected_ids.update(id(row) for row in stream)
+    return tuple(row for row in decisions if id(row) in selected_ids)
 
 
 def _namespaced_actor(decision: DecisionRow) -> tuple[str, str] | None:
@@ -368,7 +457,7 @@ def _namespaced_actor(decision: DecisionRow) -> tuple[str, str] | None:
 
 def episode_key(decision: DecisionRow) -> EpisodeKey | None:
     """Build the host/service identity edge and its degraded forms."""
-    host_gate = (decision.host.casefold(), decision.gate)
+    host_gate = (decision.host.casefold(), canonical_service(decision.gate))
     actor = _namespaced_actor(decision)
     if actor is not None and decision.source is not None:
         return (*host_gate, "edge", actor[0], actor[1], decision.source)
@@ -507,6 +596,64 @@ def landing(
     return frozenset(finding_keys), tuple(transitions), tie_count
 
 
+def _observer_coherent_landing(
+    decisions: Sequence[DecisionRow],
+    canonical_rows: Sequence[CanonicalRow],
+    window: Window,
+) -> tuple[
+    frozenset[EpisodeKey],
+    tuple[dict[str, Any], ...],
+    int,
+    tuple[DecisionRow, ...],
+]:
+    """Select one complete transition bundle per episode by observer rank."""
+    winners: dict[
+        EpisodeKey,
+        tuple[int, tuple[dict[str, Any], ...], tuple[DecisionRow, ...]],
+    ] = {}
+    for rank, stream in _observer_streams(decisions):
+        deduped_stream = _dedupe_audit_event_ids(stream)
+        _keys, transitions, _tie_count = landing(
+            deduped_stream, canonical_rows, window
+        )
+        transitions_by_key: dict[EpisodeKey, list[dict[str, Any]]] = defaultdict(list)
+        rows_by_key: dict[EpisodeKey, list[DecisionRow]] = defaultdict(list)
+        for transition in transitions:
+            transitions_by_key[tuple(transition["episode_key"])].append(transition)
+        for row in deduped_stream:
+            if not window.contains(row.ts):
+                continue
+            key = episode_key(row)
+            if key is not None:
+                rows_by_key[key].append(row)
+        for key, bundle in transitions_by_key.items():
+            incumbent = winners.get(key)
+            if incumbent is None or rank < incumbent[0]:
+                winners[key] = (rank, tuple(bundle), tuple(rows_by_key[key]))
+
+    finding_keys: set[EpisodeKey] = set()
+    selected_transitions: list[dict[str, Any]] = []
+    selected_row_ids: set[int] = set()
+    tie_count = 0
+    for key in sorted(winners):
+        _rank, bundle, rows = winners[key]
+        selected_transitions.extend(bundle)
+        selected_row_ids.update(id(row) for row in rows)
+        if any(transition["status"] == "established" for transition in bundle):
+            finding_keys.add(key)
+        tie_count += sum(
+            transition["status"] == "tie-unresolved" for transition in bundle
+        )
+
+    owner_rows = tuple(row for row in decisions if id(row) in selected_row_ids)
+    return (
+        frozenset(finding_keys),
+        tuple(selected_transitions),
+        tie_count,
+        owner_rows,
+    )
+
+
 def fanout(
     decisions: Sequence[DecisionRow], window: Window
 ) -> tuple[frozenset[tuple[str, tuple[str, ...]]], int, int]:
@@ -597,7 +744,7 @@ def _firing_facts(
     window: Window,
     live: frozenset[LiveAccount],
 ) -> FiringFacts:
-    """Compute uniform facts once for one exact post-arbitration grain."""
+    """Compute uniform facts once for one exact counted-record grain."""
     if not attempts:
         raise ValueError("firing facts require at least one attempt")
     denials = tuple(
@@ -629,7 +776,7 @@ def _firing_facts(
         else round(min(100.0, 100.0 * span_seconds / window_width), 6)
     )
     return FiringFacts(
-        attempt_count=len(attempts),
+        decision_record_count=len(attempts),
         denial_count=len(denials),
         real_account_count=real,
         nonexistent_account_count=nonexistent,
@@ -661,7 +808,7 @@ def _entity_result(
         unknown_account_count=facts.unknown_account_count,
         live_account_count=facts.live_account_count,
         host_count=facts.host_count,
-        attempt_count=facts.attempt_count,
+        decision_record_count=facts.decision_record_count,
         first_ts=facts.first_ts,
         last_ts=facts.last_ts,
         span_seconds=facts.span_seconds,
@@ -776,15 +923,26 @@ def _episode_results(
     landing_keys: frozenset[EpisodeKey],
     landing_transitions: tuple[dict[str, Any], ...],
     live: frozenset[LiveAccount],
+    landing_decisions: Sequence[DecisionRow] | None = None,
+    landing_live: frozenset[LiveAccount] | None = None,
 ) -> tuple[EpisodeResult, ...]:
     """Build typed detector-facing results without recreating lens policy."""
-    groups: dict[EpisodeKey, list[DecisionRow]] = defaultdict(list)
+    count_groups: dict[EpisodeKey, list[DecisionRow]] = defaultdict(list)
     for decision in decisions:
         if not window.contains(decision.ts):
             continue
         key = episode_key(decision)
+        if key is not None and decision.outcome == AuthOutcome.DENIED.value:
+            count_groups[key].append(decision)
+
+    landing_groups: dict[EpisodeKey, list[DecisionRow]] = defaultdict(list)
+    for decision in decisions if landing_decisions is None else landing_decisions:
+        if not window.contains(decision.ts):
+            continue
+        key = episode_key(decision)
         if key is not None:
-            groups[key].append(decision)
+            landing_groups[key].append(decision)
+    effective_landing_live = live if landing_live is None else landing_live
 
     transitions_by_key: dict[EpisodeKey, list[LandingTransition]] = defaultdict(list)
     for transition in landing_transitions:
@@ -810,7 +968,17 @@ def _episode_results(
         (EpisodeLens.LANDING, landing_keys),
     ):
         for key in sorted(keys):
-            facts = _firing_facts(groups[key], window, live)
+            population = (
+                count_groups[key]
+                if lens is EpisodeLens.CONCENTRATION
+                else landing_groups[key]
+            )
+            population_live = (
+                live
+                if lens is EpisodeLens.CONCENTRATION
+                else effective_landing_live
+            )
+            facts = _firing_facts(population, window, population_live)
             results.append(
                 EpisodeResult(
                     lens=lens,
@@ -821,7 +989,7 @@ def _episode_results(
                     unknown_account_count=facts.unknown_account_count,
                     live_account_count=facts.live_account_count,
                     host_count=facts.host_count,
-                    attempt_count=facts.attempt_count,
+                    decision_record_count=facts.decision_record_count,
                     first_ts=facts.first_ts,
                     last_ts=facts.last_ts,
                     span_seconds=facts.span_seconds,
@@ -838,32 +1006,35 @@ def run_lenses(
     canonical_rows: Sequence[CanonicalRow],
     window: Window,
 ) -> LensResult:
-    """Arbitrate producers once, then run every lens on one population."""
-    arbitrated = arbitrate_producers(decisions)
+    """Run count lenses on the observer union and landing on a coherent stream."""
+    counted = counted_decisions(decisions)
     concentration_keys, concentration_near, _fidelity = concentration(
-        arbitrated, window
+        counted, window
     )
-    landing_keys, transitions, tie_count = landing(
-        arbitrated, canonical_rows, window
+    landing_keys, transitions, tie_count, landing_rows = _observer_coherent_landing(
+        decisions, canonical_rows, window
     )
-    fanout_entities, source_near, account_near = fanout(arbitrated, window)
-    live = live_accounts(arbitrated, window)
+    fanout_entities, source_near, account_near = fanout(counted, window)
+    live = live_accounts(counted, window)
+    coherent_landing_live = live_accounts(landing_rows, window)
     entities = (
         *volume_entities(
-            arbitrated,
+            counted,
             window,
             concentration_keys=concentration_keys,
             live=live,
         ),
-        *host_spread_entities(arbitrated, window, live=live),
+        *host_spread_entities(counted, window, live=live),
     )
     episodes = _episode_results(
-        arbitrated,
+        counted,
         window,
         concentration_keys=concentration_keys,
         landing_keys=landing_keys,
         landing_transitions=transitions,
         live=live,
+        landing_decisions=landing_rows,
+        landing_live=coherent_landing_live,
     )
     return LensResult(
         concentration_keys=concentration_keys,
@@ -875,7 +1046,7 @@ def run_lenses(
         fanout_source_near_miss=source_near,
         fanout_account_near_miss=account_near,
         eligible_count=sum(
-            1 for decision in arbitrated if window.contains(decision.ts)
+            1 for decision in counted if window.contains(decision.ts)
         ),
         entity_results=entities,
         live_accounts=live,

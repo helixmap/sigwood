@@ -36,16 +36,14 @@ _UNDERFILL_TOLERANCE = timedelta(hours=1)
 # coverage or actual cell metrics, so tofu on a UTF-8 terminal without Braille
 # glyphs is an accepted limitation.
 _SPINNER_FRAMES = (
-    "⠋",
-    "⠙",
-    "⠹",
-    "⠸",
-    "⠼",
-    "⠴",
-    "⠦",
-    "⠧",
-    "⠇",
-    "⠏",
+    "⣷",
+    "⣯",
+    "⣟",
+    "⡿",
+    "⢿",
+    "⣻",
+    "⣽",
+    "⣾",
 )
 _ASCII_SPINNER_FRAMES = ("|", "/", "-", "\\")
 # Per-frame interval. 120ms sits in the middle of the 100-150ms band that

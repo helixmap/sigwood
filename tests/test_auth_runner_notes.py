@@ -97,7 +97,7 @@ def _run_text(config: dict, source: Path) -> int:
     )
 
 
-def test_summary_facts_are_post_arbitration_and_never_run_lenses(
+def test_summary_facts_use_counted_decisions_and_never_run_lenses(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     context = _context([
@@ -133,10 +133,15 @@ def test_real_runner_distinguishes_detector_abstention_from_evaluated_zero(
     assert _run_text(_run_config(quiet_root), quiet_source) == 0
     quiet = " ".join(capsys.readouterr().out.split())
     assert (
-        "auth: 1 log observation; no eligible authentication events in the "
+        "auth: 1 log observation; no eligible authentication records in the "
         "loaded window - detector abstained; requires at least one supported "
         "authentication success or failure"
     ) in quiet
+    disclosure = (
+        "counts are decision records as each source logged them; a host reporting "
+        "through more than one source can record one event in each"
+    )
+    assert disclosure in quiet
 
     evaluated_root = tmp_path / "evaluated"
     evaluated_root.mkdir()
@@ -147,9 +152,10 @@ def test_real_runner_distinguishes_detector_abstention_from_evaluated_zero(
     assert _run_text(_run_config(evaluated_root), evaluated_source) == 0
     evaluated = " ".join(capsys.readouterr().out.split())
     assert (
-        "auth: 2 log observations; 2 eligible authentication events across "
+        "auth: 2 log observations; 2 eligible authentication records across "
         "1 identity group and 1 service - five lenses evaluated"
     ) in evaluated
+    assert disclosure in evaluated
     assert "detector abstained" not in evaluated
     assert "auth - " not in evaluated
 
@@ -189,7 +195,7 @@ def test_auth_summary_uses_the_exact_post_allowlist_population(
 
     assert _run_text(config, source) == 0
     rendered = " ".join(capsys.readouterr().out.split())
-    assert "auth: 1 log observation; 1 eligible authentication event" in rendered
+    assert "auth: 1 log observation; 1 eligible authentication record" in rendered
     assert "auth allowlist: 1 remote source address extracted" in rendered
     assert "chatty.example.test" not in rendered
     assert "keep.example.test" not in rendered

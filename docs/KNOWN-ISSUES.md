@@ -151,11 +151,34 @@ physical hosts can be grouped together when both identifiers are absent. The sam
 lines and exact line count remain available in that family finding; review the samples as
 potentially unrelated events rather than assuming they came from one machine.
 
-**Without exact landing corroboration, every auth finding caps at MEDIUM.** Concentrated
-failures, source volume, account volume, and multi-host spread each describe one category of
-authentication evidence. None becomes HIGH on magnitude alone. HIGH requires the same source
-and account to show both multi-host failures and a success after the failure run; an estate with
-heavy failure traffic but no matching landing therefore reports MEDIUM findings only.
+**Every auth finding caps at MEDIUM.** Concentrated failures, source volume, account volume,
+and multi-host spread each describe one category of authentication evidence, and none becomes
+HIGH on magnitude alone. Failures followed by a success are reported as evidence on the
+matching multi-host finding but do not raise severity: the detector counts plainly and does
+not claim a corroborated verdict. Treat every auth finding as a review lead.
+
+**Auth floors count decision records, not human attempts, and more than one source can record
+the same event.** Each source that observed an authentication contributes its own records, and
+no source's records are discarded to make room for another's — dropping them is how a real
+attack can disappear. Two consequences. A host reporting through both its service log and the
+audit system can record one event in each, so its magnitudes can run up to about double. And
+where one physical authentication produces several distinct eligible audit types, each
+contributes. Mirrored renderings of a single audit record are reconciled to one, but the
+numeric floors have not been retuned for either effect, so a multi-source or audit-rich feed
+can cross a floor with fewer human attempts than a single-source feed. Every run says so in
+its notes.
+
+**A same-time auth tie can drop a failures-then-success result.** Landing keeps each source's
+rows coherent rather than mixing them, and among the sources that recorded a transition for an
+episode, the best-placed one owns the whole episode — including an unresolved
+failure-and-success tie at a single timestamp. Another source's otherwise clear transition is
+not substituted in that case. (A source that recorded no transition at all does not block one:
+it is skipped, and a lower-placed source's result stands.) The result is a conservative miss.
+Where the same source and account also produced a multi-host finding, only that evidence line
+is absent. Where they did not, the failures-then-success finding is absent altogether — the
+failures are still counted and will surface on their own if a concentration, volume, or spread
+floor is reached, but nothing guarantees one is. Because landing no longer affects severity,
+this can never lower another finding's tier.
 
 **Auth `first_seen` is window-relative.** It is the first qualifying event in the data loaded
 for this run, not proof that the activity began then. A finding can touch the beginning and end

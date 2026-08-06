@@ -16,6 +16,7 @@ from sigwood.outputs._render_model import (
     _build_renderable,
     html_cell_value,
     project_row,
+    section_columns,
 )
 from sigwood.outputs.html import render_report_html
 from sigwood.outputs.json import JsonHandler
@@ -43,7 +44,7 @@ def _finding(
 ) -> Finding:
     evidence = {
         "signal": signal,
-        "attempt_count": attempts,
+        "decision_record_count": attempts,
         "denial_count": failures,
         "host_count": hosts,
         "real_account_count": 0,
@@ -118,7 +119,7 @@ def test_auth_projector_has_one_uniform_reader_grammar() -> None:
     assert [(cell.key, cell.value, cell.optional) for cell in project_row(finding)] == [
         (None, "alice", False),
         ("shape", "multi-host failures + success", False),
-        ("failed", "13/15 failed", False),
+        ("failed", "13 failed / 15 records", False),
         ("hosts", "3 hosts", False),
         ("successes", "2 successes", True),
         ("span", "2m", False),
@@ -193,6 +194,52 @@ def test_auth_row_signal_parity_text_and_html(variant: str) -> None:
     assert checked == (6 if finding.evidence.get("landing_episodes") else 5)
 
 
+def test_auth_related_count_is_reader_visible_and_vanishes_when_absent() -> None:
+    related = _finding("host_spread", "192.0.2.42", hosts=3)
+    related.evidence["overlaps"] = [
+        {"signal": "source_volume", "title": "192.0.2.42"},
+        {"signal": "account_volume", "title": "alice"},
+    ]
+    control = _finding("host_spread", "192.0.2.43", hosts=3)
+
+    related_cells = project_row(related)
+    assert ("related", "2 related", True) in [
+        (cell.key, cell.value, cell.optional) for cell in related_cells
+    ]
+    assert all(cell.key != "related" for cell in project_row(control))
+    mixed = _build_renderable("auth", [related, control], 0, 100)
+    assert [column.key for column in section_columns(mixed.sections[0])][-2:] == [
+        "span",
+        "related",
+    ]
+
+    text = _render_text([related])
+    raw_html = render_report_html(
+        [related], _summary(), verbose_level=0, max_findings_per_detector=100,
+    )
+    visible_html = unescape(re.sub(r"<[^>]+>", " ", raw_html))
+    related_cell = next(cell for cell in related_cells if cell.key == "related")
+    assert related_cell.value in text
+    assert ">related</th>" in raw_html
+    assert html_cell_value(related_cell) in visible_html
+
+    control_html = render_report_html(
+        [control], _summary(), verbose_level=0, max_findings_per_detector=100,
+    )
+    assert ">related</th>" not in control_html
+
+    mixed_text = _render_text([related, control])
+    mixed_html = render_report_html(
+        [related, control],
+        _summary(),
+        verbose_level=0,
+        max_findings_per_detector=100,
+    )
+    assert mixed_text.count("2 related") == 1
+    assert mixed_html.count(">related</th>") == 1
+    assert all(line == line.rstrip() for line in mixed_text.splitlines())
+
+
 def test_golden_auth_mixed_rows() -> None:
     findings = [
         _finding("source_volume", "192.0.2.44"),
@@ -214,9 +261,9 @@ def test_golden_auth_mixed_rows() -> None:
 
     assert _render_text(findings) == (
         f"\nauth - 3 findings · 1 H  2 M\n{_RULE}\n"
-        "[H]   alice                       multi-host failures + success    13/15 failed  3 hosts  2 successes  2m\n"
-        "[M]   host-a.example.test · sshd  concentrated failures          100/100 failed   1 host               2m\n"
-        "[M]   192.0.2.44                  source volume                    18/18 failed   1 host               2m\n\n"
+        "[H]   alice                       multi-host failures + success    13 failed / 15 records  3 hosts  2 successes  2m\n"
+        "[M]   host-a.example.test · sshd  concentrated failures          100 failed / 100 records   1 host               2m\n"
+        "[M]   192.0.2.44                  source volume                    18 failed / 18 records   1 host               2m\n\n"
     )
 
 
@@ -235,7 +282,7 @@ def test_auth_curated_evidence_is_small_and_identity_free() -> None:
 
     assert list(curated_evidence(finding)) == [
         "severity_basis",
-        "attempt_count",
+        "decision_record_count",
         "denial_count",
         "host_count",
         "first_seen",

@@ -2388,27 +2388,33 @@ def _format_auth_summary_notes(facts: Any) -> list[str]:
     services = int(facts.service_count)
     remote_sources = int(facts.remote_source_count)
     prefix = f"auth: {observations:,} {plural(observations, 'log observation')}"
+    record_disclosure = (
+        "counts are decision records as each source logged them; a host reporting "
+        "through more than one source can record one event in each"
+    )
 
     if eligible <= 0:
         notes = [
-            f"{prefix}; no eligible authentication events in the loaded window - "
+            f"{prefix}; no eligible authentication records in the loaded window - "
             "detector abstained; requires at least one supported authentication "
-            "success or failure"
+            f"success or failure; {record_disclosure}"
         ]
     else:
         magnitudes = (
             f"{prefix}; {eligible:,} "
-            f"{plural(eligible, 'eligible authentication event')} across "
+            f"{plural(eligible, 'eligible authentication record')} across "
             f"{identities:,} {plural(identities, 'identity group')} and "
             f"{services:,} {plural(services, 'service')}"
         )
         if facts.positive_window:
-            notes = [f"{magnitudes} - five lenses evaluated"]
+            notes = [
+                f"{magnitudes} - five lenses evaluated; {record_disclosure}"
+            ]
         else:
             notes = [
                 f"{magnitudes} - concentration, landing, and host-spread evaluated; "
                 "source-volume and account-volume abstained because the loaded "
-                "window has no positive duration"
+                f"window has no positive duration; {record_disclosure}"
             ]
 
     if remote_sources > 0:

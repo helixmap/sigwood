@@ -88,6 +88,12 @@ else
 fi
 ```
 
+Finally, confirm that nothing is knowingly shipping in a defective state. A detector outside the
+default hunt is still reachable by name and under `--detect=all`, so "not in the default hunt" is
+not the same as "not reachable" — a detector known to produce wrong results still reaches anyone
+who asks for it. Clear any open release blocker you are tracking, or consciously accept it, before
+tagging.
+
 ### 1 - Prepare the release state
 
 This section only edits files. Nothing in it commits, pushes, or tags, so its work stays

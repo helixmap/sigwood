@@ -23,7 +23,7 @@ from tests.test_voice_consistency import assert_report_voice
 
 _COMMON_EVIDENCE = {
     "signal",
-    "attempt_count",
+    "decision_record_count",
     "denial_count",
     "host_count",
     "real_account_count",
@@ -79,6 +79,25 @@ def _local_failure(
     return (
         f"{_stamp(second)} {host} sudo[{3000 + second}]: "
         f"pam_unix(sudo:auth): authentication failure; user={account}"
+    )
+
+
+def _audit_decision(
+    second: int,
+    *,
+    audit_type: str = "USER_AUTH",
+    outcome: str = "failed",
+    host: str = "host-a.example.test",
+    account: str = "alice",
+    source: str = "192.0.2.10",
+    serial: int | None = None,
+) -> str:
+    event_serial = second if serial is None else serial
+    return (
+        f"{_stamp(second)} {host} audisp-syslog[{3000 + second}]: "
+        f"type={audit_type} msg=audit(1785819600.000:{event_serial}): "
+        f'acct="{account}" exe="/usr/sbin/sshd" '
+        f"addr={source} res={outcome}"
     )
 
 
@@ -182,7 +201,7 @@ def test_concentration_projects_one_medium_finding_with_frozen_evidence() -> Non
     assert finding.title == "192.0.2.10"
     assert finding.evidence["signal"] == "concentration"
     assert finding.evidence["severity_basis"] == ["concentration"]
-    assert finding.evidence["attempt_count"] == 100
+    assert finding.evidence["decision_record_count"] == 100
     assert finding.evidence["denial_count"] == 100
     assert finding.evidence["host_count"] == 1
     assert finding.evidence["live_account_count"] == 0
@@ -193,6 +212,40 @@ def test_concentration_projects_one_medium_finding_with_frozen_evidence() -> Non
     assert "severity_cap" not in finding.evidence
     assert_report_voice(findings)
     _assert_reader_vocabulary(findings)
+
+
+def test_brute_force_survives_one_benign_login_exactly_once_end_to_end() -> None:
+    lines = [
+        _success(1),
+        *[
+            _audit_decision(second, serial=10_000 + second)
+            for second in range(2, 102)
+        ],
+    ]
+
+    findings = auth.run(_context(lines))
+
+    assert len(findings) == 1
+    finding = findings[0]
+    assert finding.evidence["signal"] == "concentration"
+    assert finding.evidence["decision_record_count"] == 100
+    assert finding.evidence["denial_count"] == 100
+    assert finding.evidence["service"] == "ssh"
+
+
+def test_auth_findings_are_provider_blind_between_local_and_zeek_lanes() -> None:
+    lines = [_failure(index) for index in range(1, 101)]
+
+    local = auth.run(_context(lines))
+    zeek = auth.run(_context([], zeek_lines=lines))
+
+    assert [
+        (finding.severity, finding.title, finding.evidence)
+        for finding in local
+    ] == [
+        (finding.severity, finding.title, finding.evidence)
+        for finding in zeek
+    ]
 
 
 def test_private_preparation_reuse_is_semantically_identical_to_direct_run() -> None:
@@ -216,7 +269,7 @@ def test_private_preparation_reuse_is_semantically_identical_to_direct_run() -> 
     ]
 
 
-def test_host_spread_absorbs_every_exact_landing_into_one_high_owner() -> None:
+def test_host_spread_absorbs_every_exact_landing_into_one_medium_owner() -> None:
     lines = [
         *[_failure(index, host="host-a.example.test") for index in range(1, 7)],
         _success(7, host="host-a.example.test"),
@@ -229,10 +282,10 @@ def test_host_spread_absorbs_every_exact_landing_into_one_high_owner() -> None:
 
     assert len(findings) == 1
     finding = findings[0]
-    assert finding.severity is Severity.HIGH
+    assert finding.severity is Severity.MEDIUM
     assert finding.title == "alice"
     assert finding.evidence["signal"] == "host_spread"
-    assert finding.evidence["severity_basis"] == ["host_spread", "landing"]
+    assert finding.evidence["severity_basis"] == ["host_spread"]
     assert finding.evidence["host_count"] == 3
     assert finding.evidence["denial_count"] == 13
     assert finding.evidence["live_account_count"] == 1
@@ -246,6 +299,134 @@ def test_host_spread_absorbs_every_exact_landing_into_one_high_owner() -> None:
     }
     assert_report_voice(findings)
     _assert_reader_vocabulary(findings)
+
+
+def test_same_second_tie_cannot_subtract_host_spread_severity() -> None:
+    base = [
+        *[_failure(index, host="host-a.example.test") for index in range(1, 7)],
+        _success(7, host="host-a.example.test"),
+        _failure(20, host="host-b.example.test"),
+        _failure(40, host="host-c.example.test"),
+    ]
+    tied = [*base[:6], _failure(7, host="host-a.example.test"), *base[6:]]
+
+    baseline = auth.run(_context(base))
+    attacked = auth.run(_context(tied))
+    baseline_owner = next(
+        finding
+        for finding in baseline
+        if finding.evidence["signal"] == "host_spread"
+    )
+    attacked_owner = next(
+        finding
+        for finding in attacked
+        if finding.evidence["signal"] == "host_spread"
+    )
+
+    assert baseline_owner.severity is Severity.MEDIUM
+    assert attacked_owner.severity is Severity.MEDIUM
+    assert baseline_owner.evidence["severity_basis"] == ["host_spread"]
+    assert attacked_owner.evidence["severity_basis"] == ["host_spread"]
+
+
+def test_volume_and_host_spread_findings_cross_link_shared_population() -> None:
+    lines = [
+        _failure(
+            index,
+            host=f"host-{((index - 1) % 3) + 1}.example.test",
+        )
+        for index in range(1, 31)
+    ]
+
+    findings = auth.run(_context(lines))
+    by_signal = {finding.evidence["signal"]: finding for finding in findings}
+
+    assert set(by_signal) == {"source_volume", "account_volume", "host_spread"}
+    assert by_signal["host_spread"].evidence["overlaps"] == [
+        {"signal": "source_volume", "title": by_signal["source_volume"].title},
+        {"signal": "account_volume", "title": by_signal["account_volume"].title},
+    ]
+    assert by_signal["source_volume"].evidence["overlaps"] == [
+        {"signal": "host_spread", "title": by_signal["host_spread"].title}
+    ]
+    assert by_signal["account_volume"].evidence["overlaps"] == [
+        {"signal": "host_spread", "title": by_signal["host_spread"].title}
+    ]
+
+    isolated = auth.run(
+        _context([_failure(index) for index in range(1, 19)])
+    )
+    assert all("overlaps" not in finding.evidence for finding in isolated)
+
+
+def test_overlap_links_preserve_distinct_siblings_with_the_same_title() -> None:
+    lines = [
+        _failure(
+            index,
+            host=f"host-{((index - 1) % 3) + 1}.example.test",
+            account="alice" if index <= 18 else "bob",
+        )
+        for index in range(1, 37)
+    ]
+
+    findings = auth.run(_context(lines))
+    source = next(
+        finding
+        for finding in findings
+        if finding.evidence["signal"] == "source_volume"
+    )
+    spread_links = [
+        link
+        for link in source.evidence["overlaps"]
+        if link["signal"] == "host_spread"
+    ]
+
+    assert spread_links == [
+        {"signal": "host_spread", "title": "192.0.2.10"},
+        {"signal": "host_spread", "title": "192.0.2.10"},
+    ]
+
+
+def test_three_double_shipped_audit_failures_do_not_mint_landing() -> None:
+    lines: list[str] = []
+    for second in range(1, 4):
+        lines.extend(
+            [
+                _audit_decision(
+                    second,
+                    audit_type="USER_AUTH",
+                    serial=100 + second,
+                ),
+                _audit_decision(
+                    second,
+                    audit_type="USER_LOGIN",
+                    serial=100 + second,
+                ),
+            ]
+        )
+    lines.extend(
+        [
+            _audit_decision(
+                4,
+                audit_type="USER_LOGIN",
+                outcome="success",
+                serial=304,
+            ),
+            _audit_decision(10, host="host-b.example.test", serial=410),
+            _audit_decision(11, host="host-c.example.test", serial=411),
+        ]
+    )
+
+    findings = auth.run(_context(lines))
+
+    assert len(findings) == 1
+    finding = findings[0]
+    assert finding.severity is Severity.MEDIUM
+    assert finding.evidence["severity_basis"] == ["host_spread"]
+    assert finding.evidence["decision_record_count"] == 9
+    assert finding.evidence["denial_count"] == 8
+    assert finding.evidence["host_count"] == 3
+    assert "landing_episodes" not in finding.evidence
 
 
 def test_unmatched_and_degraded_landing_stays_medium() -> None:
@@ -314,7 +495,8 @@ def test_fixed_lane_order_combines_local_and_zeek_rows_without_record_collisions
     findings = auth.run(_context(local, zeek_lines=zeek))
 
     assert len(findings) == 1
-    assert findings[0].severity is Severity.HIGH
+    assert findings[0].severity is Severity.MEDIUM
+    assert findings[0].evidence["severity_basis"] == ["host_spread"]
     assert findings[0].evidence["host_count"] == 3
     assert len(findings[0].evidence["landing_episodes"]) == 1
 

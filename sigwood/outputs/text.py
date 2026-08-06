@@ -648,11 +648,56 @@ class TextHandler(OutputHandler):
             return self._render_duration_group(live)
         if detector == "aws":
             return self._render_aws_group(live)
+        if detector == "auth":
+            return self._render_auth_group(live)
         # Generic fallback - flat detector, one Section with label=None.
         out: list[str] = []
         for s in live:
             for f in s.findings:
                 out.append(self._render_finding(f))
+        return out
+
+    def _render_auth_group(self, sections: list[Section]) -> list[str]:
+        """Render auth through its shared identity-safe cell projection."""
+        indent = "     "
+        rows = []
+        for finding in sections[0].findings:
+            keyed, bare = _cells(finding)
+            rows.append(
+                (
+                    str(finding.severity),
+                    bare[0],
+                    keyed["shape"],
+                    keyed["failed"],
+                    keyed["hosts"],
+                    keyed["successes"],
+                    keyed["span"],
+                    finding,
+                )
+            )
+
+        title_w = max(len(row[1]) for row in rows)
+        shape_w = max(len(row[2]) for row in rows)
+        failed_w = max(len(row[3]) for row in rows)
+        hosts_w = max(len(row[4]) for row in rows)
+        successes_w = max(len(row[5]) for row in rows)
+        span_w = max(len(row[6]) for row in rows)
+        show_successes = successes_w > 0
+
+        out: list[str] = []
+        for tag, title, shape, failed, hosts, successes, span, finding in rows:
+            line = (
+                f"{tag:<4}  {title:<{title_w}}  {shape:<{shape_w}}  "
+                f"{failed:>{failed_w}}  {hosts:>{hosts_w}}"
+            )
+            if show_successes:
+                line += f"  {successes:>{successes_w}}"
+            line += f"  {span:>{span_w}}"
+            tail = _level_tail(finding, indent, self._verbose_level)
+            if tail:
+                out.append(line + "\n" + "\n".join(tail))
+            else:
+                out.append(line)
         return out
 
     def _render_beacon_group(self, sections: list[Section]) -> list[str]:

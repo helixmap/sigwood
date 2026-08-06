@@ -165,6 +165,27 @@ def _partition_syslog(findings: list[Finding]) -> list[Section]:
     return out
 
 
+_AUTH_SIGNAL_ORDER = {
+    "concentration": 0,
+    "source_volume": 1,
+    "account_volume": 2,
+    "host_spread": 3,
+    "landing": 4,
+}
+
+
+def _partition_auth(findings: list[Finding]) -> list[Section]:
+    """Auth: one urgency-first section with the reconciled signal order."""
+    ordered = sorted(
+        findings,
+        key=lambda finding: (
+            _AUTH_SIGNAL_ORDER.get(str(finding.evidence.get("signal", "")), 99),
+            finding.title,
+        ),
+    )
+    return [Section(None, ordered, len(ordered))]
+
+
 def _partition_flat(findings: list[Finding]) -> list[Section]:
     """Flat detector - one section with no label."""
     return [Section(None, findings, len(findings))]
@@ -174,6 +195,7 @@ _PARTITIONERS = {
     "dns": _partition_dns,
     "aws": _partition_aws,
     "syslog": _partition_syslog,
+    "auth": _partition_auth,
 }
 
 # Per-detector severity-sort opt-out. Severity sort is the
@@ -589,6 +611,51 @@ def _project_aws(f: Finding) -> list[Cell]:
     ]
 
 
+_AUTH_SHAPE_LABELS = {
+    "concentration": "concentrated failures",
+    "source_volume": "source volume",
+    "account_volume": "account volume",
+    "host_spread": "multi-host failures",
+    "landing": "failures then success",
+}
+
+
+def _project_auth(f: Finding) -> list[Cell]:
+    """Auth: one identity-safe row grammar for every reconciled signal."""
+    ev = f.evidence
+    signal = str(ev.get("signal", ""))
+    shape = _AUTH_SHAPE_LABELS.get(signal, "authentication activity")
+    if (
+        f.severity is Severity.HIGH
+        and ev.get("severity_basis") == ["host_spread", "landing"]
+    ):
+        shape = "multi-host failures + success"
+
+    attempts = int(ev.get("attempt_count", 0))
+    failures = int(ev.get("denial_count", 0))
+    hosts = int(ev.get("host_count", 0))
+    landings = ev.get("landing_episodes")
+    success_count = len(landings) if isinstance(landings, (list, tuple)) else 0
+    span = max(0.0, float(ev.get("span_seconds", 0.0)))
+    return [
+        Cell(None, f.title),
+        Cell("shape", shape),
+        Cell("failed", f"{failures:,}/{attempts:,} failed", align="right"),
+        Cell("hosts", f"{hosts:,} {plural(hosts, 'host')}", align="right"),
+        Cell(
+            "successes",
+            (
+                f"{success_count:,} {plural(success_count, 'success', 'successes')}"
+                if success_count
+                else ""
+            ),
+            align="right",
+            optional=True,
+        ),
+        Cell("span", fmt_compact_span(timedelta(seconds=span)), align="right"),
+    ]
+
+
 _PROJECTORS = {
     "beacon": _project_beacon,
     "dns": _project_dns,
@@ -596,6 +663,7 @@ _PROJECTORS = {
     "syslog": _project_syslog,
     "duration": _project_duration,
     "aws": _project_aws,
+    "auth": _project_auth,
 }
 
 

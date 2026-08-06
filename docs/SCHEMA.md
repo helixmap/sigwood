@@ -156,7 +156,8 @@ Source: `parsers/syslog.py` (flat RFC 3164 or ISO-8601 rsyslog), `parsers/journa
 (the live systemd journal via `journalctl --output=json`), `parsers/zeek.py`
 (`_normalize_zeek_syslog_df` - Zeek `syslog.log`, TSV + NDJSON front-ends).
 Consumers: syslog detector (source-blind - reads only the minimal-5), digest
-(syslog card - fidelity-aware, reads both flat/Zeek feeds), future auth. The second
+(syslog card - fidelity-aware, reads both flat/Zeek feeds), and the shipped `auth` detector.
+The second
 source-spanning detector after dns; same question (rare events / reboots)
 over three physical feeds of one logical lane. Exactly ONE local carrier (the live
 journal OR flat files) is selected per run; Zeek `syslog.log` remains independent.
@@ -219,8 +220,8 @@ keyword-token heuristic, and the digest's insight wording forks with the feed.
 
 ### Access-decision projection (auth extraction)
 
-Source: `parsers/auth.py` (shipped). Consumers: the `auth` detector (planned - the
-parser ships ahead of it, so this contract is stable before any detector reads it).
+Source: `parsers/auth.py` (shipped). Consumer: the shipped `auth` detector. The
+projection stays a grammar-only boundary; aggregation and severity remain detector work.
 
 A pure, grammar-only extractor over the canonical syslog lane: it consumes the
 `message` and `program` columns above and returns grammar-derived facts alone.

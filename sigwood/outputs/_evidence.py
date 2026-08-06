@@ -123,6 +123,17 @@ def curated_evidence(finding: Finding) -> dict[str, Any]:
                 "template_str", "host", "program_total", "count", "threshold",
                 "first_seen",
             )
+    elif det == "auth":
+        keys = (
+            "severity_basis",
+            "attempt_count",
+            "denial_count",
+            "host_count",
+            "first_seen",
+            "span_seconds",
+            "window_coverage_pct",
+            "window_spanning",
+        )
     elif det == "scan":
         keys = ("scan_state_ratio", "top_states", "direction", "pattern_tag")
     elif det == "duration":

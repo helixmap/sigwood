@@ -548,6 +548,21 @@ privileged automation, like a frequent sudo cron, would otherwise chain into one
 enormous false "session"), so those findings keep their own shapes too.
 `recognize_transactions = false` turns the whole thing off.
 
+### What does the auth detector look for?
+
+`auth` asks how authentication activity is distributed inside the window you loaded. It can
+surface five single-category signals at MEDIUM: **concentrated failures** against one service,
+unusual **source volume**, unusual **account volume**, **multi-host failures** for one source and
+account combination, and **failures followed by a success** for the same service identity.
+Counting failures alone never proves an intrusion; these are review leads with the measured
+attempt, failure, host, and time-span facts attached.
+
+There is one HIGH path. Exact multi-host failure evidence must coincide with a success after the
+failure run for the same source and account. The host-spread unit owns that corroborated result,
+including its matching landing episodes, so the report does not print the same event twice.
+`auth` is opt-in rather than part of the curated default hunt: run `sigwood auth PATH`, name it in
+`--detect`, or use `--detect=all`.
+
 ### `aws` - why a plain z-score instead of a fancy model?
 
 Because you have to be able to read *why* a principal was surfaced. The CloudTrail detector is
@@ -620,8 +635,8 @@ this section applies: read the code, run the tests.
 
 ### What state is sigwood in?
 
-Early, pre-1.0. The six detectors above work and are covered by tests. Five more -
-`dnsblock`, `auth`, `ssl`, `protocol`, and `weird` - are planned but not built. Interfaces may still move before
+Early, pre-1.0. The seven detectors above work and are covered by tests. Four more -
+`dnsblock`, `ssl`, `protocol`, and `weird` - are planned but not built. Interfaces may still move before
 1.0. The current roadmap and the running list of known rough edges are public, in
 [ROADMAP.md](ROADMAP.md) and [KNOWN-ISSUES.md](KNOWN-ISSUES.md).
 

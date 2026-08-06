@@ -502,10 +502,46 @@ def _run_analyze(
     allowlist_plan = resolve_allowlist_plan(config)
     allowlist = matcher_from_plan(allowlist_plan, force_off=no_allowlist)
     suppression_enabled = (not no_allowlist) and allowlist_plan.master_enabled
+    prepared_contexts: dict[str, DetectorContext] = {}
+    prepared_auth: Any | None = None
     # The default window is announced pre-load on stderr (and the data-found
     # parenthetical carries the data-vs-requested span), so no prose default-window
     # note rides the run summary.
     notes: list[str] = []
+    if "auth" in plan.will_run:
+        auth_mod = plan.detectors["auth"]
+        auth_cfg = get_detector_config(
+            config, "auth", getattr(auth_mod, "DEFAULT_CONFIG", {}),
+        )
+        try:
+            auth_context = _prepare_detector_context(
+                auth_mod,
+                "auth",
+                logs,
+                allowlist,
+                auth_cfg,
+                data_window,
+                data_sources,
+                home_net,
+            )
+        except Exception:
+            # Pre-loop disclosure is best-effort. The contained detector loop
+            # retries prep so a note failure cannot suppress auth itself.
+            pass
+        else:
+            prepared_contexts["auth"] = auth_context
+            try:
+                prepared_auth = auth_mod._prepare(auth_context)
+                auth_facts = auth_mod.summary_facts(
+                    auth_context, _prepared=prepared_auth,
+                )
+            except Exception:
+                # The detector still runs from the successfully prepared context;
+                # only the optional disclosure vanishes.
+                prepared_auth = None
+                pass
+            else:
+                notes.extend(_format_auth_summary_notes(auth_facts))
     nudge = _dns_nudge(data_sources)
     if nudge:
         notes.append(nudge)
@@ -727,10 +763,12 @@ def _run_analyze(
         else:
             with liveness(f"running {name}", enabled=not quiet) as _ln:
                 try:
-                    ctx = _prepare_detector_context(
-                        mod, name, logs, allowlist, det_cfg,
-                        data_window, data_sources, home_net,
-                    )
+                    ctx = prepared_contexts.get(name)
+                    if ctx is None:
+                        ctx = _prepare_detector_context(
+                            mod, name, logs, allowlist, det_cfg,
+                            data_window, data_sources, home_net,
+                        )
                 except Exception as exc:
                     # Prep failed BEFORE the detector even started - no
                     # seal (the "no false seal" path from
@@ -740,7 +778,11 @@ def _run_analyze(
                     run_summary.detectors_failed[name] = _failure_reason("prep error", exc)
                     continue
                 try:
-                    findings = mod.run(ctx)
+                    findings = (
+                        mod.run(ctx, _prepared=prepared_auth)
+                        if name == "auth" and prepared_auth is not None
+                        else mod.run(ctx)
+                    )
                     # The seal is a terse live completion record - "this
                     # detector finished" - NOT a tally. The report header
                     # is the single authoritative count surface
@@ -2336,6 +2378,49 @@ def _default_opt_in_note(
         f"default hunt - not run: {names} "
         f"(opt-in; {action} by name or with --detect=all)"
     )
+
+
+def _format_auth_summary_notes(facts: Any) -> list[str]:
+    """Render count-only auth facts without exposing log-derived identities."""
+    observations = int(facts.observation_count)
+    eligible = int(facts.eligible_count)
+    identities = int(facts.identity_group_count)
+    services = int(facts.service_count)
+    remote_sources = int(facts.remote_source_count)
+    prefix = f"auth: {observations:,} {plural(observations, 'log observation')}"
+
+    if eligible <= 0:
+        notes = [
+            f"{prefix}; no eligible authentication events in the loaded window - "
+            "detector abstained; requires at least one supported authentication "
+            "success or failure"
+        ]
+    else:
+        magnitudes = (
+            f"{prefix}; {eligible:,} "
+            f"{plural(eligible, 'eligible authentication event')} across "
+            f"{identities:,} {plural(identities, 'identity group')} and "
+            f"{services:,} {plural(services, 'service')}"
+        )
+        if facts.positive_window:
+            notes = [f"{magnitudes} - five lenses evaluated"]
+        else:
+            notes = [
+                f"{magnitudes} - concentration, landing, and host-spread evaluated; "
+                "source-volume and account-volume abstained because the loaded "
+                "window has no positive duration"
+            ]
+
+    if remote_sources > 0:
+        remote_source_label = plural(
+            remote_sources, "remote source address", "remote source addresses",
+        )
+        notes.append(
+            f"auth allowlist: {remote_sources:,} "
+            f"{remote_source_label} extracted; "
+            "system-log suppression covers whole hosts, not individual source addresses"
+        )
+    return notes
 
 
 def _aws_below_floor_note(

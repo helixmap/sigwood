@@ -1,4 +1,4 @@
-"""Product-owned authentication lens core for the planned auth detector.
+"""Product-owned authentication lens core for the auth detector.
 
 Producer precedence ranks independent observers, not encodings. Named and
 numeric Linux-audit records are sibling encodings of one observer and therefore
@@ -6,7 +6,7 @@ share a rank. A future producer belongs in the ladder only after measurement
 shows that it mirrors the higher-ranked observer instead of contributing
 different events.
 
-This module is callable product code but does not activate the planned detector.
+The detector adapter owns finding construction; this core owns the measured lenses.
 """
 
 from __future__ import annotations
@@ -213,7 +213,7 @@ class FiringFacts:
 
 @dataclass(frozen=True, slots=True)
 class LensResult:
-    """Aggregate output from the planned authentication lenses."""
+    """Aggregate output from the authentication lenses."""
 
     concentration_keys: frozenset[EpisodeKey]
     concentration_near_miss: int

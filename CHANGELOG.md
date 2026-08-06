@@ -116,6 +116,15 @@ All notable changes to sigwood are recorded here. The format follows
 
 ### Added
 
+- **Authentication analysis is now available as the opt-in `sigwood auth` detector.** It
+  examines the system-log lane for five measured shapes: concentrated failures, source volume,
+  account volume, multi-host failures, and failures followed by a success. Each single category
+  caps at MEDIUM; the only HIGH path combines exact multi-host spread with a matching landing.
+  Text and HTML share a designed severity-first row grammar, `-v` keeps untrusted identities out
+  of ordinary evidence, and every run reports count-only extraction magnitudes plus honest
+  evaluated-versus-abstained notes. The known-issues page also records four pre-existing
+  limitations: the corroboration requirement, window-relative first-seen time, whole-host-only
+  allowlist coverage for this lane, and the synthetic-only HIGH witness.
 - **A misspelled setting name now warns instead of being silently ignored - at every
   config scope.** A typo like `zeek_dri`, a mistyped `[detectors.beacn]` table, an unknown
   `[export.splnk]` backend, or a wrong key nested as deep as `[detectors.dns.pihole]` now
@@ -125,14 +134,14 @@ All notable changes to sigwood are recorded here. The format follows
   The `allowlist` command's read paths disclose the same way. The suggestion appears only
   when a close match exists.
 - **A written contract for what sigwood keeps stable.** `docs/CONTRACT.md` states, in one
-  place, what will not change across 1.x releases: the twelve verbs, the flag spellings and
+  place, what will not change across 1.x releases: the thirteen verbs, the flag spellings and
   their `=`-only value grammar, the five output-format tokens, the documented config key
   paths, the JSON envelope and its field types, the CSV column set, and the exit codes.
   Linked from the README and the FAQ. Detection itself is explicitly outside that promise -
   thresholds and calibration move when measurement says they should.
 - **Every detector is now importable and callable from Python**, which the README and FAQ
   already described. `from sigwood import DetectorContext, Finding, Severity` works, as does
-  `from sigwood.detectors.<name> import run` for all six detectors.
+  `from sigwood.detectors.<name> import run` for all seven detectors.
   `DetectorContext.unsuppressed(...)` builds a context for that use with allowlist
   suppression **off**, and says so in its name and docstring, because results can be noisier
   than the same detector run through the CLI. Importing the package stays lightweight - it

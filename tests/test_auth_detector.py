@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 import pandas as pd
 
 from sigwood import cli
-from sigwood.common.finding import DetectorContext, MethodTag, RunSummary, Severity
+from sigwood.common.finding import DetectorContext, Finding, MethodTag, RunSummary, Severity
 from sigwood.detectors import auth
 from sigwood.outputs.html import render_report_html
 from sigwood.outputs.json import JsonHandler
@@ -193,6 +193,27 @@ def test_concentration_projects_one_medium_finding_with_frozen_evidence() -> Non
     assert "severity_cap" not in finding.evidence
     assert_report_voice(findings)
     _assert_reader_vocabulary(findings)
+
+
+def test_private_preparation_reuse_is_semantically_identical_to_direct_run() -> None:
+    context = _context([_failure(index) for index in range(1, 101)])
+    direct = auth.run(context)
+    reused = auth.run(context, _prepared=auth._prepare(context))
+
+    def _semantic(finding: Finding) -> tuple[object, ...]:
+        return (
+            finding.detector,
+            finding.severity,
+            finding.title,
+            finding.description,
+            finding.evidence,
+            finding.next_steps,
+            finding.data_window,
+        )
+
+    assert [_semantic(finding) for finding in reused] == [
+        _semantic(finding) for finding in direct
+    ]
 
 
 def test_host_spread_absorbs_every_exact_landing_into_one_high_owner() -> None:
@@ -377,3 +398,40 @@ def test_denied_only_hostile_account_is_machine_data_never_title_or_prose() -> N
     account = payload["findings"][0]["evidence"]["account"]
     assert type(account) is str
     assert account == hostile
+
+
+def test_hostile_host_is_sanitized_on_the_new_projection_and_lossless_in_json() -> None:
+    hostile_host = "host<img/src=x/onerror=alert(1)>.example.test\x1b[31m"
+    finding = auth.run(
+        _context([
+            _local_failure(index, host=hostile_host)
+            for index in range(1, 101)
+        ])
+    )[0]
+    assert finding.evidence["signal"] == "concentration"
+    assert finding.title == f"{hostile_host.casefold()} · sudo"
+
+    for level in (0, 1, 2):
+        stream = io.StringIO()
+        TextHandler(stream=stream, verbose_level=level).write([finding])
+        rendered = stream.getvalue()
+        assert "\x1b" not in rendered
+        assert "[31m" in rendered
+
+    html = render_report_html(
+        [finding],
+        _summary(finding.data_window),
+        verbose_level=2,
+        max_findings_per_detector=100,
+    )
+    assert "<img/src=x/onerror=alert(1)>" not in html
+    assert "&lt;img/src=x/onerror=alert(1)&gt;" in html
+    assert "\x1b" not in html
+
+    stream = io.StringIO()
+    handler = JsonHandler(stream=stream)
+    handler.begin(_summary(finding.data_window))
+    handler.write([finding])
+    handler.end()
+    payload = json.loads(stream.getvalue())
+    assert payload["findings"][0]["title"] == finding.title

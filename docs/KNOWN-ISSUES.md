@@ -151,6 +151,29 @@ physical hosts can be grouped together when both identifiers are absent. The sam
 lines and exact line count remain available in that family finding; review the samples as
 potentially unrelated events rather than assuming they came from one machine.
 
+**Without exact landing corroboration, every auth finding caps at MEDIUM.** Concentrated
+failures, source volume, account volume, and multi-host spread each describe one category of
+authentication evidence. None becomes HIGH on magnitude alone. HIGH requires the same source
+and account to show both multi-host failures and a success after the failure run; an estate with
+heavy failure traffic but no matching landing therefore reports MEDIUM findings only.
+
+**Auth `first_seen` is window-relative.** It is the first qualifying event in the data loaded
+for this run, not proof that the activity began then. A finding can touch the beginning and end
+of the window, and its evidence says so, but sigwood cannot infer what happened before the
+observation cut. Widen the window before treating first-seen timing as history.
+
+**Remote source addresses in auth logs are not individually allowlist-suppressible.** The
+canonical system-log frame exposes the host that wrote each record, so the host allowlist can
+suppress that machine before analysis. A remote source address extracted from the message is
+not a canonical allowlist field, so only whole-host suppression applies on this lane. Runs with
+remote sources disclose that boundary; per-address suppression needs a future normalization and
+allowlist change, not detector-local filtering.
+
+**The only observed auth HIGH witness is synthetic.** The available real estate corpora contain
+no exact multi-host-failure plus landing shape, so they cannot demonstrate HIGH. The positive
+regression uses generated authentication traffic with known structure. That is valid evidence
+that the rule recognizes its declared shape, but it is not a precision claim about real attacks.
+
 **With both Zeek DNS and Pi-hole configured, Pi-hole is enrichment only.** In
 both-source mode Zeek is the clustering source and Pi-hole data enriches those
 findings with the block disposition; queries that appear only in the Pi-hole log

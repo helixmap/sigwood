@@ -13,10 +13,11 @@ answer "what does this actually catch?" - including the parts of the answer that
 
 What sigwood does today:
 
-- **Six detectors** - beacon (FFT periodicity), dns (density clustering over Zeek
+- **Seven detectors** - beacon (FFT periodicity), dns (density clustering over Zeek
   dns.log or Pi-hole/dnsmasq), syslog (drain3 templating with per-host burst collapse,
-  over the live systemd journal, flat rsyslog, or Zeek syslog.log), scan, duration, and
-  aws (per-principal behavior over CloudTrail).
+  over the live systemd journal, flat rsyslog, or Zeek syslog.log), auth (five
+  authentication-structure heuristics over that same system-log lane), scan, duration,
+  and aws (per-principal behavior over CloudTrail).
 - **A curated default hunt** that narrows the routine review surface while every
   detector remains runnable by name; `--detect=all` still runs everything available.
   The run discloses detectors held opt-in while their evidence is rebuilt.
@@ -58,15 +59,15 @@ needs re-checking.
 |---|---|---|
 | Reconnaissance | Sweeps against your estate (`scan`) | Web server logs |
 | Resource Development | Nothing - it happens on attacker infrastructure | Nothing in sigwood's own telemetry; only external intelligence, which it won't ship |
-| Initial Access | A window-first burst of new actions by one principal - compatible with stolen-key use, not proof of it (`aws`) | `auth`: failed logins ending in a success |
+| Initial Access | A window-first burst of new actions by one principal - compatible with stolen-key use, not proof of it (`aws`); failed authentication attempts ending in a success (`auth`) | Web server logs |
 | Execution | An occasional rare `sudo` line (`syslog`) | Linux audit records, where enabled |
 | Persistence | Rare account-management lines - `useradd` and kin (`syslog`) | Recognizing the edit itself: a crontab change, a new unit, a new SSH key |
-| Privilege Escalation | Rare `sudo`/`su`, by rarity not by meaning (`syslog`) | `auth`: denied, then granted |
+| Privilege Escalation | Rare `sudo`/`su`, by rarity not by meaning (`syslog`); failed attempts followed by a success (`auth`) | Linux audit records beyond authentication outcomes |
 | Stealth | Very little - camouflage is a host-level behavior | Little. Endpoint territory, and we say so |
 | Defense Impairment | Nothing dedicated - a logging change may surface only incidentally, inside a broader unusual API burst (`aws`) | Naming it directly; noticing a host go quiet |
-| Credential Access | Little - steady failures look routine, by design | `auth`: guessing that *worked* |
+| Credential Access | Failure concentration and volume, with success-after-failures as corroboration (`auth`) | Host-native evidence beyond authentication logs |
 | Discovery | LAN sweeps (`scan`), cloud enumeration bursts (`aws`) | Already the best-served here |
-| Lateral Movement | Little, unless it looks like a sweep | `auth` topology; Zeek SMB and SSH logs |
+| Lateral Movement | Multi-host authentication failures for one source and account (`auth`) | Zeek SMB and SSH logs |
 | Collection | Nothing claimed | Zeek SMB logs |
 | Command and Control | Check-in timing (`beacon`); generated-looking domains (`dns`), with the dense tunnel path Zeek-only | TLS anomalies, odd ports, tunnel log |
 | Exfiltration | DNS tunnelling shapes (`dns`, Zeek-only for the dense path) | Byte direction: loaded and summarized today, but no detector analyzes it for exfiltration |
@@ -76,8 +77,8 @@ needs re-checking.
 estate facing opportunistic internet attacks, compromised IoT devices and routers,
 cryptominers, info-stealers, and stolen cloud keys - and that weighting is an assumption,
 not a measured fact about the world. Against *that* model, sigwood's coverage is
-strongest at command and control, discovery, exfiltration, and, once `auth` lands,
-initial access. It is weak, and should stay weak, at the tactics that need an agent on
+strongest at command and control, discovery, exfiltration, and initial access. It is weak,
+and should stay weak, at the tactics that need an agent on
 the host: credential dumping from memory, exploitation of a local vulnerability, file
 encryption as it happens, and behavioral camouflage. Some of that darkness cannot be
 fixed from these flanks at all. One structural advantage worth naming: when Zeek runs on
@@ -102,11 +103,6 @@ prototyped in the open, as scripts and notebooks under `notebooks/` run against
 real logs, before they ship (see [CONTRIBUTING.md](../CONTRIBUTING.md)). Grouped by
 the gap each one could narrow:
 
-- **Credential access and initial access** - authentication analysis from the system
-  log lane (`auth`): the shape worth reporting is a run of denials that ends in a grant,
-  and one source or account reaching an unusual number of accounts or hosts. Counting
-  failed logins alone is not a detection; every internet-facing SSH port sees those
-  constantly.
 - **Command and control** - TLS and certificate anomalies from Zeek `ssl.log`, judged
   against your own estate's norms rather than a fingerprint database; Zeek's
   `weird.log`/`notice.log`; and a protocol classifier that notices a service running

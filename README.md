@@ -10,7 +10,8 @@
 sigwood is a local-first, command-line threat-hunting tool for self-hosters. Point it at
 logs you already have - Zeek, Pi-hole/dnsmasq, syslog, or CloudTrail - and it profiles
 what's in them, then runs a handful of detectors over them: beaconing, suspicious DNS, port
-scans, rare syslog events, over-long connections, and unusual CloudTrail activity.
+scans, authentication structure, rare syslog events, over-long connections, and unusual
+CloudTrail activity.
 
 **Not a SIEM. Not an agent. Not magic.** Nothing to deploy - no database, no daemon, no network, 
 no account. Install it, point it at a directory of logs, read the output. It runs on your own
@@ -19,7 +20,7 @@ box, over logs at rest, and your logs never have to leave your machine.
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](#license)
 ![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)
 
-> **Status: early / pre-1.0 (`0.2.9`).** The six detectors work and are covered by tests,
+> **Status: early / pre-1.0 (`0.2.9`).** The seven detectors work and are covered by tests,
 > but things may change before 1.0. Feedback is welcome.
 
 <p align="center">
@@ -107,8 +108,9 @@ full run against that corpus, and the same findings as an HTML report:
 - **Named methods.** beacon uses an FFT over connection timing; dns uses HDBSCAN clustering
   over per-query behavior; syslog uses drain3 log-templating plus rarity scoring, and folds
   recognized admin sessions and update runs into single labeled review units; aws uses a
-  per-principal z-score composite. Every run names the technique each detector used, and `-v`
-  shows the evidence behind a finding.
+  per-principal z-score composite; auth uses authentication structure across failures,
+  services, sources, accounts, and hosts. Every run names the technique each detector used,
+  and `-v` shows the evidence behind a finding.
 - **Big-tent ingestion.** One tool reads Zeek (NDJSON *and* TSV, flat *or* date-partitioned
   directories), Pi-hole/dnsmasq, the live **systemd journal** (`journalctl`, no sudo), flat
   syslog (Debian *and* RHEL/Fedora layouts, RFC 3164 *and* ISO-8601), and CloudTrail. Rotation
@@ -131,6 +133,7 @@ full run against that corpus, and the same findings as an HTML report:
 | `beacon`  | periodic C2-style callbacks                         | FFT over connection timing   | Zeek `conn.log`                |
 | `dns`     | DGA / tunneling / anomalous lookups                 | HDBSCAN clustering           | Zeek `dns.log` **or** Pi-hole  |
 | `syslog`  | rare events & reboots                               | drain3 templating + rarity   | systemd journal, flat syslog, **or** Zeek `syslog.log` |
+| `auth`    | failure concentration, volume, spread & landings    | heuristics                   | systemd journal, flat syslog, **or** Zeek `syslog.log` |
 | `scan`    | vertical / horizontal / block / slow port scans     | pattern (heuristic)          | Zeek `conn.log`                |
 | `duration`| abnormally long-lived connections                   | heuristics                   | Zeek `conn.log`                |
 | `aws`     | per-principal anomalous CloudTrail behavior         | statistical (z-score composite) | CloudTrail `*.json*` (incl. `.gz`) |
@@ -139,6 +142,8 @@ full run against that corpus, and the same findings as an HTML report:
 Pi-hole for DNS; the live systemd journal, flat rsyslog, and Zeek's own `syslog.log` for syslog -
 and adapt to whichever fidelity they're handed. On a systemd host `syslog` prefers the live
 journal by default (`--syslog-source=auto`); `--syslog-source=files` keeps the flat-file behavior.
+`auth` reads that same system-log lane but stays opt-in: run `sigwood auth PATH`, select it by
+name, or use `--detect=all`. It does not join the curated default hunt automatically.
 
 Run the curated default hunt (`sigwood hunt`), run everything available
 (`sigwood hunt --detect=all`), select some (`sigwood hunt --detect=beacon,dns`), or exclude

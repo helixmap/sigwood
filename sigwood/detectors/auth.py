@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 from collections import defaultdict
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
@@ -56,6 +57,27 @@ _SIGNAL_ORDER = {
 }
 
 
+@dataclass(frozen=True, slots=True)
+class AuthSummaryFacts:
+    """Count-only facts for runner-owned auth disclosure notes."""
+
+    observation_count: int
+    eligible_count: int
+    identity_group_count: int
+    service_count: int
+    remote_source_count: int
+    positive_window: bool
+
+
+@dataclass(frozen=True, slots=True)
+class _PreparedAuth:
+    """Private extraction result shared by runner disclosure and detector work."""
+
+    canonical_rows: tuple[core.CanonicalRow, ...]
+    decisions: tuple[core.DecisionRow, ...]
+    window: core.Window
+
+
 def _text(value: Any) -> str:
     if value is None or pd.isna(value):
         return ""
@@ -95,6 +117,58 @@ def _canonical_rows(context: DetectorContext) -> tuple[core.CanonicalRow, ...]:
                 )
             )
     return tuple(rows)
+
+
+def _prepare(context: DetectorContext) -> _PreparedAuth:
+    """Extract once without running lenses; safe to carry into ``run`` briefly."""
+    canonical_rows = _canonical_rows(context)
+    window = core.Window(
+        context.data_window[0].timestamp(),
+        context.data_window[1].timestamp(),
+        right_closed=True,
+    )
+    projected = core.project_decisions(canonical_rows)
+    return _PreparedAuth(canonical_rows, projected, window)
+
+
+def _facts(prepared: _PreparedAuth) -> AuthSummaryFacts:
+    """Count disclosure magnitudes from an extracted analysis population."""
+    arbitrated = core.arbitrate_producers(prepared.decisions)
+    eligible_count = 0
+    identities: set[core.EpisodeKey] = set()
+    services: set[str] = set()
+    remote_sources: set[str] = set()
+    for decision in arbitrated:
+        if not prepared.window.contains(decision.ts):
+            continue
+        eligible_count += 1
+        key = core.episode_key(decision)
+        if key is not None:
+            identities.add(key)
+        services.add(decision.gate)
+        if decision.source is not None:
+            remote_sources.add(decision.source)
+    facts = AuthSummaryFacts(
+        observation_count=sum(
+            prepared.window.contains(row.ts) for row in prepared.canonical_rows
+        ),
+        eligible_count=eligible_count,
+        identity_group_count=len(identities),
+        service_count=len(services),
+        remote_source_count=len(remote_sources),
+        positive_window=prepared.window.end > prepared.window.start,
+    )
+    return facts
+
+
+def summary_facts(
+    context: DetectorContext,
+    *,
+    _prepared: _PreparedAuth | None = None,
+) -> AuthSummaryFacts:
+    """Return count-only post-allowlist magnitudes without running auth lenses."""
+    prepared = _prepare(context) if _prepared is None else _prepared
+    return _facts(prepared)
 
 
 def _iso_utc(timestamp: float) -> str:
@@ -367,20 +441,21 @@ def _sort_key(finding: Finding) -> tuple[Any, ...]:
     return severity, _SIGNAL_ORDER[signal], identity, finding.title
 
 
-def run(context: DetectorContext) -> list[Finding]:
+def run(
+    context: DetectorContext,
+    *,
+    _prepared: _PreparedAuth | None = None,
+) -> list[Finding]:
     """Project normalized system logs into reconciled authentication findings."""
-    canonical_rows = _canonical_rows(context)
+    prepared = _prepare(context) if _prepared is None else _prepared
+    canonical_rows = prepared.canonical_rows
     if not canonical_rows:
         return []
 
-    decisions = core.project_decisions(canonical_rows)
+    decisions = prepared.decisions
     if not decisions:
         return []
-    window = core.Window(
-        context.data_window[0].timestamp(),
-        context.data_window[1].timestamp(),
-        right_closed=True,
-    )
+    window = prepared.window
     result = core.run_lenses(decisions, canonical_rows, window)
     now = datetime.now(timezone.utc)
 

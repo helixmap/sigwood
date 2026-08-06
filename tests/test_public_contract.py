@@ -40,7 +40,7 @@ _WINDOW = (
 )
 
 _VERBS = {
-    "allowlist", "aws", "beacon", "digest", "dns", "duration",
+    "allowlist", "auth", "aws", "beacon", "digest", "dns", "duration",
     "export", "graph", "hunt", "init", "scan", "syslog",
 }
 _FORMATS = {"csv", "html", "json", "pdf", "text"}
@@ -195,7 +195,9 @@ def test_unsuppressed_context_uses_fresh_defaults_and_a_real_empty_matcher() -> 
 
 def test_all_available_detectors_run_on_an_empty_unsuppressed_context() -> None:
     context = DetectorContext.unsuppressed({}, data_window=_WINDOW)
-    for name in sorted({"aws", "beacon", "dns", "duration", "scan", "syslog"}):
+    for name in sorted({
+        "auth", "aws", "beacon", "dns", "duration", "scan", "syslog",
+    }):
         run = import_module(f"sigwood.detectors.{name}").run
         result = run(context)
         assert isinstance(result, list), name
@@ -243,6 +245,25 @@ def test_cli_inventory_is_derived_from_the_owning_specs() -> None:
     assert [short for _long, short, _takes, _meta in observed if short] == [
         "-h", "-V", "-v", "-y", "-a", "-q", "-o", "-c", "-s", "-d", "-f",
     ]
+
+
+def test_syslog_source_is_allowed_for_both_local_lane_detector_verbs() -> None:
+    assert {
+        name
+        for name in cli._SINGLE_DETECTOR_COMMANDS
+        if "syslog_source" in cli._VERBS[name].allowed
+    } == {"auth", "syslog"}
+
+
+def test_contract_page_tracks_the_atomic_auth_surface_inventory() -> None:
+    contract = (
+        Path(__file__).resolve().parents[1] / "docs" / "CONTRACT.md"
+    ).read_text(encoding="utf-8")
+
+    assert "Thirteen, all of which stay recognized:" in contract
+    assert "`hunt` · `auth` · `beacon`" in contract
+    assert "The seven callable detectors are `auth`, `aws`, `beacon`" in contract
+    assert "exactly `auth` and `syslog` own the local system-log lane" in contract
 
 
 def test_cli_value_grammar_and_duplicate_semantics() -> None:

@@ -73,6 +73,9 @@ def _decision(
     gate: str = "sshd",
     outcome: str = "denied",
     ts: float | None = None,
+    actor_namespace: str | None = "unix_user",
+    actor: str | None = "alice",
+    source: str | None = "192.0.2.10",
 ) -> core.DecisionRow:
     return core.DecisionRow(
         record_id=("synthetic", "manual.log", number),
@@ -81,11 +84,42 @@ def _decision(
         producer=producer,
         gate=gate,
         outcome=outcome,
-        actor_namespace="unix_user",
-        actor="alice",
+        actor_namespace=actor_namespace,
+        actor=actor,
         target=None,
-        source="192.0.2.10",
+        source=source,
         audit_type=None,
+    )
+
+
+def _canonical_decisions(
+    decisions: tuple[core.DecisionRow, ...],
+) -> tuple[core.CanonicalRow, ...]:
+    return tuple(
+        core.CanonicalRow(
+            record_id=decision.record_id,
+            ts=decision.ts,
+            host=decision.host,
+            program="sshd",
+            raw="synthetic",
+            message="synthetic",
+        )
+        for decision in decisions
+    )
+
+
+def _entity(
+    result: core.LensResult,
+    lens: core.EntityLens,
+    key: tuple[str, ...],
+) -> core.EntityResult | None:
+    return next(
+        (
+            entity
+            for entity in result.entity_results
+            if entity.lens is lens and entity.key == key
+        ),
+        None,
     )
 
 
@@ -189,6 +223,24 @@ def test_single_producer_run_lenses_matches_each_unarbitrated_lens() -> None:
         decisions, canonical, window
     )
     fanout_entities, source_near, account_near = core.fanout(decisions, window)
+    live = core.live_accounts(decisions, window)
+    entities = (
+        *core.volume_entities(
+            decisions,
+            window,
+            concentration_keys=concentration_keys,
+            live=live,
+        ),
+        *core.host_spread_entities(decisions, window, live=live),
+    )
+    episodes = core._episode_results(
+        decisions,
+        window,
+        concentration_keys=concentration_keys,
+        landing_keys=landing_keys,
+        landing_transitions=transitions,
+        live=live,
+    )
 
     assert core.run_lenses(decisions, canonical, window) == core.LensResult(
         concentration_keys=concentration_keys,
@@ -200,6 +252,9 @@ def test_single_producer_run_lenses_matches_each_unarbitrated_lens() -> None:
         fanout_source_near_miss=source_near,
         fanout_account_near_miss=account_near,
         eligible_count=7,
+        entity_results=entities,
+        live_accounts=live,
+        episode_results=episodes,
     )
 
 
@@ -280,3 +335,609 @@ def test_arbitration_preserves_single_producer_identity(
 ) -> None:
     decision = _decision(1, producer=producer)
     assert core.arbitrate_producers((decision,)) == (decision,)
+
+
+@pytest.mark.parametrize(
+    ("duration", "denial_count", "expected"),
+    [
+        (60.0, 17, False),
+        (60.0, 18, True),
+        (86_400.0, 17, False),
+        (86_400.0, 18, True),
+        (1.1 * 86_400.0, 19, False),
+        (1.1 * 86_400.0, 20, True),
+        (7 * 86_400.0, 125, False),
+        (7 * 86_400.0, 126, True),
+        (14 * 86_400.0, 251, False),
+        (14 * 86_400.0, 252, True),
+    ],
+)
+def test_source_volume_floor_has_one_day_minimum_and_scales_linearly(
+    duration: float,
+    denial_count: int,
+    expected: bool,
+) -> None:
+    decisions = tuple(
+        _decision(
+            number,
+            producer=core.Producer.SSHD_TEXT,
+            ts=duration * number / (denial_count + 1),
+            actor=f"actor-{number}",
+        )
+        for number in range(1, denial_count + 1)
+    )
+
+    result = core.run_lenses(
+        decisions,
+        _canonical_decisions(decisions),
+        core.Window(0.0, duration),
+    )
+
+    assert (
+        _entity(result, core.EntityLens.SOURCE_VOLUME, ("192.0.2.10",))
+        is not None
+    ) is expected
+
+
+@pytest.mark.parametrize("window", [core.Window(0.0, 0.0), core.Window(1.0, 0.0)])
+def test_non_positive_window_produces_no_volume_entities(
+    window: core.Window,
+) -> None:
+    decisions = tuple(
+        _decision(number, producer=core.Producer.SSHD_TEXT, ts=0.0)
+        for number in range(1, 19)
+    )
+
+    result = core.run_lenses(decisions, _canonical_decisions(decisions), window)
+
+    assert not {
+        entity
+        for entity in result.entity_results
+        if entity.lens
+        in {core.EntityLens.SOURCE_VOLUME, core.EntityLens.ACCOUNT_VOLUME}
+    }
+
+
+def test_source_volume_evidence_partitions_accounts_and_live_join_exactly() -> None:
+    actors = (
+        ("unix_user", "alice"),
+        ("unix_auid", "1000"),
+        ("preauth_username", "ghost"),
+        ("service_principal", "robot"),
+    )
+    denials = tuple(
+        _decision(
+            number,
+            producer=core.Producer.SSHD_TEXT,
+            ts=float(number),
+            actor_namespace=actors[(number - 1) % len(actors)][0],
+            actor=actors[(number - 1) % len(actors)][1],
+        )
+        for number in range(1, 19)
+    )
+    grants = (
+        _decision(
+            19,
+            producer=core.Producer.SSHD_TEXT,
+            outcome="granted",
+            ts=19.0,
+            actor_namespace="unix_user",
+            actor="alice",
+        ),
+        _decision(
+            20,
+            producer=core.Producer.SSHD_TEXT,
+            outcome="granted",
+            ts=20.0,
+            host="other.example.test",
+            actor_namespace="unix_auid",
+            actor="1000",
+        ),
+        _decision(
+            21,
+            producer=core.Producer.SSHD_TEXT,
+            outcome="granted",
+            ts=21.0,
+            actor_namespace="unix_user",
+            actor="1000",
+        ),
+    )
+    decisions = (*denials, *grants)
+
+    result = core.run_lenses(
+        decisions,
+        _canonical_decisions(decisions),
+        core.Window(0.0, 22.0),
+    )
+
+    source = _entity(
+        result, core.EntityLens.SOURCE_VOLUME, ("192.0.2.10",)
+    )
+    assert source == core.EntityResult(
+        lens=core.EntityLens.SOURCE_VOLUME,
+        key=("192.0.2.10",),
+        denial_count=18,
+        real_account_count=2,
+        nonexistent_account_count=1,
+        unknown_account_count=1,
+        live_account_count=1,
+        host_count=1,
+        attempt_count=21,
+        first_ts=1.0,
+        last_ts=21.0,
+        span_seconds=20.0,
+        window_coverage_pct=90.909091,
+        window_spanning=False,
+    )
+    assert result.live_accounts == frozenset(
+        {
+            ("host.example.test", "unix_user", "alice"),
+            ("other.example.test", "unix_auid", "1000"),
+            ("host.example.test", "unix_user", "1000"),
+        }
+    )
+
+
+def test_account_volume_groups_namespaced_actor_across_sources() -> None:
+    decisions = tuple(
+        _decision(
+            number,
+            producer=core.Producer.SSHD_TEXT,
+            ts=float(number),
+            source=f"192.0.2.{number}",
+        )
+        for number in range(1, 19)
+    )
+
+    result = core.run_lenses(
+        decisions,
+        _canonical_decisions(decisions),
+        core.Window(0.0, 20.0),
+    )
+
+    account = _entity(
+        result, core.EntityLens.ACCOUNT_VOLUME, ("unix_user", "alice")
+    )
+    assert account is not None
+    assert account.denial_count == 18
+    assert account.real_account_count == 1
+    assert account.nonexistent_account_count == 0
+    assert account.unknown_account_count == 0
+
+
+def test_volume_lenses_do_not_invent_missing_grouping_identities() -> None:
+    source_only = tuple(
+        _decision(
+            number,
+            producer=core.Producer.SSHD_TEXT,
+            actor_namespace=None,
+            actor=None,
+        )
+        for number in range(1, 19)
+    )
+    actor_only = tuple(
+        _decision(
+            20 + number,
+            producer=core.Producer.SSHD_TEXT,
+            actor="bob",
+            source=None,
+        )
+        for number in range(1, 19)
+    )
+    decisions = (*source_only, *actor_only)
+
+    result = core.run_lenses(
+        decisions,
+        _canonical_decisions(decisions),
+        core.Window(0.0, 40.0),
+    )
+
+    source = _entity(
+        result, core.EntityLens.SOURCE_VOLUME, ("192.0.2.10",)
+    )
+    account = _entity(
+        result, core.EntityLens.ACCOUNT_VOLUME, ("unix_user", "bob")
+    )
+    assert source is not None and source.real_account_count == 0
+    assert account is not None and account.denial_count == 18
+    assert all(
+        entity.lens is not core.EntityLens.HOST_SPREAD
+        for entity in result.entity_results
+    )
+
+
+def test_host_spread_has_no_volume_floor_and_fires_at_three_hosts() -> None:
+    two_hosts = (
+        _decision(1, producer=core.Producer.SSHD_TEXT, host="a.example.test"),
+        _decision(2, producer=core.Producer.SSHD_TEXT, host="b.example.test"),
+    )
+    three_hosts = (
+        *two_hosts,
+        _decision(3, producer=core.Producer.SSHD_TEXT, host="c.example.test"),
+    )
+
+    silent = core.run_lenses(
+        two_hosts,
+        _canonical_decisions(two_hosts),
+        core.Window(0.0, 4.0),
+    )
+    firing = core.run_lenses(
+        three_hosts,
+        _canonical_decisions(three_hosts),
+        core.Window(0.0, 4.0),
+    )
+
+    key = ("192.0.2.10", "unix_user", "alice")
+    assert _entity(silent, core.EntityLens.HOST_SPREAD, key) is None
+    assert _entity(firing, core.EntityLens.HOST_SPREAD, key) == core.EntityResult(
+        lens=core.EntityLens.HOST_SPREAD,
+        key=key,
+        denial_count=3,
+        real_account_count=1,
+        nonexistent_account_count=0,
+        unknown_account_count=0,
+        live_account_count=0,
+        host_count=3,
+        attempt_count=3,
+        first_ts=1.0,
+        last_ts=3.0,
+        span_seconds=2.0,
+        window_coverage_pct=50.0,
+        window_spanning=False,
+    )
+
+
+def test_four_producer_floor_fixture_does_not_cross_volume_floor_after_arbitration() -> None:
+    rows = _fixture_rows("synth-4x-6.txt")
+    decisions = core.project_decisions(rows)
+
+    assert sum(decision.outcome == "denied" for decision in decisions) == 24
+    result = core.run_lenses(decisions, rows, _window(rows))
+
+    assert result.entity_results == ()
+
+
+def test_four_producer_large_fixture_volume_evidence_uses_120_arbitrated_rows() -> None:
+    rows = _fixture_rows("synth-4x-120.txt")
+    decisions = core.project_decisions(rows)
+    arbitrated = core.arbitrate_producers(decisions)
+    live = core.live_accounts(arbitrated, _window(rows))
+
+    entities = core.volume_entities(
+        arbitrated,
+        _window(rows),
+        concentration_keys=frozenset(),
+        live=live,
+    )
+
+    assert [(entity.lens, entity.denial_count) for entity in entities] == [
+        (core.EntityLens.SOURCE_VOLUME, 120),
+        (core.EntityLens.ACCOUNT_VOLUME, 120),
+    ]
+
+
+def test_concentration_deduplicates_matching_volume_entities() -> None:
+    decisions = tuple(
+        _decision(number, producer=core.Producer.SSHD_TEXT)
+        for number in range(1, 101)
+    )
+
+    result = core.run_lenses(
+        decisions,
+        _canonical_decisions(decisions),
+        core.Window(0.0, 101.0),
+    )
+
+    assert len(result.concentration_keys) == 1
+    assert result.entity_results == ()
+
+
+def test_degraded_concentration_key_suppresses_only_identity_it_carries() -> None:
+    source_only = tuple(
+        _decision(
+            number,
+            producer=core.Producer.SSHD_TEXT,
+            actor_namespace=None,
+            actor=None,
+        )
+        for number in range(1, 101)
+    )
+    actor_rows = tuple(
+        _decision(
+            100 + number,
+            producer=core.Producer.SSHD_TEXT,
+            source="192.0.2.20",
+        )
+        for number in range(1, 19)
+    )
+    decisions = (*source_only, *actor_rows)
+
+    result = core.run_lenses(
+        decisions,
+        _canonical_decisions(decisions),
+        core.Window(0.0, 120.0),
+    )
+
+    assert _entity(
+        result,
+        core.EntityLens.SOURCE_VOLUME,
+        ("192.0.2.10",),
+    ) is None
+    assert _entity(
+        result,
+        core.EntityLens.ACCOUNT_VOLUME,
+        ("unix_user", "alice"),
+    ) is not None
+
+
+def test_actor_only_concentration_does_not_suppress_source_volume() -> None:
+    actor_only = tuple(
+        _decision(
+            number,
+            producer=core.Producer.SSHD_TEXT,
+            source=None,
+        )
+        for number in range(1, 101)
+    )
+    source_rows = tuple(
+        _decision(
+            100 + number,
+            producer=core.Producer.SSHD_TEXT,
+            actor="bob",
+            source="192.0.2.20",
+        )
+        for number in range(1, 19)
+    )
+    decisions = (*actor_only, *source_rows)
+
+    result = core.run_lenses(
+        decisions,
+        _canonical_decisions(decisions),
+        core.Window(0.0, 120.0),
+    )
+
+    assert _entity(
+        result,
+        core.EntityLens.ACCOUNT_VOLUME,
+        ("unix_user", "alice"),
+    ) is None
+    assert _entity(
+        result,
+        core.EntityLens.SOURCE_VOLUME,
+        ("192.0.2.20",),
+    ) is not None
+
+
+def test_concentration_never_suppresses_cross_host_spread() -> None:
+    concentrated = tuple(
+        _decision(
+            number,
+            producer=core.Producer.SSHD_TEXT,
+            host="a.example.test",
+        )
+        for number in range(1, 101)
+    )
+    spread = (
+        _decision(101, producer=core.Producer.SSHD_TEXT, host="b.example.test"),
+        _decision(102, producer=core.Producer.SSHD_TEXT, host="c.example.test"),
+    )
+    decisions = (*concentrated, *spread)
+
+    result = core.run_lenses(
+        decisions,
+        _canonical_decisions(decisions),
+        core.Window(0.0, 103.0),
+    )
+
+    assert len(result.concentration_keys) == 1
+    spread_result = _entity(
+        result,
+        core.EntityLens.HOST_SPREAD,
+        ("192.0.2.10", "unix_user", "alice"),
+    )
+    assert spread_result is not None
+    assert spread_result.denial_count == 102
+    assert spread_result.host_count == 3
+
+
+def test_live_account_window_respects_open_and_closed_right_edge() -> None:
+    denials = tuple(
+        _decision(number, producer=core.Producer.SSHD_TEXT, ts=float(number))
+        for number in range(1, 19)
+    )
+    grant = _decision(
+        19,
+        producer=core.Producer.SSHD_TEXT,
+        outcome="granted",
+        ts=20.0,
+    )
+    decisions = (*denials, grant)
+    canonical = _canonical_decisions(decisions)
+
+    open_result = core.run_lenses(
+        decisions, canonical, core.Window(0.0, 20.0)
+    )
+    closed_result = core.run_lenses(
+        decisions, canonical, core.Window(0.0, 20.0, right_closed=True)
+    )
+
+    open_source = _entity(
+        open_result, core.EntityLens.SOURCE_VOLUME, ("192.0.2.10",)
+    )
+    closed_source = _entity(
+        closed_result, core.EntityLens.SOURCE_VOLUME, ("192.0.2.10",)
+    )
+    assert open_source is not None and open_source.live_account_count == 0
+    assert closed_source is not None and closed_source.live_account_count == 1
+
+
+def test_entity_results_have_stable_lens_then_key_order() -> None:
+    decisions = tuple(
+        _decision(
+            number,
+            producer=core.Producer.SSHD_TEXT,
+            source="192.0.2.20",
+        )
+        for number in range(1, 19)
+    ) + tuple(
+        _decision(
+            20 + number,
+            producer=core.Producer.SSHD_TEXT,
+            host=f"host-{number}.example.test",
+            actor="bob",
+            source="192.0.2.10",
+        )
+        for number in range(1, 19)
+    )
+
+    result = core.run_lenses(
+        decisions,
+        _canonical_decisions(decisions),
+        core.Window(0.0, 40.0),
+    )
+
+    assert [(entity.lens, entity.key) for entity in result.entity_results] == [
+        (core.EntityLens.SOURCE_VOLUME, ("192.0.2.10",)),
+        (core.EntityLens.SOURCE_VOLUME, ("192.0.2.20",)),
+        (core.EntityLens.ACCOUNT_VOLUME, ("unix_user", "alice")),
+        (core.EntityLens.ACCOUNT_VOLUME, ("unix_user", "bob")),
+        (
+            core.EntityLens.HOST_SPREAD,
+            ("192.0.2.10", "unix_user", "bob"),
+        ),
+    ]
+
+
+def test_run_lenses_exposes_uniform_typed_firing_facts() -> None:
+    decisions = tuple(
+        _decision(
+            number,
+            producer=core.Producer.SSHD_TEXT,
+            host="host-a.example.test",
+            ts=float(number),
+        )
+        for number in range(1, 7)
+    ) + (
+        _decision(
+            20,
+            producer=core.Producer.SSHD_TEXT,
+            host="host-b.example.test",
+            ts=2.5,
+        ),
+        _decision(
+            21,
+            producer=core.Producer.SSHD_TEXT,
+            host="host-c.example.test",
+            ts=3.5,
+        ),
+        _decision(
+            22,
+            producer=core.Producer.SSHD_TEXT,
+            host="host-a.example.test",
+            outcome="granted",
+            ts=7.0,
+        ),
+    )
+
+    result = core.run_lenses(
+        decisions,
+        _canonical_decisions(decisions),
+        core.Window(0.0, 10.0, right_closed=True),
+    )
+
+    landing = next(
+        episode
+        for episode in result.episode_results
+        if episode.lens is core.EpisodeLens.LANDING
+    )
+    assert landing.attempt_count == 7
+    assert landing.denial_count == 6
+    assert landing.real_account_count == 1
+    assert landing.nonexistent_account_count == 0
+    assert landing.unknown_account_count == 0
+    assert landing.live_account_count == 1
+    assert landing.host_count == 1
+    assert landing.first_ts == 1.0
+    assert landing.last_ts == 7.0
+    assert landing.span_seconds == 6.0
+    assert landing.window_coverage_pct == 60.0
+    assert landing.window_spanning is False
+
+    spread = _entity(
+        result,
+        core.EntityLens.HOST_SPREAD,
+        ("192.0.2.10", "unix_user", "alice"),
+    )
+    assert spread is not None
+    assert spread.attempt_count == 9
+    assert spread.denial_count == 8
+    assert spread.host_count == 3
+    assert spread.first_ts == 1.0
+    assert spread.last_ts == 7.0
+    assert spread.span_seconds == 6.0
+    assert spread.window_coverage_pct == 60.0
+    assert spread.window_spanning is False
+
+
+def test_landing_episode_owns_typed_transition_without_raw_record_ids() -> None:
+    decisions = tuple(
+        _decision(number, producer=core.Producer.SSHD_TEXT)
+        for number in range(1, 7)
+    ) + (
+        _decision(
+            7,
+            producer=core.Producer.SSHD_TEXT,
+            outcome="granted",
+        ),
+    )
+
+    result = core.run_lenses(
+        decisions,
+        _canonical_decisions(decisions),
+        core.Window(1.0, 7.0, right_closed=True),
+    )
+
+    landing = next(
+        episode
+        for episode in result.episode_results
+        if episode.lens is core.EpisodeLens.LANDING
+    )
+    assert landing.window_coverage_pct == 100.0
+    assert landing.window_spanning is True
+    assert len(landing.transitions) == 1
+    transition = landing.transitions[0]
+    assert transition.episode_key == landing.key
+    assert transition.failure_count == 6
+    assert transition.first_failure_ts == 1.0
+    assert transition.success_ts == 7.0
+    assert type(transition.transition_id) is str
+    assert len(transition.transition_id) == 20
+    assert not hasattr(transition, "record_ids")
+
+
+def test_nonpositive_window_coverage_is_explicitly_unavailable() -> None:
+    decisions = tuple(
+        _decision(
+            number,
+            producer=core.Producer.SSHD_TEXT,
+            host=f"host-{number}.example.test",
+            ts=5.0,
+        )
+        for number in range(1, 4)
+    )
+
+    result = core.run_lenses(
+        decisions,
+        _canonical_decisions(decisions),
+        core.Window(5.0, 5.0, right_closed=True),
+    )
+
+    spread = _entity(
+        result,
+        core.EntityLens.HOST_SPREAD,
+        ("192.0.2.10", "unix_user", "alice"),
+    )
+    assert spread is not None
+    assert spread.span_seconds == 0.0
+    assert spread.window_coverage_pct is None
+    assert spread.window_spanning is True

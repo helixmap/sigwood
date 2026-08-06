@@ -935,8 +935,11 @@ def test_untagged_extraction_gap_is_explicit(message: str) -> None:
     assert extract_decision(message, program="unknown") is None
 
 
-def test_stub_metadata_mirrors_the_syslog_lane_without_becoming_available() -> None:
-    assert auth_detector.STATUS == "planned"
+def test_detector_metadata_activates_the_opt_in_syslog_lane() -> None:
+    assert auth_detector.STATUS == "available"
+    assert auth_detector.IN_DEFAULT_HUNT is False
+    assert auth_detector.DETECTOR_METHOD.label == "heuristics"
+    assert auth_detector.DETECTOR_METHOD.named is False
     assert auth_detector.REQUIRED_LOGS == []
     assert auth_detector.OPTIONAL_LOGS == [
         {"source": "syslog_dir", "pattern": "*.log*"},

@@ -27,7 +27,7 @@ from sigwood.common import config as cfg
 
 
 @pytest.mark.parametrize("verb", [
-    "hunt", "beacon", "dns", "syslog", "scan", "duration", "aws",
+    "hunt", "auth", "beacon", "dns", "syslog", "scan", "duration", "aws",
     "digest", "graph", "export", "init",
 ])
 def test_render_verb_help_lists_verb_allowed_flags(verb: str) -> None:

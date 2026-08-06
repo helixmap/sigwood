@@ -20,10 +20,10 @@ Breaking any of the above means 2.0.
 
 ## Verbs
 
-Twelve, all of which stay recognized:
+Thirteen, all of which stay recognized:
 
-`hunt` · `beacon` · `dns` · `syslog` · `scan` · `duration` · `aws` · `digest` ·
-`graph` · `export` · `init` · `allowlist`
+`hunt` · `auth` · `beacon` · `dns` · `syslog` · `scan` · `duration` · `aws` ·
+`digest` · `graph` · `export` · `init` · `allowlist`
 
 ## Flags
 
@@ -60,6 +60,9 @@ The full inventory, with whether each takes a value:
 | `--pihole-dir` | | yes (`PATH`) |
 | `--syslog-dir` | | yes (`PATH`) |
 | `--cloudtrail-dir` | | yes (`PATH`) |
+
+`--syslog-source` is accepted by `hunt`, `auth`, and `syslog`; among the
+single-detector verbs, exactly `auth` and `syslog` own the local system-log lane.
 
 If an ordinary single-valued flag is repeated, the last occurrence wins. `-vv` is the
 exception: it is its own registered token rather than two `-v`s, and it selects the
@@ -98,8 +101,8 @@ home_net=())` builds a context with **suppression off**. Your allowlist is not
 applied, so results can be noisier than the same detector run through the CLI — the
 name says so on purpose.
 
-The six callable detectors are `aws`, `beacon`, `dns`, `duration`, `scan`, `syslog`;
-each exposes `run(context) -> list[Finding]`.
+The seven callable detectors are `auth`, `aws`, `beacon`, `dns`, `duration`, `scan`,
+`syslog`; each exposes `run(context) -> list[Finding]`.
 
 A `Finding` has eight public attributes: `detector`, `severity`, `title`,
 `description`, `evidence`, `next_steps`, `ts_generated`, `data_window`.
@@ -256,7 +259,7 @@ listed here do not disappear.
   `pihole_dir`, `cloudtrail_dir`, `home_net`, `export_dir`, `report_dir`,
   `output_format`, `warn_above`, `default_window`, `quiet`, `use_utc`,
   `max_findings_per_detector`
-- **`[detectors.<name>]`** for each of the six detectors. The documented tuning keys
+- **`[detectors.<name>]`** for each of the seven detectors. The documented tuning keys
   stay recognized; their default values may change.
   - `aws` — `min_events`, `min_scorable_principals`, `burst_gap_seconds`,
     `burst_window_edge_margin_seconds`, `burst_min_firsts`, `burst_high_error_rate`,

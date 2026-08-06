@@ -177,6 +177,8 @@ _ALLOWLIST_ALLOWED: frozenset[str] = frozenset({"help", "config"})
 _VERBS: dict[str, VerbSpec] = {
     "hunt":     VerbSpec("hunt",     "run the default hunt",
                          "[PATH ...]", _ANALYZE_ALLOWED),
+    "auth":     VerbSpec("auth",     "authentication anomaly detection (system logs)",
+                         "[PATH]", _SYSLOG_ALLOWED),
     "beacon":   VerbSpec("beacon",   "beacon detection (conn.log)",
                          "[PATH]", _SINGLE_DET_ALLOWED),
     "dns":      VerbSpec("dns",      "DNS clustering (Zeek or Pi-hole)",
@@ -203,7 +205,7 @@ _VERBS: dict[str, VerbSpec] = {
 
 
 _SINGLE_DETECTOR_COMMANDS: frozenset[str] = frozenset({
-    "beacon", "dns", "syslog", "scan", "duration", "aws",
+    "auth", "beacon", "dns", "syslog", "scan", "duration", "aws",
 })
 
 # User-initiated stop (Ctrl-C during compute). Named so the future error-voice
@@ -402,6 +404,7 @@ def _global_usage_text(no_config: bool = False) -> str:
         "  sigwood hunt [options] [PATH ...]   run the default hunt",
         "  sigwood PATH ...                    shorthand - point it at one or more log files",
         "",
+        "  sigwood auth [options] PATH      authentication anomaly detection (system logs)",
         "  sigwood beacon [options] PATH    beacon detection (conn.log)",
         "  sigwood dns [options] PATH       DNS clustering (Zeek or Pi-hole)",
         "  sigwood syslog [options] PATH    syslog anomaly detection",

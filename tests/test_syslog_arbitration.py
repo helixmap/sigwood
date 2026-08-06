@@ -412,6 +412,57 @@ def test_same_source_pattern_claims_dedupe(tmp_path: Path) -> None:
     assert plan.needed_logs == {"conn*.log*": "zeek_dir"}
 
 
+def test_auth_alone_claims_local_files_and_zeek_syslog_feeds(tmp_path: Path) -> None:
+    flat = tmp_path / "auth.log"
+    flat.write_text(
+        "Jun  6 12:00:00 host.example.test sshd[1]: placeholder\n",
+        encoding="utf-8",
+    )
+    zeek = tmp_path / "syslog.log"
+    zeek.write_text(
+        '{"_path":"syslog","ts":1717675200.0,'
+        '"message":"Jun  6 12:00:00 host.example.test sshd[1]: placeholder"}\n',
+        encoding="utf-8",
+    )
+
+    plan = runner.build_run_plan(
+        "auth",
+        syslog_dir=flat,
+        zeek_dir=zeek,
+    )
+
+    assert plan.selected == ["auth"]
+    assert plan.will_run == ["auth"]
+    assert plan.needed_logs == {
+        "*.log*": "syslog_dir",
+        "syslog*.log*": "zeek_dir",
+    }
+
+
+def test_auth_alone_claims_virtual_journal_and_zeek_syslog_feeds(
+    tmp_path: Path,
+) -> None:
+    zeek = tmp_path / "syslog.log"
+    zeek.write_text(
+        '{"_path":"syslog","ts":1717675200.0,'
+        '"message":"Jun  6 12:00:00 host.example.test sshd[1]: placeholder"}\n',
+        encoding="utf-8",
+    )
+
+    plan = runner.build_run_plan(
+        "auth",
+        zeek_dir=zeek,
+        virtual_sources=frozenset({("journal", "*.log*")}),
+    )
+
+    assert plan.selected == ["auth"]
+    assert plan.will_run == ["auth"]
+    assert plan.needed_logs == {
+        "*.log*": "journal",
+        "syslog*.log*": "zeek_dir",
+    }
+
+
 def test_provider_path_disclosure_is_control_safe_and_bounded() -> None:
     paths = tuple(
         Path(f"/placeholder/path-{index}\x1b[31m")

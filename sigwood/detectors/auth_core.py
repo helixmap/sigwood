@@ -14,6 +14,7 @@ from __future__ import annotations
 import hashlib
 import itertools
 import json
+import math
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from enum import StrEnum
@@ -29,10 +30,17 @@ CONCENTRATION_FLOOR = 100
 LANDING_RUN_FLOOR = 6
 FANOUT_SOURCE_FLOOR = 5
 FANOUT_ACCOUNT_FLOOR = 5
+VOLUME_DAILY_RATE = 18
+SECONDS_PER_DAY = 86_400
+# Host spread detects low-volume reuse across machines; adding a volume floor
+# would erase the cross-host shape this lens exists to surface.
+HOST_SPREAD_FLOOR = 3
 
 
 RecordId = tuple[str, str, int]
 EpisodeKey = tuple[str, ...]
+NamespacedActor = tuple[str, str]
+LiveAccount = tuple[str, str, str]
 
 
 class Producer(StrEnum):
@@ -42,6 +50,21 @@ class Producer(StrEnum):
     PAM_TEXT = "pam-text"
     AUDISP_TYPE = "audisp-type"
     AUDIT_TYPELESS = "audit-typeless"
+
+
+class EntityLens(StrEnum):
+    """Entity-level authentication lenses exposed by the product core."""
+
+    SOURCE_VOLUME = "source-volume"
+    ACCOUNT_VOLUME = "account-volume"
+    HOST_SPREAD = "host-spread"
+
+
+class EpisodeLens(StrEnum):
+    """Episode-keyed authentication lenses exposed to the detector."""
+
+    CONCENTRATION = "concentration"
+    LANDING = "landing"
 
 
 _PRODUCER_RANK = {
@@ -118,8 +141,79 @@ class Window:
 
 
 @dataclass(frozen=True, slots=True)
+class EntityResult:
+    """One firing entity and the evidence facts needed by the detector."""
+
+    lens: EntityLens
+    key: tuple[str, ...]
+    denial_count: int
+    real_account_count: int
+    nonexistent_account_count: int
+    unknown_account_count: int
+    live_account_count: int
+    host_count: int
+    attempt_count: int
+    first_ts: float
+    last_ts: float
+    span_seconds: float
+    window_coverage_pct: float | None
+    window_spanning: bool
+
+
+@dataclass(frozen=True, slots=True)
+class LandingTransition:
+    """One established failure-to-success transition owned by an episode."""
+
+    transition_id: str
+    episode_key: EpisodeKey
+    failure_count: int
+    first_failure_ts: float
+    success_ts: float
+    failure_run_ended: bool
+
+
+@dataclass(frozen=True, slots=True)
+class EpisodeResult:
+    """One firing episode and its uniform detector-facing evidence facts."""
+
+    lens: EpisodeLens
+    key: EpisodeKey
+    denial_count: int
+    real_account_count: int
+    nonexistent_account_count: int
+    unknown_account_count: int
+    live_account_count: int
+    host_count: int
+    attempt_count: int
+    first_ts: float
+    last_ts: float
+    span_seconds: float
+    window_coverage_pct: float | None
+    window_spanning: bool
+    transitions: tuple[LandingTransition, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class FiringFacts:
+    """Uniform aggregate facts computed once at an exact firing grain."""
+
+    attempt_count: int
+    denial_count: int
+    real_account_count: int
+    nonexistent_account_count: int
+    unknown_account_count: int
+    live_account_count: int
+    host_count: int
+    first_ts: float
+    last_ts: float
+    span_seconds: float
+    window_coverage_pct: float | None
+    window_spanning: bool
+
+
+@dataclass(frozen=True, slots=True)
 class LensResult:
-    """Aggregate output from the three planned authentication lenses."""
+    """Aggregate output from the planned authentication lenses."""
 
     concentration_keys: frozenset[EpisodeKey]
     concentration_near_miss: int
@@ -130,6 +224,9 @@ class LensResult:
     fanout_source_near_miss: int
     fanout_account_near_miss: int
     eligible_count: int
+    entity_results: tuple[EntityResult, ...] = ()
+    live_accounts: frozenset[LiveAccount] = frozenset()
+    episode_results: tuple[EpisodeResult, ...] = ()
 
 
 def _json_bytes(value: Any) -> bytes:
@@ -370,8 +467,13 @@ def landing(
                 transitions.append(
                     {
                         "transition_id": transition_id,
+                        "episode_key": key,
                         "status": "tie-unresolved",
                         "run_length": len(candidate_run),
+                        "first_failure_ts": min(
+                            decision.ts for decision in candidate_run
+                        ),
+                        "success_ts": timestamp,
                         "cessation": False,
                         "record_ids": record_ids,
                     }
@@ -390,8 +492,13 @@ def landing(
             transitions.append(
                 {
                     "transition_id": transition_id,
+                    "episode_key": key,
                     "status": "established",
                     "run_length": len(candidate_run),
+                    "first_failure_ts": min(
+                        decision.ts for decision in candidate_run
+                    ),
+                    "success_ts": timestamp,
                     "cessation": bool(not later_key_denial and later_host_row),
                     "record_ids": record_ids,
                 }
@@ -443,6 +550,289 @@ def fanout(
     return frozenset(entities), source_near, account_near
 
 
+def volume_floor(window: Window) -> int | None:
+    """Return the duration-scaled denial floor, or ``None`` for no window."""
+    duration = max(0.0, window.end - window.start)
+    if duration <= 0.0:
+        return None
+    scaled = math.ceil(VOLUME_DAILY_RATE * duration / SECONDS_PER_DAY)
+    return max(VOLUME_DAILY_RATE, scaled)
+
+
+def live_accounts(
+    decisions: Sequence[DecisionRow], window: Window
+) -> frozenset[LiveAccount]:
+    """Return namespaced accounts granted on a host inside the window."""
+    accounts: set[LiveAccount] = set()
+    for decision in decisions:
+        if decision.outcome != AuthOutcome.GRANTED.value or not window.contains(
+            decision.ts
+        ):
+            continue
+        actor = _namespaced_actor(decision)
+        if actor is not None:
+            accounts.add((decision.host.casefold(), *actor))
+    return frozenset(accounts)
+
+
+def _covered_volume_identities(
+    concentration_keys: frozenset[EpisodeKey],
+) -> tuple[frozenset[str], frozenset[NamespacedActor]]:
+    sources: set[str] = set()
+    actors: set[NamespacedActor] = set()
+    for key in concentration_keys:
+        fidelity = _key_fidelity(key)
+        if fidelity == "edge":
+            actors.add((key[3], key[4]))
+            sources.add(key[5])
+        elif fidelity == "source":
+            sources.add(key[3])
+        elif fidelity == "actor":
+            actors.add((key[3], key[4]))
+    return frozenset(sources), frozenset(actors)
+
+
+def _firing_facts(
+    attempts: Sequence[DecisionRow],
+    window: Window,
+    live: frozenset[LiveAccount],
+) -> FiringFacts:
+    """Compute uniform facts once for one exact post-arbitration grain."""
+    if not attempts:
+        raise ValueError("firing facts require at least one attempt")
+    denials = tuple(
+        decision
+        for decision in attempts
+        if decision.outcome == AuthOutcome.DENIED.value
+    )
+    actors = {
+        actor
+        for decision in denials
+        if (actor := _namespaced_actor(decision)) is not None
+    }
+    live_touched = {
+        actor
+        for decision in denials
+        if (actor := _namespaced_actor(decision)) is not None
+        and (decision.host.casefold(), *actor) in live
+    }
+    real = sum(actor[0] in {"unix_user", "unix_auid"} for actor in actors)
+    nonexistent = sum(actor[0] == "preauth_username" for actor in actors)
+    timestamps = [decision.ts for decision in attempts]
+    first_ts = min(timestamps)
+    last_ts = max(timestamps)
+    span_seconds = max(0.0, last_ts - first_ts)
+    window_width = max(0.0, window.end - window.start)
+    window_coverage_pct = (
+        None
+        if window_width <= 0.0
+        else round(min(100.0, 100.0 * span_seconds / window_width), 6)
+    )
+    return FiringFacts(
+        attempt_count=len(attempts),
+        denial_count=len(denials),
+        real_account_count=real,
+        nonexistent_account_count=nonexistent,
+        unknown_account_count=len(actors) - real - nonexistent,
+        live_account_count=len(live_touched),
+        host_count=len({decision.host.casefold() for decision in denials}),
+        first_ts=first_ts,
+        last_ts=last_ts,
+        span_seconds=span_seconds,
+        window_coverage_pct=window_coverage_pct,
+        window_spanning=first_ts <= window.start and last_ts >= window.end,
+    )
+
+
+def _entity_result(
+    lens: EntityLens,
+    key: tuple[str, ...],
+    attempts: Sequence[DecisionRow],
+    window: Window,
+    live: frozenset[LiveAccount],
+) -> EntityResult:
+    facts = _firing_facts(attempts, window, live)
+    return EntityResult(
+        lens=lens,
+        key=key,
+        denial_count=facts.denial_count,
+        real_account_count=facts.real_account_count,
+        nonexistent_account_count=facts.nonexistent_account_count,
+        unknown_account_count=facts.unknown_account_count,
+        live_account_count=facts.live_account_count,
+        host_count=facts.host_count,
+        attempt_count=facts.attempt_count,
+        first_ts=facts.first_ts,
+        last_ts=facts.last_ts,
+        span_seconds=facts.span_seconds,
+        window_coverage_pct=facts.window_coverage_pct,
+        window_spanning=facts.window_spanning,
+    )
+
+
+def volume_entities(
+    decisions: Sequence[DecisionRow],
+    window: Window,
+    *,
+    concentration_keys: frozenset[EpisodeKey],
+    live: frozenset[LiveAccount],
+) -> tuple[EntityResult, ...]:
+    """Return net-new source and account denial-volume entities."""
+    threshold = volume_floor(window)
+    if threshold is None:
+        return ()
+
+    source_groups: dict[str, list[DecisionRow]] = defaultdict(list)
+    account_groups: dict[NamespacedActor, list[DecisionRow]] = defaultdict(list)
+    for decision in decisions:
+        if not window.contains(decision.ts):
+            continue
+        if decision.source is not None:
+            source_groups[decision.source].append(decision)
+        actor = _namespaced_actor(decision)
+        if actor is not None:
+            account_groups[actor].append(decision)
+
+    covered_sources, covered_actors = _covered_volume_identities(concentration_keys)
+    entities: list[EntityResult] = []
+    for source in sorted(source_groups):
+        attempts = source_groups[source]
+        denial_count = sum(
+            decision.outcome == AuthOutcome.DENIED.value
+            for decision in attempts
+        )
+        if denial_count >= threshold and source not in covered_sources:
+            entities.append(
+                _entity_result(
+                    EntityLens.SOURCE_VOLUME,
+                    (source,),
+                    attempts,
+                    window,
+                    live,
+                )
+            )
+    for actor in sorted(account_groups):
+        attempts = account_groups[actor]
+        denial_count = sum(
+            decision.outcome == AuthOutcome.DENIED.value
+            for decision in attempts
+        )
+        if denial_count >= threshold and actor not in covered_actors:
+            entities.append(
+                _entity_result(
+                    EntityLens.ACCOUNT_VOLUME,
+                    actor,
+                    attempts,
+                    window,
+                    live,
+                )
+            )
+    return tuple(entities)
+
+
+def host_spread_entities(
+    decisions: Sequence[DecisionRow],
+    window: Window,
+    *,
+    live: frozenset[LiveAccount],
+) -> tuple[EntityResult, ...]:
+    """Return source/account pairs denied across at least three hosts."""
+    groups: dict[tuple[str, ...], list[DecisionRow]] = defaultdict(list)
+    for decision in decisions:
+        if not window.contains(decision.ts):
+            continue
+        actor = _namespaced_actor(decision)
+        if actor is None or decision.source is None:
+            continue
+        groups[(decision.source, *actor)].append(decision)
+
+    entities: list[EntityResult] = []
+    for key in sorted(groups):
+        attempts = groups[key]
+        denials = [
+            decision
+            for decision in attempts
+            if decision.outcome == AuthOutcome.DENIED.value
+        ]
+        host_count = len({decision.host.casefold() for decision in denials})
+        if host_count >= HOST_SPREAD_FLOOR:
+            entities.append(
+                _entity_result(
+                    EntityLens.HOST_SPREAD,
+                    key,
+                    attempts,
+                    window,
+                    live,
+                )
+            )
+    return tuple(entities)
+
+
+def _episode_results(
+    decisions: Sequence[DecisionRow],
+    window: Window,
+    *,
+    concentration_keys: frozenset[EpisodeKey],
+    landing_keys: frozenset[EpisodeKey],
+    landing_transitions: tuple[dict[str, Any], ...],
+    live: frozenset[LiveAccount],
+) -> tuple[EpisodeResult, ...]:
+    """Build typed detector-facing results without recreating lens policy."""
+    groups: dict[EpisodeKey, list[DecisionRow]] = defaultdict(list)
+    for decision in decisions:
+        if not window.contains(decision.ts):
+            continue
+        key = episode_key(decision)
+        if key is not None:
+            groups[key].append(decision)
+
+    transitions_by_key: dict[EpisodeKey, list[LandingTransition]] = defaultdict(list)
+    for transition in landing_transitions:
+        if transition["status"] != "established":
+            continue
+        key = tuple(transition["episode_key"])
+        transitions_by_key[key].append(
+            LandingTransition(
+                transition_id=str(transition["transition_id"]),
+                episode_key=key,
+                failure_count=int(transition["run_length"]),
+                first_failure_ts=float(transition["first_failure_ts"]),
+                success_ts=float(transition["success_ts"]),
+                failure_run_ended=bool(transition["cessation"]),
+            )
+        )
+    for values in transitions_by_key.values():
+        values.sort(key=lambda item: (item.success_ts, item.transition_id))
+
+    results: list[EpisodeResult] = []
+    for lens, keys in (
+        (EpisodeLens.CONCENTRATION, concentration_keys),
+        (EpisodeLens.LANDING, landing_keys),
+    ):
+        for key in sorted(keys):
+            facts = _firing_facts(groups[key], window, live)
+            results.append(
+                EpisodeResult(
+                    lens=lens,
+                    key=key,
+                    denial_count=facts.denial_count,
+                    real_account_count=facts.real_account_count,
+                    nonexistent_account_count=facts.nonexistent_account_count,
+                    unknown_account_count=facts.unknown_account_count,
+                    live_account_count=facts.live_account_count,
+                    host_count=facts.host_count,
+                    attempt_count=facts.attempt_count,
+                    first_ts=facts.first_ts,
+                    last_ts=facts.last_ts,
+                    span_seconds=facts.span_seconds,
+                    window_coverage_pct=facts.window_coverage_pct,
+                    window_spanning=facts.window_spanning,
+                    transitions=tuple(transitions_by_key.get(key, ())),
+                )
+            )
+    return tuple(results)
+
+
 def run_lenses(
     decisions: Sequence[DecisionRow],
     canonical_rows: Sequence[CanonicalRow],
@@ -457,6 +847,24 @@ def run_lenses(
         arbitrated, canonical_rows, window
     )
     fanout_entities, source_near, account_near = fanout(arbitrated, window)
+    live = live_accounts(arbitrated, window)
+    entities = (
+        *volume_entities(
+            arbitrated,
+            window,
+            concentration_keys=concentration_keys,
+            live=live,
+        ),
+        *host_spread_entities(arbitrated, window, live=live),
+    )
+    episodes = _episode_results(
+        arbitrated,
+        window,
+        concentration_keys=concentration_keys,
+        landing_keys=landing_keys,
+        landing_transitions=transitions,
+        live=live,
+    )
     return LensResult(
         concentration_keys=concentration_keys,
         concentration_near_miss=concentration_near,
@@ -469,4 +877,7 @@ def run_lenses(
         eligible_count=sum(
             1 for decision in arbitrated if window.contains(decision.ts)
         ),
+        entity_results=entities,
+        live_accounts=live,
+        episode_results=episodes,
     )

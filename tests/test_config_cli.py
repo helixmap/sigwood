@@ -1232,7 +1232,7 @@ def test_parse_args_utc_wrong_verb_for_init_and_allowlist() -> None:
 # Real cli.main → runner.run, never a mocked seam. Every run passes an isolated
 # --config (empty tmp source dirs) so nothing on the developer's box is read.
 
-_DETECT_AVAILABLE = "available: aws, beacon, dns, duration, scan, syslog"
+_DETECT_AVAILABLE = "available: auth, aws, beacon, dns, duration, scan, syslog"
 
 
 def _write_probe_config(tmp_path: Path, *, detect: str | None = None) -> Path:
@@ -1305,7 +1305,7 @@ def test_exclude_everything_live_selected_none_exit_0(
     probe = _write_probe_config(tmp_path)
     cli.main([
         "hunt",
-        "--detect=all,!aws,!beacon,!dns,!duration,!scan,!syslog",
+        "--detect=all,!auth,!aws,!beacon,!dns,!duration,!scan,!syslog",
         f"--config={probe}",
     ])
 
@@ -1320,7 +1320,7 @@ def test_exclude_everything_dry_run_banner_selected_none(
     probe = _write_probe_config(tmp_path)
     cli.main([
         "hunt",
-        "--detect=all,!aws,!beacon,!dns,!duration,!scan,!syslog",
+        "--detect=all,!auth,!aws,!beacon,!dns,!duration,!scan,!syslog",
         "--dry-run",
         f"--config={probe}",
     ])
@@ -1336,7 +1336,7 @@ def test_detect_empty_string_is_absent_falls_back_to_default(
     """Compatibility pin: `--detect=` (EMPTY string) means absent - the
     two-step fallback lands on the curated default. With every source dir
     empty that is the all-skipped arm, WITH skipped: lines, but the opt-in
-    duration detector is not selected."""
+    auth and duration detectors are not selected."""
     probe = _write_probe_config(tmp_path)
     cli.main(["hunt", "--detect=", "--dry-run", f"--config={probe}"])
 
@@ -1345,7 +1345,7 @@ def test_detect_empty_string_is_absent_falls_back_to_default(
     assert "skipped:" in out
     skipped_lines = [line for line in out.splitlines() if line.startswith("skipped:")]
     assert all("duration" not in line for line in skipped_lines)
-    assert "opt-in:          duration" in out
+    assert "opt-in:          auth, duration" in out
 
 
 def test_explicit_all_config_matches_explicit_all_cli(
@@ -1374,7 +1374,7 @@ def test_explicit_default_flag_discloses_opt_in_remainder(
     ])
 
     out = capsys.readouterr().out
-    assert "opt-in:          duration" in out
+    assert "opt-in:          auth, duration" in out
     skipped_lines = [line for line in out.splitlines() if line.startswith("skipped:")]
     assert all("duration" not in line for line in skipped_lines)
 

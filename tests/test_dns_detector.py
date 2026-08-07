@@ -6,6 +6,7 @@ All domains are placeholders - no real hostnames or infrastructure.
 
 from __future__ import annotations
 
+import math
 import random
 import socket
 from datetime import datetime, timezone
@@ -160,6 +161,93 @@ def test_run_one_zeek_row_surfaces_through_existing_gate(monkeypatch) -> None:
     assert [finding.title for finding in result] == [query]
 
 
+def _row_count_entropy_reference(label: str) -> float:
+    """Return the score using the row-rescanning frequency implementation."""
+    if not label:
+        return 0.0
+    value = label.lower()
+    n = len(value)
+    counts = {character: value.count(character) for character in set(value)}
+    probabilities = [count / n for count in counts.values()]
+    shannon = -sum(
+        probability * math.log2(probability)
+        for probability in probabilities
+    )
+    digits = sum(character.isdigit() for character in value) / n
+    vowels = sum(character in "aeiou" for character in value) / n
+    unique_ratio = len(set(value)) / n
+    max_run = run_length = 1
+    for index in range(1, n):
+        run_length = (
+            run_length + 1
+            if value[index] == value[index - 1]
+            else 1
+        )
+        max_run = max(max_run, run_length)
+    run_penalty = max_run / n
+    normalized_entropy = shannon / math.log2(36)
+    return (
+        1.5 * normalized_entropy
+        + 0.5 * unique_ratio
+        + digits
+        - 0.5 * vowels
+        - 0.3 * run_penalty
+    )
+
+
+_LONG_ENTROPY_LABEL = "".join(
+    random.Random(3759).choices(
+        "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_",
+        k=4096,
+    )
+)
+_FREQUENCY_COUNTS = [583, 868, 822, 783, 65, 262, 121, 508, 780, 461, 484]
+_FREQUENCY_CHARS = "abcdefghijk"
+_FREQUENCY_ORDER_LABELS = [
+    "".join(
+        character * count
+        for character, count in [
+            *list(zip(_FREQUENCY_CHARS, _FREQUENCY_COUNTS))[offset:],
+            *list(zip(_FREQUENCY_CHARS, _FREQUENCY_COUNTS))[:offset],
+        ]
+    )
+    for offset in range(len(_FREQUENCY_CHARS))
+]
+
+
+@pytest.mark.parametrize(
+    "label",
+    [
+        "",
+        "A",
+        "aaaaaaaa",
+        "AbCdEfGh",
+        "a1b2c3d4e5f6",
+        "aaabbbbccdde",
+        "eedccbbbbaaa",
+        _LONG_ENTROPY_LABEL,
+        *_FREQUENCY_ORDER_LABELS,
+    ],
+    ids=[
+        "empty",
+        "single",
+        "repeated",
+        "mixed-case",
+        "digit-heavy",
+        "mixed-frequency-forward",
+        "mixed-frequency-reverse",
+        "long-high-cardinality",
+        *[
+            f"frequency-order-{offset}"
+            for offset in range(len(_FREQUENCY_ORDER_LABELS))
+        ],
+    ],
+)
+def test_entropy_counter_preserves_exact_score(label: str) -> None:
+    """Single-pass frequency collection leaves every score bit unchanged."""
+    assert dns_entropy(label) == _row_count_entropy_reference(label)
+
+
 # ── Test 2 - _build_features minimal schema → query-derived only ─────────────
 
 def test_query_shape_uses_dns_labels_not_raw_split_fragments() -> None:
@@ -187,6 +275,47 @@ def test_query_shape_uses_dns_labels_not_raw_split_fragments() -> None:
     assert empty.suffix_len == 0
     assert empty.domain_len == 0
     assert empty.suffix == ""
+
+
+def test_query_shape_frame_broadcast_preserves_rowwise_contract(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Repeated queries retain row-wise values, dtypes, index, and order."""
+    import sigwood.detectors.dns as dns_mod
+
+    queries = pd.Series(
+        [
+            "api.example.com",
+            "api.example.com",
+            "x.test.example.net",
+            "api.example.com.",
+        ],
+        index=pd.Index([9, 3, 11, 5], name="source_row"),
+        name="query",
+    )
+    rowwise = queries.apply(dns_mod._query_shape)
+    expected = pd.DataFrame(
+        {
+            "length": [shape.length for shape in rowwise],
+            "parts": [shape.parts for shape in rowwise],
+            "suffix_len": [shape.suffix_len for shape in rowwise],
+            "domain_len": [shape.domain_len for shape in rowwise],
+            "suffix": [shape.suffix for shape in rowwise],
+        },
+        index=queries.index,
+    )
+    original = dns_mod._query_shape
+    calls: list[str] = []
+
+    def counted(query: str):
+        calls.append(query)
+        return original(query)
+
+    monkeypatch.setattr(dns_mod, "_query_shape", counted)
+    actual = dns_mod._query_shape_frame(queries)
+
+    pd.testing.assert_frame_equal(actual, expected, check_exact=True)
+    assert calls == list(queries.unique())
 
 
 def test_build_features_minimal_schema_omits_extended_columns() -> None:
@@ -634,6 +763,96 @@ class _FakeHDBSCAN3:
     def __init__(self, **kwargs): pass
     def fit_predict(self, X: np.ndarray) -> np.ndarray:
         return np.array([0, 0, -1])
+
+
+@pytest.mark.parametrize("enriched", [False, True], ids=["zeek-only", "both-mode"])
+def test_zeek_path_does_not_mutate_caller_frame(
+    monkeypatch: pytest.MonkeyPatch,
+    enriched: bool,
+) -> None:
+    """The owned clustering frame preserves both caller shapes byte-for-byte."""
+    import sigwood.detectors.dns as dns_mod
+
+    monkeypatch.setattr(
+        dns_mod,
+        "_TLD_EXTRACT",
+        lambda query: _BOTH_MODE_ZEEK_EXT[query],
+    )
+    monkeypatch.setattr(
+        dns_mod,
+        "fit_predict_interruptible",
+        lambda matrix, **kwargs: np.full(matrix.shape[0], -1, dtype=int),
+    )
+
+    frame = _BOTH_MODE_ZEEK_DF.copy(deep=True)
+    frame.index = pd.Index([11, 5, 23], name="source_row")
+    if enriched:
+        frame["was_blocked"] = [False, False, True]
+        frame["block_ratio"] = [0.0, 0.0, 0.5]
+    before = frame.copy(deep=True)
+
+    candidate = dns_mod._run_zeek_path(
+        frame,
+        3,
+        1,
+        thresh_high=1.8,
+        scan_cfg={
+            "scan_dense_clusters": False,
+            "scan_min_high_entropy_fraction": 0.8,
+            "scan_min_cluster_members": 100,
+            "scan_min_regdomain_share": 0.8,
+            "scan_max_members_per_cluster": 500,
+        },
+    )
+
+    assert candidate is not None
+    pd.testing.assert_frame_equal(frame, before, check_exact=True)
+
+
+def test_zeek_degenerate_filter_extracts_each_distinct_query_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The pre-feature domain check broadcasts one pure result per query."""
+    import sigwood.detectors.dns as dns_mod
+
+    queries = ["a.example", "a.example", "b.test"]
+    calls: list[str] = []
+
+    def no_domain(query: str) -> SimpleNamespace:
+        calls.append(query)
+        return SimpleNamespace(domain="")
+
+    monkeypatch.setattr(dns_mod, "_TLD_EXTRACT", no_domain)
+    monkeypatch.setattr(
+        dns_mod,
+        "fit_predict_interruptible",
+        lambda *args, **kwargs: pytest.fail("empty filtered frame reached clustering"),
+    )
+    frame = pd.DataFrame(
+        {
+            "ts": [1.0, 2.0, 3.0],
+            "src": ["192.0.2.1", "192.0.2.2", "192.0.2.3"],
+            "query": queries,
+        },
+        index=[8, 2, 13],
+    )
+
+    candidate = dns_mod._run_zeek_path(
+        frame,
+        3,
+        1,
+        thresh_high=1.8,
+        scan_cfg={
+            "scan_dense_clusters": False,
+            "scan_min_high_entropy_fraction": 0.8,
+            "scan_min_cluster_members": 100,
+            "scan_min_regdomain_share": 0.8,
+            "scan_max_members_per_cluster": 500,
+        },
+    )
+
+    assert candidate is None
+    assert calls == list(dict.fromkeys(queries))
 
 
 def test_both_mode_zeek_enriched_with_pihole_block(monkeypatch) -> None:

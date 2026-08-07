@@ -25,6 +25,7 @@ Investigation pivot: dns.log → conn.log → whois → VirusTotal → Shodan �
 
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import dataclass
 import math
 import shlex
@@ -294,13 +295,14 @@ def entropy(s: str) -> float:
     s = s.lower()
     n = len(s)
 
-    counts = {c: s.count(c) for c in set(s)}
-    probs = [v / n for v in counts.values()]
+    # Counter collects character frequencies in one pass; score arithmetic stays unchanged.
+    counts = Counter(s)
+    probs = [counts[character] / n for character in set(s)]
     shannon = -sum(p * math.log2(p) for p in probs)
 
     digits = sum(c.isdigit() for c in s) / n
     vowels = sum(c in 'aeiou' for c in s) / n
-    unique_ratio = len(set(s)) / n
+    unique_ratio = len(counts) / n
 
     max_run = run = 1
     for i in range(1, n):
@@ -347,7 +349,11 @@ def _query_shape(query: str) -> _QueryShape:
 
 
 def _query_shape_frame(queries: pd.Series) -> pd.DataFrame:
-    shapes = queries.apply(_query_shape)
+    shape_by_query = {
+        query: _query_shape(query)
+        for query in queries.unique()
+    }
+    shapes = queries.map(shape_by_query)
     return pd.DataFrame(
         {
             "length": [shape.length for shape in shapes],
@@ -764,21 +770,30 @@ def _run_zeek_path(
     if dns_df.empty or "query" not in dns_df.columns:
         return None
 
-    dns_df = dns_df.copy().reset_index(drop=True)
+    # reset_index returns the owned working frame; the caller remains unchanged.
+    working_df = dns_df.reset_index(drop=True)
 
     # Drop degenerate queries that break feature engineering.
-    has_dot    = dns_df["query"].str.count(r"\.") > 0
-    has_domain = dns_df["query"].apply(lambda q: _TLD_EXTRACT(q).domain != "")
-    dns_df = dns_df[has_dot & has_domain].reset_index(drop=True)
+    has_dot    = working_df["query"].str.count(r"\.") > 0
+    queries = working_df["query"]
+    has_domain_by_query = {
+        query: _TLD_EXTRACT(query).domain != ""
+        for query in queries.unique()
+    }
+    has_domain = queries.map(has_domain_by_query)
+    dns_df = working_df[has_dot & has_domain].reset_index(drop=True)
+    del working_df
     if dns_df.empty:
         return None
 
     feat_df = _build_features(dns_df)
 
     X = np.ascontiguousarray(feat_df.to_numpy(dtype=np.float64))
+    del feat_df
     labels = fit_predict_interruptible(
         X, min_cluster_size=min_cluster_size, min_samples=min_samples,
     )
+    del X
 
     noise_mask    = labels == -1
     noise_queries = np.unique(dns_df.loc[noise_mask, "query"].values)

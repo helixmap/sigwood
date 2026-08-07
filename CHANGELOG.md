@@ -6,6 +6,17 @@ All notable changes to sigwood are recorded here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- **The DNS detector is faster on large captures, with identical findings.** Domain parsing
+  and label-shape analysis now run once per distinct query instead of once per row, character
+  counting inside the label score is single-pass, and working tables are released as soon as
+  clustering no longer needs them. On the seven-day reference capture the detector-only run
+  dropped from about 8 minutes to about 7 (roughly 12% faster), with findings byte-for-byte
+  identical before and after. Peak memory was not improved by this change — the detector
+  process measured a few percent higher at its peak on macOS while the machine-wide peak was
+  unchanged — so the memory guidance in the known-issues list still applies as written.
+
 ### Security
 
 - **sigwood no longer writes through a symbolic link at its output path.** If the file sigwood

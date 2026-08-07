@@ -22,6 +22,25 @@ All notable changes to sigwood are recorded here. The format follows
 
 ### Fixed
 
+- **An export given one end of a window no longer silently exports the wrong period.**
+  Passing `--since` without `--until` still applied the unqualified default's end — midnight at
+  the start of today — so an export asked for "the last day" quietly stopped hours ago and wrote
+  a plausible, complete-looking file that was missing its newest data. The two ends of that
+  default are one window and now apply as one: with neither end given the default is unchanged,
+  `--since` alone runs to now, `--until` alone keeps the same one-day width ending where you
+  asked, and giving both is honoured as supplied. This is fixed for every export backend, not
+  just Splunk. (One narrow compatibility exception is unchanged: an end of `23:59:58` or
+  `23:59:59` — what `--days` produces — is still read as the following midnight.)
+- **A Splunk export no longer silently under-fetches the newest hour, and timestamped results
+  are trimmed to exactly the window you asked for.** Requests were fetched in whole hours with
+  both ends rounded *down*, so any window not starting and ending on the hour lost up to an hour
+  of its newest data and silently included data from before its start — while the filename named
+  the window you asked for. Whole-hour fetching stays (it is how the query is chunked), but it
+  now rounds outward to cover the request, and results carrying a usable timestamp are trimmed
+  back to the exact period. `--days`, which was already correct, is unchanged. A saved search
+  whose rows carry no usable timestamp keeps them rather than having a working export discarded,
+  and the run says the file covers the wider whole-hour period; where only some rows lack one,
+  those are dropped and the count is reported.
 - **Authentication counting no longer discards one log source's records in favour of another's.**
   Every source that observed an authentication now contributes its records: a benign SSH login can
   no longer hide audit-only failures for the same service, and a source that saw failures no other

@@ -18,12 +18,13 @@ from __future__ import annotations
 import os
 import re
 import ssl
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
 from tqdm import tqdm
 
+from sigwood.common.display import fmt_window, plural
 from sigwood.common.paths import private_mkdir, private_open
 
 try:
@@ -119,8 +120,9 @@ def _build_hour_windows(
 ) -> list[tuple[datetime, datetime]]:
     """Return one-hour (start, end) pairs spanning since..until.
 
-    Both since and until are floored to their hour boundary so every emitted
-    chunk is exactly one hour - no partial-hour chunks, mirroring the migration.
+    The start is floored and a non-aligned end is ceiled so the complete-hour
+    chunks form a superset of the requested interval. ``fetch`` trims the
+    returned rows back to the precise half-open interval.
 
     Args:
         since: Start of the window (timezone-aware or naive).
@@ -137,15 +139,103 @@ def _build_hour_windows(
     local_since = since
     local_until = until
 
-    # Floor both endpoints to their hour boundary
+    if local_until <= local_since:
+        return []
+
+    # Floor the start and ceil a non-aligned end. Backend calls remain complete
+    # hours while covering, rather than truncating, the requested interval.
     window_start = local_since.replace(minute=0, second=0, microsecond=0)
-    window_end   = local_until.replace(minute=0, second=0, microsecond=0)
+    window_end = local_until.replace(minute=0, second=0, microsecond=0)
+    if local_until != window_end:
+        window_end += timedelta(hours=1)
 
     total_hours = int((window_end - window_start).total_seconds() // 3600)
     return [
         (window_start + timedelta(hours=i), window_start + timedelta(hours=i + 1))
         for i in range(max(total_hours, 0))
     ]
+
+
+def _parse_result_time(value: Any) -> datetime | None:
+    """Parse one Splunk ``_time`` value without changing the source row."""
+    parsed: datetime
+    if isinstance(value, datetime):
+        parsed = value
+    elif isinstance(value, (int, float)) and not isinstance(value, bool):
+        try:
+            parsed = datetime.fromtimestamp(float(value), tz=timezone.utc)
+        except (ValueError, OverflowError, OSError):
+            return None
+    elif isinstance(value, str):
+        candidate = value.strip()
+        if not candidate:
+            return None
+        try:
+            epoch = float(candidate)
+        except ValueError:
+            try:
+                parsed = datetime.fromisoformat(candidate.replace("Z", "+00:00"))
+            except ValueError:
+                return None
+        else:
+            try:
+                parsed = datetime.fromtimestamp(epoch, tz=timezone.utc)
+            except (ValueError, OverflowError, OSError):
+                return None
+    else:
+        return None
+
+    if parsed.tzinfo is None:
+        parsed = parsed.astimezone()
+    return parsed.astimezone(timezone.utc)
+
+
+def _trim_to_requested_window(
+    rows: list[dict[str, Any]],
+    since: datetime,
+    until: datetime,
+    windows: list[tuple[datetime, datetime]],
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Return exact-window rows, or an honestly disclosed coarse fallback."""
+    if not rows:
+        return rows, []
+
+    parsed = [(row, _parse_result_time(row.get("_time"))) for row in rows]
+    parseable_count = sum(event_time is not None for _row, event_time in parsed)
+    if parseable_count == 0:
+        coarse_window = (
+            (windows[0][0], windows[-1][1]) if windows else (since, until)
+        )
+        note = (
+            f"no parseable _time values; kept {len(rows)} "
+            f"{plural(len(rows), 'row')}, so the file covers coarse window "
+            f"{fmt_window(coarse_window)} - a superset of the requested window"
+        )
+        return rows, [note]
+
+    since_utc = (
+        since.astimezone(timezone.utc)
+        if since.tzinfo is not None
+        else since.astimezone().astimezone(timezone.utc)
+    )
+    until_utc = (
+        until.astimezone(timezone.utc)
+        if until.tzinfo is not None
+        else until.astimezone().astimezone(timezone.utc)
+    )
+    trimmed = [
+        row
+        for row, event_time in parsed
+        if event_time is not None and since_utc <= event_time < until_utc
+    ]
+    timeless_count = len(rows) - parseable_count
+    notes = []
+    if timeless_count:
+        notes.append(
+            f"dropped {timeless_count} {plural(timeless_count, 'row')} without "
+            "parseable _time values while enforcing the requested window"
+        )
+    return trimmed, notes
 
 
 def fetch(
@@ -173,9 +263,12 @@ def fetch(
 
     Returns:
         A tuple ``(rows, fetch_meta)``:
-          - ``rows``: result rows as a flat list of dicts with at minimum _time and _raw.
+          - ``rows``: result rows as a flat list of dicts. When at least one row
+            has a parseable ``_time``, rows are trimmed to ``[since, until)``;
+            otherwise the existing coarse result is retained and disclosed.
           - ``fetch_meta``: ``{"units": <hour-window count>, "unit_label": "chunks"}``
-            - used by the orchestrator to render the run-summary span string.
+            plus optional user-facing ``notes`` for coarse fallback or dropped
+            timeless rows.
     """
     if splunk_client is None:
         raise ValueError("splunk-sdk not installed - run: pip install 'sigwood[splunk]'")
@@ -222,7 +315,14 @@ def fetch(
         chunk = [r for r in splunk_results.JSONResultsReader(job) if isinstance(r, dict)]
         all_rows.extend(chunk)
 
-    return all_rows, {"units": len(windows), "unit_label": "chunks"}
+    trimmed, notes = _trim_to_requested_window(all_rows, since, until, windows)
+    fetch_meta: dict[str, Any] = {
+        "units": len(windows),
+        "unit_label": "chunks",
+    }
+    if notes:
+        fetch_meta["notes"] = notes
+    return trimmed, fetch_meta
 
 
 def write(

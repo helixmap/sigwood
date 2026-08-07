@@ -19,8 +19,43 @@ from sigwood.exporters import (
     _normalize_end_of_day_until,
     _resolve_output_path,
     _resolve_queries,
+    run_export,
 )
 from sigwood.exporters.splunk import _build_hour_windows, _get_credentials, fetch, write
+
+
+def _install_fake_splunk(
+    monkeypatch: pytest.MonkeyPatch,
+    rows_by_call: list[list[dict]],
+) -> list[dict]:
+    """Install a deterministic SDK seam and return captured oneshot kwargs."""
+    import sigwood.exporters.splunk as splunk_module
+
+    calls: list[dict] = []
+
+    class FakeJobs:
+        @staticmethod
+        def oneshot(_spl, **kwargs):
+            call_index = len(calls)
+            calls.append(kwargs)
+            return rows_by_call[call_index] if call_index < len(rows_by_call) else []
+
+    class FakeService:
+        jobs = FakeJobs()
+
+    class FakeClient:
+        @staticmethod
+        def connect(**_kwargs):
+            return FakeService()
+
+    class FakeResults:
+        @staticmethod
+        def JSONResultsReader(job):
+            return iter(job)
+
+    monkeypatch.setattr(splunk_module, "splunk_client", FakeClient)
+    monkeypatch.setattr(splunk_module, "splunk_results", FakeResults)
+    return calls
 
 
 # ── --days full pipeline: local midnight → 24 chunks ─────────────────────────
@@ -41,6 +76,71 @@ def test_days_flag_local_midnight_gives_24_chunks() -> None:
     assert len(windows) == 24
     # First chunk must start at local midnight (hour 0), not a UTC-shifted hour
     assert windows[0][0].hour == 0
+    assert windows[0][0] == since
+    assert windows[-1][1] == until
+    assert _auto_filename("syslog", since, until) == "syslog_20260530_1d.log"
+
+
+def test_days_export_keeps_midnight_calls_population_narration_and_name(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    restore_display_utc,
+) -> None:
+    since, until = _resolve_timeframe(
+        {"days": "1-1"},
+        now=datetime(2026, 5, 31, 15, tzinfo=timezone.utc),
+        use_utc=True,
+    )
+    assert since is not None and until is not None
+    kept = {
+        "_time": "2026-05-30T12:00:00+00:00",
+        "_raw": "May 30 12:00:00 host.example.test sshd: retained day row",
+    }
+    calls = _install_fake_splunk(monkeypatch, [*([[]] * 12), [kept]])
+    config = {
+        "export": {
+            "splunk": {
+                "host": "192.0.2.20",
+                "port": 8089,
+                "username": "user",
+                "password": "pass",
+                "query": {
+                    "auth": {
+                        "spl": "search index=main",
+                        "output_basename": "syslog",
+                    }
+                },
+            }
+        }
+    }
+
+    run_export(
+        config=config,
+        backend="splunk",
+        query_names=["auth"],
+        since=since,
+        until=until,
+        out=str(tmp_path),
+        verbose=False,
+        use_utc=True,
+    )
+
+    assert len(calls) == 24
+    assert (calls[0]["earliest_time"], calls[0]["latest_time"]) == (
+        str(int(datetime(2026, 5, 30, tzinfo=timezone.utc).timestamp())),
+        str(int(datetime(2026, 5, 30, 1, tzinfo=timezone.utc).timestamp())),
+    )
+    assert (calls[-1]["earliest_time"], calls[-1]["latest_time"]) == (
+        str(int(datetime(2026, 5, 30, 23, tzinfo=timezone.utc).timestamp())),
+        str(int(datetime(2026, 5, 31, tzinfo=timezone.utc).timestamp())),
+    )
+    outpath = tmp_path / "syslog_20260530_1d.log"
+    assert outpath.read_text(encoding="utf-8").splitlines() == [kept["_raw"]]
+    rendered = capsys.readouterr().out
+    assert "window: 2026-05-30 00:00 → 2026-05-31 00:00 UTC  ·  1 day" in rendered
+    assert "auth · 1 lines · " in rendered
+    assert str(outpath) in rendered
 
 
 # ── _normalize_end_of_day_until ───────────────────────────────────────────────
@@ -71,9 +171,12 @@ def test_end_of_day_until_gives_24_chunks() -> None:
     since = datetime(2026, 5, 29, 0, 0, 0)
     # Simulate what --days produces: 23:59:59
     until_raw = datetime(2026, 5, 29, 23, 59, 59)
-    assert len(_build_hour_windows(since, until_raw)) == 23          # without fix
+    # Coarse coverage now ceils the raw endpoint too; normalization remains the
+    # compatibility seam that makes narration and auto-naming say next midnight.
+    assert len(_build_hour_windows(since, until_raw)) == 24
     until_fixed = _normalize_end_of_day_until(until_raw)
-    assert len(_build_hour_windows(since, until_fixed)) == 24        # with fix
+    assert until_fixed == datetime(2026, 5, 30, 0, 0, 0)
+    assert len(_build_hour_windows(since, until_fixed)) == 24
 
 
 # ── _build_hour_windows ───────────────────────────────────────────────────────
@@ -96,13 +199,11 @@ def test_build_hour_windows_multi_day():
 
 
 def test_build_hour_windows_partial():
-    # since is not on an hour boundary - floored to 09:00
-    # until is on an hour boundary - 14:00 unchanged
+    # Coarse calls cover the full request: floor the start and ceil the end.
     since = datetime(2026, 5, 30, 9, 30, 0)
-    until = datetime(2026, 5, 30, 14, 0, 0)
+    until = datetime(2026, 5, 30, 14, 45, 0)
     windows = _build_hour_windows(since, until)
-    # floor(09:30) = 09:00, floor(14:00) = 14:00 → 5 complete hours
-    assert len(windows) == 5
+    assert len(windows) == 6
     # All chunks are exactly one hour
     for start, end in windows:
         assert (end - start).total_seconds() == 3600
@@ -113,9 +214,200 @@ def test_build_hour_windows_partial():
     # First chunk starts at the floored hour
     assert windows[0][0].hour == 9
     assert windows[0][0].minute == 0
-    # Last chunk ends at 14:00
-    assert windows[-1][1].hour == 14
+    # Last chunk ends at the ceiling, 15:00, so no newest data is missed.
+    assert windows[-1][1].hour == 15
     assert windows[-1][1].minute == 0
+
+
+def test_build_hour_windows_nonpositive_request_is_empty() -> None:
+    since = datetime(2026, 5, 30, 10, 45, 0)
+    until = datetime(2026, 5, 30, 10, 15, 0)
+
+    assert _build_hour_windows(since, until) == []
+
+
+@pytest.mark.parametrize(
+    ("parsed", "fixed_now", "coarse_start", "chunk_count"),
+    (
+        (
+            {"hours": "0-2"},
+            datetime(2026, 8, 6, 13, 56, tzinfo=timezone.utc),
+            datetime(2026, 8, 6, 11, tzinfo=timezone.utc),
+            3,
+        ),
+        (
+            {
+                "since": "2026-08-06T09:30:00+00:00",
+                "until": "2026-08-06T14:45:00+00:00",
+            },
+            datetime(2026, 8, 6, 18, tzinfo=timezone.utc),
+            datetime(2026, 8, 6, 9, tzinfo=timezone.utc),
+            6,
+        ),
+    ),
+    ids=("hours", "explicit"),
+)
+def test_fetch_coarse_calls_cover_and_rows_trim_to_exact_cli_window(
+    parsed: dict[str, str],
+    fixed_now: datetime,
+    coarse_start: datetime,
+    chunk_count: int,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    since, until = _resolve_timeframe(parsed, now=fixed_now, use_utc=True)
+    assert since is not None and until is not None
+    at_since = {
+        "_time": str(since.timestamp()),
+        "_raw": "Aug 06 11:56:00 host.example.test sshd: at lower bound",
+    }
+    inside_aware = {
+        "_time": (since + timedelta(minutes=20)).astimezone(
+            timezone(timedelta(hours=2))
+        ).isoformat(),
+        "_raw": "Aug 06 12:16:00 host.example.test sshd: aware inside",
+    }
+    inside_naive = {
+        "_time": (since + timedelta(minutes=40)).replace(tzinfo=None).isoformat(),
+        "_raw": "Aug 06 12:36:00 host.example.test sshd: naive inside",
+    }
+    source_rows = [
+        {
+            "_time": (since - timedelta(minutes=1)).isoformat(),
+            "_raw": "Aug 06 11:55:00 host.example.test sshd: before",
+        },
+        at_since,
+        inside_aware,
+        inside_naive,
+        {
+            "_time": until.isoformat().replace("+00:00", "Z"),
+            "_raw": "Aug 06 13:56:00 host.example.test sshd: at upper bound",
+        },
+        {
+            "_time": (until + timedelta(minutes=1)).isoformat(),
+            "_raw": "Aug 06 13:57:00 host.example.test sshd: after",
+        },
+    ]
+    calls = _install_fake_splunk(monkeypatch, [source_rows])
+
+    rows, meta = fetch(
+        {"spl": "search index=main"},
+        {
+            "host": "192.0.2.20",
+            "port": 8089,
+            "username": "user",
+            "password": "pass",
+        },
+        since,
+        until,
+        False,
+    )
+
+    expected_calls = [
+        {
+            "count": 0,
+            "output_mode": "json",
+            "earliest_time": str(int((coarse_start + timedelta(hours=i)).timestamp())),
+            "latest_time": str(int((coarse_start + timedelta(hours=i + 1)).timestamp())),
+        }
+        for i in range(chunk_count)
+    ]
+    assert calls == expected_calls
+    assert rows == [at_since, inside_aware, inside_naive]
+    assert meta == {"units": chunk_count, "unit_label": "chunks"}
+
+
+def test_fetch_mixed_timestamps_trims_and_discloses_timeless_drops(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    since = datetime(2026, 8, 6, 9, 30, tzinfo=timezone.utc)
+    until = datetime(2026, 8, 6, 10, 30, tzinfo=timezone.utc)
+    inside = {
+        "_time": "2026-08-06T10:00:00+00:00",
+        "_raw": "Aug 06 10:00:00 host.example.test sshd: inside",
+    }
+    source_rows = [
+        {
+            "_time": "2026-08-06T09:00:00+00:00",
+            "_raw": "Aug 06 09:00:00 host.example.test sshd: before",
+        },
+        inside,
+        {"_raw": "Aug 06 10:01:00 host.example.test sshd: timeless"},
+        {
+            "_time": "not-a-time",
+            "_raw": "Aug 06 10:02:00 host.example.test sshd: malformed",
+        },
+        {
+            "_time": "2026-08-06T11:00:00+00:00",
+            "_raw": "Aug 06 11:00:00 host.example.test sshd: after",
+        },
+    ]
+    _install_fake_splunk(monkeypatch, [source_rows])
+
+    rows, meta = fetch(
+        {"spl": "search index=main"},
+        {
+            "host": "192.0.2.20",
+            "port": 8089,
+            "username": "user",
+            "password": "pass",
+        },
+        since,
+        until,
+        False,
+    )
+
+    assert rows == [inside]
+    assert meta["notes"] == [
+        "dropped 2 rows without parseable _time values while enforcing the requested window"
+    ]
+
+
+def test_all_timeless_export_stays_nonempty_and_discloses_coarse_window(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    restore_display_utc,
+) -> None:
+    source_rows = [
+        {"_raw": "Aug 06 09:45:00 host.example.test sshd: timeless"},
+        {
+            "_time": "not-a-time",
+            "_raw": "Aug 06 10:15:00 host.example.test sshd: malformed",
+        },
+    ]
+    _install_fake_splunk(monkeypatch, [source_rows])
+    outpath = tmp_path / "auth.log"
+    config = {
+        "export": {
+            "splunk": {
+                "host": "192.0.2.20",
+                "port": 8089,
+                "username": "user",
+                "password": "pass",
+                "query": {"auth": {"spl": "search index=main"}},
+            }
+        }
+    }
+
+    run_export(
+        config=config,
+        backend="splunk",
+        query_names=["auth"],
+        since=datetime(2026, 8, 6, 9, 30, tzinfo=timezone.utc),
+        until=datetime(2026, 8, 6, 10, 30, tzinfo=timezone.utc),
+        out=str(outpath),
+        verbose=False,
+        use_utc=True,
+    )
+
+    assert len(outpath.read_text(encoding="utf-8").splitlines()) == 2
+    rendered = capsys.readouterr().out
+    assert "auth · 2 lines" in rendered
+    assert "no parseable _time values" in rendered
+    assert (
+        "coarse window 2026-08-06 09:00 → 2026-08-06 11:00 UTC"
+        in rendered
+    )
 
 
 # ── write ─────────────────────────────────────────────────────────────────────

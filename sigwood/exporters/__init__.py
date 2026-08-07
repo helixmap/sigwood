@@ -21,10 +21,13 @@ Architecture:
 
         fetch(query_config, backend_config, since, until, verbose,
               *, skip_confirm=False) -> (rows, fetch_meta)
-            fetch_meta carries at least {"units": int, "unit_label": str} and
-            MUST be invariant across queries within the same (since, until)
-            window for a given backend - work-unit count is a property of the
-            window, not the individual query. The orchestrator enforces this.
+            fetch_meta carries at least {"units": int, "unit_label": str};
+            that work-unit pair MUST be invariant across queries within the
+            same (since, until) window for a given backend. The orchestrator
+            enforces this because work-unit count is a property of the window,
+            not the individual query.
+            An optional ``notes`` list carries backend-authored, user-facing
+            disclosures that the orchestrator prints after the affected result.
             skip_confirm bypasses any backend-side cost prompt; backends that
             have no prompt (Splunk) accept and ignore it.
 
@@ -98,6 +101,29 @@ def _normalize_end_of_day_until(until: datetime) -> datetime:
     return until
 
 
+def _resolve_export_window(
+    since: datetime | None,
+    until: datetime | None,
+    *,
+    display_now: datetime,
+) -> tuple[datetime, datetime]:
+    """Resolve the exporter's paired one-day default around supplied endpoints."""
+    effective_until = (
+        _normalize_end_of_day_until(until) if until is not None else None
+    )
+    if since is None and effective_until is None:
+        today_midnight = display_now.replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
+        return today_midnight - timedelta(days=1), today_midnight
+    if since is None:
+        assert effective_until is not None
+        return effective_until - timedelta(days=1), effective_until
+    if effective_until is None:
+        return since, display_now
+    return since, effective_until
+
+
 _KNOWN_BACKENDS = ("splunk", "cloudtrail")
 
 
@@ -120,10 +146,11 @@ def run_export(
         backend: Backend name ("splunk", etc.) or None to auto-select.
         query_names: Named queries to run. An empty list auto-selects only when
             exactly one query is defined.
-        since: Start of window, or None to use yesterday 00:00:00 in the
-            display timezone (local, or UTC under --utc / use_utc).
-        until: End of window, or None to use today 00:00:00 in the display
-            timezone.
+        since: Start of window. When both endpoints are absent, the pair is
+            yesterday/today at display-timezone midnight. When only since is
+            present, the end is the current instant.
+        until: End of window. When only until is present, the start is one day
+            earlier. See ``since`` for the both-absent default.
         out: Raw CLI --out string (preserves trailing slash) or None.
             be_like_water decides file-vs-directory inside the cascade.
         verbose: Threaded to fetch() / write() for backend-internal use
@@ -168,18 +195,14 @@ def _run_export(
     # value before parsing the timeframe.
     set_display_utc(use_utc)
 
-    # Apply timeframe defaults independently - anchored on display-timezone
-    # midnights, so an unqualified export means the same "yesterday" the
-    # rendered window shows.
+    # Resolve one paired default. An unqualified export remains yesterday in
+    # the display timezone; a supplied endpoint owns the missing endpoint.
     display_now = (
         datetime.now(timezone.utc) if use_utc else datetime.now().astimezone()
     )
-    today_midnight = display_now.replace(hour=0, minute=0, second=0, microsecond=0)
-    if since is None:
-        since = today_midnight - timedelta(days=1)   # yesterday 00:00:00 display-tz
-    if until is None:
-        until = today_midnight                        # today 00:00:00 display-tz (exclusive end)
-    until = _normalize_end_of_day_until(until)
+    since, until = _resolve_export_window(
+        since, until, display_now=display_now
+    )
 
     # Resolve backend and load its module
     resolved_backend = _resolve_backend(config, backend)
@@ -298,9 +321,21 @@ def _run_export(
                 f"exporter backend '{resolved_backend}' returned inconsistent fetch "
                 f"metadata across queries for the same window - this is a backend bug"
             )
+        notes = fetch_meta.get("notes", ())
+        if (
+            isinstance(notes, (str, bytes))
+            or not isinstance(notes, (list, tuple))
+            or any(not isinstance(note, str) for note in notes)
+        ):
+            raise ValueError(
+                f"exporter backend '{resolved_backend}' returned invalid fetch "
+                "metadata - 'notes' must be a list of strings"
+            )
         n_written, write_meta = backend_module.write(rows, outpath, verbose)
         rows = None  # type: ignore[assignment]
         nl, nb = _emit_result_line(query_name, n_written, write_meta, outpath)
+        for note in notes:
+            print(f"note: {strip_control(note)}")
         grand_lines += nl
         grand_bytes += nb
 

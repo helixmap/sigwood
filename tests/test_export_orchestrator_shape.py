@@ -9,7 +9,7 @@ KeyErrors today if any site still reads the top-level key.
 from __future__ import annotations
 
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +17,7 @@ import pytest
 
 from sigwood import cli, exporters
 from sigwood.common import config as cfg
+from sigwood.common.display import fmt_window
 from sigwood.exporters import run_export
 
 
@@ -208,8 +209,6 @@ def test_default_window_anchors_follow_the_knob(
     Etc/GMT+6) with the knob off, UTC midnights with it on. Expected values
     are computed before AND after the call so a midnight rollover mid-test
     cannot flake."""
-    from datetime import timedelta, timezone
-
     pin_tz("Etc/GMT+6")
 
     windows: list[tuple] = []
@@ -264,3 +263,122 @@ def test_default_window_anchors_follow_the_knob(
                since=None, until=None, out=None, verbose=False, use_utc=True)
     after = expected(True)
     assert windows[-1] in (before, after)
+
+
+@pytest.mark.parametrize(
+    ("since", "until", "expected"),
+    (
+        (
+            None,
+            None,
+            (
+                datetime(2026, 8, 5, tzinfo=timezone.utc),
+                datetime(2026, 8, 6, tzinfo=timezone.utc),
+            ),
+        ),
+        (
+            datetime(2026, 8, 5, 13, 56, tzinfo=timezone.utc),
+            None,
+            (
+                datetime(2026, 8, 5, 13, 56, tzinfo=timezone.utc),
+                datetime(2026, 8, 6, 13, 56, tzinfo=timezone.utc),
+            ),
+        ),
+        (
+            None,
+            datetime(2026, 8, 4, 14, 45, tzinfo=timezone.utc),
+            (
+                datetime(2026, 8, 3, 14, 45, tzinfo=timezone.utc),
+                datetime(2026, 8, 4, 14, 45, tzinfo=timezone.utc),
+            ),
+        ),
+        (
+            datetime(2026, 8, 4, 9, 30, tzinfo=timezone.utc),
+            datetime(2026, 8, 4, 14, 45, tzinfo=timezone.utc),
+            (
+                datetime(2026, 8, 4, 9, 30, tzinfo=timezone.utc),
+                datetime(2026, 8, 4, 14, 45, tzinfo=timezone.utc),
+            ),
+        ),
+        (
+            None,
+            datetime(2026, 8, 3, 23, 59, 59, tzinfo=timezone.utc),
+            (
+                datetime(2026, 8, 3, tzinfo=timezone.utc),
+                datetime(2026, 8, 4, tzinfo=timezone.utc),
+            ),
+        ),
+    ),
+    ids=("neither", "since-only", "until-only", "both", "until-only-eod"),
+)
+def test_run_export_resolves_endpoint_defaults_as_one_pair(
+    since: datetime | None,
+    until: datetime | None,
+    expected: tuple[datetime, datetime],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    restore_display_utc,
+) -> None:
+    """The fetch seam and permanent narration share one pair-aware window."""
+    fixed_now = datetime(2026, 8, 6, 13, 56, tzinfo=timezone.utc)
+    observed: list[tuple[datetime, datetime]] = []
+
+    class _FixedDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return fixed_now if tz is None else fixed_now.astimezone(tz)
+
+    class _PairStub:
+        @staticmethod
+        def is_configured(_backend_cfg):
+            return True
+
+        @staticmethod
+        def summary_descriptor(_backend_cfg):
+            return "stub"
+
+        @staticmethod
+        def fetch(
+            _query_config,
+            _backend_config,
+            resolved_since,
+            resolved_until,
+            _verbose,
+            *,
+            skip_confirm=False,
+        ):
+            observed.append((resolved_since, resolved_until))
+            return [], {"units": 0, "unit_label": "chunks"}
+
+        @staticmethod
+        def write(_rows, outpath, _verbose):
+            return 0, {"bytes": 0, "paths": [outpath]}
+
+    monkeypatch.setattr(exporters, "datetime", _FixedDateTime)
+    monkeypatch.setattr(exporters, "_load_backend", lambda _name: _PairStub)
+    monkeypatch.setattr(exporters, "_KNOWN_BACKENDS", ("splunk",))
+    config = {
+        "sigwood": {"export_dir": str(tmp_path)},
+        "export": {
+            "splunk": {
+                "host": "192.0.2.20",
+                "query": {"default": {"spl": "search *"}},
+            }
+        },
+    }
+
+    run_export(
+        config=config,
+        backend="splunk",
+        query_names=[],
+        since=since,
+        until=until,
+        out=None,
+        verbose=False,
+        use_utc=True,
+    )
+
+    assert observed == [expected]
+    rendered = capsys.readouterr().out
+    assert f"window: {fmt_window(expected)}" in rendered

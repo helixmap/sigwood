@@ -17,7 +17,8 @@ import pytest
 
 from sigwood import cli, exporters
 from sigwood.common import config as cfg
-from sigwood.common.display import fmt_window
+from sigwood.common.display import fmt_window, set_display_utc
+from sigwood.common.errors import UsageError
 from sigwood.exporters import run_export
 
 
@@ -382,3 +383,217 @@ def test_run_export_resolves_endpoint_defaults_as_one_pair(
     assert observed == [expected]
     rendered = capsys.readouterr().out
     assert f"window: {fmt_window(expected)}" in rendered
+
+
+@pytest.mark.parametrize(
+    ("since", "until", "display_now", "resolved"),
+    (
+        (
+            datetime(2026, 8, 6, 14, 30, tzinfo=timezone.utc),
+            None,
+            datetime(2026, 8, 6, 13, 56, tzinfo=timezone.utc),
+            (
+                datetime(2026, 8, 6, 14, 30, tzinfo=timezone.utc),
+                datetime(2026, 8, 6, 13, 56, tzinfo=timezone.utc),
+            ),
+        ),
+        (
+            datetime(2026, 8, 6, 15, 0, tzinfo=timezone.utc),
+            datetime(2026, 8, 6, 14, 0, tzinfo=timezone.utc),
+            datetime(2026, 8, 6, 13, 56, tzinfo=timezone.utc),
+            (
+                datetime(2026, 8, 6, 15, 0, tzinfo=timezone.utc),
+                datetime(2026, 8, 6, 14, 0, tzinfo=timezone.utc),
+            ),
+        ),
+        (
+            datetime(2026, 8, 6, 14, 0, tzinfo=timezone.utc),
+            datetime(2026, 8, 6, 14, 0, tzinfo=timezone.utc),
+            datetime(2026, 8, 6, 13, 56, tzinfo=timezone.utc),
+            (
+                datetime(2026, 8, 6, 14, 0, tzinfo=timezone.utc),
+                datetime(2026, 8, 6, 14, 0, tzinfo=timezone.utc),
+            ),
+        ),
+    ),
+    ids=("future-since-only", "inverted", "equal"),
+)
+def test_resolve_export_window_rejects_non_positive_pair(
+    since: datetime | None,
+    until: datetime | None,
+    display_now: datetime,
+    resolved: tuple[datetime, datetime],
+    restore_display_utc,
+) -> None:
+    """Every resolved export interval is positive before orchestration starts."""
+    set_display_utc(True)
+
+    with pytest.raises(UsageError) as exc_info:
+        exporters._resolve_export_window(since, until, display_now=display_now)
+
+    assert str(exc_info.value) == (
+        f"export window is empty: {fmt_window(resolved)}. "
+        "The window start must be earlier than its end."
+    )
+
+
+def test_cli_equal_hours_uses_flag_neutral_empty_window_remedy(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    restore_display_utc,
+) -> None:
+    """The --hours path names the interval rule, not unrelated endpoint flags."""
+    tmp_path.chmod(0o700)
+    config = {
+        "sigwood": {"root": str(tmp_path), "use_utc": True},
+        "export": {
+            "splunk": {
+                "host": "192.0.2.20",
+                "query": {"default": {"spl": "search *"}},
+            }
+        },
+    }
+    monkeypatch.setattr(cfg, "load", lambda _path=None: config)
+
+    with pytest.raises(SystemExit) as exc_info:
+        cli.main(["export", "splunk", "--hours=1-1"])
+
+    assert exc_info.value.code == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err.startswith("sigwood: export window is empty: ")
+    assert (
+        ". The window start must be earlier than its end.\n"
+        "run 'sigwood --help' for usage\n"
+    ) in captured.err
+    assert "--since" not in captured.err
+    assert "--until" not in captured.err
+
+
+def test_run_export_rejects_inverted_window_before_fetch_or_write(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    restore_display_utc,
+) -> None:
+    """A bad pair cannot reach backend work or create a plausible empty artifact."""
+    observed_fetches: list[tuple[datetime, datetime]] = []
+
+    class _RejectingWindowStub:
+        @staticmethod
+        def is_configured(_backend_cfg):
+            return True
+
+        @staticmethod
+        def summary_descriptor(_backend_cfg):
+            return "stub"
+
+        @staticmethod
+        def fetch(
+            _query_config,
+            _backend_config,
+            resolved_since,
+            resolved_until,
+            _verbose,
+            *,
+            skip_confirm=False,
+        ):
+            observed_fetches.append((resolved_since, resolved_until))
+            return [], {"units": 0, "unit_label": "chunks"}
+
+        @staticmethod
+        def write(_rows, outpath, _verbose):
+            outpath.write_text("fetched", encoding="utf-8")
+            return 0, {"bytes": 7, "paths": [outpath]}
+
+    monkeypatch.setattr(exporters, "_load_backend", lambda _name: _RejectingWindowStub)
+    monkeypatch.setattr(exporters, "_KNOWN_BACKENDS", ("splunk",))
+    config = {
+        "export": {
+            "splunk": {
+                "host": "192.0.2.20",
+                "query": {"default": {"spl": "search *"}},
+            }
+        },
+    }
+
+    with pytest.raises(UsageError):
+        run_export(
+            config=config,
+            backend="splunk",
+            query_names=[],
+            since=datetime(2026, 8, 6, 15, 0, tzinfo=timezone.utc),
+            until=datetime(2026, 8, 6, 14, 0, tzinfo=timezone.utc),
+            out=str(tmp_path / "export.log"),
+            verbose=False,
+            use_utc=True,
+        )
+
+    assert observed_fetches == []
+    assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.parametrize(
+    ("duration", "expected"),
+    (
+        (timedelta(minutes=30), "30m"),
+        (timedelta(minutes=90), "2h"),
+        (timedelta(hours=36), "1.5d"),
+        (timedelta(days=1), "1 day"),
+        (timedelta(days=2), "2 days"),
+    ),
+    ids=("thirty-minutes", "ninety-minutes", "thirty-six-hours", "one-day", "two-days"),
+)
+def test_run_export_narrates_compact_positive_span(
+    duration: timedelta,
+    expected: str,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    restore_display_utc,
+) -> None:
+    """Non-day spans share compact rendering while whole days keep prose."""
+    class _SpanStub:
+        @staticmethod
+        def is_configured(_backend_cfg):
+            return True
+
+        @staticmethod
+        def summary_descriptor(_backend_cfg):
+            return "stub"
+
+        @staticmethod
+        def fetch(*_args, **_kwargs):
+            return [], {"units": 0, "unit_label": "chunks"}
+
+        @staticmethod
+        def write(_rows, outpath, _verbose):
+            return 0, {"bytes": 0, "paths": [outpath]}
+
+    monkeypatch.setattr(exporters, "_load_backend", lambda _name: _SpanStub)
+    monkeypatch.setattr(exporters, "_KNOWN_BACKENDS", ("splunk",))
+    config = {
+        "export": {
+            "splunk": {
+                "host": "192.0.2.20",
+                "query": {"default": {"spl": "search *"}},
+            }
+        },
+    }
+    since = datetime(2026, 8, 4, 9, 0, tzinfo=timezone.utc)
+
+    run_export(
+        config=config,
+        backend="splunk",
+        query_names=[],
+        since=since,
+        until=since + duration,
+        out=str(tmp_path / "export.log"),
+        verbose=False,
+        use_utc=True,
+    )
+
+    window_line = next(
+        line for line in capsys.readouterr().out.splitlines() if line.startswith("window:")
+    )
+    assert window_line.endswith(f"  ·  {expected}")

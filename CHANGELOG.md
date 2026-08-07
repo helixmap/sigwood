@@ -41,6 +41,16 @@ All notable changes to sigwood are recorded here. The format follows
   whose rows carry no usable timestamp keeps them rather than having a working export discarded,
   and the run says the file covers the wider whole-hour period; where only some rows lack one,
   those are dropped and the count is reported.
+- **An export whose window ends before it starts is refused instead of writing an empty file.**
+  A `--since` set in the future, a `--since`/`--until` pair given the wrong way round, and
+  `--hours=N-N` (which asks for a window of no width at all) each produced a window ending at or
+  before its start. Nothing can fall inside such a window, so the export fetched nothing, wrote an
+  empty file, described the span as `1h`, and exited as though it had succeeded — and an empty file
+  is easy to miss when the run gives no reason to look at it. sigwood now stops before contacting
+  the backend or creating a file, shows the window it worked out, and says the start must be earlier
+  than the end. Spans that are not a whole number of days are also described through sigwood's
+  shared format now, so a 30-minute window reads `30m` instead of being rounded up to `1h`, and
+  `36h` reads `1.5d`; whole-day windows still read `1 day` and `2 days` as before.
 - **Authentication counting no longer discards one log source's records in favour of another's.**
   Every source that observed an authentication now contributes its records: a benign SSH login can
   no longer hide audit-only failures for the same service, and a source that saw failures no other

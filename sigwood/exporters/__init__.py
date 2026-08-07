@@ -72,6 +72,7 @@ from typing import Any
 # existing call sites and external code.
 from sigwood.common.display import (
     compact_home,
+    fmt_compact_span,
     fmt_window,
     hidden_cursor,
     human_bytes,
@@ -80,7 +81,7 @@ from sigwood.common.display import (
     set_display_utc,
     set_narration_enabled,
 )
-from sigwood.common.errors import ExportAborted  # noqa: F401  (re-export)
+from sigwood.common.errors import ExportAborted, UsageError  # noqa: F401
 from sigwood.common.paths import be_like_water, effective_root, resolve_path
 from sigwood.common.sanitize import strip_control
 
@@ -115,13 +116,26 @@ def _resolve_export_window(
         today_midnight = display_now.replace(
             hour=0, minute=0, second=0, microsecond=0
         )
-        return today_midnight - timedelta(days=1), today_midnight
-    if since is None:
+        resolved_since = today_midnight - timedelta(days=1)
+        resolved_until = today_midnight
+    elif since is None:
         assert effective_until is not None
-        return effective_until - timedelta(days=1), effective_until
-    if effective_until is None:
-        return since, display_now
-    return since, effective_until
+        resolved_since = effective_until - timedelta(days=1)
+        resolved_until = effective_until
+    elif effective_until is None:
+        resolved_since = since
+        resolved_until = display_now
+    else:
+        resolved_since = since
+        resolved_until = effective_until
+
+    if resolved_until <= resolved_since:
+        raise UsageError(
+            f"export window is empty: "
+            f"{fmt_window((resolved_since, resolved_until))}. "
+            "The window start must be earlier than its end."
+        )
+    return resolved_since, resolved_until
 
 
 _KNOWN_BACKENDS = ("splunk", "cloudtrail")
@@ -264,10 +278,11 @@ def _run_export(
         """Duration-only span for the window line. The work-unit count moved to
         the live fetch bar - narration carries the human duration only."""
         total_secs = (until - since).total_seconds()
-        if total_secs > 0 and total_secs % 86400 == 0:
+        # _resolve_export_window guarantees a positive duration before orchestration.
+        if total_secs % 86400 == 0:
             n_days = int(total_secs / 86400)
             return f"{n_days} {plural(n_days, 'day')}"
-        return f"{max(int(total_secs / 3600), 1)}h"
+        return fmt_compact_span(until - since)
 
     def _emit_result_line(
         query_name: str, n_written: int, write_meta: dict[str, Any],

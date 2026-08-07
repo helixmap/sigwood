@@ -258,7 +258,6 @@ def test_query_wins_over_host_and_nonquery_frames_dispatch_narrowly() -> None:
     matcher = al.AllowlistMatcher(host_patterns=["chatty-*"])
     pihole = pd.DataFrame({
         "query": ["keep.example"], "host": ["chatty-dns"],
-        "message": ["query[A] keep.example"],
     })
     syslog = pd.DataFrame({"host": ["chatty-flat", "keep-flat"],
                            "message": ["a", "b"]})

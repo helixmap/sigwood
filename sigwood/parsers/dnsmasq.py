@@ -24,18 +24,11 @@ dnsmasq event fields (parser-specific):
                config | validation | dnssec_query | special | dhcp |
                pihole_hostname | regex_blocked | unknown
   qtype      - query type (A, AAAA, HTTPS, …) (str | None; query and dnssec_query events)
-  dst        - upstream resolver or validation target (str | None; forwarded and
-               dnssec_query events; also holds an opaque token on dhcp rows -
-               not canonical DNS on dhcp; guard with event_type check before use)
-  answer     - answer payload (str | None; reply/cached/gravity_blocked/config/special/
-               pihole_hostname events; also holds an opaque token on dhcp rows -
-               same caveat as dst)
-  validation - DNSSEC status or block disposition phrase (str | None; validation events
-               carry the DNSSEC verdict; regex_blocked events carry the matched
-               disposition phrase e.g. "regex denied", "exactly blacklisted")
   host       - source host, set by the loader from filename (parser leaves "")
-  raw        - original line
-  message    - message portion after the dnsmasq[PID]: prefix
+
+The parser retains only fields that shipped consumers use.  Future detectors
+promote their source fields at their own planning seam rather than retaining
+every line payload in every loaded row.
 
 Rule for detector authors: features may depend on the canonical fields (ts, src,
 query) freely.  Any feature derived from the dnsmasq event fields must be guarded
@@ -127,8 +120,9 @@ def parse_line(raw: str) -> dict | None:
     docstring.  All keys are always present.  The 'host' field is left as "" -
     the loader fills it from the filename stem before building the DataFrame.
     The 'event_type' is "unknown" when the outer grammar matches but no inner
-    grammar does; 'query' is None in that case.  Unknown lines are retained
-    (not dropped) so the detector session can discover new message patterns.
+    grammar does; 'query' is None in that case. Unknown rows remain available
+    as count-bearing parser evidence; extending the grammar recovers their
+    source-line content from the log rather than from the loaded frame.
     """
     if not raw or raw.lstrip().startswith("#"):
         return None
@@ -146,12 +140,7 @@ def parse_line(raw: str) -> dict | None:
         "query":      None,
         "event_type": "unknown",
         "qtype":      None,
-        "dst":        None,
-        "answer":     None,
-        "validation": None,
         "host":       "",
-        "raw":        raw,
-        "message":    message,
     }
 
     m_q = _QUERY_RE.match(message)
@@ -167,15 +156,10 @@ def parse_line(raw: str) -> dict | None:
     # dhcp rows are non-DNS DHCP lease events that ride the dnsmasq log file.
     # They are excluded from all DNS analysis. Parsed here only to keep the unknown
     # bucket clean and to let the detector trivially filter with event_type == "dhcp".
-    # dst and answer hold the two raw "DHCP <a> is <b>" tokens as opaque strings;
-    # the "is" separator does NOT mean domain/answer here. Do not use dst or answer
-    # from dhcp rows in any DNS aggregation - guard with event_type == "dhcp" first.
     m_dhcp = _DHCP_RE.match(message)
     if m_dhcp:
         result.update({
             "event_type": "dhcp",
-            "dst":    m_dhcp.group("a"),   # opaque - not a DNS resolver address
-            "answer": m_dhcp.group("b"),   # opaque - not a DNS answer
         })
         return result
 
@@ -193,7 +177,6 @@ def parse_line(raw: str) -> dict | None:
             "event_type": "dnssec_query",
             "qtype":      m_dq.group("qtype"),
             "query":      m_dq.group("domain"),
-            "dst":        m_dq.group("dst"),
         })
         return result
 
@@ -202,7 +185,6 @@ def parse_line(raw: str) -> dict | None:
         result.update({
             "event_type": "forwarded",
             "query":      m_f.group("domain"),
-            "dst":        m_f.group("dst"),
         })
         return result
 
@@ -211,7 +193,6 @@ def parse_line(raw: str) -> dict | None:
         result.update({
             "event_type": "reply",
             "query":      m_r.group("domain"),
-            "answer":     m_r.group("answer").strip(),
         })
         return result
 
@@ -220,7 +201,6 @@ def parse_line(raw: str) -> dict | None:
         result.update({
             "event_type": "cached",
             "query":      m_c.group("domain"),
-            "answer":     m_c.group("answer").strip(),
         })
         return result
 
@@ -229,7 +209,6 @@ def parse_line(raw: str) -> dict | None:
         result.update({
             "event_type": "gravity_blocked",
             "query":      m_g.group("domain"),
-            "answer":     m_g.group("answer").strip(),
         })
         return result
 
@@ -238,7 +217,6 @@ def parse_line(raw: str) -> dict | None:
         result.update({
             "event_type": "special",
             "query":      m_sp.group("domain"),
-            "answer":     m_sp.group("answer").strip(),
         })
         return result
 
@@ -251,7 +229,6 @@ def parse_line(raw: str) -> dict | None:
         result.update({
             "event_type": "pihole_hostname",
             "query":      m_ph.group("domain"),
-            "answer":     m_ph.group("answer").strip(),
         })
         return result
 
@@ -262,16 +239,11 @@ def parse_line(raw: str) -> dict | None:
     # "blocked" notion when computing block_ratio / was_blocked - do not collapse
     # them here. (Separation of powers: parser stays faithful to the source; detector
     # owns the abstraction.)
-    # The disposition phrase is stored in the validation field - the same field used
-    # for DNSSEC verdicts - because both describe the resolution outcome and no new
-    # schema column is needed. Guard with event_type == "regex_blocked" before using.
     m_rb = _REGEX_BLOCKED_RE.match(message)
     if m_rb:
         result.update({
             "event_type": "regex_blocked",
             "query":      m_rb.group("domain"),
-            "answer":     m_rb.group("answer").strip(),
-            "validation": m_rb.group("disposition"),
         })
         return result
 
@@ -280,7 +252,6 @@ def parse_line(raw: str) -> dict | None:
         result.update({
             "event_type": "config",
             "query":      m_cf.group("domain"),
-            "answer":     m_cf.group("answer").strip(),
         })
         return result
 
@@ -288,7 +259,6 @@ def parse_line(raw: str) -> dict | None:
     if m_v:
         result.update({
             "event_type": "validation",
-            "validation": m_v.group("status"),
         })
         return result
 

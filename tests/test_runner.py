@@ -23,6 +23,7 @@ from sigwood.common.display import (
     default_window_advisory,
 )
 from sigwood.common.journal_probe import JournalProbeCode, JournalProbeResult
+from sigwood.common.loader.types import _PIHOLE_COLUMNS
 from sigwood.runner import (
     _DIGEST_TS_CONFIDENCE_FLOOR,
     _aws_no_interactive_note,
@@ -1028,7 +1029,7 @@ def test_runner_composes_distinct_record_labels_for_loaded_plan_patterns(
     fake_lr = LoadResult(
         logs={
             "dns*.log*": pd.DataFrame(columns=["ts", "src", "query", "qclass"]),
-            "pihole*.log*": pd.DataFrame(columns=_PIHOLE_COLUMNS_FOR_MOCK),
+            "pihole*.log*": pd.DataFrame(columns=_PIHOLE_COLUMNS),
         },
         record_counts={
             "dns*.log*": 2,
@@ -1082,7 +1083,7 @@ def test_runner_stale_pihole_emits_pihole_span_note(
         "ts": [_TS_JAN5], "src": ["192.0.2.10"],
         "query": ["example.test"], "qclass": [1],
     })
-    pihole_empty = pd.DataFrame(columns=_PIHOLE_COLUMNS_FOR_MOCK)
+    pihole_empty = pd.DataFrame(columns=_PIHOLE_COLUMNS)
     span = _ts_window_span()
     fake_lr = LoadResult(
         logs={"dns*.log*": zeek_dns_df, "pihole*.log*": pihole_empty},
@@ -2036,10 +2037,6 @@ def test_runner_appends_disclosure_after_home_net_note(
 
 
 # Column lists needed by the mocked LoadResult fixtures above.
-_PIHOLE_COLUMNS_FOR_MOCK = [
-    "ts", "host", "program", "client", "qtype", "query", "answer",
-    "rcode", "raw", "message", "event_type",
-]
 _CT_COLUMNS_FOR_MOCK = [
     "ts", "eventTime", "eventSource", "eventName", "eventID", "awsRegion",
     "sourceIPAddress", "principal", "lane", "read_write", "errorCode",

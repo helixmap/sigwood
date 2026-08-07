@@ -2915,8 +2915,7 @@ _DNS_ZEEK_EMPTY_COLUMNS = [
     "qtype",
 ]
 _DNS_PIHOLE_EMPTY_COLUMNS = [
-    "ts", "src", "query", "event_type", "qtype", "dst", "answer",
-    "validation", "host", "raw", "message",
+    "ts", "src", "query", "event_type", "qtype", "host",
 ]
 _CONN_EMPTY_COLUMNS = [
     "src", "dst", "port", "proto", "ts", "bytes", "conn_state", "local_orig",

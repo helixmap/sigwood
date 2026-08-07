@@ -23,6 +23,8 @@ import pytest
 
 import sigwood.cli as cli
 import sigwood.runner as runner
+from sigwood.common import loader
+from sigwood.common.loader.types import _PIHOLE_COLUMNS as _LOADER_PIHOLE_COLUMNS
 from sigwood.common.finding import DigestCard, DigestSlot, RunSummary
 from sigwood.digest import dns as dns_digest
 from sigwood.outputs.text import TextHandler
@@ -37,8 +39,7 @@ _ZEEK_DNS_COLUMNS = [
     "ts", "src", "query", "rtt", "ttl", "rcode", "answer", "tc", "qtype",
 ]
 _PIHOLE_COLUMNS = [
-    "ts", "src", "query", "event_type", "qtype",
-    "dst", "answer", "validation", "host", "raw", "message",
+    "ts", "src", "query", "event_type", "qtype", "host",
 ]
 
 
@@ -85,12 +86,7 @@ def _pihole_row(
         "query":       query,
         "event_type":  event_type,
         "qtype":       qtype,
-        "dst":         None,
-        "answer":      None,
-        "validation":  None,
         "host":        None,
-        "raw":         "",
-        "message":     "",
     }
 
 
@@ -674,6 +670,38 @@ def test_cli_digest_pihole_file_sniffs_to_dns_schema_pihole_origin(
     assert captured.get("schema") == "dns"
     assert captured.get("pihole_dir") == str(log_path)
     assert captured.get("zeek_dir") is None
+
+
+def test_run_digest_empty_pihole_frame_uses_canonical_columns(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The real digest loader selects a column-stable empty Pi-hole frame.
+
+    ``DigestEmpty`` is the expected control signal; this test captures the
+    frame immediately before that runner decision so its schema cannot drift
+    from the parser/loader contract unnoticed.
+    """
+    pihole_dir = tmp_path / "pihole"
+    pihole_dir.mkdir()
+    (pihole_dir / "pihole.log").write_text("", encoding="utf-8")
+
+    observed: dict[str, list[str]] = {}
+    real_load_required_logs = loader.load_required_logs
+
+    def capture_empty_frame(*args, **kwargs):
+        result = real_load_required_logs(*args, **kwargs)
+        observed["columns"] = list(result.logs["pihole*.log*"].columns)
+        return result
+
+    monkeypatch.setattr(loader, "load_required_logs", capture_empty_frame)
+
+    with pytest.raises(runner.DigestEmpty):
+        runner.run_digest(
+            config={"sigwood": {}}, pihole_dir=pihole_dir, schema="dns",
+            load_all=True, skip_confirm=True,
+        )
+
+    assert observed["columns"] == _LOADER_PIHOLE_COLUMNS == _PIHOLE_COLUMNS
 
 
 # ─── Single-file Zeek bypass - dns variant ─────────────────────────────────

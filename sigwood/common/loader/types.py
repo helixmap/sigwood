@@ -24,7 +24,7 @@ _LOG_SUFFIXES = frozenset({".gz", ".log"})
 
 _PIHOLE_COLUMNS = [
     "ts", "src", "query", "event_type", "qtype",
-    "dst", "answer", "validation", "host", "raw", "message",
+    "host",
 ]
 
 # CloudTrail canonical row schema. The aws detector consumes frames with

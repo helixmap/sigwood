@@ -15,7 +15,22 @@ All notable changes to sigwood are recorded here. The format follows
   dropped from about 8 minutes to about 7 (roughly 12% faster), with findings byte-for-byte
   identical before and after. Peak memory was not improved by this change — the detector
   process measured a few percent higher at its peak on macOS while the machine-wide peak was
-  unchanged — so the memory guidance in the known-issues list still applies as written.
+  unchanged. (The Pi-hole change below is what moves peak memory.)
+
+- **Pi-hole captures use substantially less memory to analyze, with identical results.** When
+  sigwood reads a Pi-hole or dnsmasq log it no longer keeps five values that nothing in the
+  tool reads: the answer payload, the upstream resolver address, the DNSSEC or block
+  disposition phrase, the original log line, and the parsed message portion of that line. The
+  grammars still recognize all of it — that is how each line's event type is decided — but the
+  values are no longer carried on every row, which on a multi-million-line capture is
+  gigabytes held for no reader. On the seven-day reference capture the detector process peaked
+  roughly 2 GiB lower, about a quarter less than before, and the peak across sigwood and its
+  helper process together fell by about the same amount. Results were unchanged on both
+  reference captures: findings and graph data matched apart from the timestamp each run
+  stamps on itself, and digest cards matched byte for byte. **One consequence to know about:**
+  a log line that no grammar recognizes is still kept and still counted, but the row no longer
+  carries the line's text — on the reference capture that is about one line in 650. Reading
+  those lines means going to the source log rather than the loaded table.
 
 ### Security
 

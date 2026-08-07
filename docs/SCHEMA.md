@@ -132,9 +132,23 @@ resolver, rtt, ttl, rcode, answer, tc
 dnsmasq enrichment (Pi-hole only) - computed by the dns detector's per-domain
 aggregation (`_build_pihole_aggregate`), *not* emitted by the parser. Same
 parser-emits-fragments / detector-aggregates split as CloudTrail below: the
-dnsmasq parser emits one row per event (`ts, src, query, event_type, qtype, dst,
-answer, validation, host, raw, message`); the enrichment appears only after the
-detector rolls those events up per domain.
+dnsmasq parser emits one row per event (`ts, src, query, event_type, qtype,
+host`); the enrichment appears only after the detector rolls those events up per
+domain.
+
+The parser retains only the fields shipped consumers read. Answer payloads,
+upstream resolver addresses, DNSSEC and block-disposition phrases, and the
+original line text are recognized by the grammars - they decide the `event_type`
+- but are not carried on the row, because holding them costs gigabytes on a
+multi-million-line capture and nothing reads them. A future consumer promotes
+what it needs at its own planning seam and recovers the values by re-parsing the
+source log, the same promote-don't-grep discipline the CloudTrail `raw` column
+describes below.
+
+One consequence worth stating plainly: a line no grammar recognizes is still
+kept, and still counts, as an `unknown` row - but the row no longer carries the
+line's text. Extending the grammar means reading the source log, not the loaded
+frame.
 ```
 was_blocked, block_ratio, unique_clients, qtype_counts, cache_ratio, forward_ratio
 ```

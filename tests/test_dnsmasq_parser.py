@@ -11,8 +11,9 @@ from datetime import datetime
 
 import pytest
 
-from sigwood.parsers.dnsmasq import parse_line
-from sigwood.parsers.syslog import parse_timestamp
+from sigwood.common.loader.types import _PIHOLE_COLUMNS
+from sigwood.parsers.dnsmasq import parse_line, sniff
+from sigwood.runner import _DNS_PIHOLE_EMPTY_COLUMNS
 
 
 # ── Fixture helpers ───────────────────────────────────────────────────────────
@@ -37,8 +38,6 @@ def test_parse_query_line() -> None:
     assert result["qtype"] == "A"
     assert result["query"] == "example.test"
     assert result["src"] == "192.0.2.1"
-    assert result["dst"] is None
-    assert result["answer"] is None
 
 
 def test_parse_query_line_with_syslog_hostname() -> None:
@@ -56,7 +55,6 @@ def test_parse_forwarded_line() -> None:
     assert result is not None
     assert result["event_type"] == "forwarded"
     assert result["query"] == "example.test"
-    assert result["dst"] == "198.51.100.53"
     assert result["src"] is None
 
 
@@ -66,7 +64,6 @@ def test_parse_reply_line() -> None:
     assert result is not None
     assert result["event_type"] == "reply"
     assert result["query"] == "example.test"
-    assert result["answer"] == "203.0.113.1"
 
 
 def test_parse_cached_line() -> None:
@@ -75,7 +72,6 @@ def test_parse_cached_line() -> None:
     assert result is not None
     assert result["event_type"] == "cached"
     assert result["query"] == "example.test"
-    assert result["answer"] == "203.0.113.1"
 
 
 def test_parse_cached_stale_line() -> None:
@@ -93,16 +89,14 @@ def test_parse_gravity_blocked_address() -> None:
     assert result is not None
     assert result["event_type"] == "gravity_blocked"
     assert result["query"] == "bad.example.test"
-    assert result["answer"] == "0.0.0.0"
 
 
 def test_parse_gravity_blocked_nodata() -> None:
-    """NODATA answer is captured as a plain string passthrough."""
+    """NODATA form retains the gravity-blocked grammar verdict."""
     raw = _line("gravity blocked bad.example.test is NODATA")
     result = parse_line(raw)
     assert result is not None
     assert result["event_type"] == "gravity_blocked"
-    assert result["answer"] == "NODATA"
 
 
 def test_parse_gravity_blocked_cname_address() -> None:
@@ -111,7 +105,6 @@ def test_parse_gravity_blocked_cname_address() -> None:
     assert result is not None
     assert result["event_type"] == "gravity_blocked"
     assert result["query"] == "alias.example.test"
-    assert result["answer"] == "0.0.0.0"
 
 
 def test_parse_gravity_blocked_cname_nodata() -> None:
@@ -120,16 +113,14 @@ def test_parse_gravity_blocked_cname_nodata() -> None:
     assert result is not None
     assert result["event_type"] == "gravity_blocked"
     assert result["query"] == "alias.example.test"
-    assert result["answer"] == "NODATA"
 
 
 def test_parse_gravity_blocked_ipv6_zero() -> None:
-    """:: (IPv6 null) answer is captured correctly."""
+    """:: (IPv6 null) is still classified as a gravity block."""
     raw = _line("gravity blocked bad.example.test is ::")
     result = parse_line(raw)
     assert result is not None
     assert result["event_type"] == "gravity_blocked"
-    assert result["answer"] == "::"
 
 
 def test_parse_config_slash_form() -> None:
@@ -139,7 +130,6 @@ def test_parse_config_slash_form() -> None:
     assert result is not None
     assert result["event_type"] == "config"
     assert result["query"] == "example.test"
-    assert result["answer"] == "192.0.2.10"
 
 
 def test_parse_config_slash_form_with_syslog_hostname() -> None:
@@ -148,7 +138,6 @@ def test_parse_config_slash_form_with_syslog_hostname() -> None:
     assert result is not None
     assert result["event_type"] == "config"
     assert result["query"] == "example.test"
-    assert result["answer"] == "192.0.2.10"
 
 
 def test_parse_config_keyword_form() -> None:
@@ -158,7 +147,6 @@ def test_parse_config_keyword_form() -> None:
     assert result is not None
     assert result["event_type"] == "config"
     assert result["query"] == "example.test"
-    assert result["answer"] == "NODATA"
 
 
 def test_parse_validation_line() -> None:
@@ -166,19 +154,16 @@ def test_parse_validation_line() -> None:
     result = parse_line(raw)
     assert result is not None
     assert result["event_type"] == "validation"
-    assert result["validation"] == "SECURE"
     assert result["query"] is None
 
 
 def test_parse_unknown_passthrough() -> None:
-    """Unrecognized inner message → event_type 'unknown', query=None, raw/message kept."""
+    """Unrecognized inner message remains an unknown count-bearing row."""
     raw = _line("something totally unrecognized xyz-12345")
     result = parse_line(raw)
     assert result is not None
     assert result["event_type"] == "unknown"
     assert result["query"] is None
-    assert result["raw"] == raw
-    assert "unrecognized" in result["message"]
 
 
 # ── Outer-grammar failures and null inputs ────────────────────────────────────
@@ -264,7 +249,7 @@ def test_all_keys_present_on_every_non_none_result() -> None:
     """Every non-None result has the full canonical key set."""
     expected_keys = {
         "ts", "src", "query", "event_type", "qtype",
-        "dst", "answer", "validation", "host", "raw", "message",
+        "host",
     }
     lines = [
         _line("query[A] example.test from 192.0.2.1"),
@@ -289,6 +274,22 @@ def test_all_keys_present_on_every_non_none_result() -> None:
         )
 
 
+def test_pihole_schema_declarations_stay_ordered_and_in_lockstep() -> None:
+    """All three Pi-hole row declarations must agree on populated and empty shape."""
+    result = parse_line(_line("query[A] example.test from 192.0.2.1"))
+    assert result is not None
+    parser_columns = tuple(result)
+    assert parser_columns == tuple(_PIHOLE_COLUMNS) == tuple(_DNS_PIHOLE_EMPTY_COLUMNS), (
+        "a narrowing that touches two of the three sites leaves populated and "
+        "empty Pi-hole frames disagreeing on shape"
+    )
+
+
+def test_sniff_recognizes_dns_bearing_event_after_row_narrowing() -> None:
+    """Sniffing depends on the surviving event_type, not discarded line payload."""
+    assert sniff([_line("query[A] example.test from 192.0.2.1")]) == "dns"
+
+
 # ── dnssec_query event type ───────────────────────────────────────────────────
 
 def test_parse_dnssec_query_ds() -> None:
@@ -298,7 +299,6 @@ def test_parse_dnssec_query_ds() -> None:
     assert result["event_type"] == "dnssec_query"
     assert result["qtype"] == "DS"
     assert result["query"] == "example.test"
-    assert result["dst"] == "198.51.100.53"
     assert result["src"] is None
 
 
@@ -326,7 +326,6 @@ def test_parse_special_domain() -> None:
     assert result is not None
     assert result["event_type"] == "special"
     assert result["query"] == "example.test"
-    assert result["answer"] == "192.0.2.10"
 
 
 def test_parse_special_domain_not_config() -> None:
@@ -357,7 +356,6 @@ def test_parse_dhcp_ip_then_hostname() -> None:
     assert result["query"] is None
     assert result["src"] is None
     assert result["qtype"] is None
-    assert result["validation"] is None
 
 
 def test_parse_dhcp_hostname_then_ip() -> None:
@@ -369,7 +367,6 @@ def test_parse_dhcp_hostname_then_ip() -> None:
     assert result["query"] is None
     assert result["src"] is None
     assert result["qtype"] is None
-    assert result["validation"] is None
 
 
 def test_parse_unknown_still_works() -> None:
@@ -379,7 +376,6 @@ def test_parse_unknown_still_works() -> None:
     assert result is not None
     assert result["event_type"] == "unknown"
     assert result["query"] is None
-    assert result["raw"] == raw
 
 
 # ── pihole_hostname event type ────────────────────────────────────────────────
@@ -390,16 +386,14 @@ def test_parse_pihole_hostname_address() -> None:
     assert result is not None
     assert result["event_type"] == "pihole_hostname"
     assert result["query"] == "pihole.test"
-    assert result["answer"] == "192.0.2.1"
 
 
 def test_parse_pihole_hostname_nodata() -> None:
-    """NODATA answer form is captured as-is - do not special-case."""
+    """NODATA form retains the Pi-hole-hostname grammar verdict."""
     raw = _line("Pi-hole hostname pihole.test is NODATA")
     result = parse_line(raw)
     assert result is not None
     assert result["event_type"] == "pihole_hostname"
-    assert result["answer"] == "NODATA"
 
 
 def test_parse_pihole_hostname_not_config() -> None:
@@ -422,14 +416,12 @@ def test_parse_pihole_hostname_unknown_still_unknown() -> None:
 # ── regex_blocked event type ──────────────────────────────────────────────────
 
 def test_parse_regex_blocked_denied_address() -> None:
-    """Primary spelling (regex denied) with an address answer."""
+    """Primary regex-denied spelling retains its event-type verdict."""
     raw = _line("regex denied telemetry.example.test is 0.0.0.0")
     result = parse_line(raw)
     assert result is not None
     assert result["event_type"] == "regex_blocked"
     assert result["query"] == "telemetry.example.test"
-    assert result["answer"] == "0.0.0.0"
-    assert result["validation"] == "regex denied"
 
 
 def test_parse_regex_blocked_not_config() -> None:
@@ -454,7 +446,6 @@ def test_parse_regex_blacklisted_variant() -> None:
     result = parse_line(raw)
     assert result is not None
     assert result["event_type"] == "regex_blocked"
-    assert result["validation"] == "regex blacklisted"
 
 
 def test_parse_exactly_denied_variant() -> None:
@@ -463,16 +454,14 @@ def test_parse_exactly_denied_variant() -> None:
     result = parse_line(raw)
     assert result is not None
     assert result["event_type"] == "regex_blocked"
-    assert result["validation"] == "exactly denied"
 
 
 def test_parse_regex_blocked_nodata_answer() -> None:
-    """NODATA answer form is captured as-is."""
+    """NODATA form retains the regex-blocked grammar verdict."""
     raw = _line("regex denied telemetry.example.test is NODATA")
     result = parse_line(raw)
     assert result is not None
     assert result["event_type"] == "regex_blocked"
-    assert result["answer"] == "NODATA"
 
 
 def test_parse_canary_domain_still_unknown() -> None:

@@ -624,6 +624,7 @@ def test_load_pihole_plain_fixture(tmp_path: Path) -> None:
     assert len(df) == 2
     assert df.iloc[0]["event_type"] == "query"
     assert df.iloc[0]["src"] == "192.0.2.1"
+    assert df.iloc[0]["host"] == "pihole"
     assert df.iloc[1]["event_type"] == "reply"
 
 

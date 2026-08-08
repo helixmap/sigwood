@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 from sigwood import runner
 from sigwood.detectors import dns as dns_mod
-from tools import measure_dns_b16_allowlist_audit as measure
+from tools import measure_dns_allowlist_audit as measure
 
 
 _UNTIL = datetime(2026, 7, 28, tzinfo=timezone.utc)

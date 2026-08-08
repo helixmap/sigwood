@@ -98,7 +98,7 @@ jobs:
           "$VENV/bin/sigwood" --version
           "$VENV/bin/sigwood" --help >/dev/null
           "$VENV/bin/python" -c "import importlib.resources as r; assert (r.files('sigwood') / 'data' / 'config_example.toml').is_file()"
-          "$VENV/bin/python" -c "import importlib, sys, sigwood; assert 'pandas' not in sys.modules; from datetime import datetime, timezone; from pathlib import Path; from sigwood import DetectorContext, Finding, Severity; assert Path(sigwood.__file__).resolve().is_relative_to(Path(sys.prefix).resolve()); now = datetime.now(timezone.utc); context = DetectorContext.unsuppressed({}, data_window=(now, now)); runs = [importlib.import_module(f'sigwood.detectors.{name}').run for name in ('aws', 'beacon', 'dns', 'duration', 'scan', 'syslog')]; assert all(isinstance(run(context), list) for run in runs); assert Finding.__name__ == 'Finding' and Severity.HIGH.value == 'H'"
+          "$VENV/bin/python" -c "import importlib, sys, sigwood; assert 'pandas' not in sys.modules; from datetime import datetime, timezone; from pathlib import Path; from sigwood import DetectorContext, Finding, Severity; assert Path(sigwood.__file__).resolve().is_relative_to(Path(sys.prefix).resolve()); now = datetime.now(timezone.utc); context = DetectorContext.unsuppressed({}, data_window=(now, now)); runs = [importlib.import_module(f'sigwood.detectors.{name}').run for name in ('aws', 'beacon', 'dns', 'exfil', 'scan', 'syslog')]; assert all(isinstance(run(context), list) for run in runs); assert Finding.__name__ == 'Finding' and Severity.HIGH.value == 'H'"
 
   # JOB 4 - the WeasyPrint native stack is the flakiest part; keep CI green while
   # it stabilizes, promote to required later.

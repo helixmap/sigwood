@@ -85,7 +85,7 @@ network data - so you can watch it work first:
 git clone https://github.com/helixmap/sigwood
 cd sigwood
 python3 demo/gen_corpus.py                 # writes a synthetic corpus; no network calls
-sigwood hunt --config=demo/sigwood.toml    # beacons, a DGA burst, and the matching syslog trail
+sigwood hunt --config=demo/sigwood.toml    # beacons, a DGA burst, a bulk transfer out, and the syslog trail
 ```
 
 The generated logs live under `demo/corpus/` (gitignored); the full walkthrough is in

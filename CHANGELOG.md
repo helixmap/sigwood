@@ -63,6 +63,24 @@ All notable changes to sigwood are recorded here. The format follows
 
 ### Changed
 
+- **The demo corpus now shows data leaving.** The synthetic demo could not trip `exfil` at
+  any threshold - it simply contained no bulk transfer - so the detector that now runs in
+  the default hunt had nothing to demonstrate. The compromised host now uploads about 1.9 GB
+  to an external drop host late in the day, hours after the intrusion, completing the arc
+  from break-in to data leaving; `exfil` is in the demo's detector list, and the walkthrough
+  covers what it reports. The transfer is deliberately a single destination, so it renders
+  as a plain pair finding rather than the grouped form used for a rotating cloud pool. The
+  corpus stays byte-for-byte deterministic at a given seed, and every pre-existing signal is
+  unchanged. `demo/gen_corpus.py --scenario bench` also drops one leftover connection that
+  existed only for the retired `duration` detector.
+
+  The walkthrough's expected-output section has been corrected against a real run at the
+  default seed. Three of its claims had gone stale as the DNS and syslog detectors evolved:
+  the hunt reports three DNS findings rather than one, the syslog section reports ten rather
+  than eight, and the Pi-hole-only DNS run reports MEDIUM rather than HIGH - the last of
+  those is the severity ladder working as intended, since a Pi-hole feed carries no
+  resolution outcome and so cannot supply the corroboration that would raise it.
+
 - **The DNS detector is faster on large captures, with identical findings.** Domain parsing
   and label-shape analysis now run once per distinct query instead of once per row, character
   counting inside the label score is single-pass, and working tables are released as soon as

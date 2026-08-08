@@ -3,8 +3,9 @@
 
 Writes a small Zeek + syslog corpus that exercises the real
 loader -> allowlist -> detector -> renderer path, so a short terminal cast can
-show sigwood finding a compromised host three ways: beacon (periodic C2),
-dns (a high-entropy DGA lookup burst), and syslog (intrusion-narrative needles).
+show sigwood finding a compromised host four ways: beacon (periodic C2), exfil
+(an originator-dominant transfer), dns (a high-entropy DGA lookup burst), and
+syslog (intrusion-narrative needles).
 
 No real network data. Addresses are RFC 5737 documentation space
 (192.0.2.x / 198.51.100.x / 203.0.113.x) and RFC 1918 private space
@@ -56,13 +57,13 @@ FLOW = {
     "pihole_blocks": 0x10,
     "pihole_clients": 0x11,
     "pihole_timing": 0x12,
-    "bench_duration": 0x13,
     "bench_background": 0x14,
     "bench_bytes": 0x15,
     "below_gate_parent": 0x16,
     "below_gate_labels": 0x17,
     "below_gate_timing": 0x18,
     "non_psl_labels": 0x19,
+    "exfil": 0x1A,
 }
 
 WINDOW_SECONDS = 86_400  # a 24h corpus
@@ -77,8 +78,10 @@ NON_PSL_SUBDOMAIN_COUNT = 6
 BENCH_BEACON = (WEBHOST, C2_PRIMARY, 443, "tcp")
 BENCH_BEACON_PERIOD_SECONDS = 180
 BENCH_BEACON_COUNT = 480
-BENCH_DURATION = (WEBHOST, C2_SECONDARY, 22, "tcp")
-BENCH_DURATION_SECONDS = 18_000.0
+EXFIL_DESTINATION = "203.0.113.77"
+EXFIL_CONNECTION_COUNT = 12
+EXFIL_START_SECONDS = 79_500
+EXFIL_SPACING_SECONDS = 300
 
 # DGA alphabet: digits + consonants (no vowels) - consonant-heavy random labels
 # are a realistic DGA shape and clear the detector's entropy gates cleanly.
@@ -231,7 +234,29 @@ def _gen_conn(rows: list[dict], rng_for, epoch0: float) -> None:
                   ob, rb.randint(120, 40000),
                   rb.choice(["SF", "SF", "S1"]), rb.uniform(0.02, 5.0))
 
+    _gen_exfil(rows, rng_for, epoch0)
     rows.sort(key=lambda r: r["ts"])
+
+
+def _gen_exfil(rows: list[dict], rng_for, epoch0: float) -> None:
+    """Append one measured originator-dominant external transfer."""
+    # Twelve rows stay below beacon's connection gate, keeping this signal
+    # focused on transfer volume rather than periodicity.
+    rng = rng_for("exfil")
+    for index in range(EXFIL_CONNECTION_COUNT):
+        orig_bytes = rng.randint(140_000_000, 190_000_000)
+        _conn_row(
+            rows,
+            epoch0 + EXFIL_START_SECONDS + index * EXFIL_SPACING_SECONDS + rng.uniform(-20, 20),
+            WEBHOST,
+            EXFIL_DESTINATION,
+            443,
+            "tcp",
+            orig_bytes,
+            int(orig_bytes * rng.uniform(0.01, 0.03)),
+            "SF",
+            rng.uniform(180, 260),
+        )
 
 
 def _gen_bench_conn(rows: list[dict], rng_for, epoch0: float) -> None:
@@ -251,19 +276,9 @@ def _gen_bench_conn(rows: list[dict], rng_for, epoch0: float) -> None:
             timing_rng.uniform(0.05, 0.4),
         )
 
-    duration_rng = rng_for("bench_duration")
-    duration_ts = epoch0 + 12 * 3600 + duration_rng.uniform(-30.0, 30.0)
-    _conn_row(
-        rows,
-        duration_ts,
-        *BENCH_DURATION,
-        bytes_rng.randint(1_000, 4_000),
-        bytes_rng.randint(4_000, 20_000),
-        "SF",
-        BENCH_DURATION_SECONDS,
-    )
-
     background_rng = rng_for("bench_background")
+    # The beacon loop consumes its full byte stream before background generation.
+    # Background bytes consume the remaining shared stream and are not a byte-frozen fixture.
     destinations = [
         "192.0.2.40",
         "192.0.2.41",

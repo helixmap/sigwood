@@ -1,7 +1,7 @@
 # sigwood demo corpus
 
 A tiny synthetic log corpus that shows sigwood finding one compromised host
-four different ways - across Pi-hole, beacon, dns, and syslog - in a single hunt. It drives the real
+five different ways - across Pi-hole, beacon, dns, exfil, and syslog - in a single hunt. It drives the real
 `loader → allowlist → detector → renderer` path - nothing is faked or
 pre-baked. This is the corpus behind the animated demo in the top-level README.
 
@@ -12,7 +12,9 @@ The story: an internal host `192.168.1.37` is compromised and shows up in
 - **beacon** - periodic command-and-control call-outs to two external IPs,
 - **dns** - a burst of high-entropy DGA-style lookups under one throwaway domain,
 - **syslog** - a root SSH login from the C2 address, a UID-0 account added, and a
-  root cron entry planted.
+  root cron entry planted,
+- **exfil** - a bulk transfer out to a drop host late that evening, hours after the
+  intrusion, closing the arc from break-in to data leaving.
 
 Every address is documentation space (RFC 5737 `198.51.100.x` / `203.0.113.x` /
 `192.0.2.x`) or private space (RFC 1918 `192.168.x.x`); the readable domains come
@@ -66,31 +68,45 @@ At the default seed, these commands show:
 - **Pi-hole digest:** one card for `pihole.log` with a dominant client,
   a top repeated domain, a long-query tail from the DGA source, qtype mix, and a
   small but visible block rate.
-- **Pi-hole dns - 1 finding (HIGH):** one entropy-gated grouped finding for a
-  modest set of high-entropy subdomains under the same random `.xyz` apex used
-  by the Zeek DNS slice. This demo keeps the Pi-hole burst below HDBSCAN's
-  `min_cluster_size` so it remains visible as noise.
+- **Pi-hole dns - 1 finding (MEDIUM):** one entropy-gated grouped finding covering
+  16 high-entropy subdomains under the same random `.xyz` apex used by the Zeek DNS
+  slice. This demo keeps the Pi-hole burst below HDBSCAN's `min_cluster_size` so it
+  remains visible as noise. It lands MEDIUM rather than HIGH by design: a Pi-hole
+  feed carries no resolution outcome, so the corroborating evidence that would raise
+  it is not available on this source. The hunt below reaches HIGH on the Zeek side of
+  the same burst, where that corroboration is available - though the two feeds carry
+  different generated labels under the shared apex, so the two findings cover the same
+  campaign rather than the same names.
 - **beacon - 2 findings (both MEDIUM):**
   `192.168.1.37 → 198.51.100.20:443/tcp` at a 3-minute cadence, and
   `192.168.1.37 → 203.0.113.61:8443/tcp` at 10 minutes. Clean periodic beacons
   land in the MEDIUM band; the score is a transparent FFT composite you can read
   under `-vv`.
-- **dns - 1 finding (HIGH):** one grouped finding for ~13 high-entropy subdomains
-  sharing a single random `.xyz` apex, all from `192.168.1.37`, most returning
-  NXDOMAIN. Max label score ~1.96.
-- **syslog - 8 findings (3 MEDIUM + 4 LOW + 1 INFO):** the intrusion on `webhost` across two
-  tight clusters - initial access + escalation (root SSH login from the C2 IP, a
-  `sudo … USER=root` shell, a `useradd … UID=0` account) then, ~an hour later,
-  persistence (a root `crontab REPLACE` and an sshd listener on port 8443). Rare
-  lines sharing one host and program fold into a single per-program review unit,
-  so the two `sshd` lines render as one MEDIUM privileged family, with the seeded
-  `sudo` and `useradd` lines as MEDIUM privileged needles. The `useradd` remains one
-  standalone G3 seed; it is not duplicated by the generator. `db01`'s two kernel
-  one-offs fold into one LOW rare-events family, alongside LOW smartd, crontab, and
-  named needles, while one INFO burst collapses a `gateway` reboot. Family and burst
-  rows carry a first-seen timestamp; `-v` shows up to three sampled lines, and HTML
-  reports offer a closed full-sample expansion. Rows stay chronological within each
-  section, so the analyst still picks the `webhost` cluster out of the surrounding noise.
+- **dns - 3 findings (1 HIGH + 1 MEDIUM + 1 INFO):** the HIGH is the DGA burst -
+  high-entropy subdomains sharing a single random `.xyz` apex, all from
+  `192.168.1.37`, most returning NXDOMAIN, max label score ~1.96. The MEDIUM covers
+  six names under a private `.lan` namespace, and the INFO is a quieter family of
+  eight subdomains under a second throwaway apex that sits below the surfacing gate
+  on lexical score alone and is surfaced on its failure pattern instead. Only the
+  first is the planted story; the other two are there so the demo shows the
+  gradient rather than a single verdict.
+- **exfil - 1 finding (MEDIUM):** `192.168.1.37 → 203.0.113.77`, about 1.9 GB out
+  across 12 connections in 55 minutes, with 98% of the pair's bytes flowing outbound.
+  It reports the fact and stops there - a large transfer left for that endpoint - and
+  makes no claim that it was theft. It renders as one finding for the pair rather than
+  one per connection, and because there is a single destination it is a plain pair
+  finding, not the grouped form sigwood uses for a rotating cloud destination pool.
+- **syslog - 10 findings (4 MEDIUM + 5 LOW + 1 INFO):** the intrusion on `webhost`
+  surfaces as four MEDIUM privileged rows - a root SSH login from the C2 address, a
+  `sudo … USER=root` shell, a `useradd … UID=0` account, and, about an hour later, an
+  sshd listener on port 8443. Rare lines sharing one host and program fold into a
+  single per-program review unit only from four lines up, so the two `sshd` lines stay
+  separate rather than folding. Five LOW rare events sit around them - a root
+  `crontab REPLACE` on `webhost`, and `db01` kernel, smartd, and named one-offs - and
+  one INFO burst collapses a 13-line `gateway` reboot. Burst rows carry a first-seen
+  timestamp; `-v` shows up to three sampled lines, and HTML reports offer a closed
+  full-sample expansion. Rows stay chronological within each section, so the analyst
+  still picks the `webhost` cluster out of the surrounding noise.
 
 The banner also shows a non-zero `allowlist:` line: a minority of the DNS queries
 are reverse-PTR / mDNS / DNS-SD lookups that the shipped allowlist suppresses

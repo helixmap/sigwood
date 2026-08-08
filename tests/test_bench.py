@@ -346,7 +346,7 @@ def test_bench_end_to_end_repeats_ranks_and_detects_threshold_change(tmp_path: P
     _write_ledger(ledger)
     _write_selectors(selectors)
 
-    expected_counts = {"conn*.log*": 531}
+    expected_counts = {"conn*.log*": 530}
     first = _run_summary(
         config,
         tmp_path / "bundle-1",

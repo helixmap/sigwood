@@ -8,16 +8,22 @@ use RFC 5737 / RFC 1918 space, and timestamps derive from the runtime clock
 from __future__ import annotations
 
 import importlib.util
+import json
+import random
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from sigwood import runner
+from sigwood.common import config as config_module
 from sigwood.common.loader import load_pihole, load_syslog
+from sigwood.detectors import beacon, exfil
 from sigwood.detectors.dns import DEFAULT_CONFIG as DNS_DEFAULT_CONFIG
 from sigwood.parsers.dnsmasq import parse_line as parse_dnsmasq_line
 from sigwood.parsers.syslog import parse_timestamp
 
 _GEN_CORPUS_PATH = Path(__file__).resolve().parent.parent / "demo" / "gen_corpus.py"
+_DEMO_CONFIG_PATH = Path(__file__).resolve().parent.parent / "demo" / "sigwood.toml"
 _spec = importlib.util.spec_from_file_location("gen_corpus", _GEN_CORPUS_PATH)
 assert _spec is not None and _spec.loader is not None
 gen_corpus = importlib.util.module_from_spec(_spec)
@@ -30,11 +36,15 @@ def _run_generator(
     *,
     seed: int = 3759,
     anchor: str = "2026-06-01T00:00:00",
+    scenario: str = "demo",
 ) -> None:
     monkeypatch.setattr(
         sys,
         "argv",
-        ["gen_corpus.py", str(out_dir), "--seed", str(seed), "--anchor", anchor],
+        [
+            "gen_corpus.py", str(out_dir), "--seed", str(seed), "--anchor", anchor,
+            "--scenario", scenario,
+        ],
     )
     gen_corpus.main()
 
@@ -84,10 +94,91 @@ def test_pihole_slice_main_wiring_is_deterministic(
     assert (out_a / "zeek" / "dns.log").exists()
     assert (out_a / "syslog" / "messages").exists()
 
-    config_text = (Path(__file__).resolve().parent.parent / "demo" / "sigwood.toml").read_text(
+    config_text = _DEMO_CONFIG_PATH.read_text(
         encoding="utf-8",
     )
     assert 'pihole_dir = "demo/corpus/pihole"' in config_text
+    assert 'detect = "dns, beacon, exfil, syslog"' in config_text
+
+
+def test_generated_exfil_rows_are_one_originator_dominant_pair() -> None:
+    rows: list[dict] = []
+    epoch0 = datetime(2026, 6, 1, tzinfo=timezone.utc).timestamp()
+
+    def rng_for(channel: str) -> random.Random:
+        return random.Random(3759 ^ gen_corpus.FLOW[channel])
+
+    gen_corpus._gen_conn(rows, rng_for, epoch0)
+    exfil_rows = [row for row in rows if row["id.resp_h"] == gen_corpus.EXFIL_DESTINATION]
+
+    assert len(exfil_rows) == gen_corpus.EXFIL_CONNECTION_COUNT
+    assert {row["id.orig_h"] for row in exfil_rows} == {gen_corpus.WEBHOST}
+    assert {row["id.resp_p"] for row in exfil_rows} == {443}
+    assert {row["proto"] for row in exfil_rows} == {"tcp"}
+    assert {row["conn_state"] for row in exfil_rows} == {"SF"}
+    assert {row["local_orig"] for row in exfil_rows} == {True}
+    assert sum(row["orig_bytes"] for row in exfil_rows) > exfil.DEFAULT_CONFIG["min_outbound_bytes"]
+    total_bytes = sum(row["orig_bytes"] + row["resp_bytes"] for row in exfil_rows)
+    assert sum(row["orig_bytes"] for row in exfil_rows) / total_bytes >= exfil.DEFAULT_CONFIG["min_orig_share"]
+    assert len(exfil_rows) < beacon.DEFAULT_CONFIG["min_connections"]
+    assert {row["uid"] for row in exfil_rows} == {
+        f"C{index:07d}"
+        for index in range(len(rows) - gen_corpus.EXFIL_CONNECTION_COUNT, len(rows))
+    }
+
+
+def test_demo_config_routes_generated_exfil_to_json_and_text(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    out_dir = tmp_path / "corpus"
+    _run_generator(monkeypatch, out_dir)
+    capsys.readouterr()
+    config = config_module.load(_DEMO_CONFIG_PATH)
+    assert config["sigwood"]["detect"] == "dns, beacon, exfil, syslog"
+
+    json_path = tmp_path / "report.json"
+    assert runner.run(
+        config,
+        zeek_dir=out_dir / "zeek",
+        output_format="json",
+        output_file=json_path,
+        scope=frozenset({"zeek_dir"}),
+        quiet=True,
+    ) == 0
+    payload = json.loads(json_path.read_text(encoding="utf-8"))
+    exfil_findings = [finding for finding in payload["findings"] if finding["detector"] == "exfil"]
+    assert len(exfil_findings) == 1
+    evidence = exfil_findings[0]["evidence"]
+    assert evidence["src"] == gen_corpus.WEBHOST
+    assert evidence["dst"] == gen_corpus.EXFIL_DESTINATION
+    assert "destination_count" not in evidence
+    assert "members" not in evidence
+
+    text_path = tmp_path / "report.txt"
+    assert runner.run(
+        config,
+        zeek_dir=out_dir / "zeek",
+        output_format="text",
+        output_file=text_path,
+        scope=frozenset({"zeek_dir"}),
+        quiet=True,
+    ) == 0
+    text = text_path.read_text(encoding="utf-8")
+    assert f"{gen_corpus.WEBHOST}  →  {gen_corpus.EXFIL_DESTINATION}" in text
+    assert "conns=12" in text
+
+
+def test_bench_conn_count_excludes_duration_control(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    out_dir = tmp_path / "bench"
+    _run_generator(monkeypatch, out_dir, scenario="bench")
+    capsys.readouterr()
+    assert len((out_dir / "zeek" / "conn.log").read_text(encoding="utf-8").splitlines()) == 530
 
 
 def test_generated_pihole_lines_are_known_dnsmasq_events(

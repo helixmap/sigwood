@@ -151,7 +151,7 @@ def test_empty_detect_override_uses_default_before_syslog_intent_guard(
         f"--config={config}",
     ]) == 0
 
-    assert "opt-in:          auth, exfil" in capsys.readouterr().out
+    assert "opt-in:          auth" in capsys.readouterr().out
 
 
 def test_explicit_off_is_legal_with_syslog_excluded_and_never_probes(

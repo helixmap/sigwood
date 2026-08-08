@@ -549,10 +549,17 @@ def _project_exfil(f: Finding) -> list[Cell]:
     count = int(ev.get("connection_count", 0))
     span = ev.get("span_seconds")
     span_col = "" if span is None else fmt_compact_span(timedelta(seconds=float(span)))
+    destination_count = ev.get("destination_count")
+    destination_col = (
+        f"dsts={int(destination_count):,}"
+        if ev.get("tier") == "destination_pool" and destination_count is not None
+        else ""
+    )
     return [
         Cell(None, ev.get("src", "")),
         Cell(None, "→"),
-        Cell(None, ev.get("dst", "")),
+        Cell(None, ev.get("destination_network", ev.get("dst", ""))),
+        Cell("dsts", destination_col, align="right", optional=True),
         Cell("out", f"out={human_bytes(float(ev.get('orig_bytes_total', 0)))}", align="right"),
         Cell("share", f"share={float(ev.get('orig_share', 0)):.4f}", align="right"),
         Cell("conns", f"conns={count:,}", align="right"),

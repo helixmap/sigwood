@@ -75,6 +75,28 @@ def test_one_row_per_finding() -> None:
     assert len(rows) == 3
 
 
+def test_exfil_pool_stays_one_fixed_shape_row_without_member_list() -> None:
+    finding = _finding(
+        detector="exfil",
+        title="192.0.2.10 → 198.51.96.0/20",
+        evidence={
+            "tier": "destination_pool",
+            "destination_count": 4,
+            "orig_bytes_total": 4_000,
+            "resp_bytes_total": 400,
+            "orig_share": 0.9091,
+            "connection_count": 4,
+            "members": [{"dst": "198.51.100.20", "orig_bytes": 1_000}],
+        },
+    )
+
+    rows = _rows(_emit([finding]))
+
+    assert len(rows) == 1
+    assert "destination_count=4" in rows[0]["signals"]
+    assert "members" not in rows[0]["signals"]
+
+
 def test_finding_column_is_the_title() -> None:
     row = _rows(_emit([_finding()]))[0]
     assert row["finding"] == "192.0.2.10 → 192.0.2.20:443/tcp"

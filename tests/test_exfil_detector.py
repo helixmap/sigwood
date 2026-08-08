@@ -51,7 +51,7 @@ def _context(rows: list[dict[str, object]], **config: object) -> DetectorContext
 def test_constants_and_discovery_contract() -> None:
     assert exfil.DETECTOR_NAME == "exfil"
     assert exfil.STATUS == "available"
-    assert exfil.IN_DEFAULT_HUNT is False
+    assert exfil.IN_DEFAULT_HUNT is True
     assert exfil.DEFAULT_CONFIG == {
         "min_outbound_bytes": 1 << 30,
         "min_orig_share": 0.6,
@@ -72,6 +72,134 @@ def test_pair_uses_sum_then_divide_and_sorts_by_measured_outbound() -> None:
     assert second.evidence["connection_count"] == 2
     assert second.severity is Severity.MEDIUM
     assert "severity_basis" not in second.evidence
+
+
+def test_subthreshold_destination_pool_retains_the_exact_pair_shape() -> None:
+    """Three surfaced pairs share the /20 but remain ordinary pair findings."""
+    rows = [
+        _row(dst=f"198.51.100.{host}", bytes=1_200, resp_bytes=100)
+        for host in (20, 21, 22)
+    ]
+
+    findings = exfil.run(_context(rows))
+    singleton = exfil.run(_context([rows[0]]))[0]
+
+    assert len(findings) == 3
+    assert [finding.title for finding in findings] == [
+        "10.0.0.10 → 198.51.100.20",
+        "10.0.0.10 → 198.51.100.21",
+        "10.0.0.10 → 198.51.100.22",
+    ]
+    assert findings[0].evidence == singleton.evidence
+    assert findings[0].next_steps == singleton.next_steps
+    assert all("tier" not in finding.evidence for finding in findings)
+    assert all("members" not in finding.evidence for finding in findings)
+
+
+def test_four_surfaced_pairs_fold_to_one_lossless_destination_pool() -> None:
+    findings = exfil.run(_context([
+        _row(dst="198.51.100.20", bytes=1_500, resp_bytes=100, port=443, ts=90.0),
+        _row(dst="198.51.100.21", bytes=1_300, resp_bytes=200, port=8443, ts=60.0),
+        _row(dst="198.51.100.22", bytes=1_200, resp_bytes=100, port=443, ts=120.0),
+        _row(dst="198.51.100.23", bytes=1_000, resp_bytes=100, port=22, ts=180.0),
+    ]))
+
+    assert len(findings) == 1
+    finding = findings[0]
+    assert finding.severity is Severity.MEDIUM
+    assert finding.title == "10.0.0.10 → 198.51.96.0/20"
+    assert finding.evidence["tier"] == "destination_pool"
+    assert finding.evidence["destination_network"] == "198.51.96.0/20"
+    assert finding.evidence["destination_count"] == 4
+    assert finding.evidence["orig_bytes_total"] == 5_000.0
+    assert finding.evidence["resp_bytes_total"] == 500.0
+    assert finding.evidence["orig_share"] == round(5_000 / 5_500, 4)
+    assert finding.evidence["connection_count"] == 4
+    assert finding.evidence["first_seen"] == "1970-01-01T00:01:00+00:00"
+    assert finding.evidence["last_seen"] == "1970-01-01T00:03:00+00:00"
+    assert finding.evidence["span_seconds"] == 120.0
+    assert [member["dst"] for member in finding.evidence["members"]] == [
+        "198.51.100.20", "198.51.100.21", "198.51.100.22", "198.51.100.23",
+    ]
+    assert all(
+        {"port_mix", "first_seen", "last_seen", "max_duration_seconds"} <= set(member)
+        for member in finding.evidence["members"]
+    )
+    assert "whois 198.51.96.0/20" in finding.next_steps[1]
+
+
+def test_only_surfaced_pairs_count_toward_destination_pool_fold() -> None:
+    findings = exfil.run(_context([
+        _row(dst=f"198.51.100.{host}", bytes=1_000, resp_bytes=100)
+        for host in (20, 21, 22)
+    ] + [
+        _row(dst="198.51.100.23", bytes=999, resp_bytes=0),
+    ]))
+
+    assert len(findings) == 3
+    assert all(finding.evidence.get("tier") != "destination_pool" for finding in findings)
+    assert {finding.evidence["dst"] for finding in findings} == {
+        "198.51.100.20", "198.51.100.21", "198.51.100.22",
+    }
+
+
+def test_ipv6_destination_pool_uses_a_canonical_40_prefix() -> None:
+    findings = exfil.run(_context([
+        _row(dst=f"2001:db8:abcd:{host}::1", bytes=1_100, resp_bytes=100)
+        for host in range(1, 5)
+    ]))
+
+    assert len(findings) == 1
+    assert findings[0].title == "10.0.0.10 → 2001:db8:ab00::/40"
+    assert findings[0].evidence["destination_network"] == "2001:db8:ab00::/40"
+    assert len(findings[0].evidence["members"]) == 4
+
+
+def test_mapped_ipv6_destination_joins_native_ipv4_pool() -> None:
+    findings = exfil.run(_context([
+        _row(dst="::ffff:198.51.100.23", bytes=1_100, resp_bytes=100),
+        _row(dst="198.51.100.22", bytes=1_100, resp_bytes=100),
+        _row(dst="198.51.100.21", bytes=1_100, resp_bytes=100),
+        _row(dst="198.51.100.20", bytes=1_100, resp_bytes=100),
+    ]))
+
+    assert len(findings) == 1
+    assert findings[0].title == "10.0.0.10 → 198.51.96.0/20"
+    assert [member["dst"] for member in findings[0].evidence["members"]] == [
+        "198.51.100.20", "198.51.100.21", "198.51.100.22", "198.51.100.23",
+    ]
+
+
+def test_destination_pools_do_not_merge_across_sources_or_networks() -> None:
+    findings = exfil.run(_context([
+        _row(src="10.0.0.10", dst="198.51.100.20"),
+        _row(src="10.0.0.10", dst="198.51.100.21"),
+        _row(src="10.0.0.11", dst="198.51.100.22"),
+        _row(src="10.0.0.11", dst="198.51.100.23"),
+        _row(src="10.0.0.12", dst="198.51.100.24"),
+        _row(src="10.0.0.12", dst="198.51.116.20"),
+        _row(src="10.0.0.12", dst="198.51.116.21"),
+        _row(src="10.0.0.12", dst="198.51.116.22"),
+    ]))
+
+    assert len(findings) == 8
+    assert all(finding.evidence.get("tier") != "destination_pool" for finding in findings)
+
+
+def test_destination_pool_share_is_sum_then_divide_and_ties_sort_by_destination() -> None:
+    findings = exfil.run(_context([
+        _row(dst="198.51.100.23", bytes=1_000, resp_bytes=600),
+        _row(dst="198.51.100.21", bytes=1_000, resp_bytes=600),
+        _row(dst="198.51.100.22", bytes=1_000, resp_bytes=600),
+        _row(dst="198.51.100.20", bytes=10_000, resp_bytes=0),
+    ]))
+
+    assert len(findings) == 1
+    finding = findings[0]
+    assert finding.evidence["orig_share"] == round(13_000 / 14_800, 4)
+    assert [member["dst"] for member in finding.evidence["members"]] == [
+        "198.51.100.20", "198.51.100.21", "198.51.100.22", "198.51.100.23",
+    ]
 
 
 def test_empty_or_missing_responder_column_abstains_without_exception() -> None:

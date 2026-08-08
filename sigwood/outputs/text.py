@@ -38,7 +38,7 @@ from sigwood.common.finding import (
     SuppressionSummary,
 )
 from sigwood.common.output import OutputHandler, register_handler
-from sigwood.outputs._evidence import evidence_at_level
+from sigwood.outputs._evidence import evidence_at_level, exfil_members_at_level
 from sigwood.outputs._render_model import (
     DetectorRenderable,
     Section,
@@ -348,7 +348,7 @@ def _debug_tail(finding: Finding, indent: str) -> list[str]:
         body.append(f"{indent}evidence:")
         for k, v in finding.evidence.items():
             if k in ("member_fragments", "members"):
-                continue  # already rendered as syslog row/drilldown content
+                continue  # structured member views render below, never as reprs
             body.append(f"{indent}  {_sanitize(k)}: {_sanitize(v)}")
     if finding.next_steps:
         body.append(f"{indent}next steps:")
@@ -366,9 +366,41 @@ def _level_tail(finding: Finding, indent: str, verbose_level: int) -> list[str]:
     vanish-don't-dash."""
     if verbose_level <= 0:
         return []
-    if verbose_level >= 2:
-        return _debug_tail(finding, indent)
-    return _verbose_tail(finding, indent, evidence_at_level(finding, 1))
+    tail = (
+        _debug_tail(finding, indent)
+        if verbose_level >= 2
+        else _verbose_tail(finding, indent, evidence_at_level(finding, 1))
+    )
+    member_lines = _exfil_member_lines(finding, indent, verbose_level)
+    if not member_lines or not tail:
+        return tail
+    return [*tail[:-1], *member_lines, tail[-1]]
+
+
+def _exfil_member_lines(
+    finding: Finding,
+    indent: str,
+    verbose_level: int,
+) -> list[str]:
+    """Render the shared rollup member slice without exposing a dict repr."""
+    members, note = exfil_members_at_level(finding, verbose_level)
+    if not members:
+        return []
+    lines = [f"{indent}members:"]
+    for member in members:
+        try:
+            out = human_bytes(float(member.get("orig_bytes", 0)))
+            share = f"{float(member.get('orig_share', 0)):.4f}"
+            conns = f"{int(member.get('connection_count', 0)):,}"
+        except (TypeError, ValueError):
+            continue
+        lines.append(
+            f"{indent}  · {_sanitize(member.get('dst', ''))} "
+            f"· out={out} · share={share} · conns={conns}"
+        )
+    if note is not None:
+        lines.append(f"{indent}  {_sanitize(note)}")
+    return lines if len(lines) > 1 else []
 
 
 def _transaction_member_lines(finding: Finding, indent: str) -> list[str]:
@@ -937,23 +969,33 @@ class TextHandler(OutputHandler):
             keyed, bare = _cells(f)
             src, dst = bare[0], bare[2]
             rows.append((
-                str(f.severity), src, dst, keyed["out"], keyed["share"],
-                keyed["conns"], keyed.get("span", ""), f,
+                str(f.severity), src, dst, keyed.get("dsts", ""), keyed["out"],
+                keyed["share"], keyed["conns"], keyed.get("span", ""), f,
             ))
 
         src_w = max(len(row[1]) for row in rows)
         dst_w = max(len(row[2]) for row in rows)
-        out_w = max(len(row[3]) for row in rows)
-        share_w = max(len(row[4]) for row in rows)
-        conns_w = max(len(row[5]) for row in rows)
-        span_w = max(len(row[6]) for row in rows)
+        dsts_w = max(len(row[3]) for row in rows)
+        out_w = max(len(row[4]) for row in rows)
+        share_w = max(len(row[5]) for row in rows)
+        conns_w = max(len(row[6]) for row in rows)
+        span_w = max(len(row[7]) for row in rows)
+        show_destination_count = dsts_w > 0
 
-        for tag, src, dst, out_col, share_col, conns_col, span_col, f in rows:
-            line = (
-                f"{tag}  {src:<{src_w}}  →  {dst:<{dst_w}}  "
-                f"{out_col:>{out_w}}  {share_col:>{share_w}}  "
-                f"{conns_col:>{conns_w}}  {span_col:>{span_w}}"
-            ).rstrip()
+        for tag, src, dst, dsts_col, out_col, share_col, conns_col, span_col, f in rows:
+            if show_destination_count:
+                line = (
+                    f"{tag}  {src:<{src_w}}  →  {dst:<{dst_w}}  "
+                    f"{dsts_col:>{dsts_w}}  {out_col:>{out_w}}  "
+                    f"{share_col:>{share_w}}  {conns_col:>{conns_w}}  "
+                    f"{span_col:>{span_w}}"
+                ).rstrip()
+            else:
+                line = (
+                    f"{tag}  {src:<{src_w}}  →  {dst:<{dst_w}}  "
+                    f"{out_col:>{out_w}}  {share_col:>{share_w}}  "
+                    f"{conns_col:>{conns_w}}  {span_col:>{span_w}}"
+                ).rstrip()
             tail = _level_tail(f, indent, self._verbose_level)
             if tail:
                 out.append(line + "\n" + "\n".join(tail))

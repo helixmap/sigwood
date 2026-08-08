@@ -128,6 +128,17 @@ _VARIANTS: dict[str, Finding] = {
         "orig_share": 0.9999, "connection_count": 37, "span_seconds": 15_420.0,
         "port_mix": "9931/tcp (1.7 GB)", "max_duration_seconds": 2.0,
         "first_seen": "2026-08-01T00:00:00+00:00", "last_seen": "2026-08-01T04:17:00+00:00"}),
+    "exfil_pool": _f("exfil", Severity.MEDIUM, "x", {
+        "tier": "destination_pool", "src": "192.0.2.242",
+        "destination_network": "198.51.96.0/20", "destination_count": 4,
+        "orig_bytes_total": 1_800_000_000.0, "resp_bytes_total": 200_000.0,
+        "orig_share": 0.9998, "connection_count": 47, "span_seconds": 16_420.0,
+        "members": [
+            {"dst": f"198.51.100.{host}", "orig_bytes": 450_000_000.0,
+             "resp_bytes": 50_000.0, "orig_share": 0.9998, "connection_count": 10}
+            for host in range(20, 24)
+        ],
+    }),
     "aws_burst": _f("aws", Severity.MEDIUM, "role/sentinel-burst-7", {
         "tier": "burst", "principal": "role/sentinel-burst-7", "span_seconds": 4577.0,
         "new_action_count": 137, "new_service_count": 47, "error_rate": 0.27, "mean_rarity": 2.0}),
@@ -380,6 +391,16 @@ def test_syslog_member_fragment_parity_outside_projector(variant: str) -> None:
     for fragment in fragments:
         assert fragment in text_out
         assert fragment in html_out
+
+
+@pytest.mark.parametrize("level", [1, 2])
+def test_exfil_pool_member_parity_outside_projector(level: int) -> None:
+    finding = _VARIANTS["exfil_pool"]
+    text_out = _text([finding], level=level)
+    html_out = _html_text([finding], level=level)
+    for member in finding.evidence["members"]:
+        assert member["dst"] in text_out
+        assert member["dst"] in html_out
 
 
 def test_projection_covers_every_detector_variant() -> None:

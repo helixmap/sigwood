@@ -805,6 +805,7 @@ _DEFAULT_HUNT_SLOTS: dict[str, frozenset[str]] = {
     "aws": frozenset({"cloudtrail"}),
     "beacon": frozenset({"zeek"}),
     "dns": frozenset({"zeek", "pihole"}),
+    "exfil": frozenset({"zeek"}),
     "scan": frozenset({"zeek"}),
     "syslog": frozenset({"zeek", "local_syslog"}),
 }

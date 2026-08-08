@@ -23,7 +23,7 @@ from sigwood.common.finding import DetectorContext, Finding, MethodTag, Severity
 
 DETECTOR_NAME = "exfil"
 STATUS = "available"
-IN_DEFAULT_HUNT: bool = False
+IN_DEFAULT_HUNT: bool = True
 
 REQUIRED_LOGS = [
     {"source": "zeek_dir", "pattern": "conn*.log*"},
@@ -40,6 +40,10 @@ DETECTOR_METHOD = MethodTag("heuristics", named=False)
 
 _REQUIRED_SCORING_COLUMNS = ("src", "dst", "bytes", "resp_bytes")
 _DEFAULT_HOME_NET = ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"]
+# Frozen calibration values, not operator configuration: a rotating destination
+# pool folds only when four already-surfaced pairs share one canonical network.
+DESTINATION_POOL_FOLD_COUNT = 4
+_DESTINATION_POOL_PREFIX = {4: 20, 6: 40}
 
 
 def validate_config(cfg: dict) -> None:
@@ -212,6 +216,152 @@ def _surface_pair(orig_bytes: float, resp_bytes: float, cfg: dict) -> bool:
     )
 
 
+def _destination_pool_network(address: object) -> ipaddress.IPv4Network | ipaddress.IPv6Network:
+    """Return the explicit rollup network for one already-normalized address."""
+    if not isinstance(address, (ipaddress.IPv4Address, ipaddress.IPv6Address)):
+        raise TypeError("destination pool address must be parsed")
+    return ipaddress.ip_network(
+        f"{address}/{_DESTINATION_POOL_PREFIX[address.version]}", strict=False,
+    )
+
+
+def _pair_summary(
+    src: str,
+    dst: str,
+    group: pd.DataFrame,
+    cfg: dict,
+) -> dict[str, Any] | None:
+    """Measure one pair once for either its pair or pooled finding shape."""
+    orig_total = float(group["_orig_bytes"].sum())
+    resp_total = float(group["_resp_bytes"].sum())
+    if not _surface_pair(orig_total, resp_total, cfg):
+        return None
+    total = orig_total + resp_total
+    first_seen, last_seen, span_seconds = _time_evidence(group)
+    return {
+        "src": str(src),
+        "dst": str(dst),
+        "destination_ip": group["_dst_ip"].iloc[0],
+        "group": group,
+        "orig_bytes_total": orig_total,
+        "resp_bytes_total": resp_total,
+        "orig_share": round(orig_total / total, 4),
+        "connection_count": len(group),
+        "port_mix": _port_mix(group),
+        "span_seconds": span_seconds,
+        "first_seen": first_seen,
+        "last_seen": last_seen,
+        "max_duration_seconds": _max_duration(group),
+    }
+
+
+def _pair_next_steps(src: str, dst: str) -> list[str]:
+    """Build pair commands with every log-derived value quoted at composition."""
+    return [
+        "Review the measured transfer in conn.log: zeek-cut id.orig_h id.resp_h "
+        f"id.resp_p orig_bytes resp_bytes < conn.log | grep {shlex.quote(src)}",
+        f"Check destination ownership: whois {shlex.quote(dst)}",
+        "Confirm whether the transfer is an expected backup, sync, or upload",
+        "Add an expected recurring pair to the allowlist",
+    ]
+
+
+def _pair_finding(summary: dict[str, Any], context: DetectorContext) -> Finding:
+    """Build the legacy pair shape byte-for-byte from its single measurement."""
+    src = summary["src"]
+    dst = summary["dst"]
+    return Finding(
+        detector=DETECTOR_NAME,
+        severity=Severity.MEDIUM,
+        title=f"{src} → {dst}",
+        description=(
+            "Complete-byte connection rows show originator-dominant traffic to an "
+            "external destination, which resembles bulk data transfer."
+        ),
+        evidence={
+            "src": src,
+            "dst": dst,
+            "orig_bytes_total": summary["orig_bytes_total"],
+            "resp_bytes_total": summary["resp_bytes_total"],
+            "orig_share": summary["orig_share"],
+            "connection_count": summary["connection_count"],
+            "port_mix": summary["port_mix"],
+            "span_seconds": summary["span_seconds"],
+            "first_seen": summary["first_seen"],
+            "last_seen": summary["last_seen"],
+            "max_duration_seconds": summary["max_duration_seconds"],
+        },
+        next_steps=_pair_next_steps(src, dst),
+        ts_generated=datetime.now(tz=timezone.utc),
+        data_window=context.data_window,
+    )
+
+
+def _rollup_finding(
+    src: str,
+    network: ipaddress.IPv4Network | ipaddress.IPv6Network,
+    summaries: list[dict[str, Any]],
+    context: DetectorContext,
+) -> Finding:
+    """Build one lossless finding for a folded rotating destination pool."""
+    represented = pd.concat([summary["group"] for summary in summaries])
+    orig_total = sum(float(summary["orig_bytes_total"]) for summary in summaries)
+    resp_total = sum(float(summary["resp_bytes_total"]) for summary in summaries)
+    total = orig_total + resp_total
+    members = [
+        {
+            "dst": summary["dst"],
+            "orig_bytes": summary["orig_bytes_total"],
+            "resp_bytes": summary["resp_bytes_total"],
+            "orig_share": summary["orig_share"],
+            "connection_count": summary["connection_count"],
+            "port_mix": summary["port_mix"],
+            "span_seconds": summary["span_seconds"],
+            "first_seen": summary["first_seen"],
+            "last_seen": summary["last_seen"],
+            "max_duration_seconds": summary["max_duration_seconds"],
+        }
+        for summary in summaries
+    ]
+    members.sort(key=lambda member: (-float(member["orig_bytes"]), str(member["dst"])))
+    first_seen, last_seen, span_seconds = _time_evidence(represented)
+    network_text = str(network)
+    return Finding(
+        detector=DETECTOR_NAME,
+        severity=Severity.MEDIUM,
+        title=f"{src} → {network_text}",
+        description=(
+            "Complete-byte connection rows show originator-dominant traffic across "
+            "a rotating external destination pool, which resembles bulk data transfer."
+        ),
+        evidence={
+            "tier": "destination_pool",
+            "src": src,
+            "destination_network": network_text,
+            "destination_count": len(members),
+            "orig_bytes_total": orig_total,
+            "resp_bytes_total": resp_total,
+            "orig_share": round(orig_total / total, 4),
+            "connection_count": int(sum(int(summary["connection_count"]) for summary in summaries)),
+            "port_mix": _port_mix(represented),
+            "span_seconds": span_seconds,
+            "first_seen": first_seen,
+            "last_seen": last_seen,
+            "max_duration_seconds": _max_duration(represented),
+            "members": members,
+        },
+        next_steps=[
+            "Review the represented transfers in conn.log: zeek-cut id.orig_h id.resp_h "
+            f"id.resp_p orig_bytes resp_bytes < conn.log | grep {shlex.quote(src)}",
+            f"Check destination-pool ownership: whois {shlex.quote(network_text)}",
+            "Confirm whether the transfer is an expected backup, sync, or upload",
+            "Add an expected recurring destination pool to the allowlist",
+        ],
+        ts_generated=datetime.now(tz=timezone.utc),
+        data_window=context.data_window,
+    )
+
+
 def _partial_pair_facts(
     complete: pd.DataFrame,
     excluded: pd.DataFrame,
@@ -375,44 +525,27 @@ def run(context: DetectorContext) -> list[Finding]:
     if facts["missing_columns"] or complete.empty:
         return []
 
-    findings: list[Finding] = []
+    summaries: list[dict[str, Any]] = []
     for (src, dst), group in complete.groupby(["src", "dst"], sort=False):
-        orig_total = float(group["_orig_bytes"].sum())
-        resp_total = float(group["_resp_bytes"].sum())
-        if not _surface_pair(orig_total, resp_total, cfg):
+        summary = _pair_summary(str(src), str(dst), group, cfg)
+        if summary is not None:
+            summaries.append(summary)
+
+    pools: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for summary in summaries:
+        network = _destination_pool_network(summary["destination_ip"])
+        pools.setdefault((summary["src"], str(network)), []).append(summary)
+
+    folded_pair_ids: set[tuple[str, str]] = set()
+    findings: list[Finding] = []
+    for (src, _network_text), members in pools.items():
+        if len(members) < DESTINATION_POOL_FOLD_COUNT:
             continue
-        total = orig_total + resp_total
-        first_seen, last_seen, span_seconds = _time_evidence(group)
-        findings.append(Finding(
-            detector=DETECTOR_NAME,
-            severity=Severity.MEDIUM,
-            title=f"{src} → {dst}",
-            description=(
-                "Complete-byte connection rows show originator-dominant traffic to an "
-                "external destination, which resembles bulk data transfer."
-            ),
-            evidence={
-                "src": str(src),
-                "dst": str(dst),
-                "orig_bytes_total": orig_total,
-                "resp_bytes_total": resp_total,
-                "orig_share": round(orig_total / total, 4),
-                "connection_count": len(group),
-                "port_mix": _port_mix(group),
-                "span_seconds": span_seconds,
-                "first_seen": first_seen,
-                "last_seen": last_seen,
-                "max_duration_seconds": _max_duration(group),
-            },
-            next_steps=[
-                "Review the measured transfer in conn.log: zeek-cut id.orig_h id.resp_h "
-                f"id.resp_p orig_bytes resp_bytes < conn.log | grep {shlex.quote(str(src))}",
-                f"Check destination ownership: whois {shlex.quote(str(dst))}",
-                "Confirm whether the transfer is an expected backup, sync, or upload",
-                "Add an expected recurring pair to the allowlist",
-            ],
-            ts_generated=datetime.now(tz=timezone.utc),
-            data_window=context.data_window,
-        ))
+        network = _destination_pool_network(members[0]["destination_ip"])
+        findings.append(_rollup_finding(src, network, members, context))
+        folded_pair_ids.update((member["src"], member["dst"]) for member in members)
+    for summary in summaries:
+        if (summary["src"], summary["dst"]) not in folded_pair_ids:
+            findings.append(_pair_finding(summary, context))
     findings.sort(key=lambda finding: finding.evidence["orig_bytes_total"], reverse=True)
     return findings

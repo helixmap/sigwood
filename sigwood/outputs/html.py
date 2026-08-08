@@ -30,7 +30,11 @@ from sigwood.common.finding import Finding, MethodTag, RunSummary, Severity
 from sigwood.common.output import OutputHandler, register_handler
 from sigwood.common.paths import private_mkdir, private_write_text
 from sigwood.parsers.syslog import split_header
-from sigwood.outputs._evidence import evidence_at_level, sample_bound_note
+from sigwood.outputs._evidence import (
+    evidence_at_level,
+    exfil_members_at_level,
+    sample_bound_note,
+)
 from sigwood.outputs._render_model import (
     ColumnSpec,
     DetectorRenderable,
@@ -230,12 +234,41 @@ def _render_detail_row(finding: Finding, *, verbose_level: int, colspan: int) ->
     parts.append(_render_next_steps(finding.next_steps))
     # evidence_at_level dispatches curated (1) vs full (2).
     parts.append(_render_kv_grid(evidence_at_level(finding, verbose_level)))
+    parts.append(_render_exfil_members(finding, verbose_level))
     body = "".join(p for p in parts if p)
     if not body:
         return ""
     return (
         f'<tr class="detail"><td class="sev-cell"></td>'
         f'<td colspan="{colspan}">{body}</td></tr>'
+    )
+
+
+def _render_exfil_members(finding: Finding, verbose_level: int) -> str:
+    """Render the shared pool-member slice as inert structured text."""
+    members, note = exfil_members_at_level(finding, verbose_level)
+    if not members:
+        return ""
+    lines: list[str] = []
+    for member in members:
+        try:
+            line = " · ".join([
+                str(member.get("dst", "")),
+                f"out={human_bytes(float(member.get('orig_bytes', 0)))}",
+                f"share={float(member.get('orig_share', 0)):.4f}",
+                f"conns={int(member.get('connection_count', 0)):,}",
+            ])
+        except (TypeError, ValueError):
+            continue
+        lines.append(f'<div class="exfil-member">{_esc(line)}</div>')
+    if not lines:
+        return ""
+    note_line = (
+        f'<div class="sample-bound">{_esc(note)}</div>' if note is not None else ""
+    )
+    return (
+        '<div class="exfil-members"><div class="members-label">members:</div>'
+        f"{''.join(lines)}{note_line}</div>"
     )
 
 

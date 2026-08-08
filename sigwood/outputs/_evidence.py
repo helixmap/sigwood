@@ -21,6 +21,7 @@ from sigwood.common.finding import Finding, Severity
 # level 2 (the debug tail renders the raw evidence dict); this only keeps `-v`
 # readable when a burst touches dozens of actions/services.
 _CURATED_LIST_CAP = 12
+EXFIL_MEMBER_DISPLAY_CAP = 10
 
 
 def cap_evidence_list(values: "list | tuple") -> str:
@@ -35,9 +36,18 @@ def cap_evidence_list(values: "list | tuple") -> str:
     return f"{shown}, … (+{len(items) - _CURATED_LIST_CAP} more)"
 
 
-def sample_bound_note(total: object, shown: object) -> str | None:
+def sample_bound_note(
+    total: object,
+    shown: object,
+    noun: object = "rare line",
+) -> str | None:
     """Describe a positive integral sample shortfall, or vanish defensively."""
-    if isinstance(total, bool) or isinstance(shown, bool):
+    if (
+        isinstance(total, bool)
+        or isinstance(shown, bool)
+        or not isinstance(noun, str)
+        or not noun
+    ):
         return None
     try:
         total_int = int(index(total))
@@ -48,8 +58,26 @@ def sample_bound_note(total: object, shown: object) -> str | None:
         return None
     return (
         f"showing {shown_int} of {total_int} "
-        f"{plural(total_int, 'rare line')}"
+        f"{plural(total_int, noun)}"
     )
+
+
+def exfil_members_at_level(
+    finding: Finding,
+    level: int,
+) -> tuple[list[dict[str, Any]], str | None]:
+    """Return the shared human member slice for a destination-pool rollup."""
+    if (
+        finding.detector != "exfil"
+        or finding.evidence.get("tier") != "destination_pool"
+    ):
+        return [], None
+    raw_members = finding.evidence.get("members")
+    if not isinstance(raw_members, (list, tuple)):
+        return [], None
+    members = [member for member in raw_members if isinstance(member, dict)]
+    shown = members if level >= 2 else members[:EXFIL_MEMBER_DISPLAY_CAP]
+    return shown, sample_bound_note(len(members), len(shown), "destination")
 
 
 # Per-detector curated-evidence subsets for level 1 - tolerant: omit absent
@@ -137,6 +165,7 @@ def curated_evidence(finding: Finding) -> dict[str, Any]:
         keys = ("scan_state_ratio", "top_states", "direction", "pattern_tag")
     elif det == "exfil":
         keys = (
+            "destination_count",
             "orig_bytes_total", "resp_bytes_total", "orig_share",
             "connection_count", "span_seconds", "max_duration_seconds",
             "port_mix", "first_seen", "last_seen",
@@ -215,6 +244,15 @@ def evidence_at_level(finding: Finding, level: int) -> dict[str, Any]:
             # Human surfaces render transaction members as a structured
             # drilldown. Keep the same evidence full at the detector/JSON seam,
             # but do not also dump its nested list as a generic value here.
+            return {
+                key: value
+                for key, value in finding.evidence.items()
+                if key != "members"
+            }
+        if (
+            finding.detector == "exfil"
+            and finding.evidence.get("tier") == "destination_pool"
+        ):
             return {
                 key: value
                 for key, value in finding.evidence.items()

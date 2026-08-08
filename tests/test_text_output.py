@@ -1264,6 +1264,44 @@ def test_exfil_findings_stay_visible_at_every_reading_level() -> None:
     assert "192.0.2.10" in out1 and "192.0.2.20" in out1
 
 
+def test_exfil_pool_member_detail_follows_the_reading_level() -> None:
+    finding = _bare_finding("exfil", Severity.MEDIUM, "192.0.2.10 → 198.51.96.0/20")
+    finding.evidence = {
+        "tier": "destination_pool",
+        "src": "192.0.2.10",
+        "destination_network": "198.51.96.0/20",
+        "destination_count": 11,
+        "orig_bytes_total": 11_000,
+        "resp_bytes_total": 1_100,
+        "orig_share": 0.9091,
+        "connection_count": 11,
+        "span_seconds": 60.0,
+        "members": [
+            {
+                "dst": f"198.51.100.{host}",
+                "orig_bytes": 2_000 - host,
+                "resp_bytes": 100,
+                "orig_share": 0.95,
+                "connection_count": 1,
+            }
+            for host in range(20, 31)
+        ],
+    }
+
+    at0 = _capture_write(TextHandler(verbose_level=0), [finding])
+    at1 = _capture_write(TextHandler(verbose_level=1), [finding])
+    at2 = _capture_write(TextHandler(verbose_level=2), [finding])
+
+    assert "members:" not in at0
+    assert "198.51.100.20" not in at0
+    assert "members:" in at1
+    assert "198.51.100.29" in at1
+    assert "198.51.100.30" not in at1
+    assert "showing 10 of 11 destinations" in at1
+    assert "198.51.100.30" in at2
+    assert "members: [{" not in at2
+
+
 def test_severity_sort_primary_within_subsection() -> None:
     """Within a section, findings sort H → M → L → I (stable for incoming
     secondary order). Uses the generic ``_render_finding`` fallback so the

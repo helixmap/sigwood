@@ -14,12 +14,27 @@ All notable changes to sigwood are recorded here. The format follows
   outbound transfer to an external endpoint exists between these two hosts - and leaves the
   judgement to you; it never claims theft. Findings are MEDIUM; there is no severity ladder
   to climb and no baseline to learn, just two absolute thresholds you can read and change.
-  It is **opt-in**: run `sigwood exfil`, or `sigwood hunt --detect=all`.
+  It runs in the **default hunt**, so `sigwood hunt` includes it. `auth` is now the only
+  opt-in detector.
 
   The two thresholds - one gibibyte of outbound bytes to a single endpoint, and at least
-  60% of that pair's measured bytes flowing outbound - are provisional starting values,
-  deliberately conservative so a first run is quiet. The direction bar is what keeps
-  ordinary downloads out of an upload worklist.
+  60% of that pair's measured bytes flowing outbound - were swept against 121 days of real
+  traffic and both hold up. The floor sits in a region where moving it either way by a factor
+  of two barely changes what surfaces. The direction bar is what keeps ordinary downloads out
+  of an upload worklist; it is the safe side of a real boundary rather than a precision-tuned
+  value, and the difference between 60% and 50% was worth a single finding across those four
+  months.
+
+  **A rotating destination pool reports as one finding, not one per address.** Cloud services
+  answer on pools, so a single backup run can touch a hundred addresses and would otherwise
+  produce a hundred findings for one event - measured at its worst, 138 findings describing
+  two things happening. Four or more surfaced destinations that share a network block **and
+  the same sending host** now fold into a single finding that keeps every destination's own
+  byte totals inside it: complete in
+  JSON, the ten largest with a count of the rest under `-v`, and a single aggregate row in CSV
+  with no destination list buried in a cell. On the same traffic, a typical week goes from nine
+  findings to two and the worst week from 138 to two. Fewer than four destinations in a block
+  report exactly as before.
 
   Byte figures cover only the connections where **both** byte counts were recorded; rows
   missing either count leave the measurement rather than being counted as zero, and a

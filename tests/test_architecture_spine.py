@@ -136,14 +136,14 @@ class ArchitectureSpineTests(unittest.TestCase):
 
         self.assertEqual(
             selection.selected,
-            ["aws", "beacon", "dns", "scan", "syslog"],
+            ["aws", "beacon", "dns", "exfil", "scan", "syslog"],
         )
         self.assertTrue(selection.used_default)
-        self.assertNotIn("exfil", selection.selected)
+        self.assertIn("exfil", selection.selected)
 
     def test_default_keyword_is_additive_and_exclusions_apply_last(self) -> None:
         available = ["aws", "beacon", "dns", "exfil", "scan", "syslog"]
-        curated = ["aws", "beacon", "dns", "scan", "syslog"]
+        curated = ["aws", "beacon", "dns", "exfil", "scan", "syslog"]
 
         self.assertEqual(
             resolve_detect("default", available, default_members=curated),
@@ -153,13 +153,13 @@ class ArchitectureSpineTests(unittest.TestCase):
             resolve_detect(
                 "default,exfil", available, default_members=curated,
             ),
-            curated + ["exfil"],
+            curated,
         )
         self.assertEqual(
             resolve_detect(
                 "default,!beacon", available, default_members=curated,
             ),
-            ["aws", "dns", "scan", "syslog"],
+            ["aws", "dns", "exfil", "scan", "syslog"],
         )
 
     def test_detector_without_membership_does_not_join_default(self) -> None:

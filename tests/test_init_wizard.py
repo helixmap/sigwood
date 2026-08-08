@@ -2699,17 +2699,17 @@ def test_init_detect_fresh_accepts_compound_offer(
 
     text = (home / "config.toml").read_text(encoding="utf-8")
     assert text.splitlines().count(
-        'detect = "default, !aws, !beacon, !scan"'
+        'detect = "default, !aws, !beacon, !exfil, !scan"'
     ) == 1
     out = capsys.readouterr().out
     assert (
-        "beacon, scan (need Zeek logs) · aws (needs CloudTrail)"
+        "beacon, exfil, scan (need Zeek logs) · aws (needs CloudTrail)"
         in out
     )
     assert "dns (needs" not in out
     assert "syslog (needs" not in out
     assert re.search(
-        r"^  detectors\s+default, !aws, !beacon, !scan\s+added$",
+        r"^  detectors\s+default, !aws, !beacon, !exfil, !scan\s+added$",
         out,
         re.MULTILINE,
     )
@@ -2852,7 +2852,7 @@ def test_init_detect_merge_lift_accept_or_decline(
         assert not re.search(r"^  detectors\s", out, re.MULTILINE)
 
 
-def test_init_detect_merge_out_of_table_exclusion_is_untouched(
+def test_init_detect_merge_exfil_exclusion_is_lifted_when_zeek_is_added(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -2861,17 +2861,16 @@ def test_init_detect_merge_out_of_table_exclusion_is_untouched(
     _stub_candidates(monkeypatch)
     _stage_inputs(
         monkeypatch,
-        ["", "/zeek", "/pihole", "", "/cloudtrail", "", ""],
+        ["", "/zeek", "/pihole", "", "/cloudtrail", "", "", ""],
     )
 
     cli._run_init([])
 
     out = capsys.readouterr().out
-    assert "These detectors have nothing to read" not in out
-    assert "Lift the exclusion" not in out
-    assert not re.search(r"^  detectors\s", out, re.MULTILINE)
+    assert "Lift the exclusion" in out
+    assert re.search(r"^  detectors\s+default\s+was: default, !exfil$", out, re.MULTILINE)
     text = (home / "config.toml").read_text(encoding="utf-8")
-    assert 'detect = "default, !exfil"' in text
+    assert 'detect = "default"' in text
 
 
 def test_init_detect_merge_additions_and_lifts_compose(
@@ -2891,11 +2890,11 @@ def test_init_detect_merge_additions_and_lifts_compose(
     cli._run_init([])
 
     text = (home / "config.toml").read_text(encoding="utf-8")
-    assert 'detect = "default, !beacon, !scan"' in text
+    assert 'detect = "default, !beacon, !exfil, !scan"' in text
     out = capsys.readouterr().out
     assert "Skip them in the default hunt?" in out
     assert "Lift the exclusion?" in out
-    assert 'writes detect = "default, !beacon, !scan"' in out
+    assert 'writes detect = "default, !beacon, !exfil, !scan"' in out
 
 
 def test_init_detect_invalid_choice_reprompts(

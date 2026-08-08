@@ -57,13 +57,22 @@ and a four-hour beacon as about eighty minutes (a third). The beacon is still de
 flagged - it is the reported period that is wrong, not a silent miss - so treat a reported
 period as approximate and confirm the real cadence against the raw connection timestamps.
 
-**`exfil` is opt-in, and its two thresholds are provisional.** The detector surfaces bulk
-outbound transfers by byte volume rather than connection length, and it is not part of the
-default hunt: run `sigwood exfil`, or `sigwood hunt --detect=all`. Its floor - one gibibyte
-of outbound bytes to a single external endpoint - and its direction bar - at least 60% of a
-pair's measured bytes flowing outbound - are conservative starting values chosen to keep a
-first run quiet. They have not been calibrated against a broad corpus, so expect to tune
-them under `[detectors.exfil]` for your own traffic.
+**`exfil`'s direction bar is the safe side of a boundary, not a finely tuned number.** The
+detector surfaces bulk outbound transfers by byte volume rather than connection length. Both
+thresholds - a floor of one gibibyte of outbound bytes to a single external endpoint, and a
+direction bar of at least 60% of a pair's measured bytes flowing outbound - have now been
+swept against 121 days of real traffic and hold up. The floor sits in a region where moving
+it by a factor of two either way barely changes what surfaces. The direction bar is doing real
+work, correctly excluding download-heavy and roughly symmetric transfers, but the difference
+between 60% and 50% was worth a single finding across four months: it sits safely above the
+transfers we observed near the boundary, and it is not precision-tuned. Both are adjustable
+under `[detectors.exfil]`.
+
+**Most of what `exfil` reports will be traffic you already know about.** It reports a fact -
+this much data left, to here - and never claims the transfer was theft. The value is that you
+can see what your largest uploads actually are; the one you do not recognise is the signal. On
+the one estate we swept in detail, every finding over 121 days was a cloud backup service or
+an API endpoint the operator ran deliberately. That is one network, and your mix will differ.
 
 **`exfil` reports nothing at all when a connection log carries no responder byte counts.**
 The direction bar needs both sides of each connection, so a `conn.log` without a
@@ -82,11 +91,25 @@ looks strongly outbound may have been inbound-dominant in truth. sigwood never p
 measured share as the whole picture for this reason, but no arithmetic can rule the case
 out.
 
+**`exfil` groups a rotating destination pool by network block, which is a display choice
+that can be wrong at the edges.** Cloud services answer on pools of addresses, so one backup
+run can touch a hundred of them. Rather than print a finding per address, sigwood folds four
+or more surfaced destinations into a single finding when they share a network block **and the
+same sending host** - two different machines uploading into the same cloud stay two findings -
+and keeps every destination's own byte totals inside it: complete in JSON, and readable with
+`-v`. The block
+is a fixed size, not a lookup of who really owns those addresses, so two unrelated services
+that happen to be neighbours can be grouped together. Nothing is lost when that happens: the
+per-destination detail is still there, and the JSON output can always reconstruct the
+one-finding-per-destination view.
+
 **`exfil` misses transfers under its floor, spread across destinations, or outside the
 window.** A slow trickle below the byte floor is invisible to it, though `beacon` may still
 catch the cadence of the channel carrying it, and an upload split across many destinations
-can leave every individual pair under-floor. The floor is window-relative, so a narrow
-`--hours` window can hide volume a full-archive run shows. And because sigwood is stateless,
+can leave every individual pair under-floor - the grouping above helps you read a pool that
+does surface, but it cannot rescue destinations that never cleared the floor individually.
+The floor is window-relative, so a narrow `--hours` window can hide volume a full-archive run
+shows. And because sigwood is stateless,
 a legitimate recurring transfer - a nightly backup, a photo sync - surfaces on every run
 until you add that pair to the allowlist. That is the intended workflow rather than a
 defect.
@@ -155,18 +178,40 @@ findings come entirely from the per-label suspicion score, not from cluster shap
 clusters, so on a small capture the lexical score is doing the work.
 
 **DNS clustering cost rises with the volume of unsuppressed queries.** Measured on one frozen
-seven-day corpus of about 2.2 million rows, on one machine. Running the DNS detector on its own,
-a `--no-allowlist` pass over the full seven days completed in about eight minutes, and the
-process was observed at about 8 GiB resident — holding near that level for most of the run rather
-than spiking briefly. Running the whole default hunt over the same window, also unsuppressed, did
-not finish within a nine-minute bound. With the shipped allowlist the same window completes
-normally, and at a one-day window the unsuppressed run completes in about 50 seconds.
+seven-day corpus - about 1.7 million Zeek DNS rows alongside 3.8 million Pi-hole rows - on one
+machine. Running the DNS detector on its own, a `--no-allowlist` pass over the full seven days
+takes several minutes and was measured needing **7.26 to 7.54 GiB in the main process, with
+about 9.85 GiB across the whole process tree**. Both figures matter: clustering runs in a
+separate child process, so a reading that watches only the main process understates what the
+machine needs by roughly a quarter. Size for the tree figure. Running the whole default hunt
+over the same window, also unsuppressed, takes substantially longer. With the shipped allowlist
+the same window completes normally, and a one-day window is far quicker.
+
+Clock times are given as orders of magnitude on purpose: wall-clock for this path does not
+reproduce closely between runs on a machine doing other work, so a precise figure would imply
+a precision we cannot stand behind. The memory figures did reproduce across sessions, which is
+why they are given as a measured range rather than rounded to a single number.
 
 With an unusually thin allowlist, or `--no-allowlist` over a large window, the DNS path may be
 impractically slow or may exceed the memory available to the process on a smaller machine. Narrow
 the window, run the detector on its own (`--detect=dns`), or keep suppression enabled. These
 figures come from one corpus and one machine. They are not a scaling law and do not explain why
 clustering behaves this way.
+
+**DNS clustering does not reproduce itself exactly on very large captures.** Run the same
+multi-million-query capture twice on the same machine with identical input and roughly one
+percent of queries can land in a different cluster the second time. The clustering library
+spreads its work across processor cores, and the order those results come back in varies, which
+is enough to move queries sitting near a boundary between groups. The effect is scale-dependent:
+the one smaller capture we tested this way - about 202,000 queries - was identical across three
+runs. We have not established where between those two sizes the behaviour changes.
+
+**Findings have been identical across every run we have measured**, over many runs on two
+machines, so the step from clusters to reported findings absorbs this. But nothing in the design
+guarantees it: a domain sitting right at the edge of being reported could appear on one run and
+not the next. We have never observed that happen, and we cannot promise it will not. If you are
+comparing two runs of the same capture and want certainty about a borderline domain, look at it
+directly rather than inferring from whether it was reported both times.
 
 **A fast sequence of unprivileged rare events folds into one informational burst.** Four or
 more rare log lines outside the privileged program class within about a minute on one host

@@ -72,7 +72,7 @@ needs re-checking.
 | Lateral Movement | Multi-host authentication failures for one source and account (`auth`) | Zeek SMB and SSH logs |
 | Collection | Nothing claimed | Zeek SMB logs |
 | Command and Control | Check-in timing (`beacon`); generated-looking domains (`dns`), with the dense tunnel path Zeek-only | TLS anomalies, odd ports, tunnel log |
-| Exfiltration | DNS tunnelling shapes (`dns`, Zeek-only for the dense path); bulk outbound byte transfers (`exfil`, opt-in) | Transfers below the byte floor or split across many destinations; exfiltration inside an allowed cloud service |
+| Exfiltration | DNS tunnelling shapes (`dns`, Zeek-only for the dense path); bulk outbound byte transfers (`exfil`) | Transfers below the byte floor or split across many destinations; exfiltration inside an allowed cloud service |
 | Impact | No mining-specific verdict; generic check-ins (`beacon`) can be a downstream clue | Cloud destruction events; SMB file activity |
 
 **The shape of it.** This roadmap weights one particular threat model - a self-hosted

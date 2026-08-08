@@ -91,6 +91,36 @@ def test_envelope_has_version_and_schema() -> None:
     assert payload["schema_version"] == 1
 
 
+def test_exfil_pool_members_are_lossless_at_every_reading_level() -> None:
+    finding = Finding(
+        detector="exfil",
+        severity=Severity.MEDIUM,
+        title="192.0.2.10 → 198.51.96.0/20",
+        description="A destination pool was measured.",
+        evidence={
+            "tier": "destination_pool",
+            "destination_network": "198.51.96.0/20",
+            "destination_count": 2,
+            "members": [
+                {"dst": "198.51.100.20", "orig_bytes": 1_200},
+                {"dst": "198.51.100.21", "orig_bytes": 1_100},
+            ],
+        },
+        next_steps=[],
+        ts_generated=datetime(2026, 6, 1, 18, 0, tzinfo=timezone.utc),
+        data_window=_W,
+    )
+
+    at0 = _emit([finding], verbose_level=0)
+    at2 = _emit([finding], verbose_level=2)
+
+    assert at0["findings"][0]["evidence"] == at2["findings"][0]["evidence"]
+    assert at0["findings"][0]["evidence"]["members"] == [
+        {"dst": "198.51.100.20", "orig_bytes": 1_200},
+        {"dst": "198.51.100.21", "orig_bytes": 1_100},
+    ]
+
+
 def test_run_summary_provenance_populated_and_nullable() -> None:
     summary = _run_summary()
     summary.invocation = "sigwood hunt 'quoted path/conn.log'"

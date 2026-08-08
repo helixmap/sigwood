@@ -106,6 +106,9 @@ def test_sample_bound_note_accepts_only_positive_integral_objects() -> None:
     )
     assert _evidence.sample_bound_note(20, 20) is None
     assert _evidence.sample_bound_note(19, 20) is None
+    assert _evidence.sample_bound_note(np.int64(11), np.int64(10), "destination") == (
+        "showing 10 of 11 destinations"
+    )
 
 
 @pytest.mark.parametrize(
@@ -368,6 +371,55 @@ def test_exfil_low_is_visible_at_level_0() -> None:
     )
     assert "192.0.2.50" in _render([low], verbose_level=0)
     assert "192.0.2.50" in _render([low], verbose_level=1)
+
+
+def test_exfil_pool_members_are_bounded_and_html_escaped() -> None:
+    members = [
+        {
+            "dst": f"198.51.100.{host}",
+            "orig_bytes": 2_000 - host,
+            "resp_bytes": 100,
+            "orig_share": 0.95,
+            "connection_count": 1,
+        }
+        for host in range(20, 30)
+    ]
+    members.append({
+        "dst": "198.51.100.30<script>alert(1)</script>",
+        "orig_bytes": 1_970,
+        "resp_bytes": 100,
+        "orig_share": 0.95,
+        "connection_count": 1,
+    })
+    finding = _finding(
+        detector="exfil",
+        title="192.0.2.10 → 198.51.96.0/20",
+        evidence={
+            "tier": "destination_pool",
+            "src": "192.0.2.10",
+            "destination_network": "198.51.96.0/20",
+            "destination_count": 11,
+            "orig_bytes_total": 11_000,
+            "resp_bytes_total": 1_100,
+            "orig_share": 0.9091,
+            "connection_count": 11,
+            "span_seconds": 60.0,
+            "members": members,
+        },
+    )
+
+    at0 = _render([finding], verbose_level=0)
+    at1 = _render([finding], verbose_level=1)
+    at2 = _render([finding], verbose_level=2)
+
+    assert "members:" not in at0
+    assert "198.51.100.20" not in at0
+    assert "198.51.100.29" in at1
+    assert "198.51.100.30" not in at1
+    assert "showing 10 of 11 destinations" in at1
+    assert "198.51.100.30&lt;script&gt;alert(1)&lt;/script&gt;" in at2
+    assert "<script>alert(1)</script>" not in at2
+    assert "href=" not in at2
 
 
 def test_group_header_uses_pre_cap_counts() -> None:

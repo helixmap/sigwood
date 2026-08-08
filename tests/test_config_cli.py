@@ -1336,7 +1336,7 @@ def test_detect_empty_string_is_absent_falls_back_to_default(
     """Compatibility pin: `--detect=` (EMPTY string) means absent - the
     two-step fallback lands on the curated default. With every source dir
     empty that is the all-skipped arm, WITH skipped: lines, but the opt-in
-    auth and exfil detectors are not selected."""
+    auth detector is not selected."""
     probe = _write_probe_config(tmp_path)
     cli.main(["hunt", "--detect=", "--dry-run", f"--config={probe}"])
 
@@ -1344,8 +1344,8 @@ def test_detect_empty_string_is_absent_falls_back_to_default(
     assert "(none - required logs unavailable)" in out
     assert "skipped:" in out
     skipped_lines = [line for line in out.splitlines() if line.startswith("skipped:")]
-    assert all("exfil" not in line for line in skipped_lines)
-    assert "opt-in:          auth, exfil" in out
+    assert any("exfil" in line for line in skipped_lines)
+    assert "opt-in:          auth" in out
 
 
 def test_explicit_all_config_matches_explicit_all_cli(
@@ -1374,9 +1374,9 @@ def test_explicit_default_flag_discloses_opt_in_remainder(
     ])
 
     out = capsys.readouterr().out
-    assert "opt-in:          auth, exfil" in out
+    assert "opt-in:          auth" in out
     skipped_lines = [line for line in out.splitlines() if line.startswith("skipped:")]
-    assert all("exfil" not in line for line in skipped_lines)
+    assert any("exfil" in line for line in skipped_lines)
 
 
 def test_detect_whitespace_only_selects_none(

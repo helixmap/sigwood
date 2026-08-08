@@ -104,6 +104,7 @@ BUNDLE_FILES = {
 }
 
 HASH_DOMAIN = b"sigwood-bench-config-v1"
+FINDING_IDENTITY_HASH_DOMAIN = b"sigwood-bench-finding-identity-v1"
 SIGWOOD_REDACT_KEYS = frozenset({
     "root",
     "zeek_dir",
@@ -555,6 +556,22 @@ def _config_hash(config: dict[str, Any], salt: str) -> str:
     return digest.hexdigest()[:12]
 
 
+def _finding_identity_digest(
+    identities: dict[str, list[tuple[str, str]]], salt: str,
+) -> dict[str, str]:
+    """Return salted, detector-scoped digests of raw finding identities."""
+    salt_bytes = bytes.fromhex(salt)
+    return {
+        detector: hashlib.sha256(
+            FINDING_IDENTITY_HASH_DOMAIN
+            + b"\0"
+            + salt_bytes
+            + json.dumps(sorted(pairs), separators=(",", ":")).encode("utf-8")
+        ).hexdigest()[:12]
+        for detector, pairs in sorted(identities.items())
+    }
+
+
 def _prepare_bundle(raw_path: Path) -> Path:
     path = raw_path.expanduser().resolve()
     if path == REPO_ROOT or REPO_ROOT in path.parents:
@@ -711,6 +728,7 @@ def _project_summary(
     exit_code: int,
     runtime_seconds: float,
     config_hash: str,
+    salt: str,
     dataset_id: str,
     config: dict[str, Any],
     selectors: list[dict[str, str]],
@@ -727,12 +745,16 @@ def _project_summary(
         for detector in run_detector_names
     }
     totals: dict[str, int] = {detector: 0 for detector in run_detector_names}
+    identities: dict[str, list[tuple[str, str]]] = {
+        detector: [] for detector in run_detector_names
+    }
     for finding in findings:
         detector = strip_control(finding["detector"])
         if detector not in grouped:
             raise SummaryRefusal("findings.detector", "detector is absent from detectors_run")
         grouped[detector][finding["severity"]] += 1
         totals[detector] += 1
+        identities[detector].append((finding["severity"], finding["title"]))
 
     default_visible, cap_hidden, level_hidden = _parse_text_counts(report, totals)
     methods: dict[str, str | None] = {}
@@ -748,6 +770,9 @@ def _project_summary(
         "sigwood_version": strip_control(payload["sigwood_version"]),
         "schema_version": payload["schema_version"],
         "findings_by_detector_severity": grouped,
+        "finding_identity_digest": _finding_identity_digest(
+            identities, salt
+        ),
         "total_findings": len(findings),
         "detectors_run": _safe_name_list(run["detectors_run"]),
         "detectors_skipped": _safe_name_list(list(run["detectors_skipped"])),
@@ -837,6 +862,7 @@ def _measurement(
         exit_code=json_run.returncode,
         runtime_seconds=runtime_seconds,
         config_hash=_config_hash(config, salt),
+        salt=salt,
         dataset_id=args.dataset_id,
         config=config,
         selectors=selectors,

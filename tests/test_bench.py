@@ -437,6 +437,7 @@ def test_projection_handles_nullable_shapes_span_and_absent_header() -> None:
         exit_code=0,
         runtime_seconds=1.25,
         config_hash="abc123abc123",
+        salt="0123456789abcdef0123456789abcdef",
         dataset_id="demo",
         config=_projection_config(),
         selectors=[],
@@ -484,6 +485,105 @@ def test_config_hash_is_salted_path_redacted_and_behavior_sensitive() -> None:
     changed["detectors"] = {"beacon": {"threshold": 0.9}}
     assert bench_summarize._config_hash(changed, salt) != baseline
     assert bench_summarize._config_hash(config, "fedcba9876543210fedcba9876543210") != baseline
+
+
+def _identity_summary(
+    findings: list[dict[str, Any]],
+    detectors_run: list[str],
+    *,
+    salt: str = "0123456789abcdef0123456789abcdef",
+) -> dict[str, Any]:
+    payload = bench_summarize._validate_payload(
+        _payload(findings, detectors_run=detectors_run)
+    )
+    return bench_summarize._project_summary(
+        payload,
+        "",
+        exit_code=0,
+        runtime_seconds=1.0,
+        config_hash="abc123abc123",
+        salt=salt,
+        dataset_id="demo",
+        config=_projection_config(),
+        selectors=[],
+    )
+
+
+def test_finding_identity_digest_is_salted_order_independent_and_private() -> None:
+    salt = "0123456789abcdef0123456789abcdef"
+    findings = [
+        _finding("exfil", "low", title="sensitive identity"),
+        _finding("scan", "high", title="other identity"),
+        _finding("exfil", "low", title="identity\x00with-control"),
+    ]
+    baseline = _identity_summary(findings, ["scan", "exfil", "idle"], salt=salt)
+    digests = baseline["finding_identity_digest"]
+
+    assert set(digests) == {"scan", "exfil", "idle"}
+    assert all(re.fullmatch(r"[0-9a-f]{12}", digest) for digest in digests.values())
+    assert digests["idle"] == _identity_summary([], ["idle"], salt=salt)[
+        "finding_identity_digest"
+    ]["idle"]
+    serialized = json.dumps(baseline, sort_keys=True)
+    assert "sensitive identity" not in serialized
+    assert "identity\\u0000with-control" not in serialized
+    assert salt not in serialized
+
+    reordered = _identity_summary(list(reversed(findings)), ["exfil", "idle", "scan"], salt=salt)
+    assert reordered["finding_identity_digest"] == digests
+
+    changed = copy.deepcopy(findings)
+    changed[0]["title"] = "changed identity"
+    changed_digests = _identity_summary(changed, ["scan", "exfil", "idle"], salt=salt)[
+        "finding_identity_digest"
+    ]
+    assert changed_digests["exfil"] != digests["exfil"]
+    assert changed_digests["scan"] == digests["scan"]
+    assert changed_digests["idle"] == digests["idle"]
+
+    changed = copy.deepcopy(findings)
+    changed[0]["severity"] = "medium"
+    assert _identity_summary(changed, ["scan", "exfil", "idle"], salt=salt)[
+        "finding_identity_digest"
+    ]["exfil"] != digests["exfil"]
+
+    salted = _identity_summary(
+        findings,
+        ["scan", "exfil", "idle"],
+        salt="fedcba9876543210fedcba9876543210",
+    )["finding_identity_digest"]
+    assert all(salted[detector] != digest for detector, digest in digests.items())
+
+
+def test_finding_identity_digest_helper_sorts_each_detector_identity_list() -> None:
+    salt = "0123456789abcdef0123456789abcdef"
+    first = {"exfil": [("low", "a"), ("high", "b")]}
+    reversed_pairs = {"exfil": list(reversed(first["exfil"]))}
+
+    assert bench_summarize._finding_identity_digest(first, salt) == (
+        bench_summarize._finding_identity_digest(reversed_pairs, salt)
+    )
+
+
+def test_finding_identity_digest_preserves_multiplicity_and_unambiguous_pairs() -> None:
+    one = [_finding("exfil", "low", title="same identity")]
+    two = one + [_finding("exfil", "low", title="same identity")]
+    assert _identity_summary(one, ["exfil"])["finding_identity_digest"] != _identity_summary(
+        two, ["exfil"]
+    )["finding_identity_digest"]
+
+    split = [
+        _finding("exfil", "low", title="a"),
+        _finding("exfil", "low", title="b"),
+    ]
+    glued = [_finding("exfil", "low", title="a/low/b")]
+    naive = lambda rows: "/".join(
+        part for row in rows for part in (row["severity"], row["title"])
+    )
+    assert naive(split) == naive(glued)
+    assert _identity_summary(split, ["exfil"])["finding_identity_digest"] != _identity_summary(
+        glued, ["exfil"]
+    )["finding_identity_digest"]
 
 
 def test_payload_refuses_schema_bump_and_structural_key_drift() -> None:
@@ -655,6 +755,7 @@ def _diff_summary(**overrides: Any) -> dict[str, Any]:
         "data_size_bytes": 10,
         "requested_span_seconds": None,
         "total_findings": 2,
+        "finding_identity_digest": {"exfil": "aaaaaaaaaaaa"},
         "detectors_failed": [],
     }
     summary.update(overrides)
@@ -711,6 +812,13 @@ def test_diff_expect_diff_requires_detector_behavior() -> None:
     )
     assert code == 0
     assert any("total_findings" in line for line in lines)
+
+    changed = _diff_summary(finding_identity_digest={"exfil": "bbbbbbbbbbbb"})
+    code, lines = bench_diff._compare(
+        base, changed, expect_diff=True, strict_runtime=False
+    )
+    assert code == 0
+    assert any("finding_identity_digest.exfil" in line for line in lines)
 
 
 def test_diff_runtime_tolerance_and_unknown_float_guard() -> None:

@@ -14,6 +14,7 @@ from typing import Any, NoReturn
 RUNTIME_PATH = "runtime_seconds"
 BEHAVIORAL_PREFIXES = (
     "findings_by_detector_severity",
+    "finding_identity_digest",
     "total_findings",
     "default_visible",
     "cap_hidden",

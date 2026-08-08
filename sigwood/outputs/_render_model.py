@@ -7,7 +7,7 @@ the section-walking cap + pre-cap sidecars) AND the per-finding cell projection
 they cannot drift.
 
 PURE - no I/O, no ``detectors/`` imports. Imports ``common/`` and
-``outputs/_evidence`` (``level_visible``) only.
+``outputs/_evidence`` only.
 
 Cell-projection contract:
   - ``project_row(finding)`` → the ordered data columns text builds today
@@ -33,10 +33,10 @@ from sigwood.common.display import (
     fmt_compact_span,
     fmt_syslog_timestamp,
     fmt_timestamp,
+    human_bytes,
     plural,
 )
 from sigwood.common.finding import Finding, Severity
-from sigwood.outputs._evidence import level_visible
 
 
 def fold_mix_names(mix: Iterable[object]) -> str:
@@ -235,11 +235,10 @@ def _build_renderable(
     """Run the render pipeline on one detector's findings.
 
     Order is binding:
-      1. level-filter (duration LOW at level 0)
-      2. partition into Sections (detector-specific)
-      3. capture pre-cap level_visible_total + severity_breakdown
-      4. severity-sort each section in place
-      5. cap walks sections in declared order; truncates findings; sets
+      1. partition into Sections (detector-specific)
+      2. capture pre-cap level_visible_total + severity_breakdown
+      3. severity-sort each section in place
+      4. cap walks sections in declared order; truncates findings; sets
          cap_truncated; later sections may end up with findings=[] and
          vanish at render time
 
@@ -247,7 +246,9 @@ def _build_renderable(
     BEFORE the cap so the group header NEVER drifts to post-cap counts -
     the pre-cap regression test in tests/test_text_output.py guards this.
     """
-    visible = [f for f in findings if level_visible(f, verbose_level)]
+    # No detector has a finding-visibility-by-level rule. Verbosity changes
+    # evidence depth only; every produced finding remains visible.
+    visible = list(findings)
 
     partition = _PARTITIONERS.get(detector, _partition_flat)
     sections = partition(visible)
@@ -543,32 +544,19 @@ def _project_syslog(f: Finding) -> list[Cell]:
     return [Cell(None, f.title, full_width=True)]
 
 
-def _project_duration(f: Finding) -> list[Cell]:
+def _project_exfil(f: Finding) -> list[Cell]:
     ev = f.evidence
-    port = ev.get("port")
-    port_str = str(port) if port is not None else "?"
-    dst = f"{ev.get('dst', '')}:{port_str}/{ev.get('proto', '')}"
-    bps = ev.get("avg_bytes_per_second")
-    if bps is None:
-        bps_col = ""
-    elif bps >= 1_000_000:
-        bps_col = f"{bps / 1_000_000:.1f}mbps"
-    elif bps >= 1_000:
-        bps_col = f"{bps / 1_000:.1f}kbps"
-    else:
-        bps_col = f"{bps:.0f}bps"
-    count = ev.get("connection_count", 1)
-    conns = f"{count} conn" if count == 1 else f"{count} conns"
-    states = ev.get("conn_states", [])
-    state_col = ", ".join(states) if states else ""
+    count = int(ev.get("connection_count", 0))
+    span = ev.get("span_seconds")
+    span_col = "" if span is None else fmt_compact_span(timedelta(seconds=float(span)))
     return [
         Cell(None, ev.get("src", "")),
         Cell(None, "→"),
-        Cell(None, dst),
-        Cell("dur", ev.get("max_duration_str", "")),
-        Cell("bps", bps_col, align="right"),
-        Cell("conns", conns, align="right"),
-        Cell("states", state_col, align="right"),
+        Cell(None, ev.get("dst", "")),
+        Cell("out", f"out={human_bytes(float(ev.get('orig_bytes_total', 0)))}", align="right"),
+        Cell("share", f"share={float(ev.get('orig_share', 0)):.4f}", align="right"),
+        Cell("conns", f"conns={count:,}", align="right"),
+        Cell("span", span_col, align="right", optional=True),
     ]
 
 
@@ -679,7 +667,7 @@ _PROJECTORS = {
     "dns": _project_dns,
     "scan": _project_scan,
     "syslog": _project_syslog,
-    "duration": _project_duration,
+    "exfil": _project_exfil,
     "aws": _project_aws,
     "auth": _project_auth,
 }

@@ -308,20 +308,20 @@ def test_run_banner_shows_suppression_counted_once(tmp_path: Path, capsys) -> No
     env = _env(tmp_path, rule=":22/tcp")          # suppresses the port-22 row
     # Three conn detectors share ONE conn frame - the count must stay 1, NOT 3
     # (anti-double-count: counted over load_result.logs, not per-detector).
-    runner.run(env["config"], detect="beacon,scan,duration", zeek_dir=env["zeek_dir"])
+    runner.run(env["config"], detect="beacon,scan,exfil", zeek_dir=env["zeek_dir"])
     out = capsys.readouterr().out
     assert "allowlist:     suppressed 1 connection" in out
 
 
 def test_run_banner_no_hits_when_nothing_matches(tmp_path: Path, capsys) -> None:
     env = _env(tmp_path, rule=":9999/tcp")        # matches nothing
-    runner.run(env["config"], detect="duration", zeek_dir=env["zeek_dir"])
+    runner.run(env["config"], detect="exfil", zeek_dir=env["zeek_dir"])
     assert "allowlist:     no hits" in capsys.readouterr().out
 
 
 def test_run_no_allowlist_crosses_seam_to_off(tmp_path: Path, capsys) -> None:
     env = _env(tmp_path, rule=":22/tcp")          # would suppress, but --no-allowlist
-    runner.run(env["config"], detect="duration", zeek_dir=env["zeek_dir"],
+    runner.run(env["config"], detect="exfil", zeek_dir=env["zeek_dir"],
                no_allowlist=True)
     assert "allowlist:     off" in capsys.readouterr().out
 
@@ -329,5 +329,5 @@ def test_run_no_allowlist_crosses_seam_to_off(tmp_path: Path, capsys) -> None:
 def test_run_master_off_renders_off(tmp_path: Path, capsys) -> None:
     env = _env(tmp_path, rule=":22/tcp")
     env["config"]["allowlist"]["enabled"] = False
-    runner.run(env["config"], detect="duration", zeek_dir=env["zeek_dir"])
+    runner.run(env["config"], detect="exfil", zeek_dir=env["zeek_dir"])
     assert "allowlist:     off" in capsys.readouterr().out

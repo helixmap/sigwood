@@ -2,8 +2,7 @@
 
 ``curated_evidence`` / ``is_empty`` / ``cap_evidence_list`` were MOVED here from
 ``text.py`` byte-identical so text and html cannot drift on *what* shows at a
-level. ``evidence_at_level`` + ``level_visible`` are the two level dials both
-surfaces consume.
+level. ``evidence_at_level`` is the shared reading-depth dial.
 
 This is output-OWNED render policy (the only shared behavioural coupling between
 the human formats). It is never imported by ``detectors/`` or ``common/`` - the
@@ -136,8 +135,12 @@ def curated_evidence(finding: Finding) -> dict[str, Any]:
         )
     elif det == "scan":
         keys = ("scan_state_ratio", "top_states", "direction", "pattern_tag")
-    elif det == "duration":
-        keys = ("avg_bytes_per_second", "conn_states", "connection_count")
+    elif det == "exfil":
+        keys = (
+            "orig_bytes_total", "resp_bytes_total", "orig_share",
+            "connection_count", "span_seconds", "max_duration_seconds",
+            "port_mix", "first_seen", "last_seen",
+        )
     elif det == "aws":
         tier = ev.get("tier")
         if tier == "burst":
@@ -228,15 +231,3 @@ def evidence_at_level(finding: Finding, level: int) -> dict[str, Any]:
         # curated_evidence() directly and therefore never inherits raw members.
         out["sample_raw"] = list(finding.evidence["sample_raw"][:3])
     return out
-
-
-def level_visible(finding: Finding, level: int) -> bool:
-    """The one finding-visibility-by-level rule, per-finding.
-
-    Duration hides LOW findings at level 0 - this lives in the render seam,
-    not the detector's ``run()``. Every other detector / finding is a
-    no-op. Default ``True``.
-    """
-    if finding.detector == "duration" and level == 0:
-        return finding.severity != Severity.LOW
-    return True

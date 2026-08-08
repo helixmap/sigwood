@@ -64,7 +64,7 @@ def test_flag_allowlist_is_hunt_and_syslog_only() -> None:
     assert "syslog_source" in cli._VERBS["hunt"].allowed
     assert "syslog_source" in cli._VERBS["syslog"].allowed
     for verb in (
-        "beacon", "dns", "scan", "duration", "aws", "digest", "graph",
+        "beacon", "dns", "scan", "exfil", "aws", "digest", "graph",
         "export", "init", "allowlist",
     ):
         assert "syslog_source" not in cli._VERBS[verb].allowed
@@ -141,7 +141,7 @@ def test_empty_detect_override_uses_default_before_syslog_intent_guard(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     """An explicit empty spec overrides a named config with the curated default."""
-    config = _config(tmp_path, tmp_path, detect="duration")
+    config = _config(tmp_path, tmp_path, detect="exfil")
 
     assert cli._main([
         "hunt",
@@ -151,7 +151,7 @@ def test_empty_detect_override_uses_default_before_syslog_intent_guard(
         f"--config={config}",
     ]) == 0
 
-    assert "opt-in:          auth, duration" in capsys.readouterr().out
+    assert "opt-in:          auth, exfil" in capsys.readouterr().out
 
 
 def test_explicit_off_is_legal_with_syslog_excluded_and_never_probes(

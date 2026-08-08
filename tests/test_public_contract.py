@@ -40,7 +40,7 @@ _WINDOW = (
 )
 
 _VERBS = {
-    "allowlist", "auth", "aws", "beacon", "digest", "dns", "duration",
+    "allowlist", "auth", "aws", "beacon", "digest", "dns", "exfil",
     "export", "graph", "hunt", "init", "scan", "syslog",
 }
 _FORMATS = {"csv", "html", "json", "pdf", "text"}
@@ -196,7 +196,7 @@ def test_unsuppressed_context_uses_fresh_defaults_and_a_real_empty_matcher() -> 
 def test_all_available_detectors_run_on_an_empty_unsuppressed_context() -> None:
     context = DetectorContext.unsuppressed({}, data_window=_WINDOW)
     for name in sorted({
-        "auth", "aws", "beacon", "dns", "duration", "scan", "syslog",
+        "auth", "aws", "beacon", "dns", "exfil", "scan", "syslog",
     }):
         run = import_module(f"sigwood.detectors.{name}").run
         result = run(context)
@@ -264,6 +264,8 @@ def test_contract_page_tracks_the_atomic_auth_surface_inventory() -> None:
     assert "`hunt` · `auth` · `beacon`" in contract
     assert "The seven callable detectors are `auth`, `aws`, `beacon`" in contract
     assert "exactly `auth` and `syslog` own the local system-log lane" in contract
+    assert "## Exfil measured evidence" in contract
+    assert "They are not a claim about\nunmeasured rows for the same pair." in contract
 
 
 def test_cli_value_grammar_and_duplicate_semantics() -> None:
@@ -407,7 +409,7 @@ def test_documented_config_key_inventory_is_not_defaults_only() -> None:
             "scan_max_members_per_cluster", "promote_below_gate",
             "promote_min_subdomains", "promote_min_nxdomain_fraction",
         },
-        "duration": {"min_duration_seconds"},
+        "exfil": {"min_outbound_bytes", "min_orig_share"},
         "scan": {
             "window_secs", "horizontal_threshold", "vertical_threshold",
             "block_host_threshold", "block_port_threshold", "block_state_min",
@@ -513,7 +515,7 @@ def _assert_aware_iso(value: object) -> None:
 def test_event_time_contract_uses_current_finding_producers() -> None:
     beacon = import_module("sigwood.detectors.beacon")
     dns = import_module("sigwood.detectors.dns")
-    duration = import_module("sigwood.detectors.duration")
+    exfil = import_module("sigwood.detectors.exfil")
     aws = import_module("sigwood.detectors.aws")
     scan = import_module("sigwood.detectors.scan")
     syslog_detector = import_module("sigwood.detectors.syslog")
@@ -573,21 +575,24 @@ def test_event_time_contract_uses_current_finding_producers() -> None:
         assert {"first_seen", "last_seen", "span_seconds"} <= finding.evidence.keys()
         _assert_aware_iso(finding.evidence["first_seen"])
 
-    duration_context = DetectorContext.unsuppressed(
+    exfil_context = DetectorContext.unsuppressed(
         {"conn*.log*": pd.DataFrame({
-            "src": ["192.0.2.10"],
+            "src": ["10.0.0.10"],
             "dst": ["198.51.100.20"],
             "port": [443],
             "proto": ["tcp"],
             "duration": [3600.0],
             "ts": [60.0],
+            "bytes": [1 << 30],
+            "resp_bytes": [1],
+            "local_orig": [True],
         })},
         data_window=_WINDOW,
     )
-    duration_finding = duration.run(duration_context)[0]
-    assert {"first_seen", "last_seen"} <= duration_finding.evidence.keys()
-    _assert_aware_iso(duration_finding.evidence["first_seen"])
-    _assert_aware_iso(duration_finding.evidence["last_seen"])
+    exfil_finding = exfil.run(exfil_context)[0]
+    assert {"first_seen", "last_seen", "span_seconds"} <= exfil_finding.evidence.keys()
+    _assert_aware_iso(exfil_finding.evidence["first_seen"])
+    _assert_aware_iso(exfil_finding.evidence["last_seen"])
 
     rows = [
         SimpleNamespace(

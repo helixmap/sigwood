@@ -57,11 +57,44 @@ and a four-hour beacon as about eighty minutes (a third). The beacon is still de
 flagged - it is the reported period that is wrong, not a silent miss - so treat a reported
 period as approximate and confirm the real cadence against the raw connection timestamps.
 
-**Duration overstates severity for ordinary long-lived connections.** The duration detector
-assigns HIGH from elapsed wall-clock time alone, so CDN, streaming, and keepalive flows can
-score HIGH without corroborating evidence. It is opt-in while that severity model is rebuilt:
-run `sigwood duration` or `sigwood hunt --detect=all`. It returns to the default hunt when its
-severity earns that place.
+**`exfil` is opt-in, and its two thresholds are provisional.** The detector surfaces bulk
+outbound transfers by byte volume rather than connection length, and it is not part of the
+default hunt: run `sigwood exfil`, or `sigwood hunt --detect=all`. Its floor - one gibibyte
+of outbound bytes to a single external endpoint - and its direction bar - at least 60% of a
+pair's measured bytes flowing outbound - are conservative starting values chosen to keep a
+first run quiet. They have not been calibrated against a broad corpus, so expect to tune
+them under `[detectors.exfil]` for your own traffic.
+
+**`exfil` reports nothing at all when a connection log carries no responder byte counts.**
+The direction bar needs both sides of each connection, so a `conn.log` without a
+`resp_bytes` column makes the detector abstain rather than guess - and sigwood says so in
+the run summary instead of reporting a quiet night. Individual connections missing either
+byte count leave the measurement entirely; they are never counted as zero. A finding's byte
+totals, direction share, and connection count therefore describe only the connections where
+both counts were recorded. Where those omissions could have changed the answer, the run
+summary reports how many pairs and how much outbound volume were affected.
+
+**A download can be reported as an upload when responder bytes go unrecorded.** The
+direction bar is computed from connections where both byte counts exist, and a missing
+responder count cannot be bounded from the outbound side: an omitted connection carrying a
+little outbound data could have carried a great deal inbound. A pair whose measured traffic
+looks strongly outbound may have been inbound-dominant in truth. sigwood never presents a
+measured share as the whole picture for this reason, but no arithmetic can rule the case
+out.
+
+**`exfil` misses transfers under its floor, spread across destinations, or outside the
+window.** A slow trickle below the byte floor is invisible to it, though `beacon` may still
+catch the cadence of the channel carrying it, and an upload split across many destinations
+can leave every individual pair under-floor. The floor is window-relative, so a narrow
+`--hours` window can hide volume a full-archive run shows. And because sigwood is stateless,
+a legitimate recurring transfer - a nightly backup, a photo sync - surfaces on every run
+until you add that pair to the allowlist. That is the intended workflow rather than a
+defect.
+
+**`exfil` reports addresses in canonical form.** Addresses are normalized before grouping,
+so an IPv4-mapped IPv6 address and its plain IPv4 form are correctly treated as one host.
+The address shown in a finding is that canonical form, which for such inputs is not the
+literal text in the log - the suggested `grep` follow-up may need the raw form instead.
 
 **High-volume DNS tunneling spread across many domains can slip the scan.** sigwood
 surfaces sustained tunneling that concentrates under a single registered domain, but a
@@ -268,7 +301,7 @@ somewhere you don't mind restarting.
 **An explicit conn log named outside `conn*.log*` silently skips the connection
 detectors.** Pointing sigwood at a single Zeek connection log whose filename does not
 match `conn*.log*` (say, `capture.ndjson`) reports `conn.log not found` and skips
-beacon, scan, and duration, even though the file's content is a valid conn log -
+beacon, scan, and exfil, even though the file's content is a valid conn log -
 single-file discovery still matches by filename. Rename the file to match the
 pattern (`conn.capture.log` works), or point sigwood at its directory with the
 standard names. Content-trusted explicit files are planned; the filename match is
@@ -344,7 +377,7 @@ still could not prove which copy is more complete. A very large `journalctl` que
 32 files, takes a majority vote on what family the directory is (Zeek, syslog, Pi-hole,
 CloudTrail), and hunts it as that family - files of a losing family in the same
 directory aren't hunted as their own kind on that run (sigwood says so at run time when
-the sample is mixed). The other single-detector verbs (`beacon`, `scan`, `duration`,
+the sample is mixed). The other single-detector verbs (`beacon`, `scan`, `exfil`,
 `aws`) don't sample at all: the verb itself decides the family, with no mixed-content
 notice. A parent directory whose log families live in subdirectories (`case/zeek/`,
 `case/pihole/`) isn't recursively inventoried either. Pass the files themselves, one
@@ -367,7 +400,7 @@ virtualenv at roughly 450 MB on disk - light to operate, not light to install.
 ## Digest and output
 
 **Findings carry an event timestamp in their JSON evidence, but the key name varies by
-finding type.** Most of them - beacon, dns, duration, and syslog families, bursts and
+finding type.** Most of them - beacon, dns, exfil, and syslog families, bursts and
 single rare lines - use `first_seen`. aws burst findings use `start_time`; syslog reboot
 findings use `reboot_ts`, which is the reboot instant rather than the first event of a
 group; and `scan` uses `window_start`, whose value is UTC but written without a timezone

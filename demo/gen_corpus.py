@@ -212,7 +212,7 @@ def _gen_conn(rows: list[dict], rng_for, epoch0: float) -> None:
 
     # Background - aperiodic internal traffic, shaped to trip NEITHER beacon
     # (no 4-tuple gets a periodic run of 20+), scan (no src fans many ports at
-    # one host), NOR duration (every duration well under the 1800s floor).
+    # one host), NOR exfil (every row stays far below the provisional byte floor).
     rb = rng_for("background_conn")
     internal = [f"192.168.1.{h}" for h in range(20, 31)]
     external = ([f"198.51.100.{n}" for n in range(30, 60)]

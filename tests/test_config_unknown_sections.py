@@ -230,7 +230,7 @@ def test_detector_disclosure_runs_once_for_selected_unselected_nested_and_dry_ru
         "detectors": {
             "beacn": {"threshold": 0.4},
             "beacon": {"thresold": 0.4},
-            "duration": {"min_duration_second": 10},
+            "duration": {"min_duration_seconds": 10},
             "dns": {"pihole": {"min_sampels": 8}},
         },
     }
@@ -241,12 +241,12 @@ def test_detector_disclosure_runs_once_for_selected_unselected_nested_and_dry_ru
     expected = [
         "config: ignoring unknown detector section [detectors.beacn] "
         "(did you mean beacon?)",
+        "config: [detectors.duration] is retired; use [detectors.exfil] "
+        "- retired keys: min_duration_seconds",
         "config: ignoring unknown setting [detectors.beacon].thresold "
         "(did you mean threshold?)",
         "config: ignoring unknown setting [detectors.dns.pihole].min_sampels "
         "(did you mean min_samples?)",
-        "config: ignoring unknown setting [detectors.duration].min_duration_second "
-        "(did you mean min_duration_seconds?)",
     ]
     assert err.splitlines() == expected
     assert all(err.count(line) == 1 for line in expected)

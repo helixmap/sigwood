@@ -186,7 +186,7 @@ def test_count_domain_parity_with_filter() -> None:
 
 def test_count_numeric_includes_stanza_and_ignores_scope() -> None:
     # A rule scoped to ONE detector - scope-blind count must still count it.
-    scoped = al.NumericRule(port=9999, detectors=["duration"])
+    scoped = al.NumericRule(port=9999, detectors=["exfil"])
     matcher = al.AllowlistMatcher(numeric_rules=[scoped])
     df = pd.DataFrame({
         "src": ["192.0.2.10", "192.0.2.11"],

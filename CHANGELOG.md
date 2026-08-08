@@ -6,6 +6,46 @@ All notable changes to sigwood are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **`exfil` - a new detector for bulk outbound transfers over Zeek connection logs.** It
+  sums the bytes each internal host sent to each external destination and reports the pairs
+  that move a large volume while running strongly outbound. It delivers a fact - a large
+  outbound transfer to an external endpoint exists between these two hosts - and leaves the
+  judgement to you; it never claims theft. Findings are MEDIUM; there is no severity ladder
+  to climb and no baseline to learn, just two absolute thresholds you can read and change.
+  It is **opt-in**: run `sigwood exfil`, or `sigwood hunt --detect=all`.
+
+  The two thresholds - one gibibyte of outbound bytes to a single endpoint, and at least
+  60% of that pair's measured bytes flowing outbound - are provisional starting values,
+  deliberately conservative so a first run is quiet. The direction bar is what keeps
+  ordinary downloads out of an upload worklist.
+
+  Byte figures cover only the connections where **both** byte counts were recorded; rows
+  missing either count leave the measurement rather than being counted as zero, and a
+  connection log with no responder byte counts at all makes the detector abstain and say so
+  instead of guessing. Where those omissions could have changed the answer, the run summary
+  reports how many pairs and how much outbound volume were affected. See
+  [Known issues](docs/KNOWN-ISSUES.md) for what this detector cannot see, including the one
+  case where an unrecorded responder count can make a download look like an upload.
+
+### Removed
+
+- **BREAKING: the `duration` detector is retired; `exfil` replaces it.** `sigwood duration`
+  is no longer a command, `[detectors.duration]` is no longer read (sigwood tells you so, and
+  names the successor, if it finds one in your config), and the `detector` value in JSON and
+  CSV output is now `exfil`. There is no alias.
+
+  The reason is that its premise had expired. `duration` treated a long-lived connection as
+  inherently suspicious and assigned severity from elapsed wall-clock time alone, so on any
+  modern network its high-severity findings were by-design persistence - mobile push
+  channels, mail clients holding a connection open, CDN keep-alives, interactive SSH - and
+  the tool narrated a phone's push socket in the language of a command-and-control channel.
+  Worse, the statistic missed the thing that actually matters in this space: a fast bulk
+  upload never stays open long enough to trip a duration floor at all, and speed is exactly
+  what an exfiltration channel wants. `exfil` asks the question that was worth asking, and
+  duration survives as context on its findings rather than as the trigger.
+
 ### Changed
 
 - **The DNS detector is faster on large captures, with identical findings.** Domain parsing

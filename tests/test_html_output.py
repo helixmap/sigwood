@@ -359,15 +359,15 @@ def test_full_evidence_at_level_2_is_structured_not_str_dict() -> None:
 
 
 # ── the 5-step pipeline ──────────────────────────────────────────────────────
-def test_duration_low_hidden_at_level_0() -> None:
+def test_exfil_low_is_visible_at_level_0() -> None:
     low = _finding(
-        detector="duration", severity=Severity.LOW, title="x",
-        evidence={"src": "192.0.2.50", "dst": "198.51.100.9", "port": 22,
-                  "proto": "tcp", "max_duration_str": "31m", "connection_count": 1,
-                  "avg_bytes_per_second": None, "conn_states": []},
+        detector="exfil", severity=Severity.LOW, title="x",
+        evidence={"src": "192.0.2.50", "dst": "198.51.100.9",
+                  "orig_bytes_total": 1_000_000, "resp_bytes_total": 10,
+                  "orig_share": 1.0, "connection_count": 1, "span_seconds": None},
     )
-    assert "192.0.2.50" not in _render([low], verbose_level=0)  # LOW hidden at L0
-    assert "192.0.2.50" in _render([low], verbose_level=1)      # shown at L1
+    assert "192.0.2.50" in _render([low], verbose_level=0)
+    assert "192.0.2.50" in _render([low], verbose_level=1)
 
 
 def test_group_header_uses_pre_cap_counts() -> None:
@@ -1210,18 +1210,16 @@ def test_html_no_target_streams_to_stdout_no_cwd_file(tmp_path, monkeypatch) -> 
 
 # ── print-CSS + pdf orientation (wrapping is the correctness floor; landscape is
 #    a best-effort readability estimate layered on top - never the other way) ────
-def _wide_duration() -> Finding:
-    """A duration finding whose table overflows A4 portrait - full IPv6 flow +
-    conn_states. Exercises project_row/html_columns (the seam under test)."""
+def _wide_exfil() -> Finding:
+    """An exfil finding whose full IPv6 flow overflows A4 portrait."""
     return _finding(
-        detector="duration",
+        detector="exfil",
         title="",
         evidence={
             "src": "2001:db8:1234:5678:9abc:def0:1234:5678",
             "dst": "2001:db8:8765:4321:fedc:ba98:7654:3210",
-            "port": 443, "proto": "tcp", "max_duration_str": "4h 30m",
-            "avg_bytes_per_second": 1_500_000, "connection_count": 37,
-            "conn_states": ["S0", "SF", "REJ", "RSTO"],
+            "orig_bytes_total": 1_500_000_000, "resp_bytes_total": 1_000,
+            "orig_share": 0.9999, "connection_count": 37, "span_seconds": 16_200.0,
         },
     )
 
@@ -1283,9 +1281,9 @@ def test_needs_landscape_wide_vs_narrow() -> None:
     stays portrait."""
     from sigwood.outputs._render_model import _build_renderable, needs_landscape
 
-    wide = _build_renderable("duration", [_wide_duration()], 0, 100)
+    wide = _build_renderable("exfil", [_wide_exfil()], 0, 100)
     narrow = _build_renderable("beacon", [_narrow_beacon()], 0, 100)
-    assert needs_landscape([("duration", wide)]) is True
+    assert needs_landscape([("exfil", wide)]) is True
     assert needs_landscape([("beacon", narrow)]) is False
 
 
@@ -1364,7 +1362,7 @@ def test_stamped_long_journal_needle_deliberately_flips_to_landscape(
 def test_render_emits_landscape_for_wide_portrait_for_narrow() -> None:
     """Render-level: render_report_html flips ONLY the print @page
     size from the content estimate; screen html is inert (paged media only)."""
-    wide = _render([_wide_duration()])
+    wide = _render([_wide_exfil()])
     narrow = _render([_narrow_beacon()])
     assert "@page { size: A4 landscape; margin: 1.5cm; }" in wide
     assert "@page { size: A4; margin: 1.5cm; }" in narrow

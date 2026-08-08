@@ -158,9 +158,10 @@ allowlist_dir    = "allowlist.d/"
 # slow_min_ports       = 8      # slow scan: min ports across the dataset…
 # slow_min_buckets     = 4      # …over this many active time windows
 
-# duration - abnormally long-lived connections.
-# [detectors.duration]
-# min_duration_seconds = 1800   # 30m floor to flag (LOW; verbose-only)
+# exfil - bulk outbound transfer by complete-byte connection rows.
+# [detectors.exfil]
+# min_outbound_bytes = 1073741824  # provisional 1 GiB measured outbound floor
+# min_orig_share     = 0.6         # measured originator-byte share (0, 1]
 
 # dns - DNS clustering (HDBSCAN over per-query behavior).
 # [detectors.dns]

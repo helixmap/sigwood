@@ -628,11 +628,11 @@ def test_usage_lists_aws_subcommand(capsys) -> None:
     assert "sigwood aws " in out
 
 
-def test_usage_lists_duration_subcommand(capsys) -> None:
-    """Regression: catch any future stale-usage drift on duration."""
+def test_usage_lists_exfil_subcommand(capsys) -> None:
+    """Regression: catch any future stale-usage drift on exfil."""
     cli._print_usage()
     out = capsys.readouterr().out
-    assert "sigwood duration " in out
+    assert "sigwood exfil " in out
 
 
 # positional PATH → cloudtrail_dir in single-detector mode
@@ -1105,7 +1105,7 @@ def test_syslog_positional_zeek_ndjson_without_path_routes_to_zeek_dir(
 
 
 @pytest.mark.parametrize(
-    "verb", ["hunt", "beacon", "dns", "syslog", "scan", "duration", "aws", "digest"]
+    "verb", ["hunt", "beacon", "dns", "syslog", "scan", "exfil", "aws", "digest"]
 )
 def test_parse_args_quiet_accepted_on_analyze_detectors_and_digest(verb: str) -> None:
     """-q/--quiet is in the allowed set for analyze, the six single-detector
@@ -1232,7 +1232,7 @@ def test_parse_args_utc_wrong_verb_for_init_and_allowlist() -> None:
 # Real cli.main → runner.run, never a mocked seam. Every run passes an isolated
 # --config (empty tmp source dirs) so nothing on the developer's box is read.
 
-_DETECT_AVAILABLE = "available: auth, aws, beacon, dns, duration, scan, syslog"
+_DETECT_AVAILABLE = "available: auth, aws, beacon, dns, exfil, scan, syslog"
 
 
 def _write_probe_config(tmp_path: Path, *, detect: str | None = None) -> Path:
@@ -1305,7 +1305,7 @@ def test_exclude_everything_live_selected_none_exit_0(
     probe = _write_probe_config(tmp_path)
     cli.main([
         "hunt",
-        "--detect=all,!auth,!aws,!beacon,!dns,!duration,!scan,!syslog",
+        "--detect=all,!auth,!aws,!beacon,!dns,!exfil,!scan,!syslog",
         f"--config={probe}",
     ])
 
@@ -1320,7 +1320,7 @@ def test_exclude_everything_dry_run_banner_selected_none(
     probe = _write_probe_config(tmp_path)
     cli.main([
         "hunt",
-        "--detect=all,!auth,!aws,!beacon,!dns,!duration,!scan,!syslog",
+        "--detect=all,!auth,!aws,!beacon,!dns,!exfil,!scan,!syslog",
         "--dry-run",
         f"--config={probe}",
     ])
@@ -1336,7 +1336,7 @@ def test_detect_empty_string_is_absent_falls_back_to_default(
     """Compatibility pin: `--detect=` (EMPTY string) means absent - the
     two-step fallback lands on the curated default. With every source dir
     empty that is the all-skipped arm, WITH skipped: lines, but the opt-in
-    auth and duration detectors are not selected."""
+    auth and exfil detectors are not selected."""
     probe = _write_probe_config(tmp_path)
     cli.main(["hunt", "--detect=", "--dry-run", f"--config={probe}"])
 
@@ -1344,8 +1344,8 @@ def test_detect_empty_string_is_absent_falls_back_to_default(
     assert "(none - required logs unavailable)" in out
     assert "skipped:" in out
     skipped_lines = [line for line in out.splitlines() if line.startswith("skipped:")]
-    assert all("duration" not in line for line in skipped_lines)
-    assert "opt-in:          auth, duration" in out
+    assert all("exfil" not in line for line in skipped_lines)
+    assert "opt-in:          auth, exfil" in out
 
 
 def test_explicit_all_config_matches_explicit_all_cli(
@@ -1360,7 +1360,7 @@ def test_explicit_all_config_matches_explicit_all_cli(
     from_flag = capsys.readouterr()
 
     assert from_config == from_flag
-    assert "duration" in from_config.out
+    assert "exfil" in from_config.out
     assert "opt-in:" not in from_config.out
 
 
@@ -1374,9 +1374,9 @@ def test_explicit_default_flag_discloses_opt_in_remainder(
     ])
 
     out = capsys.readouterr().out
-    assert "opt-in:          auth, duration" in out
+    assert "opt-in:          auth, exfil" in out
     skipped_lines = [line for line in out.splitlines() if line.startswith("skipped:")]
-    assert all("duration" not in line for line in skipped_lines)
+    assert all("exfil" not in line for line in skipped_lines)
 
 
 def test_detect_whitespace_only_selects_none(

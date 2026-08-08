@@ -16,11 +16,13 @@ What sigwood does today:
 - **Seven detectors** - beacon (FFT periodicity), dns (density clustering over Zeek
   dns.log or Pi-hole/dnsmasq), syslog (drain3 templating with per-host burst collapse,
   over the live systemd journal, flat rsyslog, or Zeek syslog.log), auth (five
-  authentication-structure heuristics over that same system-log lane), scan, duration,
-  and aws (per-principal behavior over CloudTrail).
+  authentication-structure heuristics over that same system-log lane), scan, exfil
+  (bulk outbound transfers over connection logs), and aws (per-principal behavior over
+  CloudTrail).
 - **A curated default hunt** that narrows the routine review surface while every
   detector remains runnable by name; `--detect=all` still runs everything available.
-  The run discloses detectors held opt-in while their evidence is rebuilt.
+  The run discloses which available detectors were held out of the default hunt, so an
+  opt-in detector is never silently absent.
 - **A `digest` verb** to orient before you hunt - a fast, honest profile of conn, DNS,
   syslog, or CloudTrail data, with a bytes-only fallback for anything it doesn't
   recognize.
@@ -50,7 +52,7 @@ it. Naming an ATT&CK technique is an *association*, not a claim of full coverage
 signal can be the behavior itself, or merely consistent with it, or just a side effect of
 it, and those are very different things. The per-detector limits that qualify these rows
 - beacon's span and aliasing edges, DNS source fidelity, aws's window-relative
-first-seen behavior, duration's opt-in severity model - are catalogued in
+first-seen behavior, exfil's measured-population limits - are catalogued in
 [Known issues](KNOWN-ISSUES.md) rather than repeated here. The mapping is pinned to
 **ATT&CK Enterprise v19.1** (checked 2026-08-04); a later ATT&CK release means this table
 needs re-checking.
@@ -70,8 +72,8 @@ needs re-checking.
 | Lateral Movement | Multi-host authentication failures for one source and account (`auth`) | Zeek SMB and SSH logs |
 | Collection | Nothing claimed | Zeek SMB logs |
 | Command and Control | Check-in timing (`beacon`); generated-looking domains (`dns`), with the dense tunnel path Zeek-only | TLS anomalies, odd ports, tunnel log |
-| Exfiltration | DNS tunnelling shapes (`dns`, Zeek-only for the dense path) | Byte direction: loaded and summarized today, but no detector analyzes it for exfiltration |
-| Impact | No mining-specific verdict; generic check-ins (`beacon`) and opt-in long flows (`duration`) can be downstream clues | Cloud destruction events; SMB file activity |
+| Exfiltration | DNS tunnelling shapes (`dns`, Zeek-only for the dense path); bulk outbound byte transfers (`exfil`, opt-in) | Transfers below the byte floor or split across many destinations; exfiltration inside an allowed cloud service |
+| Impact | No mining-specific verdict; generic check-ins (`beacon`) can be a downstream clue | Cloud destruction events; SMB file activity |
 
 **The shape of it.** This roadmap weights one particular threat model - a self-hosted
 estate facing opportunistic internet attacks, compromised IoT devices and routers,
@@ -93,8 +95,7 @@ Actively being worked on or thought through:
   pre-registered bar for what "better" means, data held back from tuning, and a simple
   baseline the change has to beat. The syslog pass shipped in 0.2.7 (rare-line rollups,
   recognized transactions, reboot reporting); the DNS pass is in progress
-  (behavior-corroborated severity in place of score-only verdicts); duration's pass
-  follows.
+  (behavior-corroborated severity in place of score-only verdicts).
 
 ## Later
 
@@ -107,9 +108,11 @@ the gap each one could narrow:
   against your own estate's norms rather than a fingerprint database; Zeek's
   `weird.log`/`notice.log`; and a protocol classifier that notices a service running
   somewhere it normally does not.
-- **Exfiltration** - byte direction over connection logs. sigwood already loads
-  responder bytes but no detector reads them, so "who is uploading, and to whom" is
-  currently an unasked question.
+- **Exfiltration, beyond bulk volume** - `exfil` now answers "who is uploading, and to
+  whom" for transfers large enough to clear its floor, complementing the tunnelling
+  shapes `dns` already covers. The open ground is what volume alone cannot see: a
+  trickle held under the floor, an upload spread thin across many destinations, and
+  modest transfers inside a service the allowlist already trusts.
 - **DNS, beyond label shape** - research directions under active consideration, each
   behavioral rather than list-driven: grouping generated-looking failed-lookup campaigns
   per client into one finding, then searching the same client's successful lookups for

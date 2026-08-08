@@ -135,7 +135,7 @@ full run against that corpus, and the same findings as an HTML report:
 | `syslog`  | rare events & reboots                               | drain3 templating + rarity   | systemd journal, flat syslog, **or** Zeek `syslog.log` |
 | `auth`    | failure concentration, volume, spread & landings    | heuristics                   | systemd journal, flat syslog, **or** Zeek `syslog.log` |
 | `scan`    | vertical / horizontal / block / slow port scans     | pattern (heuristic)          | Zeek `conn.log`                |
-| `duration`| abnormally long-lived connections                   | heuristics                   | Zeek `conn.log`                |
+| `exfil`   | bulk outbound byte transfer                        | heuristics                   | Zeek `conn.log`                |
 | `aws`     | per-principal anomalous CloudTrail behavior         | statistical (z-score composite) | CloudTrail `*.json*` (incl. `.gz`) |
 
 `dns` and `syslog` each answer **one** question across several source families - Zeek and
@@ -381,7 +381,7 @@ sees it, so signal isn't buried in plumbing. Two kinds of allowlist file:
 - **Flat files = suppression.** One rule per line - an IP, a CIDR, a `:port/proto`, a domain
   glob/regex, or a system-log host pattern. Matching traffic is dropped before any detector runs.
 - **TOML stanzas = structured suppression.** The same drop, expressed as an entry that carries a
-  comment and an optional per-detector scope (`detectors = ["duration"]`). A richer
+  comment and an optional per-detector scope (`detectors = ["exfil"]`). A richer
   classification role - telling a detector *what* something is - is planned, but no shipped
   detector consumes it yet, so today a stanza suppresses.
 

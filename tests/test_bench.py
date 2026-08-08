@@ -84,10 +84,6 @@ def _selectors() -> list[dict[str, str]]:
         f"{gen_corpus.BENCH_BEACON[0]} → {gen_corpus.BENCH_BEACON[1]}:"
         f"{gen_corpus.BENCH_BEACON[2]}/{gen_corpus.BENCH_BEACON[3]}"
     )
-    duration_title = (
-        f"{gen_corpus.BENCH_DURATION[0]} → {gen_corpus.BENCH_DURATION[1]}:"
-        f"{gen_corpus.BENCH_DURATION[2]}/{gen_corpus.BENCH_DURATION[3]}"
-    )
     return [
         {
             "example_id": "beacon_c2",
@@ -95,13 +91,6 @@ def _selectors() -> list[dict[str, str]]:
             "field": "title",
             "op": "eq",
             "value": beacon_title,
-        },
-        {
-            "example_id": "duration_c2",
-            "detector": "duration",
-            "field": "title",
-            "op": "eq",
-            "value": duration_title,
         },
     ]
 
@@ -231,7 +220,7 @@ def _payload(
 
 
 def _finding(
-    detector: str = "duration",
+    detector: str = "exfil",
     severity: str = "low",
     *,
     title: str = "reserved flow",
@@ -381,14 +370,12 @@ def test_bench_end_to_end_repeats_ranks_and_detects_threshold_change(tmp_path: P
     assert type(runtime_a) is type(runtime_b) is float
     assert summary_a == summary_b
 
-    assert summary_a["total_findings"] == 2
+    assert summary_a["total_findings"] == 1
     assert summary_a["findings_by_detector_severity"]["beacon"]["medium"] == 1
-    assert summary_a["findings_by_detector_severity"]["duration"]["high"] == 1
     assert summary_a["findings_by_detector_severity"]["scan"] == {
         "high": 0, "medium": 0, "low": 0, "info": 0,
     }
     assert summary_a["known_example_ranks"]["beacon_c2"]["rank"] == 1
-    assert summary_a["known_example_ranks"]["duration_c2"]["rank"] == 1
     assert summary_a["requested_span_seconds"] is None
 
     expected_bundle = {
@@ -411,7 +398,7 @@ def test_bench_end_to_end_repeats_ranks_and_detects_threshold_change(tmp_path: P
     summary_changed = json.loads(changed.stdout)
     assert summary_changed["config_hash"] != summary_a["config_hash"]
     assert summary_changed["findings_by_detector_severity"]["beacon"]["medium"] == 0
-    assert summary_changed["total_findings"] == 1
+    assert summary_changed["total_findings"] == 0
 
     left_path = tmp_path / "summary-a.json"
     right_path = tmp_path / "summary-changed.json"
@@ -439,7 +426,7 @@ def test_projection_handles_nullable_shapes_span_and_absent_header() -> None:
     raw = _payload(
         [_finding()],
         requested_span=604800.0,
-        detectors_run=["duration"],
+        detectors_run=["exfil"],
         record_counts={"conn*.log*": 11},
         record_labels={"conn*.log*": "Zeek conn"},
     )
@@ -456,9 +443,9 @@ def test_projection_handles_nullable_shapes_span_and_absent_header() -> None:
     )
     assert summary["requested_span_seconds"] == 604800
     assert type(summary["requested_span_seconds"]) is int
-    assert summary["default_visible"] == {"duration": 0}
-    assert summary["cap_hidden"] == {"duration": 0}
-    assert summary["level_hidden"] == {"duration": 1}
+    assert summary["default_visible"] == {"exfil": 0}
+    assert summary["cap_hidden"] == {"exfil": 0}
+    assert summary["level_hidden"] == {"exfil": 1}
     assert summary["record_labels"] == {"conn*.log*": "Zeek conn"}
     assert "invocation" not in summary
     assert "generated_at" not in summary
@@ -633,27 +620,27 @@ def test_record_count_mismatch_neutralizes_actual_pattern_controls() -> None:
 
 def test_text_count_contract_handles_singular_and_comma_cap() -> None:
     report = (
-        "duration - 1 finding · 1 H\n"
+        "exfil - 1 finding · 1 H\n"
         f"{TEXT_RULE}\n"
         "[H] reserved flow\n"
     )
-    visible, capped, level = bench_summarize._parse_text_counts(report, {"duration": 1})
-    assert visible == {"duration": 1}
-    assert capped == {"duration": 0}
-    assert level == {"duration": 0}
+    visible, capped, level = bench_summarize._parse_text_counts(report, {"exfil": 1})
+    assert visible == {"exfil": 1}
+    assert capped == {"exfil": 0}
+    assert level == {"exfil": 0}
 
     capped_report = (
-        "duration - 1100 findings · 1100 H\n"
+        "exfil - 1100 findings · 1100 H\n"
         f"{TEXT_RULE}\n"
         "… 1,000 more not shown (showing first 100). Unusually high - narrow with "
         "the allowlist, or this detector may be misbehaving.\n"
     )
     visible, capped, level = bench_summarize._parse_text_counts(
-        capped_report, {"duration": 1100}
+        capped_report, {"exfil": 1100}
     )
-    assert visible == {"duration": 100}
-    assert capped == {"duration": 1000}
-    assert level == {"duration": 0}
+    assert visible == {"exfil": 100}
+    assert capped == {"exfil": 1000}
+    assert level == {"exfil": 0}
 
 
 def _diff_summary(**overrides: Any) -> dict[str, Any]:
@@ -862,14 +849,14 @@ def test_selector_match_value_never_crosses_parent_surfaces(tmp_path: Path) -> N
     _write_selectors(
         selectors,
         [{
-            "example_id": "duration_example",
-            "detector": "duration",
+            "example_id": "exfil_example",
+            "detector": "exfil",
             "field": "title",
             "op": "contains",
             "value": selector_secret,
         }],
     )
-    payload = _payload(detectors_run=["duration"])
+    payload = _payload(detectors_run=["exfil"])
     fake = tmp_path / "fake-python"
     _fake_python(fake, payload)
     result = _run_summary(
@@ -878,10 +865,10 @@ def test_selector_match_value_never_crosses_parent_surfaces(tmp_path: Path) -> N
     assert result.returncode == 0, result.stderr
     assert selector_secret not in result.stdout
     assert selector_secret not in result.stderr
-    rank = json.loads(result.stdout)["known_example_ranks"]["duration_example"]
+    rank = json.loads(result.stdout)["known_example_ranks"]["exfil_example"]
     assert rank == {
-        "detector": "duration",
-        "example_id": "duration_example",
+        "detector": "exfil",
+        "example_id": "exfil_example",
         "found": False,
         "pool_size": 0,
         "rank": None,
@@ -895,7 +882,7 @@ def test_selector_detector_must_be_in_run_status_without_echo(tmp_path: Path) ->
     _write_selectors(
         selectors,
         [{
-            "example_id": "duration_example",
+            "example_id": "exfil_example",
             "detector": detector_secret,
             "field": "title",
             "op": "contains",
@@ -903,7 +890,7 @@ def test_selector_detector_must_be_in_run_status_without_echo(tmp_path: Path) ->
         }],
     )
     fake = tmp_path / "fake-python"
-    _fake_python(fake, _payload(detectors_run=["duration"]))
+    _fake_python(fake, _payload(detectors_run=["exfil"]))
     bundle = tmp_path / "bundle"
     result = _run_summary(config, bundle, ledger, selectors=selectors, python=fake)
     assert result.returncode == 1
@@ -1036,7 +1023,7 @@ def test_selector_normalization_collision_refuses_before_bundle(tmp_path: Path) 
     selectors = tmp_path / "private-selectors-name.json"
     entries = _selectors()
     entries[0]["example_id"] = "same\u0001"
-    entries[1]["example_id"] = "same"
+    entries.append({**entries[0], "example_id": "same"})
     _write_selectors(selectors, entries)
     result = _run_summary(config, tmp_path / "bundle", ledger, selectors=selectors)
     assert result.returncode == 1

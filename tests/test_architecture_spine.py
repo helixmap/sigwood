@@ -59,7 +59,7 @@ class ArchitectureSpineTests(unittest.TestCase):
         self.assertIn("beacon", detectors)
         self.assertIn("auth", detectors)
         self.assertIn("dns", detectors)
-        self.assertIn("duration", detectors)
+        self.assertIn("exfil", detectors)
         for planned in ("ssl", "protocol", "weird", "dnsblock"):
             self.assertNotIn(planned, detectors)
 
@@ -69,10 +69,10 @@ class ArchitectureSpineTests(unittest.TestCase):
         detectors = discover_detectors(_vocab=vocab)
 
         self.assertEqual(set(detectors), {
-            "auth", "aws", "beacon", "dns", "duration", "scan", "syslog",
+            "auth", "aws", "beacon", "dns", "exfil", "scan", "syslog",
         })
         self.assertEqual(set(vocab), {
-            "auth", "aws", "beacon", "dns", "dnsblock", "duration",
+            "auth", "aws", "beacon", "dns", "dnsblock", "exfil",
             "protocol", "scan", "ssl", "syslog", "weird",
         })
         self.assertEqual(vocab["dns"]["pihole"], {
@@ -129,7 +129,7 @@ class ArchitectureSpineTests(unittest.TestCase):
         available = sorted(discover_detectors())
 
         self.assertEqual(resolve_detect("all", available), available)
-        self.assertIn("duration", resolve_detect("all", available))
+        self.assertIn("exfil", resolve_detect("all", available))
 
     def test_default_selection_uses_explicit_curated_membership(self) -> None:
         selection = select_detectors(None)
@@ -139,10 +139,10 @@ class ArchitectureSpineTests(unittest.TestCase):
             ["aws", "beacon", "dns", "scan", "syslog"],
         )
         self.assertTrue(selection.used_default)
-        self.assertNotIn("duration", selection.selected)
+        self.assertNotIn("exfil", selection.selected)
 
     def test_default_keyword_is_additive_and_exclusions_apply_last(self) -> None:
-        available = ["aws", "beacon", "dns", "duration", "scan", "syslog"]
+        available = ["aws", "beacon", "dns", "exfil", "scan", "syslog"]
         curated = ["aws", "beacon", "dns", "scan", "syslog"]
 
         self.assertEqual(
@@ -151,9 +151,9 @@ class ArchitectureSpineTests(unittest.TestCase):
         )
         self.assertEqual(
             resolve_detect(
-                "default,duration", available, default_members=curated,
+                "default,exfil", available, default_members=curated,
             ),
-            curated + ["duration"],
+            curated + ["exfil"],
         )
         self.assertEqual(
             resolve_detect(
@@ -184,51 +184,51 @@ class ArchitectureSpineTests(unittest.TestCase):
         self.assertFalse(select_detectors(" ", detectors).used_default)
 
     def test_resolve_detect_unknown_inclusion_raises(self) -> None:
-        available = ["aws", "beacon", "dns", "duration", "scan", "syslog"]
+        available = ["aws", "beacon", "dns", "exfil", "scan", "syslog"]
 
         with self.assertRaises(ValueError) as ctx:
             resolve_detect("beacn", available)
         self.assertEqual(
             str(ctx.exception),
             "unknown detector 'beacn' - available: "
-            "aws, beacon, dns, duration, scan, syslog",
+            "aws, beacon, dns, exfil, scan, syslog",
         )
 
     def test_resolve_detect_unknown_exclusion_raises(self) -> None:
         """A typo'd exclusion silently running a detector is the inverse
         coverage bug - exclusions validate exactly like inclusions."""
-        available = ["aws", "beacon", "dns", "duration", "scan", "syslog"]
+        available = ["aws", "beacon", "dns", "exfil", "scan", "syslog"]
 
         with self.assertRaises(ValueError) as ctx:
             resolve_detect("all,!syslgo", available)
         self.assertEqual(
             str(ctx.exception),
             "unknown detector 'syslgo' - available: "
-            "aws, beacon, dns, duration, scan, syslog",
+            "aws, beacon, dns, exfil, scan, syslog",
         )
 
     def test_resolve_detect_multiple_unknowns_first_seen_deduped(self) -> None:
-        available = ["aws", "beacon", "dns", "duration", "scan", "syslog"]
+        available = ["aws", "beacon", "dns", "exfil", "scan", "syslog"]
 
         with self.assertRaises(ValueError) as ctx:
             resolve_detect("beacn,!syslgo,beacn", available)
         self.assertEqual(
             str(ctx.exception),
             "unknown detectors 'beacn', 'syslgo' - available: "
-            "aws, beacon, dns, duration, scan, syslog",
+            "aws, beacon, dns, exfil, scan, syslog",
         )
 
     def test_resolve_detect_valid_specs_unchanged(self) -> None:
-        available = ["aws", "beacon", "dns", "duration", "scan", "syslog"]
+        available = ["aws", "beacon", "dns", "exfil", "scan", "syslog"]
 
         self.assertEqual(resolve_detect("dns, beacon", available), ["dns", "beacon"])
         self.assertEqual(
             resolve_detect("all, !syslog", available),
-            ["aws", "beacon", "dns", "duration", "scan"],
+            ["aws", "beacon", "dns", "exfil", "scan"],
         )
         self.assertEqual(
             resolve_detect("all,!dns,!syslog", available),
-            ["aws", "beacon", "duration", "scan"],
+            ["aws", "beacon", "exfil", "scan"],
         )
 
     def test_resolve_detect_whitespace_only_spec_empty_no_raise(self) -> None:
@@ -236,7 +236,7 @@ class ArchitectureSpineTests(unittest.TestCase):
         error - the caller-side default-spec fallback catches the
         EMPTY string before this function ever sees it, so whitespace-only is
         the one nothing-shaped spec that reaches resolution."""
-        available = ["aws", "beacon", "dns", "duration", "scan", "syslog"]
+        available = ["aws", "beacon", "dns", "exfil", "scan", "syslog"]
 
         self.assertEqual(resolve_detect(" ", available), [])
 
@@ -298,10 +298,10 @@ class ArchitectureSpineTests(unittest.TestCase):
         self.assertEqual(len(filtered), 1)
         self.assertEqual(filtered.iloc[0]["src"], "192.0.2.11")
 
-    def test_configured_connection_rule_file_filters_duration_rows(self) -> None:
-        """Unscoped flat-file rule suppresses duration the same way it suppresses beacon.
+    def test_configured_connection_rule_file_filters_exfil_rows(self) -> None:
+        """Unscoped flat-file rule suppresses exfil the same way it suppresses beacon.
 
-        Locks the filter-before-analyze pass-through for duration: omission of
+        Locks the filter-before-analyze pass-through for exfil: omission of
         scope is permission for every connection detector that groups on the
         canonical (src, dst, port, proto) tuple, not just beacon.
         """
@@ -320,17 +320,17 @@ class ArchitectureSpineTests(unittest.TestCase):
             {"src": "192.0.2.11", "dst": "203.0.113.20", "port": 443, "proto": "tcp"},
         ])
 
-        filtered = matcher.filter_df(df, "duration")
+        filtered = matcher.filter_df(df, "exfil")
 
         self.assertEqual(len(filtered), 1)
         self.assertEqual(filtered.iloc[0]["src"], "192.0.2.11")
 
-    def test_scoped_stanza_filters_duration_and_gates_unlisted_detector(self) -> None:
-        """A stanza scoped to duration suppresses duration and only duration.
+    def test_scoped_stanza_filters_exfil_and_gates_unlisted_detector(self) -> None:
+        """A stanza scoped to exfil suppresses exfil and only exfil.
 
         Locks the scoping half of the contract: a stanza with
-        ``detectors = ["duration", "beacon"]`` drops the matching row when
-        called for "duration", and the same matcher leaves the row in place
+        ``detectors = ["exfil", "beacon"]`` drops the matching row when
+        called for "exfil", and the same matcher leaves the row in place
         when called for a detector outside the scope.
         """
         matcher = build_matcher({
@@ -342,7 +342,7 @@ class ArchitectureSpineTests(unittest.TestCase):
                         "src": "192.0.2.10",
                         "dst_port": 443,
                         "comment": "Example scoped flow",
-                        "detectors": ["duration", "beacon"],
+                        "detectors": ["exfil", "beacon"],
                     }
                 ],
             }
@@ -353,9 +353,9 @@ class ArchitectureSpineTests(unittest.TestCase):
             {"src": "192.0.2.11", "dst": "203.0.113.20", "port": 443, "proto": "tcp"},
         ])
 
-        filtered_duration = matcher.filter_df(df, "duration")
-        self.assertEqual(len(filtered_duration), 1)
-        self.assertEqual(filtered_duration.iloc[0]["src"], "192.0.2.11")
+        filtered_exfil = matcher.filter_df(df, "exfil")
+        self.assertEqual(len(filtered_exfil), 1)
+        self.assertEqual(filtered_exfil.iloc[0]["src"], "192.0.2.11")
 
         # Same matcher, same frame, a detector outside the scope - the rule
         # must NOT fire. (filter_df routes by column shape, so a connection

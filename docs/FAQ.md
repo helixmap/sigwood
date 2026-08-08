@@ -211,7 +211,7 @@ domains so real signal isn't buried in plumbing - but they trust a domain by its
 a channel that fronts through an allowlisted CDN, or hosts its payload on a big cloud
 provider's domain, gets its DNS name quieted along with the legitimate traffic. Two things keep
 that from being a silent hole. First, the shipped lists are **domain-only**: connection
-analysis (`beacon`, `scan`, `duration`, all reading `conn.log` by IP) never consults them, so a
+analysis (`beacon`, `scan`, `exfil`, all reading `conn.log` by IP) never consults them, so a
 periodic beacon to a fronted host is still scored on its *timing*, whatever name it used.
 Second, every run prints how much it suppressed (the `allowlist:` line), and `--no-allowlist`
 turns suppression off entirely for one run. Numeric IP/CIDR suppression never ships - that's
@@ -591,13 +591,15 @@ its blind spot: a low-volume principal doing a few high-impact things isn't reli
 volume-shaped signals, so principals below the event floor are set aside and their count is 
 disclosed up front, not hidden.
 
-### `scan` and `duration` - why are these labeled "just heuristics"?
+### `scan` and `exfil` - why are these labeled "just heuristics"?
 
-Because that's what they are. `scan` counts distinct destination ports and hosts against thresholds 
-to separate vertical (one host, many ports), horizontal (one port, many hosts), block (many of both), 
-and slow (the same spread out over time) scanning. `duration` groups connections by flow and flags 
-the long-lived tail - the keep-alive sessions and tunnels that stay open far longer than a normal 
-request.
+Because that's what they are. `scan` counts distinct destination ports and hosts against thresholds
+to separate vertical (one host, many ports), horizontal (one port, many hosts), block (many of both),
+and slow (the same spread out over time) scanning. `exfil` sums the bytes each internal host sent to
+each external destination and reports the pairs that clear a volume floor while running strongly
+outbound. Both are arithmetic against thresholds you can read off the page - no model, nothing
+learned, no published algorithm underneath - and the bracketed label says so instead of dressing
+them up.
 
 ### Why isn't the top-ranked finding automatically the most severe?
 

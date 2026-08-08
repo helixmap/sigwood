@@ -38,7 +38,7 @@ KIT_VERSION = "1"
 REPORT_SCHEMA_VERSION = 1
 RETURN_ADDRESS = "fieldkit@augros.org"
 
-DETECTOR_TOKENS = frozenset({"aws", "beacon", "dns", "duration", "scan", "syslog"})
+DETECTOR_TOKENS = frozenset({"aws", "beacon", "dns", "exfil", "scan", "syslog"})
 SEVERITY_TOKENS = frozenset({"high", "medium", "low", "info"})
 SEVERITY_ORDER = {"high": 0, "medium": 1, "low": 2, "info": 3, "other": 4}
 VERDICT_TOKENS = frozenset(
@@ -100,7 +100,7 @@ NUMERIC_EVIDENCE = {
             "unique_sources",
         }
     ),
-    "duration": frozenset({"max_duration_seconds"}),
+    "exfil": frozenset({"orig_bytes_total", "resp_bytes_total", "orig_share"}),
     "scan": frozenset(
         {
             "active_buckets",

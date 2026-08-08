@@ -644,8 +644,8 @@ class TextHandler(OutputHandler):
             return self._render_scan_group(live)
         if detector == "syslog":
             return self._render_syslog_group(live)
-        if detector == "duration":
-            return self._render_duration_group(live)
+        if detector == "exfil":
+            return self._render_exfil_group(live)
         if detector == "aws":
             return self._render_aws_group(live)
         if detector == "auth":
@@ -926,36 +926,33 @@ class TextHandler(OutputHandler):
 
         return out
 
-    def _render_duration_group(self, sections: list[Section]) -> list[str]:
-        """Render duration findings with aligned columns. Flat detector. Each
-        sub-field of the flow is padded independently so → arrows align
-        vertically. Columns: severity | src → dst:port/proto | max_dur_str |
-        avg_bps | N_conns | states."""
+    def _render_exfil_group(self, sections: list[Section]) -> list[str]:
+        """Render exfil findings with aligned measured-byte columns."""
         indent = "     "
         out: list[str] = []
         findings = sections[0].findings
 
         rows = []
         for f in findings:
-            keyed, bare = _cells(f)  # bare = [src, "→", dst]
-            src, dst_str = bare[0], bare[2]
-            dur_str = keyed["dur"]
-            bps_col = keyed["bps"]
-            conns_col = keyed["conns"]
-            state_col = keyed["states"]
-            rows.append((str(f.severity), src, dst_str, dur_str, bps_col, conns_col, state_col, f))
+            keyed, bare = _cells(f)
+            src, dst = bare[0], bare[2]
+            rows.append((
+                str(f.severity), src, dst, keyed["out"], keyed["share"],
+                keyed["conns"], keyed.get("span", ""), f,
+            ))
 
-        src_w    = max(len(r[1]) for r in rows)
-        dst_w    = max(len(r[2]) for r in rows)
-        dur_w    = max(len(r[3]) for r in rows)
-        bps_w    = max(len(r[4]) for r in rows)
-        conns_w  = max(len(r[5]) for r in rows)
-        state_w  = max(len(r[6]) for r in rows)
+        src_w = max(len(row[1]) for row in rows)
+        dst_w = max(len(row[2]) for row in rows)
+        out_w = max(len(row[3]) for row in rows)
+        share_w = max(len(row[4]) for row in rows)
+        conns_w = max(len(row[5]) for row in rows)
+        span_w = max(len(row[6]) for row in rows)
 
-        for tag, src, dst_str, dur_str, bps_col, conns_col, state_col, f in rows:
+        for tag, src, dst, out_col, share_col, conns_col, span_col, f in rows:
             line = (
-                f"{tag}  {src:<{src_w}}  →  {dst_str:<{dst_w}}  "
-                f"{dur_str:<{dur_w}}  {bps_col:>{bps_w}}  {conns_col:>{conns_w}}  {state_col:>{state_w}}"
+                f"{tag}  {src:<{src_w}}  →  {dst:<{dst_w}}  "
+                f"{out_col:>{out_w}}  {share_col:>{share_w}}  "
+                f"{conns_col:>{conns_w}}  {span_col:>{span_w}}"
             ).rstrip()
             tail = _level_tail(f, indent, self._verbose_level)
             if tail:

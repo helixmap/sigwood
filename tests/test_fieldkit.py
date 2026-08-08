@@ -18,7 +18,7 @@ import pytest
 from sigwood import runner
 from sigwood.common.finding import DetectorContext
 from sigwood.common.loader import load_logs
-from sigwood.detectors import aws, beacon, dns, duration, scan, syslog
+from sigwood.detectors import aws, beacon, dns, exfil, scan, syslog
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -58,7 +58,7 @@ def _payload(marker: str = "HOSTILE_MARKER") -> dict[str, object]:
             "data_size_bytes": 4096,
             "detectors_run": ["beacon", marker + "_run"],
             "detectors_skipped": {
-                "duration": "conn logs not found",
+                "exfil": "conn logs not found",
                 marker + "_skip_key": marker + "_skip_reason",
             },
             "detectors_failed": {
@@ -174,7 +174,7 @@ def test_standalone_script_is_python39_syntax_and_has_no_product_or_network_impo
 
 
 def test_literal_vocabulary_tables_match_live_available_detectors() -> None:
-    modules = (aws, beacon, dns, duration, scan, syslog)
+    modules = (aws, beacon, dns, exfil, scan, syslog)
     assert fieldkit.DETECTOR_TOKENS == frozenset(
         module.DETECTOR_NAME for module in modules
     )

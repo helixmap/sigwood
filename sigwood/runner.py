@@ -44,6 +44,7 @@ from sigwood.common.display import (
     fmt_compact_span,
     fmt_timestamp,
     fmt_window,
+    human_bytes,
     hidden_cursor,
     liveness,
     phase_separator,
@@ -577,6 +578,21 @@ def _run_analyze(
             beacon_note_logs["conn*.log*"] = filtered_beacon_df
     if beacon_note_logs is not None:
         notes.extend(_beacon_eligibility_notes(plan, beacon_note_logs, home_net))
+    exfil_note_logs: dict[str, pd.DataFrame] | None = logs
+    exfil_df = logs.get("conn*.log*")
+    if "exfil" in plan.will_run and exfil_df is not None and not exfil_df.empty:
+        try:
+            filtered_exfil_df = allowlist.filter_df(exfil_df, "exfil")
+        except Exception:
+            # Do not infer a fidelity cause from the raw frame when the detector's
+            # actual post-allowlist view is unavailable. The contained detector
+            # loop records the actionable preparation error independently.
+            exfil_note_logs = None
+        else:
+            exfil_note_logs = dict(logs)
+            exfil_note_logs["conn*.log*"] = filtered_exfil_df
+    if exfil_note_logs is not None:
+        notes.extend(_exfil_eligibility_notes(plan, exfil_note_logs, home_net, config))
     beacon_floor_note = _beacon_min_connections_note(plan, config)
     if beacon_floor_note:
         notes.append(beacon_floor_note)
@@ -2524,6 +2540,79 @@ def _aws_no_interactive_note(
     if cloudtrail_narrowed:
         note += " - run with --all for full history"
     return note
+
+
+def _exfil_eligibility_notes(
+    plan: RunPlan,
+    logs: dict[str, pd.DataFrame],
+    home_net: list[str],
+    config: dict[str, Any],
+) -> list[str]:
+    """Render Exfil's post-allowlist fidelity and partial-measurement notes.
+
+    The detector owns the eligibility and reconstruction calculations.  This
+    runner seam owns only user-facing wording and reduces identity-bearing pair
+    facts to an aggregate count and excluded outbound mass.
+    """
+    if "exfil" not in plan.will_run:
+        return []
+    mod = plan.detectors.get("exfil")
+    if mod is None or not hasattr(mod, "eligibility"):
+        return []
+    df = logs.get("conn*.log*")
+    if df is None or df.empty:
+        return []
+    try:
+        det_cfg = get_detector_config(
+            config, "exfil", getattr(mod, "DEFAULT_CONFIG", {}),
+        )
+        facts = mod.eligibility(df, home_net, det_cfg)
+        rows_total = int(facts.get("rows_total", 0))
+        missing = tuple(facts.get("missing_columns", ()))
+        if missing:
+            return [
+                f"exfil: did not score {rows_total} loaded "
+                f"{plural(rows_total, 'connection')} - required conn.log columns missing: "
+                f"{', '.join(missing)}"
+            ]
+
+        notes: list[str] = []
+        rows_after_external = int(facts.get("rows_after_external", 0))
+        rows_after_bytes = int(facts.get("rows_after_byte_pairing", 0))
+        if rows_after_external > 0 and rows_after_bytes == 0:
+            notes.append(
+                f"exfil: {rows_after_external} loaded "
+                f"{plural(rows_after_external, 'connection')} passed the parse, "
+                "local-origin, and external gates but carried no usable complete byte "
+                "pairs - none were scored"
+            )
+
+        material_count = 0
+        excluded_mass = 0.0
+        partial_pairs = facts.get("partial_pairs", {})
+        if isinstance(partial_pairs, Mapping):
+            for pair_fact in partial_pairs.values():
+                if not isinstance(pair_fact, Mapping):
+                    continue
+                if pair_fact.get("surfaced") or not pair_fact.get("best_case_surfaces"):
+                    continue
+                try:
+                    mass = float(pair_fact.get("excluded_orig", 0.0))
+                except (TypeError, ValueError):
+                    continue
+                if not math.isfinite(mass) or mass < 0:
+                    continue
+                material_count += 1
+                excluded_mass += mass
+        if material_count:
+            notes.append(
+                f"exfil: {material_count} {plural(material_count, 'connection pair')} "
+                "may have met the measured byte gates if responder bytes were recorded "
+                f"({human_bytes(excluded_mass)} outbound bytes excluded)"
+            )
+        return notes
+    except Exception:
+        return []
 
 
 def _beacon_eligibility_notes(

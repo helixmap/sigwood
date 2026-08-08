@@ -20,7 +20,6 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any, Iterator
 
 import pandas as pd
@@ -30,7 +29,6 @@ from sigwood.common import config as cfg
 from sigwood.common.finding import DetectorContext, Finding, Severity
 from sigwood.common.tld import TLD_EXTRACT
 from sigwood.detectors import dns as detector
-from sigwood.outputs._evidence import level_visible
 
 
 _LEXICAL_THRESHOLD = 1.8
@@ -324,14 +322,10 @@ def _visible_defaults_excluding_b16(payload: dict[str, object]) -> int:
         if not isinstance(detector_name, str) or not isinstance(severity_name, str):
             raise MeasurementError("runner report was not usable")
         try:
-            view = SimpleNamespace(
-                detector=detector_name,
-                severity=Severity[severity_name.upper()],
-            )
+            Severity[severity_name.upper()]
         except KeyError as exc:
             raise MeasurementError("runner report was not usable") from exc
-        if level_visible(view, 0):
-            visible += 1
+        visible += 1
     return visible
 
 

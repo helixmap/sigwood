@@ -122,10 +122,12 @@ _VARIANTS: dict[str, Finding] = {
              "title": "host-sentinel-txn-9", "program": "kernsentinel"},
         ],
     }),
-    "duration": _f("duration", Severity.HIGH, "x", {
-        "src": "192.0.2.241", "dst": "198.51.100.251", "port": 9931, "proto": "tcp",
-        "max_duration_str": "4h 17m", "connection_count": 37,
-        "avg_bytes_per_second": 1700000.0, "conn_states": ["SF", "RSTO"]}),
+    "exfil": _f("exfil", Severity.MEDIUM, "x", {
+        "src": "192.0.2.241", "dst": "198.51.100.251",
+        "orig_bytes_total": 1_700_000_000.0, "resp_bytes_total": 100_000.0,
+        "orig_share": 0.9999, "connection_count": 37, "span_seconds": 15_420.0,
+        "port_mix": "9931/tcp (1.7 GB)", "max_duration_seconds": 2.0,
+        "first_seen": "2026-08-01T00:00:00+00:00", "last_seen": "2026-08-01T04:17:00+00:00"}),
     "aws_burst": _f("aws", Severity.MEDIUM, "role/sentinel-burst-7", {
         "tier": "burst", "principal": "role/sentinel-burst-7", "span_seconds": 4577.0,
         "new_action_count": 137, "new_service_count": 47, "error_rate": 0.27, "mean_rarity": 2.0}),
@@ -394,3 +396,16 @@ def test_projection_covers_every_detector_variant() -> None:
             assert cols == []  # full-width carries no grid columns
         else:
             assert len(cols) == len(cells)
+
+
+def test_exfil_projection_keeps_the_three_measured_facts_concise() -> None:
+    from sigwood.outputs._render_model import html_cell_value
+
+    cells = project_row(_VARIANTS["exfil"])
+    keyed = {cell.key: cell for cell in cells if cell.key is not None}
+    assert keyed["out"].value == "out=1.6 GB"
+    assert keyed["share"].value == "share=0.9999"
+    assert keyed["conns"].value == "conns=37"
+    assert html_cell_value(keyed["out"]) == "1.6 GB"
+    assert html_cell_value(keyed["share"]) == "0.9999"
+    assert html_cell_value(keyed["conns"]) == "37"

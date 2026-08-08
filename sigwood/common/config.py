@@ -191,6 +191,9 @@ _INTERNAL_KEYS: frozenset[str] = frozenset({"__user_set__"})
 # derived from _DEFAULTS: several supported keys are deliberately unset there.
 _LEAF = object()
 _ANY_SCOPE = object()
+_RETIRED_DETECTOR_SECTIONS: dict[str, tuple[str, tuple[str, ...]]] = {
+    "duration": ("exfil", ("min_duration_seconds",)),
+}
 
 KNOWN_CONFIG_KEYS: dict[str, Any] = {
     "sigwood": {
@@ -392,7 +395,16 @@ def detector_disclosure_lines(
     settings: list[str] = []
     names = [name for name in vocab if isinstance(name, str)]
     for name in detectors_cfg:
-        if isinstance(name, str) and name not in vocab:
+        if not isinstance(name, str) or name in vocab:
+            continue
+        retired = _RETIRED_DETECTOR_SECTIONS.get(name)
+        if retired is not None:
+            successor, retired_keys = retired
+            sections.append(
+                f"config: [detectors.{name}] is retired; use [detectors.{successor}] "
+                f"- retired keys: {', '.join(retired_keys)}"
+            )
+        else:
             sections.append(
                 _section_line(("detectors",), name, names, detector=True)
             )

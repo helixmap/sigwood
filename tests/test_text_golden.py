@@ -243,26 +243,28 @@ def test_golden_syslog_burst_compact_span_and_singular_noun():
     assert "host-zero · 4 rare lines · 0s · mostly kernel" in zero
 
 
-# ── duration: split flow, with and without states (rstrip) ───────────────────
-def test_golden_duration_with_states():
-    out = _render([_f("duration", Severity.HIGH, "192.0.2.10 → 198.51.100.20:443/tcp",
-        {"src": "192.0.2.10", "dst": "198.51.100.20", "port": 443, "proto": "tcp",
-         "max_duration_str": "4h 0m", "connection_count": 3,
-         "avg_bytes_per_second": 1500000.0, "conn_states": ["SF", "S1"]})])
+# ── exfil: measured-byte flow rows ──────────────────────────────────────────
+def test_golden_exfil_flow_row():
+    out = _render([_f("exfil", Severity.MEDIUM, "192.0.2.10 → 198.51.100.20",
+        {"src": "192.0.2.10", "dst": "198.51.100.20", "orig_bytes_total": 1_500_000_000,
+         "resp_bytes_total": 500_000_000, "orig_share": 0.75, "connection_count": 3,
+         "span_seconds": 14_400.0})])
     assert out == (
-        f"\nduration - 1 finding · 1 H\n{RULE}\n"
-        "[H]  192.0.2.10  →  198.51.100.20:443/tcp  4h 0m  1.5mbps  3 conns  SF, S1\n\n"
+        f"\nexfil - 1 finding · 1 M\n{RULE}\n"
+        "[M]  192.0.2.10  →  198.51.100.20  out=1.4 GB  "
+        "share=0.7500  conns=3  4h\n\n"
     )
 
 
-def test_golden_duration_no_states_rstrip():
-    out = _render([_f("duration", Severity.MEDIUM, "192.0.2.11 → 198.51.100.21:993/tcp",
-        {"src": "192.0.2.11", "dst": "198.51.100.21", "port": 993, "proto": "tcp",
-         "max_duration_str": "2h 5m", "connection_count": 1,
-         "avg_bytes_per_second": None, "conn_states": []})])
+def test_golden_exfil_optional_span_vanishes():
+    out = _render([_f("exfil", Severity.MEDIUM, "192.0.2.11 → 198.51.100.21",
+        {"src": "192.0.2.11", "dst": "198.51.100.21", "orig_bytes_total": 1_000,
+         "resp_bytes_total": 0, "orig_share": 1.0, "connection_count": 1,
+         "span_seconds": None})])
     assert out == (
-        f"\nduration - 1 finding · 1 M\n{RULE}\n"
-        "[M]  192.0.2.11  →  198.51.100.21:993/tcp  2h 5m    1 conn\n\n"
+        f"\nexfil - 1 finding · 1 M\n{RULE}\n"
+        "[M]  192.0.2.11  →  198.51.100.21  out=1000 B  "
+        "share=1.0000  conns=1\n\n"
     )
 
 

@@ -2857,7 +2857,7 @@ def test_init_detect_merge_out_of_table_exclusion_is_untouched(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     home = _isolated_home(monkeypatch, tmp_path)
-    _write_init_detect_config(home, 'detect = "default, !duration"')
+    _write_init_detect_config(home, 'detect = "default, !exfil"')
     _stub_candidates(monkeypatch)
     _stage_inputs(
         monkeypatch,
@@ -2871,7 +2871,7 @@ def test_init_detect_merge_out_of_table_exclusion_is_untouched(
     assert "Lift the exclusion" not in out
     assert not re.search(r"^  detectors\s", out, re.MULTILINE)
     text = (home / "config.toml").read_text(encoding="utf-8")
-    assert 'detect = "default, !duration"' in text
+    assert 'detect = "default, !exfil"' in text
 
 
 def test_init_detect_merge_additions_and_lifts_compose(

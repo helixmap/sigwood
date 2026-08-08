@@ -27,7 +27,6 @@ from sigwood import runner
 from sigwood.common import config as cfg
 from sigwood.common.finding import DetectorContext, Finding
 from sigwood.detectors import syslog as detector
-from sigwood.outputs._evidence import level_visible
 
 
 _MIN_COMPLETE_BINS = 16
@@ -490,9 +489,7 @@ def _measure_observation(
         all_episodes.extend(episodes)
     episodes = _merge_episodes(all_episodes)
     surfaced_streams = len({(episode.host, episode.program) for episode in episodes})
-    visible_findings = tuple(
-        finding for finding in observation.findings if level_visible(finding, 0)
-    )
+    visible_findings = tuple(observation.findings)
     unmatched = [
         episode
         for episode in episodes

@@ -567,6 +567,10 @@ def capture_summary(monkeypatch):
 
 
 _BEACON_ONLY = {"sigwood": {"detect": "beacon", "default_window": "1d"}}
+_EXFIL_ONLY = {
+    "sigwood": {"detect": "exfil", "default_window": "all"},
+    "detectors": {"exfil": {"min_outbound_bytes": 1_000, "min_orig_share": 0.6}},
+}
 
 
 def test_runner_dated_default_filters_to_newest_date(tmp_path, capture_summary, capsys):
@@ -3733,8 +3737,8 @@ def test_default_hunt_note_reaches_summary_and_text_renderer(
 
     fakes = {
         "alpha": _fake_detector("alpha", lambda _ctx: []),
-        "duration": _fake_detector(
-            "duration", lambda _ctx: [], in_default=False,
+        "exfil": _fake_detector(
+            "exfil", lambda _ctx: [], in_default=False,
         ),
     }
     monkeypatch.setattr(runner, "discover_detectors", lambda **_: fakes)
@@ -3746,7 +3750,7 @@ def test_default_hunt_note_reaches_summary_and_text_renderer(
 
     summary = capture_summary["summary"]
     note = (
-        "default hunt - not run: duration "
+        "default hunt - not run: exfil "
         "(opt-in; run it by name or with --detect=all)"
     )
     assert note in summary.notes
@@ -3757,7 +3761,7 @@ def test_default_hunt_note_reaches_summary_and_text_renderer(
 
 @pytest.mark.parametrize(
     "detect_spec",
-    ["all", "alpha", "default,duration", "default,!duration"],
+    ["all", "alpha", "default,exfil", "default,!exfil"],
 )
 def test_default_hunt_note_respects_operator_selection(
     detect_spec, capture_summary, monkeypatch, capsys,
@@ -3765,8 +3769,8 @@ def test_default_hunt_note_respects_operator_selection(
     """Explicit all/names/additions/exclusions never get called curated omissions."""
     fakes = {
         "alpha": _fake_detector("alpha", lambda _ctx: []),
-        "duration": _fake_detector(
-            "duration", lambda _ctx: [], in_default=False,
+        "exfil": _fake_detector(
+            "exfil", lambda _ctx: [], in_default=False,
         ),
     }
     monkeypatch.setattr(runner, "discover_detectors", lambda **_: fakes)
@@ -3783,8 +3787,8 @@ def test_default_hunt_remainder_omits_excluded_curated_member() -> None:
     """A curated exclusion stays operator intent; only real opt-ins remain."""
     fakes = {
         "alpha": _fake_detector("alpha", lambda _ctx: []),
-        "duration": _fake_detector(
-            "duration", lambda _ctx: [], in_default=False,
+        "exfil": _fake_detector(
+            "exfil", lambda _ctx: [], in_default=False,
         ),
     }
     selection = runner.select_detectors("default,!alpha", fakes)
@@ -3792,7 +3796,7 @@ def test_default_hunt_remainder_omits_excluded_curated_member() -> None:
 
     assert runner._default_opt_in_remainder(
         plan, selection, "default,!alpha"
-    ) == ["duration"]
+    ) == ["exfil"]
 
 
 def test_default_hunt_note_is_defensive_on_optional_module_metadata() -> None:
@@ -3819,8 +3823,8 @@ def test_default_hunt_dry_run_lists_opt_in_remainder(
 ) -> None:
     fakes = {
         "alpha": _fake_detector("alpha", lambda _ctx: []),
-        "duration": _fake_detector(
-            "duration", lambda _ctx: [], in_default=False,
+        "exfil": _fake_detector(
+            "exfil", lambda _ctx: [], in_default=False,
         ),
     }
     monkeypatch.setattr(runner, "discover_detectors", lambda **_: fakes)
@@ -3829,7 +3833,7 @@ def test_default_hunt_dry_run_lists_opt_in_remainder(
 
     out = capsys.readouterr().out
     assert (
-        "opt-in:          duration - not in the default hunt "
+        "opt-in:          exfil - not in the default hunt "
         "(--detect=all runs everything)"
     ) in out
 
@@ -3839,14 +3843,14 @@ def test_default_hunt_dry_run_honors_explicit_opt_in_exclusion(
 ) -> None:
     fakes = {
         "alpha": _fake_detector("alpha", lambda _ctx: []),
-        "duration": _fake_detector(
-            "duration", lambda _ctx: [], in_default=False,
+        "exfil": _fake_detector(
+            "exfil", lambda _ctx: [], in_default=False,
         ),
     }
     monkeypatch.setattr(runner, "discover_detectors", lambda **_: fakes)
 
     runner.run(
-        config={"sigwood": {"detect": "default,!duration"}},
+        config={"sigwood": {"detect": "default,!exfil"}},
         dry_run=True,
     )
 
@@ -5066,6 +5070,113 @@ def test_beacon_missing_required_column_note_and_clean_abstention(
     assert s.detectors_failed == {}
 
 
+def test_exfil_missing_responder_column_is_a_fidelity_note_on_real_conn_load(
+    tmp_path, capture_summary,
+):
+    records = [{
+        "ts": _TS_JAN5,
+        "id.orig_h": "10.0.0.10",
+        "id.resp_h": "198.51.100.20",
+        "id.resp_p": 443,
+        "proto": "tcp",
+        "orig_bytes": 1_500,
+        "local_orig": True,
+    }]
+
+    assert runner.run(config=_EXFIL_ONLY, zeek_dir=_make_flat_zeek(tmp_path, records)) == 0
+    assert (
+        "exfil: did not score 1 loaded connection - required conn.log columns "
+        "missing: resp_bytes"
+    ) in capture_summary["summary"].notes
+
+
+def test_exfil_no_usable_byte_pair_is_not_mislabeled_as_missing_column(
+    tmp_path, capture_summary,
+):
+    records = [{
+        "ts": _TS_JAN5,
+        "id.orig_h": "10.0.0.10",
+        "id.resp_h": "198.51.100.20",
+        "id.resp_p": 443,
+        "proto": "tcp",
+        "orig_bytes": 100,
+        "resp_bytes": None,
+        "local_orig": True,
+    }]
+
+    assert runner.run(config=_EXFIL_ONLY, zeek_dir=_make_flat_zeek(tmp_path, records)) == 0
+    notes = capture_summary["summary"].notes
+    assert any("carried no usable complete byte pairs" in note for note in notes)
+    assert not any("required conn.log columns missing" in note for note in notes)
+    assert not any("may have met the measured byte gates" in note for note in notes)
+
+
+def test_exfil_best_case_note_uses_post_allowlist_pair_facts_without_identity_leak(
+    tmp_path, capture_summary,
+):
+    records = [
+        {
+            "ts": _TS_JAN5,
+            "id.orig_h": "10.0.0.10",
+            "id.resp_h": "198.51.100.20",
+            "id.resp_p": 443,
+            "proto": "tcp",
+            "orig_bytes": 900,
+            "resp_bytes": 900,
+            "local_orig": True,
+        },
+        {
+            "ts": _TS_JAN5 + 1,
+            "id.orig_h": "10.0.0.10",
+            "id.resp_h": "198.51.100.20",
+            "id.resp_p": 443,
+            "proto": "tcp",
+            "orig_bytes": 600,
+            "resp_bytes": None,
+            "local_orig": True,
+        },
+    ]
+
+    assert runner.run(config=_EXFIL_ONLY, zeek_dir=_make_flat_zeek(tmp_path, records)) == 0
+    notes = capture_summary["summary"].notes
+    matching = [note for note in notes if note.startswith("exfil:") and "may have met" in note]
+    assert matching == [
+        "exfil: 1 connection pair may have met the measured byte gates if responder "
+        "bytes were recorded (600 B outbound bytes excluded)"
+    ]
+    assert "10.0.0.10" not in matching[0]
+    assert "198.51.100.20" not in matching[0]
+
+
+def test_exfil_note_does_not_reconstruct_a_pair_suppressed_by_allowlist(
+    tmp_path, capture_summary,
+):
+    records = [{
+        "ts": _TS_JAN5,
+        "id.orig_h": "10.0.0.10",
+        "id.resp_h": "198.51.100.20",
+        "id.resp_p": 443,
+        "proto": "tcp",
+        "orig_bytes": 1_500,
+        "resp_bytes": None,
+        "local_orig": True,
+    }]
+    config = {
+        **_EXFIL_ONLY,
+        "allowlist": {
+            "entry": [{
+                "match": "ip_pair",
+                "src": "10.0.0.10",
+                "dst_port": 443,
+                "detectors": ["exfil"],
+            }],
+        },
+    }
+
+    assert runner.run(config=config, zeek_dir=_make_flat_zeek(tmp_path, records)) == 0
+    assert not any(note.startswith("exfil:") for note in capture_summary["summary"].notes)
+
+
 def test_beacon_bytes_total_wipe_note_uses_post_gate_count(
     tmp_path, capture_summary,
 ):
@@ -5404,7 +5515,7 @@ def test_conn_summary_only_dir_skips_conn_detectors_no_zero_yield_warning(
 ):
     # A Corelight-style conn-summary is a plaintext connection SUMMARY, not a Zeek
     # conn log - its name shares the 'conn' prefix but the loader must never open
-    # it. Discovery drops it: conn*.log* yields nothing, so beacon/scan/duration
+    # it. Discovery drops it: conn*.log* yields nothing, so beacon/scan/exfil
     # skip cleanly, and the plaintext body (which would hit the zero-yield arm if
     # read) never produces the spurious "no Zeek records found" warning.
     zeek_dir = tmp_path / "zeek"
@@ -5413,11 +5524,11 @@ def test_conn_summary_only_dir_skips_conn_detectors_no_zero_yield_warning(
         "ts\tsrc\tdst\n1704067200\t192.0.2.10\t198.51.100.10\n", encoding="utf-8"
     )
     runner.run(
-        config={"sigwood": {"detect": "beacon, scan, duration", "default_window": "all"}},
+        config={"sigwood": {"detect": "beacon, scan, exfil", "default_window": "all"}},
         zeek_dir=zeek_dir,
     )
     err = capsys.readouterr().err
-    for name in ("beacon", "scan", "duration"):
+    for name in ("beacon", "scan", "exfil"):
         assert f"skipping {name} detection" in err
     assert "no Zeek records found" not in err
 
@@ -5427,7 +5538,7 @@ def test_conn_summary_only_reaches_summary_surface_without_warning(
 ):
     # Same conn-summary drop, but a valid dns.log rides along so a detector runs
     # and a RunSummary is produced (an all-skip run short-circuits before the
-    # summary). beacon/scan/duration land in detectors_skipped with the standard
+    # summary). beacon/scan/exfil land in detectors_skipped with the standard
     # "not found" reason, and the zero-yield warning is absent from the operator
     # surfaces (stderr AND RunSummary.notes).
     zeek_dir = tmp_path / "zeek"
@@ -5440,13 +5551,13 @@ def test_conn_summary_only_reaches_summary_surface_without_warning(
         {"ts": 1704067260.0, "id.orig_h": "192.0.2.11", "query": "example.test", "qclass": 1},
     ])
     assert runner.run(
-        config={"sigwood": {"detect": "beacon, scan, duration, dns",
+        config={"sigwood": {"detect": "beacon, scan, exfil, dns",
                               "default_window": "all"}},
         zeek_dir=zeek_dir,
     ) == 0
     s = capture_summary["summary"]
     err = capsys.readouterr().err
-    for name in ("beacon", "scan", "duration"):
+    for name in ("beacon", "scan", "exfil"):
         assert name in s.detectors_skipped, s.detectors_skipped
         assert "not found" in s.detectors_skipped[name]
     assert "no Zeek records found" not in err

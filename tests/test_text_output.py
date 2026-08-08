@@ -1246,24 +1246,21 @@ def test_vanish_truly_bare_finding_renders_title_only() -> None:
         )
 
 
-def test_duration_low_hidden_at_level_0_visible_at_level_1() -> None:
-    """Duration LOW findings hidden at verbose_level 0,
-    visible at level ≥ 1. The result set returned by run() is invariant -
-    the text handler is the sole authority on hiding LOW. Probe the title
-    line via the duration renderer's evidence-derived shape."""
-    def _dur(sev: Severity, src: str) -> Finding:
-        f = _bare_finding("duration", sev, f"{src} → x:443/tcp")
+def test_exfil_findings_stay_visible_at_every_reading_level() -> None:
+    """Reading level changes evidence depth, never finding visibility."""
+    def _exfil(sev: Severity, src: str) -> Finding:
+        f = _bare_finding("exfil", sev, f"{src} → 203.0.113.1")
         f.evidence = {
-            "src": src, "dst": "203.0.113.1", "port": 443, "proto": "tcp",
-            "max_duration_str": "1h 0m", "connection_count": 1,
-            "avg_bytes_per_second": None, "conn_states": [],
+            "src": src, "dst": "203.0.113.1", "orig_bytes_total": 1_000_000,
+            "resp_bytes_total": 10, "orig_share": 1.0, "connection_count": 1,
+            "span_seconds": None,
         }
         return f
-    high = _dur(Severity.HIGH, "192.0.2.10")
-    low = _dur(Severity.LOW, "192.0.2.20")
+    high = _exfil(Severity.HIGH, "192.0.2.10")
+    low = _exfil(Severity.LOW, "192.0.2.20")
     out0 = _capture_write(TextHandler(verbose_level=0), [high, low])
     out1 = _capture_write(TextHandler(verbose_level=1), [high, low])
-    assert "192.0.2.10" in out0 and "192.0.2.20" not in out0
+    assert "192.0.2.10" in out0 and "192.0.2.20" in out0
     assert "192.0.2.10" in out1 and "192.0.2.20" in out1
 
 
@@ -1584,17 +1581,12 @@ def test_w5_per_detector_isolation() -> None:
         assert f"quiet-{i}" in out
 
 
-def test_empty_level_visible_detector_renders_no_header() -> None:
-    """All-LOW duration at level 0 → level_visible_total == 0 → renders NOTHING
-    for the detector group (no lonely header, no group-header rule). The
-    run-summary banner's own rules still appear - exactly two of them."""
-    fs = [_bare_finding("duration", Severity.LOW, f"low-{i}") for i in range(3)]
-    out = _capture_write(TextHandler(verbose_level=0), fs)
-    assert "duration -" not in out
-    # Banner is bracketed by two DOUBLE rules; no single group-header rule should
-    # be added for the empty detector group.
-    assert out.count("═" * 80) == 2, "expected exactly 2 banner (double) rules"
-    assert out.count("─" * 80) == 0, "no single group-header rule for empty group"
+def test_synthetic_empty_renderable_renders_no_header() -> None:
+    """A renderer with no live section emits no empty detector chrome."""
+    from sigwood.outputs._render_model import Section
+
+    handler = TextHandler(verbose_level=0)
+    assert handler._render_group("synthetic", [Section(None, [], 0)]) == []
 
 
 # ── failed-detector tail disclosure ──────────────────────────────────────────

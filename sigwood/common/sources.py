@@ -1235,7 +1235,7 @@ def route_positional_source(
     that the losing families are not loaded as their own kind.
 
     **Named-module mode** (``detector_module`` is an imported detector module):
-    ``REQUIRED_LOGS`` carriers (beacon, scan, duration, aws, …) route to
+    ``REQUIRED_LOGS`` carriers (beacon, scan, exfil, aws, …) route to
     ``REQUIRED_LOGS[0]["source"]``. Two-source detectors (dns, syslog)
     content-sniff a file, or run the bounded directory vote for a directory,
     and route to the matching ``OPTIONAL_LOGS`` source; on miss or sniff

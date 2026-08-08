@@ -91,7 +91,7 @@ is checkable.
 ### Canonical connection schema (Zeek conn / dns transport)
 
 Source: `parsers/zeek.py`, `parsers/zeek_tsv.py`. Consumers: beacon, scan,
-duration, digest (conn card), graph (conn replay). (The Zeek dns feed shares the
+exfil, digest (conn card), graph (conn replay). (The Zeek dns feed shares the
 `src`/`ts` naming but has its own minimal schema, below.)
 
 ```
@@ -101,11 +101,18 @@ port       - destination port (int, nullable)
 proto      - tcp / udp / icmp (str, nullable)
 ts         - unix epoch timestamp (float)
 bytes      - originator bytes (int, nullable)
-resp_bytes - responder bytes (int, nullable; graph byte-direction shares)
+resp_bytes - responder bytes (int, nullable; graph byte-direction shares and exfil)
 duration   - connection duration in seconds (float, nullable)
 conn_state - connection state (str, nullable)
 local_orig - bool (nullable)
 ```
+
+### Exfil evidence population
+
+The `exfil` detector requires both `bytes` and `resp_bytes`. Its
+`orig_bytes_total`, `resp_bytes_total`, `orig_share`, and `connection_count`
+evidence describe only complete-byte measured rows for the pair; they do not
+claim totals or byte share for rows whose responder bytes were unavailable.
 
 Zeek-specific names (`id.orig_h`, etc.) never appear outside `parsers/zeek.py`.
 

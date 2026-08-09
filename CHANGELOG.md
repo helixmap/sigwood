@@ -21,6 +21,15 @@ All notable changes to sigwood are recorded here. The format follows
   Pi-hole archive: a full-archive streaming pass completed with a peak under 150 MB of
   memory, where the previous release's whole-frame path was stopped at an 8 GB memory
   safety ceiling without completing.
+- **Exports now carry content-bound availability provenance.** Each completed export
+  directory gains a private `.sigwood-export-provenance.json` manifest that binds the
+  written files to their requested half-open UTC interval, size, and SHA-256. Export
+  commits stage private data and serialize the manifest-last replacement with a directory
+  lock, so a write interrupted after data replacement but before manifest replacement
+  leaves a torn pair that reads as unknown instead of claiming coverage it cannot prove;
+  interruption before any replacement preserves the prior state untouched. The manifest, lock, and private staging namespace are reserved product
+  artifacts: log discovery excludes them, and explicitly selecting one reports how to
+  choose the exported data instead.
 
 ### Changed
 

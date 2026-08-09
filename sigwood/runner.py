@@ -62,8 +62,13 @@ from sigwood.common.errors import (
 from sigwood.common.finding import DetectorContext, Finding, RunSummary
 from sigwood.common.journal_probe import probe_journal
 from sigwood.common.loader import (
+    AvailabilityState,
+    CoverageDecision,
+    CoverageDecisionReason,
+    CoverageLane,
     DirectorySkipInfo,
     DualWindow,
+    ExportAvailability,
     FileSpan,
     JournalCaptureOutcome,
     PositionalMask,
@@ -141,6 +146,82 @@ class _LoadedPlan:
     load_result: Any
     load_windows: list[Any]
     default_spec: str
+    coverage_decisions: dict[str, CoverageDecision]
+
+
+def _select_coverage_lane(
+    facts: Sequence[ExportAvailability],
+    report_interval: tuple[datetime, datetime] | None,
+) -> CoverageDecision:
+    """Select STRONG only from complete content-bound interval coverage.
+
+    U2a deliberately refuses to infer an interval from loaded rows.  U2b may
+    supply a later authoritative interval; until then unbounded shapes are WEAK.
+    """
+    if report_interval is None:
+        return CoverageDecision(
+            CoverageLane.WEAK,
+            CoverageDecisionReason.INTERVAL_UNBOUNDED,
+            None,
+        )
+    report_start, report_end = report_interval
+    if (
+        report_start.tzinfo is None
+        or report_end.tzinfo is None
+        or report_start.utcoffset() is None
+        or report_end.utcoffset() is None
+        or report_end <= report_start
+    ):
+        return CoverageDecision(
+            CoverageLane.WEAK,
+            CoverageDecisionReason.INTERVAL_UNBOUNDED,
+            report_interval,
+        )
+    if not facts:
+        return CoverageDecision(
+            CoverageLane.WEAK,
+            CoverageDecisionReason.NO_OBJECTS,
+            report_interval,
+        )
+    def _valid_interval(fact: ExportAvailability) -> bool:
+        if fact.state is not AvailabilityState.TRUSTED or fact.interval is None:
+            return False
+        start, end = fact.interval
+        return (
+            start.tzinfo is not None
+            and end.tzinfo is not None
+            and start.utcoffset() is not None
+            and end.utcoffset() is not None
+            and end > start
+        )
+
+    if any(not _valid_interval(fact) for fact in facts):
+        return CoverageDecision(
+            CoverageLane.WEAK,
+            CoverageDecisionReason.OBJECT_UNKNOWN,
+            report_interval,
+        )
+    ordered = sorted(fact.interval for fact in facts if fact.interval is not None)
+    merged: list[tuple[datetime, datetime]] = []
+    for start, end in ordered:
+        if not merged or start > merged[-1][1]:
+            merged.append((start, end))
+        elif end > merged[-1][1]:
+            merged[-1] = (merged[-1][0], end)
+    complete = any(
+        start <= report_start and end >= report_end
+        for start, end in merged
+    )
+    return CoverageDecision(
+        CoverageLane.STRONG if complete else CoverageLane.WEAK,
+        (
+            CoverageDecisionReason.COMPLETE
+            if complete
+            else CoverageDecisionReason.INTERVAL_GAP
+        ),
+        report_interval,
+        tuple(merged),
+    )
 
 
 def run(
@@ -983,12 +1064,24 @@ def _plan_and_load(
         file_select_windows=file_select_windows,
         _directory_skips=plan.directory_skips,
     )
+    report_interval = (
+        (since, until)
+        if since is not None and until is not None
+        else None
+    )
+    coverage_decisions = {
+        pattern: _select_coverage_lane(
+            load_result.availability.get(pattern, ()), report_interval,
+        )
+        for pattern in plan.needed_logs
+    }
     return _LoadedPlan(
         plan=plan,
         source_dirs=source_dirs,
         load_result=load_result,
         load_windows=load_windows,
         default_spec=default_spec,
+        coverage_decisions=coverage_decisions,
     )
 
 

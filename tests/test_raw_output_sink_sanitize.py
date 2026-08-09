@@ -288,12 +288,13 @@ def test_loader_rotation_window_skip_strips_control(tmp_path, capsys) -> None:
 
 
 def test_export_narration_strips_control(tmp_path, monkeypatch, capsys) -> None:
-    # exporters/__init__.py:206 (summary_descriptor) + :229 (query name AND the
-    # written path). The real run_export orchestrator drives a stubbed backend.
+    # The real run_export orchestrator drives a stubbed external fetch. The query
+    # and descriptor remain hostile narration values; the output basename is safe
+    # because provenance entry keys deliberately reject control-bearing names.
     from sigwood.exporters import splunk as splunk_module
 
     esc_query = _esc(prefix="q", suffix="name")
-    esc_path = Path(str(tmp_path / _esc(ext=".log")))
+    from sigwood.common.paths import private_write_bytes
 
     monkeypatch.setattr(
         splunk_module, "summary_descriptor", lambda cfg: _esc(prefix="host", suffix="desc")
@@ -304,14 +305,19 @@ def test_export_narration_strips_control(tmp_path, monkeypatch, capsys) -> None:
     )
     monkeypatch.setattr(
         splunk_module, "write",
-        lambda rows, outpath, verbose: (0, {"bytes": 0, "paths": [esc_path]}),
+        lambda rows, outpath, verbose: (
+            private_write_bytes(outpath, b"") or 0,
+            {"bytes": 0, "paths": [outpath]},
+        ),
     )
 
     config = {
         "sigwood": {"export_dir": str(tmp_path)},
         "export": {"splunk": {
             "host": "192.0.2.20", "port": 8089,
-            "query": {esc_query: {"spl": "search x"}},
+            "query": {esc_query: {
+                "spl": "search x", "output_basename": "safe-export",
+            }},
         }},
     }
     exporters.run_export(
@@ -322,7 +328,7 @@ def test_export_narration_strips_control(tmp_path, monkeypatch, capsys) -> None:
     )
     out = capsys.readouterr().out
     assert ESC not in out
-    # Both the descriptor and the query/path rendered (non-vacuous).
+    # Both the descriptor and query rendered (non-vacuous).
     assert "hostdesc" in out
     assert "qname" in out
 

@@ -24,8 +24,15 @@ from sigwood import cli
 from sigwood.common import config as cfg
 from sigwood.common import display as display_mod
 from sigwood.common.display import _CURSOR_HIDE, _CURSOR_SHOW
-from sigwood.common.paths import effective_root
+from sigwood.common.paths import effective_root, private_write_bytes
 from sigwood.exporters import _resolve_output_path
+
+
+def _materialized_write(
+    outpath: Path, data: bytes = b"",
+) -> tuple[int, dict[str, object]]:
+    private_write_bytes(outpath, data)
+    return 0, {"bytes": len(data), "paths": [outpath]}
 
 
 class _FakeStdout:
@@ -434,7 +441,10 @@ def test_multi_query_guard_silent_for_directory_verdict(monkeypatch, tmp_path: P
         splunk_module, "fetch",
         lambda *a, **kw: ([], {"units": 0, "unit_label": "chunks"}),
     )
-    monkeypatch.setattr(splunk_module, "write", lambda rows, outpath, verbose: (0, {"bytes": 0, "paths": [outpath]}))
+    monkeypatch.setattr(
+        splunk_module, "write",
+        lambda rows, outpath, verbose: _materialized_write(outpath),
+    )
 
     out_dir = tmp_path / "hunt"
     # Should not raise. Multi-query in a DIRECTORY target is fine - each
@@ -461,7 +471,7 @@ def test_multi_query_guard_silent_for_single_query_with_file_target(
 
     def _capture_write(rows, outpath, verbose):
         captured["outpath"] = outpath
-        return 0, {"bytes": 0, "paths": [outpath]}
+        return _materialized_write(outpath)
 
     monkeypatch.setattr(splunk_module, "write", _capture_write)
 
@@ -471,7 +481,9 @@ def test_multi_query_guard_silent_for_single_query_with_file_target(
         since=datetime(2026, 6, 1), until=datetime(2026, 6, 8),
         out=str(target), verbose=False,
     )
-    assert captured["outpath"] == target
+    assert captured["outpath"].name == target.name
+    assert captured["outpath"].parent.name.startswith(".sigwood-export-stage-")
+    assert target.exists()
 
 
 # ── File-target + CloudTrail split ───────────────────────────────────────────
@@ -531,7 +543,11 @@ def test_orchestrator_seals_write_record_to_stderr(
         lambda *a, **kw: ([], {"units": 0, "unit_label": "chunks"}),
     )
     # Backend write returns a known count - no real I/O.
-    monkeypatch.setattr(splunk_module, "write", lambda rows, outpath, verbose: (1234, {"bytes": 0, "paths": [outpath]}))
+    def _counted_write(rows, outpath, verbose):
+        _, meta = _materialized_write(outpath)
+        return 1234, meta
+
+    monkeypatch.setattr(splunk_module, "write", _counted_write)
 
     fake = _FakeStream(tty=False)
     monkeypatch.setattr(sys, "stderr", fake)
@@ -575,7 +591,10 @@ def test_export_no_ansi_in_output(monkeypatch, tmp_path: Path, capsys) -> None:
     )
     monkeypatch.setattr(
         splunk_module, "write",
-        lambda rows, outpath, verbose: (100, {"bytes": 0, "paths": [outpath]}),
+        lambda rows, outpath, verbose: (
+            100,
+            _materialized_write(outpath)[1],
+        ),
     )
 
     target = tmp_path / "single.log"
@@ -602,7 +621,8 @@ def test_export_multi_query_totals_line(monkeypatch, tmp_path: Path, capsys) -> 
     )
 
     def _write(rows, outpath, verbose):
-        return 100, {"bytes": 4096, "paths": [outpath]}
+        _, meta = _materialized_write(outpath, b"x" * 4096)
+        return 100, meta
 
     monkeypatch.setattr(splunk_module, "write", _write)
 
@@ -639,7 +659,9 @@ def test_export_cloudtrail_split_renders_plus_K_more(
             outpath.with_name(outpath.stem + "_part02.log"),
             outpath.with_name(outpath.stem + "_part03.log"),
         ]
-        return 7_000_000, {"bytes": 6_000_000_000, "paths": parts}
+        for part in parts:
+            private_write_bytes(part, b"x" * 2048)
+        return 7_000_000, {"bytes": 6144, "paths": parts}
 
     monkeypatch.setattr(splunk_module, "write", _split_write)
 
@@ -650,8 +672,7 @@ def test_export_cloudtrail_split_renders_plus_K_more(
     )
     out = capsys.readouterr().out
     assert "(+2 more)" in out
-    # Bytes are summed (~5.6 GB).
-    assert "GB" in out
+    assert "KB" in out
 
 
 def test_export_streams_per_query_fetch_then_write(
@@ -688,7 +709,7 @@ def test_export_streams_per_query_fetch_then_write(
 
     def _write(rows, outpath, verbose):
         call_log.append(f"write:{current_query.get('name', '?')}")
-        return 0, {"bytes": 0, "paths": [outpath]}
+        return _materialized_write(outpath)
 
     monkeypatch.setattr(splunk_module, "fetch", _fetch_tracking)
     monkeypatch.setattr(splunk_module, "write", _write)

@@ -61,10 +61,16 @@ Architecture:
 from __future__ import annotations
 
 import importlib
+import importlib.metadata
+import fcntl
+import os
+import shutil
+import stat
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import ModuleType
 from typing import Any
+from uuid import uuid4
 
 # ExportAborted lives in common.errors so runner.py and exporter backends can
 # both raise it without creating a runner ↔ exporter dependency. Re-exported
@@ -82,7 +88,27 @@ from sigwood.common.display import (
     set_narration_enabled,
 )
 from sigwood.common.errors import ExportAborted, UsageError  # noqa: F401
-from sigwood.common.paths import be_like_water, effective_root, resolve_path
+from sigwood.common.loader.provenance import (
+    PROVENANCE_LOCK_NAME,
+    PROVENANCE_MANIFEST_NAME,
+    PROVENANCE_SCHEMA_VERSION,
+    PROVENANCE_STAGE_PREFIX,
+    ProvenanceEntry,
+    ProvenanceManifest,
+    ProvenanceManifestError,
+    canonical_manifest_bytes,
+    hash_file,
+    is_reserved_provenance_path,
+    read_manifest,
+)
+from sigwood.common.paths import (
+    be_like_water,
+    effective_root,
+    private_mkdir,
+    private_open,
+    private_write_bytes,
+    resolve_path,
+)
 from sigwood.common.sanitize import strip_control
 
 
@@ -139,6 +165,212 @@ def _resolve_export_window(
 
 
 _KNOWN_BACKENDS = ("splunk", "cloudtrail")
+
+
+def _request_zone_identity(use_utc: bool) -> str | None:
+    """Return the display/request interpretation zone without guessing."""
+    if use_utc:
+        return "Etc/UTC"
+    env_zone = os.environ.get("TZ", "")
+    candidates: list[str] = []
+    if env_zone and not env_zone.startswith(":"):
+        candidates.append(env_zone)
+    try:
+        resolved = Path("/etc/localtime").resolve(strict=True)
+    except OSError:
+        resolved = None
+    if resolved is not None:
+        parts = resolved.parts
+        if "zoneinfo" in parts:
+            index = len(parts) - 1 - list(reversed(parts)).index("zoneinfo")
+            candidates.append("/".join(parts[index + 1:]))
+    try:
+        from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+    except ImportError:
+        return None
+    for candidate in candidates:
+        if not candidate or candidate.startswith("/"):
+            continue
+        try:
+            ZoneInfo(candidate)
+        except (ValueError, OSError, ZoneInfoNotFoundError):
+            continue
+        return candidate
+    return None
+
+
+def _tzdata_version() -> str | None:
+    """Return an installed tzdata identity when one is inspectable."""
+    try:
+        value = importlib.metadata.version("tzdata")
+    except importlib.metadata.PackageNotFoundError:
+        value = ""
+    if value:
+        return value[:256]
+    candidates = (
+        Path("/usr/share/zoneinfo/tzdata.zi"),
+        Path("/usr/share/zoneinfo/+VERSION"),
+        Path("/var/db/timezone/zoneinfo/+VERSION"),
+    )
+    for path in candidates:
+        try:
+            with path.open("r", encoding="utf-8", errors="strict") as stream:
+                first = stream.readline(512).strip()
+        except (OSError, UnicodeError):
+            continue
+        if first.startswith("# version "):
+            first = first.removeprefix("# version ").strip()
+        if first and len(first) <= 256 and not any(ord(ch) < 0x20 for ch in first):
+            return first
+    return None
+
+
+def _fsync_file(path: Path) -> None:
+    with path.open("rb") as stream:
+        os.fsync(stream.fileno())
+
+
+def _fsync_directory(path: Path) -> None:
+    try:
+        fd = os.open(path, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)
+
+
+def _new_stage_directory(parent: Path) -> Path:
+    private_mkdir(parent)
+    for _ in range(10):
+        candidate = parent / f"{PROVENANCE_STAGE_PREFIX}{uuid4().hex}"
+        try:
+            private_mkdir(candidate)
+        except FileExistsError:
+            continue
+        return candidate
+    raise OSError("could not create a unique export staging directory")
+
+
+def _validate_staged_write(
+    stage_dir: Path,
+    write_meta: dict[str, Any],
+) -> list[tuple[Path, Path, int, str]]:
+    raw_paths = write_meta.get("paths")
+    if (
+        not isinstance(raw_paths, list)
+        or not raw_paths
+        or any(not isinstance(path, Path) for path in raw_paths)
+    ):
+        raise ValueError("exporter backend returned invalid write metadata paths")
+    staged: list[tuple[Path, Path, int, str]] = []
+    names: set[str] = set()
+    for path in raw_paths:
+        if path.parent != stage_dir or path.name in names:
+            raise ValueError("exporter backend returned an escaping or duplicate path")
+        try:
+            info = path.lstat()
+        except OSError as exc:
+            raise ValueError("exporter backend returned a missing output path") from exc
+        if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
+            raise ValueError("exporter backend output is not a regular file")
+        if stat.S_IMODE(info.st_mode) != 0o600:
+            raise ValueError("exporter backend output is not private (expected 0600)")
+        names.add(path.name)
+        staged.append((path, stage_dir.parent / path.name, info.st_size, hash_file(path)))
+    declared_bytes = write_meta.get("bytes")
+    if (
+        isinstance(declared_bytes, bool)
+        or not isinstance(declared_bytes, int)
+        or declared_bytes != sum(item[2] for item in staged)
+    ):
+        raise ValueError("exporter backend returned inconsistent write byte metadata")
+    return staged
+
+
+def _commit_export_provenance(
+    staged: list[tuple[Path, Path, int, str]],
+    *,
+    since: datetime,
+    until: datetime,
+    backend: str,
+    request_zone: str | None,
+    tzdata_version: str | None,
+) -> dict[str, Any]:
+    parent = staged[0][1].parent
+    if any(final.parent != parent for _, final, _, _ in staged):
+        raise ValueError("one backend write returned files in multiple directories")
+    requested_start = since.astimezone(timezone.utc)
+    requested_end = until.astimezone(timezone.utc)
+    entries = {
+        final.name: ProvenanceEntry(
+            schema_version=PROVENANCE_SCHEMA_VERSION,
+            content_sha256=digest,
+            size_bytes=size,
+            requested_start_utc=requested_start,
+            requested_end_utc=requested_end,
+            request_zone=request_zone,
+            tzdata_version=tzdata_version,
+            exporter="sigwood",
+            backend=backend,
+            completion="success",
+        )
+        for _, final, size, digest in staged
+    }
+    # Validate the complete entry shape before acquiring the lock or replacing
+    # any final data.  In particular, a backend-returned reserved/control-bearing
+    # basename must never fail only after it has already mutated the destination.
+    canonical_manifest_bytes(ProvenanceManifest(
+        schema_version=PROVENANCE_SCHEMA_VERSION,
+        generation=1,
+        written_at=datetime.now(timezone.utc),
+        entries=entries,
+    ))
+    lock_path = parent / PROVENANCE_LOCK_NAME
+    manifest_path = parent / PROVENANCE_MANIFEST_NAME
+    stage_dir = staged[0][0].parent
+    staged_manifest = stage_dir / PROVENANCE_MANIFEST_NAME
+    with private_open(lock_path, encoding="utf-8") as lock_stream:
+        if not stat.S_ISREG(os.fstat(lock_stream.fileno()).st_mode):
+            raise ValueError("export provenance lock is not a regular file")
+        fcntl.flock(lock_stream.fileno(), fcntl.LOCK_EX)
+        try:
+            try:
+                current = read_manifest(manifest_path)
+            except FileNotFoundError:
+                generation = 0
+                merged: dict[str, ProvenanceEntry] = {}
+            except ProvenanceManifestError as exc:
+                raise ValueError(
+                    f"could not update {manifest_path}: existing provenance "
+                    "manifest is malformed"
+                ) from exc
+            else:
+                generation = current.generation
+                merged = dict(current.entries)
+            merged.update(entries)
+            for staged_path, final_path, _, _ in staged:
+                _fsync_file(staged_path)
+                os.replace(staged_path, final_path)
+            manifest = ProvenanceManifest(
+                schema_version=PROVENANCE_SCHEMA_VERSION,
+                generation=generation + 1,
+                written_at=datetime.now(timezone.utc),
+                entries=merged,
+            )
+            private_write_bytes(staged_manifest, canonical_manifest_bytes(manifest))
+            _fsync_file(staged_manifest)
+            os.replace(staged_manifest, manifest_path)
+            _fsync_directory(parent)
+        finally:
+            fcntl.flock(lock_stream.fileno(), fcntl.LOCK_UN)
+    return {
+        "bytes": sum(item[2] for item in staged),
+        "paths": [item[1] for item in staged],
+    }
 
 
 def run_export(
@@ -265,6 +497,11 @@ def _run_export(
             sigwood_config=sigwood_cfg,
             root=root,
         )
+        if is_reserved_provenance_path(outpath):
+            raise ValueError(
+                f"{outpath} is reserved for sigwood export provenance; "
+                "choose another export path"
+            )
         plan.append((query_name, query_cfg, outpath))
 
     # Header - single plain stdout line. No box, no seplines, NO color, no
@@ -309,6 +546,8 @@ def _run_export(
     grand_bytes = 0
     run_fetch_meta: dict[str, Any] | None = None
     n_queries = len(plan)
+    request_zone = _request_zone_identity(use_utc)
+    tzdata_version = _tzdata_version()
 
     # One uniform streaming loop: fetch → validate/agree fetch_meta → write →
     # the one result line. Streaming preserves partial-success durability
@@ -346,8 +585,24 @@ def _run_export(
                 f"exporter backend '{resolved_backend}' returned invalid fetch "
                 "metadata - 'notes' must be a list of strings"
             )
-        n_written, write_meta = backend_module.write(rows, outpath, verbose)
-        rows = None  # type: ignore[assignment]
+        stage_dir = _new_stage_directory(outpath.parent)
+        try:
+            staged_outpath = stage_dir / outpath.name
+            n_written, staged_meta = backend_module.write(
+                rows, staged_outpath, verbose,
+            )
+            rows = None  # type: ignore[assignment]
+            staged = _validate_staged_write(stage_dir, staged_meta)
+            write_meta = _commit_export_provenance(
+                staged,
+                since=since,
+                until=until,
+                backend=resolved_backend,
+                request_zone=request_zone,
+                tzdata_version=tzdata_version,
+            )
+        finally:
+            shutil.rmtree(stage_dir, ignore_errors=True)
         nl, nb = _emit_result_line(query_name, n_written, write_meta, outpath)
         for note in notes:
             print(f"note: {strip_control(note)}")

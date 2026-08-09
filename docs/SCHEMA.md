@@ -397,6 +397,68 @@ which between them exercise the full `userIdentity` variety.
 
 ---
 
+## Export availability provenance (v1)
+
+Every directory holding a successfully committed `sigwood export` carries a reserved
+`.sigwood-export-provenance.json` manifest. It binds each completed data object
+to the exact requested half-open UTC interval and to the bytes that were
+written. The manifest itself is not log input.
+
+```json
+{
+  "schema_version": 1,
+  "generation": 1,
+  "written_at": "2026-08-09T20:00:00Z",
+  "entries": {
+    "pihole_dnsblock_20260801_to_20260808.log": {
+      "schema_version": 1,
+      "content_sha256": "<64 lowercase hexadecimal characters>",
+      "size_bytes": 123,
+      "requested_start_utc": "2026-08-01T00:00:00Z",
+      "requested_end_utc": "2026-08-08T00:00:00Z",
+      "request_zone": "America/Chicago",
+      "tzdata_version": "2026a",
+      "exporter": "sigwood",
+      "backend": "splunk",
+      "completion": "success"
+    }
+  }
+}
+```
+
+The manifest is canonical UTF-8 JSON with a trailing LF. Object keys are
+unique, `generation` is positive, entry names are safe basenames, and every
+interval is positive, UTC, and half-open: `[requested_start_utc,
+requested_end_utc)`. `request_zone` and `tzdata_version` may be `null`. They
+describe how the request was interpreted on the exporting host; they never
+claim the source device's wall-clock zone and never establish completeness.
+Manifest input is capped at 256 MiB and 100,000 entries; a selected population
+above 100,000 objects is downgraded as one unit without partial trusted facts.
+
+The loader publishes one typed availability fact for every selected data file.
+A fact is `TRUSTED` only when a unique `completion: "success"` entry binds the
+whole file's exact size and SHA-256. Missing, malformed, incomplete, unreadable,
+or mismatched evidence yields `UNKNOWN`; it never aborts parsing solely because
+provenance could not be established. Entries for files outside the selected
+population create no fact. Trust is prospective: existing files do not become
+trusted merely because a later manifest exists.
+
+The reserved manifest, `.sigwood-export-provenance.lock`, and every path below
+the exact `.sigwood-export-stage-` prefix are excluded before discovery,
+sniffing, parsing, snapshots, and byte accounting. Explicitly naming a reserved
+artifact is rejected with guidance to select the exported data file or its
+containing directory.
+
+The runner selects a strong coverage lane only for an exact bounded report
+interval when every participating object is trusted and the merged union of
+their manifest intervals covers that interval without a gap. Overlap counts
+once. Filenames (`_to_`, `_Nd`, date-shaped names), loaded event extrema, and
+request-zone context are never availability evidence. Implicit or unbounded
+report intervals remain weak until a later contract supplies an authoritative
+interval.
+
+---
+
 ## Loader & data_sources wiring
 
 Every source family loads through **one uniform pipeline**, not a per-source

@@ -29,6 +29,7 @@ from sigwood.common.display import (
     hidden_cursor,
 )
 from sigwood.common.errors import ExportAborted
+from sigwood.common.paths import private_write_bytes
 from sigwood.exporters import _resolve_output_path, run_export
 from sigwood.exporters import cloudtrail as ct
 
@@ -84,6 +85,7 @@ def test_run_export_uses_cloudtrail_synthetic_query(
     def _write(events, outpath, verbose):
         captured["writes"] += 1
         captured["outpath"] = outpath
+        private_write_bytes(outpath, b"")
         return 0, {"bytes": 0, "paths": [outpath]}
 
     monkeypatch.setattr(ct, "fetch", _fetch)

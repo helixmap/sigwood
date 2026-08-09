@@ -289,6 +289,67 @@ class PreparedStatus:
     cause: str = ""
 
 
+class AvailabilityState(str, Enum):
+    """Trust state for one selected data object's export availability."""
+
+    TRUSTED = "TRUSTED"
+    UNKNOWN = "UNKNOWN"
+
+
+class AvailabilityReason(str, Enum):
+    """Bounded downgrade vocabulary for provenance validation."""
+
+    TRUSTED = "trusted"
+    MANIFEST_MISSING = "manifest_missing"
+    MANIFEST_MALFORMED = "manifest_malformed"
+    ENTRY_MISSING = "entry_missing"
+    INCOMPLETE = "incomplete"
+    BINDING_MISMATCH = "binding_mismatch"
+    UNREADABLE = "unreadable"
+    RESOURCE_LIMIT = "resource_limit"
+
+
+@dataclass(frozen=True)
+class ExportAvailability:
+    """Content-bound availability fact for one selected data object."""
+
+    path: Path
+    state: AvailabilityState
+    reason: AvailabilityReason
+    interval: tuple[datetime, datetime] | None = None
+    manifest_generation: int | None = None
+    backend: str | None = None
+    request_zone: str | None = None
+    tzdata_version: str | None = None
+
+
+class CoverageLane(str, Enum):
+    """Runner coverage lane selected from typed availability facts."""
+
+    STRONG = "strong"
+    WEAK = "weak"
+
+
+class CoverageDecisionReason(str, Enum):
+    """Why the runner selected a coverage lane."""
+
+    COMPLETE = "complete"
+    INTERVAL_UNBOUNDED = "interval_unbounded"
+    NO_OBJECTS = "no_objects"
+    OBJECT_UNKNOWN = "object_unknown"
+    INTERVAL_GAP = "interval_gap"
+
+
+@dataclass(frozen=True)
+class CoverageDecision:
+    """Conservative runner decision over one pattern's selected objects."""
+
+    lane: CoverageLane
+    reason: CoverageDecisionReason
+    report_interval: tuple[datetime, datetime] | None
+    trusted_intervals: tuple[tuple[datetime, datetime], ...] = ()
+
+
 @dataclass(frozen=True)
 class SourceFileQuality:
     """Aggregate-only quality facts for one planned file."""
@@ -454,6 +515,9 @@ class LoadResult:
     snapshots: dict[str, SourceSnapshot] = field(default_factory=dict)
     fold_results: dict[str, dict[str, Any]] = field(default_factory=dict)
     prepared_status: dict[str, PreparedStatus] = field(default_factory=dict)
+    availability: dict[str, tuple[ExportAvailability, ...]] = field(
+        default_factory=dict,
+    )
 
 
 def _data_window(logs: dict[str, pd.DataFrame]) -> tuple[datetime, datetime] | None:

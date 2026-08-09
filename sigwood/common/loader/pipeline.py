@@ -64,6 +64,10 @@ from sigwood.common.loader.journal import (
     _journal_read_error,
     _journal_strategy_parse,
 )
+from sigwood.common.loader.provenance import (
+    reject_explicit_reserved_path,
+    validate_selected_files,
+)
 from sigwood.common.loader.sniff import _is_ndjson, _looks_binary
 from sigwood.common.loader.types import (
     _CLOUDTRAIL_COLUMNS,
@@ -1532,6 +1536,7 @@ def load_required_logs(
     snapshots: dict[str, SourceSnapshot] = {}
     fold_results: dict[str, dict[str, Any]] = {}
     prepared_status: dict[str, PreparedStatus] = {}
+    availability = {}
     snapshot_cache: dict[
         tuple[str, tuple[Path, ...], datetime | None, datetime | None],
         SourceSnapshot,
@@ -1543,6 +1548,13 @@ def load_required_logs(
         if not paths and not trusted:
             warnings.append(f"{source} not configured - {pattern} not loaded")
             continue
+
+        # Explicit paths bypass parts of filename-based discovery by design,
+        # but the provenance namespace is never log input.  Enforce that
+        # exception before source-specific routing so flat-file inputs cannot
+        # slip past the discovery-layer guard.
+        for explicit_path in [*paths, *trusted]:
+            reject_explicit_reserved_path(explicit_path)
 
         strategy = _SOURCE_LOADERS.get(source)
         if strategy is None:
@@ -1639,6 +1651,8 @@ def load_required_logs(
             else:
                 selected_dir = dir_for_window
             files = _union_dedupe([file_inputs, selected_dir])
+
+        availability[pattern] = validate_selected_files(files)
 
         for path in files:
             try:
@@ -1778,6 +1792,7 @@ def load_required_logs(
         snapshots=snapshots,
         fold_results=fold_results,
         prepared_status=prepared_status,
+        availability=availability,
     )
 
 

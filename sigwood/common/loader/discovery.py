@@ -19,6 +19,10 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 from sigwood.common.loader.io import _safe_resolve, _union_dedupe
+from sigwood.common.loader.provenance import (
+    is_reserved_provenance_path,
+    reject_explicit_reserved_path,
+)
 from sigwood.common.loader.sniff import _looks_like_syslog
 from sigwood.common.loader.types import DirectorySkipInfo, _LOG_SUFFIXES
 from sigwood.common.loader.windowing import _peek_first_ts, _rotation_base_and_index
@@ -26,7 +30,10 @@ from sigwood.common.loader.windowing import _peek_first_ts, _rotation_base_and_i
 
 def discover_files(directory: Path, pattern: str) -> list[Path]:
     """Return all files in directory matching the glob pattern, sorted by name."""
-    return sorted(directory.glob(pattern))
+    return sorted(
+        path for path in directory.glob(pattern)
+        if not is_reserved_provenance_path(path)
+    )
 
 
 # Matches YYYY-MM-DD at the start of a Zeek log-rotation directory name.
@@ -63,7 +70,10 @@ def _list_directory(
 ) -> list[Path]:
     """List immediate children or raise the typed, already-recorded denial."""
     try:
-        return list(directory.iterdir())
+        return [
+            path for path in directory.iterdir()
+            if not is_reserved_provenance_path(path)
+        ]
     except PermissionError:
         _record_directory_skip(source_key, directory, sink)
         raise _DirectoryListingDenied from None
@@ -334,6 +344,7 @@ def discover_zeek_files(
     A directory-listing denial returns no candidates for that input and records
     the omission when a caller-owned sink is supplied; it never enters the flat arm.
     """
+    reject_explicit_reserved_path(directory)
     if directory.is_file():
         return [directory] if _file_matches_pattern(directory, pattern) else []
 
@@ -347,7 +358,7 @@ def discover_zeek_files(
         # Flat layout. Keep only primary Zeek logs (conn.log, conn.<ts>.log.gz),
         # never derived siblings that share the type prefix (conn-summary).
         return [
-            f for f in sorted(directory.glob(pattern))
+            f for f in discover_files(directory, pattern)
             if f.is_file() and _is_primary_zeek_name(f.name, pattern)
         ]
 
@@ -397,7 +408,7 @@ def discover_zeek_files(
     files: list[Path] = []
     for d in included:
         files.extend(
-            f for f in sorted(d.glob(pattern))
+            f for f in discover_files(d, pattern)
             if f.is_file() and _is_primary_zeek_name(f.name, pattern)
         )
     return files
@@ -423,6 +434,7 @@ def _syslog_files(
     loads. The AppleDouble filter and numeric ordering apply to DIRECTORY discovery
     only: the junk filter targets glob noise, not operator intent.
     """
+    reject_explicit_reserved_path(path)
     if path.is_file():
         return [path]
     if not _probe_directory_listable(path, "pihole_dir", _directory_skips):
@@ -465,6 +477,7 @@ def _discover_syslog_files(
     A listing denial yields no candidates and records the source directory when
     a caller-owned sink is supplied.
     """
+    reject_explicit_reserved_path(path)
     if path.is_file():
         return [path]
     try:
@@ -490,7 +503,12 @@ def _dir_has_regular_files(path: Path) -> bool:
     through the disclosure silently.
     """
     try:
-        return any(p.is_file() and not p.name.startswith("._") for p in path.iterdir())
+        return any(
+            p.is_file()
+            and not p.name.startswith("._")
+            and not is_reserved_provenance_path(p)
+            for p in path.iterdir()
+        )
     except OSError:
         return False
 
@@ -513,6 +531,7 @@ def discover_cloudtrail_files(
     ``AWSLogs/<acct>/CloudTrail/<region>/YYYY/MM/DD/`` tree work - users who pull
     logs their own way can point ``cloudtrail_dir`` at any level of that tree.
     """
+    reject_explicit_reserved_path(path)
     if path.is_file():
         return [path]
     if not path.is_dir():
@@ -523,6 +542,8 @@ def discover_cloudtrail_files(
         return []
     files: list[Path] = []
     for candidate in sorted(path.rglob("*.json*")):
+        if is_reserved_provenance_path(candidate):
+            continue
         if not candidate.is_file():
             continue
         if candidate.name.startswith("._"):

@@ -19,7 +19,13 @@ from sigwood import cli, exporters
 from sigwood.common import config as cfg
 from sigwood.common.display import fmt_window, set_display_utc
 from sigwood.common.errors import UsageError
+from sigwood.common.paths import private_write_bytes
 from sigwood.exporters import run_export
+
+
+def _materialized_write(outpath: Path, data: bytes = b"") -> tuple[int, dict[str, Any]]:
+    private_write_bytes(outpath, data)
+    return 0, {"bytes": len(data), "paths": [outpath]}
 
 
 # ── backend selection reads config["export"][name], not top-level ────────────
@@ -58,7 +64,10 @@ def test_backend_selection_from_export_namespace_succeeds(
         splunk_module, "fetch",
         lambda *a, **kw: ([], {"units": 0, "unit_label": "chunks"}),
     )
-    monkeypatch.setattr(splunk_module, "write", lambda rows, outpath, verbose: (0, {"bytes": 0, "paths": [outpath]}))
+    monkeypatch.setattr(
+        splunk_module, "write",
+        lambda rows, outpath, verbose: _materialized_write(outpath),
+    )
     # Should auto-select splunk and not raise.
     run_export(
         config=config, backend=None, query_names=[],
@@ -97,7 +106,7 @@ class _StubBackend:
     @staticmethod
     def write(rows, outpath, verbose):
         _StubBackend.captured["outpath"] = outpath
-        return 0, {"bytes": 0, "paths": [outpath]}
+        return _materialized_write(outpath)
 
 
 def test_run_export_fetch_receives_export_namespace_backend_config(
@@ -231,7 +240,7 @@ def test_default_window_anchors_follow_the_knob(
 
         @staticmethod
         def write(rows, outpath, verbose):
-            return 0, {"bytes": 0, "paths": [outpath]}
+            return _materialized_write(outpath)
 
     monkeypatch.setattr(exporters, "_load_backend", lambda name: _WindowStub)
     monkeypatch.setattr(exporters, "_KNOWN_BACKENDS", ("splunk",))
@@ -354,7 +363,7 @@ def test_run_export_resolves_endpoint_defaults_as_one_pair(
 
         @staticmethod
         def write(_rows, outpath, _verbose):
-            return 0, {"bytes": 0, "paths": [outpath]}
+            return _materialized_write(outpath)
 
     monkeypatch.setattr(exporters, "datetime", _FixedDateTime)
     monkeypatch.setattr(exporters, "_load_backend", lambda _name: _PairStub)
@@ -503,8 +512,7 @@ def test_run_export_rejects_inverted_window_before_fetch_or_write(
 
         @staticmethod
         def write(_rows, outpath, _verbose):
-            outpath.write_text("fetched", encoding="utf-8")
-            return 0, {"bytes": 7, "paths": [outpath]}
+            return _materialized_write(outpath, b"fetched")
 
     monkeypatch.setattr(exporters, "_load_backend", lambda _name: _RejectingWindowStub)
     monkeypatch.setattr(exporters, "_KNOWN_BACKENDS", ("splunk",))
@@ -568,7 +576,7 @@ def test_run_export_narrates_compact_positive_span(
 
         @staticmethod
         def write(_rows, outpath, _verbose):
-            return 0, {"bytes": 0, "paths": [outpath]}
+            return _materialized_write(outpath)
 
     monkeypatch.setattr(exporters, "_load_backend", lambda _name: _SpanStub)
     monkeypatch.setattr(exporters, "_KNOWN_BACKENDS", ("splunk",))

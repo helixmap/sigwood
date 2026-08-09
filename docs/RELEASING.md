@@ -88,6 +88,21 @@ else
 fi
 ```
 
+Audit the installed dependencies for known advisories. Dependabot proposes updates to the CI
+action pins on a schedule, but it does not scan the Python packages sigwood installs, so a
+published advisory against a runtime dependency would otherwise reach a cut unnoticed. Run
+`pip-audit` ephemerally with `uvx` (nothing is installed into the venv) against the venv's
+resolved third-party packages:
+
+```bash
+uvx pip-audit -r <(.venv/bin/pip freeze --exclude-editable)
+```
+
+`--exclude-editable` drops the editable `sigwood` line itself, so only the third-party
+dependencies are audited. `pip-audit` exits non-zero when it finds a vulnerability. Resolve
+anything it reports — bump the affected version, or consciously accept it with a note — before
+tagging; a clean report is the pass, and an unreviewed one is not.
+
 Finally, confirm that nothing is knowingly shipping in a defective state. A detector outside the
 default hunt is still reachable by name and under `--detect=all`, so "not in the default hunt" is
 not the same as "not reachable" — a detector known to produce wrong results still reaches anyone
@@ -134,10 +149,10 @@ Two checks belong here as well, because no test covers either:
     diff /tmp/cl-prev.txt /tmp/cl-now.txt
   ```
 
-- **Shipped images still match shipped output.** The README screenshots and terminal
-  recording under `docs/img/` render on the project page *and* on PyPI. Any release that
-  changed what a report looks like needs them recaptured, or the front page advertises older
-  output than the release produces.
+- **Shipped images still match shipped output.** The report screenshot (`docs/img/report.png`)
+  and the terminal recording (`docs/img/demo.svg`) render on the project page *and* on PyPI. Any
+  release that changed what a report looks like needs them recaptured, or the front page
+  advertises older output than the release produces.
 
 The section is done when the working tree holds the intended release state, the suite is
 green, and both checks above have been made. It stays uncommitted.

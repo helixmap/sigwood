@@ -6,6 +6,8 @@ All notable changes to sigwood are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-08-08
+
 ### Added
 
 - **`exfil` - a new detector for bulk outbound transfers over Zeek connection logs.** It
@@ -44,22 +46,40 @@ All notable changes to sigwood are recorded here. The format follows
   [Known issues](docs/KNOWN-ISSUES.md) for what this detector cannot see, including the one
   case where an unrecorded responder count can make a download look like an upload.
 
-### Removed
-
-- **BREAKING: the `duration` detector is retired; `exfil` replaces it.** `sigwood duration`
-  is no longer a command, `[detectors.duration]` is no longer read (sigwood tells you so, and
-  names the successor, if it finds one in your config), and the `detector` value in JSON and
-  CSV output is now `exfil`. There is no alias.
-
-  The reason is that its premise had expired. `duration` treated a long-lived connection as
-  inherently suspicious and assigned severity from elapsed wall-clock time alone, so on any
-  modern network its high-severity findings were by-design persistence - mobile push
-  channels, mail clients holding a connection open, CDN keep-alives, interactive SSH - and
-  the tool narrated a phone's push socket in the language of a command-and-control channel.
-  Worse, the statistic missed the thing that actually matters in this space: a fast bulk
-  upload never stays open long enough to trip a duration floor at all, and speed is exactly
-  what an exfiltration channel wants. `exfil` asks the question that was worth asking, and
-  duration survives as context on its findings rather than as the trigger.
+- **Authentication analysis is now available as the opt-in `sigwood auth` detector.** It
+  examines the system-log lane for five measured shapes: concentrated failures, source volume,
+  account volume, multi-host failures, and failures followed by a success. Each single category
+  caps at MEDIUM; the only HIGH path combines exact multi-host spread with a matching landing.
+  Text and HTML share a designed severity-first row grammar, `-v` keeps untrusted identities out
+  of ordinary evidence, and every run reports count-only extraction magnitudes plus honest
+  evaluated-versus-abstained notes. The known-issues page also records four pre-existing
+  limitations: the corroboration requirement, window-relative first-seen time, whole-host-only
+  allowlist coverage for this lane, and the synthetic-only HIGH witness.
+- **A misspelled setting name now warns instead of being silently ignored - at every
+  config scope.** A typo like `zeek_dri`, a mistyped `[detectors.beacn]` table, an unknown
+  `[export.splnk]` backend, or a wrong key nested as deep as `[detectors.dns.pihole]` now
+  prints one plain warning on stderr - `config: ignoring unknown setting [sigwood].zeek_dri
+  (did you mean zeek_dir?)` - and the run continues on what it understood. Nothing stops,
+  no value is validated, and `-q` does not hide it (a warning is not progress narration).
+  The `allowlist` command's read paths disclose the same way. The suggestion appears only
+  when a close match exists.
+- **A written contract for what sigwood keeps stable.** `docs/CONTRACT.md` states, in one
+  place, what will not change across 1.x releases: the thirteen verbs, the flag spellings and
+  their `=`-only value grammar, the five output-format tokens, the documented config key
+  paths, the JSON envelope and its field types, the CSV column set, and the exit codes.
+  Linked from the README and the FAQ. Detection itself is explicitly outside that promise -
+  thresholds and calibration move when measurement says they should.
+- **Every detector is now importable and callable from Python**, which the README and FAQ
+  already described. `from sigwood import DetectorContext, Finding, Severity` works, as does
+  `from sigwood.detectors.<name> import run` for all seven detectors.
+  `DetectorContext.unsuppressed(...)` builds a context for that use with allowlist
+  suppression **off**, and says so in its name and docstring, because results can be noisier
+  than the same detector run through the CLI. Importing the package stays lightweight - it
+  does not pull in pandas.
+- **Tests that hold the contract to its word.** The published inventory is pinned by
+  executable tests rather than prose alone, including a check that a consumer tolerating new
+  fields keeps working, and an event-time matrix asserted against the real finding producers.
+  The installed-wheel smoke in CI now exercises the documented Python example end to end.
 
 ### Changed
 
@@ -105,19 +125,48 @@ All notable changes to sigwood are recorded here. The format follows
   carries the line's text — on the reference capture that is about one line in 650. Reading
   those lines means going to the source log rather than the loaded table.
 
-### Security
+- **Every `auth` finding now caps at MEDIUM.** Failures followed by a success are still reported,
+  as evidence attached to the multi-host finding covering the same source and account, but they no
+  longer raise a finding to HIGH. The counting this detector does is deliberately plain, and a
+  higher tier has to earn its way back on evidence. `auth` remains opt-in.
+- **Auth findings that describe the same activity from different angles now say so.** Source
+  volume, account volume, and multi-host spread continue to report separately — they answer
+  different questions — and each now names the related findings, with a count shown in the report
+  row, so three rows are not read as three separate incidents.
+- **The "working" spinner now uses the braille animation common to modern command-line
+  tools.** On a terminal that can encode it, the indicator beside a running phase cycles
+  through braille dots instead of `| / ─ \`. A terminal that cannot encode those
+  characters, and `TERM=dumb`, keep the ASCII spinner unchanged. The spin rate, the line
+  layout, and every other line of output are untouched. Encoding support is not the same
+  as font coverage, so a terminal missing braille glyphs may show placeholder boxes.
+- **A saved search named `default` no longer silently wins a bare `sigwood export`.**
+  With several saved searches configured, `sigwood export` (or `sigwood export splunk`)
+  now stops with the existing error naming them and the exact command to run instead of
+  quietly picking the one called `default`. A single configured search still runs bare,
+  whatever its name, and `default` remains a valid name to ask for explicitly. CloudTrail
+  exports are unaffected. The example config and README no longer teach the old behavior.
+- **Two `--syslog-source` errors now name the requirement rather than one detector.** Asking
+  for an active system-log mode (`auto`, `journal`, `files`) when the final detector selection
+  contains no system-log detector reports `requires a system-log detector` - from the usage
+  error at the command line and from source resolution alike. For the shipped detector set,
+  no run behavior changes beyond the reworded errors.
 
-- **sigwood no longer writes through a symbolic link at its output path.** If the file sigwood
-  was about to write turned out to be a symbolic link, it followed the link and wrote to
-  whatever the link pointed at: that file was emptied, replaced with the run's findings, and had
-  its permissions tightened to owner-only - and sigwood reported success. On a directory another
-  account can write to, a symbolic link planted ahead of time therefore let someone else choose
-  where a report landed, which is a way of taking the contents as much as destroying the file
-  already there. sigwood now refuses at the moment it opens the file, leaves the existing file
-  untouched, and reports the target it declined to write to. Ordinary use is unaffected,
-  including a reports directory that is itself a symbolic link to another disk - only the final
-  file name is checked. Two limits are written down in the known-issues list: a hard link is not
-  covered, and neither is a symbolic link among the parent directories.
+### Removed
+
+- **BREAKING: the `duration` detector is retired; `exfil` replaces it.** `sigwood duration`
+  is no longer a command, `[detectors.duration]` is no longer read (sigwood tells you so, and
+  names the successor, if it finds one in your config), and the `detector` value in JSON and
+  CSV output is now `exfil`. There is no alias.
+
+  The reason is that its premise had expired. `duration` treated a long-lived connection as
+  inherently suspicious and assigned severity from elapsed wall-clock time alone, so on any
+  modern network its high-severity findings were by-design persistence - mobile push
+  channels, mail clients holding a connection open, CDN keep-alives, interactive SSH - and
+  the tool narrated a phone's push socket in the language of a command-and-control channel.
+  Worse, the statistic missed the thing that actually matters in this space: a fast bulk
+  upload never stays open long enough to trip a duration floor at all, and speed is exactly
+  what an exfiltration channel wants. `exfil` asks the question that was worth asking, and
+  duration survives as context on its findings rather than as the trigger.
 
 ### Fixed
 
@@ -232,76 +281,23 @@ All notable changes to sigwood are recorded here. The format follows
   carrying shell metacharacters arrives visibly quoted and inert. Verified unchanged
   byte-for-byte on the frozen benign corpora.
 
-### Changed
-
-- **Every `auth` finding now caps at MEDIUM.** Failures followed by a success are still reported,
-  as evidence attached to the multi-host finding covering the same source and account, but they no
-  longer raise a finding to HIGH. The counting this detector does is deliberately plain, and a
-  higher tier has to earn its way back on evidence. `auth` remains opt-in.
-- **Auth findings that describe the same activity from different angles now say so.** Source
-  volume, account volume, and multi-host spread continue to report separately — they answer
-  different questions — and each now names the related findings, with a count shown in the report
-  row, so three rows are not read as three separate incidents.
-- **The "working" spinner now uses the braille animation common to modern command-line
-  tools.** On a terminal that can encode it, the indicator beside a running phase cycles
-  through braille dots instead of `| / ─ \`. A terminal that cannot encode those
-  characters, and `TERM=dumb`, keep the ASCII spinner unchanged. The spin rate, the line
-  layout, and every other line of output are untouched. Encoding support is not the same
-  as font coverage, so a terminal missing braille glyphs may show placeholder boxes.
-- **A saved search named `default` no longer silently wins a bare `sigwood export`.**
-  With several saved searches configured, `sigwood export` (or `sigwood export splunk`)
-  now stops with the existing error naming them and the exact command to run instead of
-  quietly picking the one called `default`. A single configured search still runs bare,
-  whatever its name, and `default` remains a valid name to ask for explicitly. CloudTrail
-  exports are unaffected. The example config and README no longer teach the old behavior.
-- **Two `--syslog-source` errors now name the requirement rather than one detector.** Asking
-  for an active system-log mode (`auto`, `journal`, `files`) when the final detector selection
-  contains no system-log detector reports `requires a system-log detector` - from the usage
-  error at the command line and from source resolution alike. For the shipped detector set,
-  no run behavior changes beyond the reworded errors.
-
-### Added
-
-- **Authentication analysis is now available as the opt-in `sigwood auth` detector.** It
-  examines the system-log lane for five measured shapes: concentrated failures, source volume,
-  account volume, multi-host failures, and failures followed by a success. Each single category
-  caps at MEDIUM; the only HIGH path combines exact multi-host spread with a matching landing.
-  Text and HTML share a designed severity-first row grammar, `-v` keeps untrusted identities out
-  of ordinary evidence, and every run reports count-only extraction magnitudes plus honest
-  evaluated-versus-abstained notes. The known-issues page also records four pre-existing
-  limitations: the corroboration requirement, window-relative first-seen time, whole-host-only
-  allowlist coverage for this lane, and the synthetic-only HIGH witness.
-- **A misspelled setting name now warns instead of being silently ignored - at every
-  config scope.** A typo like `zeek_dri`, a mistyped `[detectors.beacn]` table, an unknown
-  `[export.splnk]` backend, or a wrong key nested as deep as `[detectors.dns.pihole]` now
-  prints one plain warning on stderr - `config: ignoring unknown setting [sigwood].zeek_dri
-  (did you mean zeek_dir?)` - and the run continues on what it understood. Nothing stops,
-  no value is validated, and `-q` does not hide it (a warning is not progress narration).
-  The `allowlist` command's read paths disclose the same way. The suggestion appears only
-  when a close match exists.
-- **A written contract for what sigwood keeps stable.** `docs/CONTRACT.md` states, in one
-  place, what will not change across 1.x releases: the thirteen verbs, the flag spellings and
-  their `=`-only value grammar, the five output-format tokens, the documented config key
-  paths, the JSON envelope and its field types, the CSV column set, and the exit codes.
-  Linked from the README and the FAQ. Detection itself is explicitly outside that promise -
-  thresholds and calibration move when measurement says they should.
-- **Every detector is now importable and callable from Python**, which the README and FAQ
-  already described. `from sigwood import DetectorContext, Finding, Severity` works, as does
-  `from sigwood.detectors.<name> import run` for all seven detectors.
-  `DetectorContext.unsuppressed(...)` builds a context for that use with allowlist
-  suppression **off**, and says so in its name and docstring, because results can be noisier
-  than the same detector run through the CLI. Importing the package stays lightweight - it
-  does not pull in pandas.
-- **Tests that hold the contract to its word.** The published inventory is pinned by
-  executable tests rather than prose alone, including a check that a consumer tolerating new
-  fields keeps working, and an event-time matrix asserted against the real finding producers.
-  The installed-wheel smoke in CI now exercises the documented Python example end to end.
-
-### Fixed
-
 - The known-issues entry on event timestamps said `beacon` and `dns` findings carried none.
   They have carried one for some time; the real wrinkle is that the key name varies by
   finding type, which is now stated plainly and tabulated in the contract page.
+
+### Security
+
+- **sigwood no longer writes through a symbolic link at its output path.** If the file sigwood
+  was about to write turned out to be a symbolic link, it followed the link and wrote to
+  whatever the link pointed at: that file was emptied, replaced with the run's findings, and had
+  its permissions tightened to owner-only - and sigwood reported success. On a directory another
+  account can write to, a symbolic link planted ahead of time therefore let someone else choose
+  where a report landed, which is a way of taking the contents as much as destroying the file
+  already there. sigwood now refuses at the moment it opens the file, leaves the existing file
+  untouched, and reports the target it declined to write to. Ordinary use is unaffected,
+  including a reports directory that is itself a symbolic link to another disk - only the final
+  file name is checked. Two limits are written down in the known-issues list: a hard link is not
+  covered, and neither is a symbolic link among the parent directories.
 
 ## [0.2.9] - 2026-08-01
 
@@ -1051,7 +1047,8 @@ agent, no account.
 - Analysis-window controls (`--since`/`--until`/`--days`/`--all`), a per-source default
   lookback window, and local-or-UTC time rendering.
 
-[Unreleased]: https://github.com/helixmap/sigwood/compare/v0.2.9...HEAD
+[Unreleased]: https://github.com/helixmap/sigwood/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/helixmap/sigwood/compare/v0.2.9...v0.3.0
 [0.2.9]: https://github.com/helixmap/sigwood/compare/v0.2.8...v0.2.9
 [0.2.8]: https://github.com/helixmap/sigwood/compare/v0.2.7...v0.2.8
 [0.2.7]: https://github.com/helixmap/sigwood/compare/v0.2.6...v0.2.7

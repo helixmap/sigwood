@@ -11,10 +11,18 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from enum import Enum
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import pandas as pd
+
+from sigwood.common.loader.limits import (
+    MAX_CHUNK_DECODED_BYTES,
+    MAX_CHUNK_ROWS,
+    MAX_FILE_DELTA_BYTES,
+    MAX_LOGICAL_RECORD_BYTES,
+)
 
 
 # Named log/compression suffixes stripped when deriving hostname from filename.
@@ -265,6 +273,170 @@ class FileSpan:
     last_ts: float
 
 
+class PreparedState(str, Enum):
+    """Runner-visible state for one independent sink channel."""
+
+    READY = "READY"
+    ABSTAINED = "ABSTAINED"
+    FAILED = "FAILED"
+
+
+@dataclass(frozen=True)
+class PreparedStatus:
+    """Bounded status for one sink; partial reducer state never rides here."""
+
+    state: PreparedState
+    cause: str = ""
+
+
+@dataclass(frozen=True)
+class SourceFileQuality:
+    """Aggregate-only quality facts for one planned file."""
+
+    decoded_records: int = 0
+    decoded_bytes: int = 0
+    skipped_oversize: int = 0
+
+
+@dataclass(frozen=True)
+class SnapshotFile:
+    """One immutable file entry in a content-stable multi-pass snapshot."""
+
+    path: Path
+    resolved_path: Path
+    source: str
+    device: int
+    inode: int
+    compressed: bool
+    stat_bytes: int
+    mtime_ns: int
+    readable_bytes: int
+    content_sha256: str
+    scan_interval: tuple[datetime | None, datetime | None] = (None, None)
+    quality: SourceFileQuality = SourceFileQuality()
+
+
+@dataclass(frozen=True)
+class SourceSnapshot:
+    """Ordered, deduped, content-bound input plan for fold/multi-pass work."""
+
+    source: str
+    files: tuple[SnapshotFile, ...]
+    identity_sha256: str
+
+
+@dataclass(frozen=True)
+class DualWindow:
+    """Runner-owned report interval plus strictly earlier optional context."""
+
+    report_interval: tuple[datetime, datetime]
+    context_interval: tuple[datetime, datetime] | None = None
+
+    def __post_init__(self) -> None:
+        report_start, report_end = self.report_interval
+        if report_start > report_end:
+            raise ValueError("report interval start must not follow its end")
+        if self.context_interval is None:
+            return
+        context_start, context_end = self.context_interval
+        if context_start > context_end:
+            raise ValueError("context interval start must not follow its end")
+        if context_end >= report_start:
+            raise ValueError("context interval must end strictly before report start")
+
+    def membership(self, ts: float) -> tuple[bool, bool]:
+        """Return inclusive report/context membership for one finite epoch."""
+        instant = datetime.fromtimestamp(ts, tz=timezone.utc)
+        report_start, report_end = self.report_interval
+        in_report = report_start <= instant <= report_end
+        in_context = False
+        if self.context_interval is not None:
+            context_start, context_end = self.context_interval
+            in_context = context_start <= instant <= context_end
+        return in_report, in_context
+
+
+@dataclass(frozen=True)
+class PositionalMask:
+    """A duplicate-index-safe keep vector aligned to chunk row positions."""
+
+    keep: tuple[bool, ...]
+
+
+@dataclass(frozen=True)
+class DecodedChunk:
+    """One canonical chunk bounded by row count and decoded input bytes."""
+
+    frame: pd.DataFrame
+    decoded_bytes: int
+    report_mask: tuple[bool, ...]
+    context_mask: tuple[bool, ...]
+    first_ordinal: int
+
+    def __post_init__(self) -> None:
+        rows = len(self.frame)
+        if rows > MAX_CHUNK_ROWS:
+            raise ValueError("decoded chunk exceeds the row limit")
+        if self.decoded_bytes > MAX_CHUNK_DECODED_BYTES:
+            raise ValueError("decoded chunk exceeds the byte limit")
+        if self.decoded_bytes < 0:
+            raise ValueError("decoded chunk bytes must be non-negative")
+        if len(self.report_mask) != rows or len(self.context_mask) != rows:
+            raise ValueError("chunk membership masks must align by position")
+
+
+@dataclass(frozen=True)
+class FoldDelta:
+    """Pure file-local reducer value with an explicit resident-byte measure."""
+
+    value: Any
+    resident_bytes: int
+
+    def __post_init__(self) -> None:
+        if self.resident_bytes < 0:
+            raise ValueError("fold delta bytes must be non-negative")
+
+
+@dataclass(frozen=True)
+class FoldSink:
+    """Neutral pure-reducer callbacks for one independent folded channel."""
+
+    channel: str
+    seed_file: Callable[[], FoldDelta]
+    consume: Callable[[FoldDelta, DecodedChunk, PositionalMask], FoldDelta]
+    seed_run: Callable[[], Any]
+    commit_file: Callable[[Any, FoldDelta], Any]
+    mask: Callable[[pd.DataFrame], PositionalMask]
+
+
+@dataclass(frozen=True)
+class SinkPlan:
+    """Independent folded channels plus optional ordinary-frame preservation."""
+
+    folds: tuple[FoldSink, ...] = ()
+    preserve_frame: bool = True
+
+    def __post_init__(self) -> None:
+        channels = [sink.channel for sink in self.folds]
+        if len(channels) != len(set(channels)):
+            raise ValueError("sink channels must be unique")
+
+    @property
+    def requires_snapshot(self) -> bool:
+        return bool(self.folds)
+
+
+@dataclass
+class LoadQuality:
+    """Structured aggregate quality for a pattern load."""
+
+    attempted_files: int = 0
+    committed_files: int = 0
+    decoded_records: int = 0
+    decoded_bytes: int = 0
+    skipped_oversize: int = 0
+
+
 @dataclass
 class LoadResult:
     """Loaded log data and metadata needed by the runner."""
@@ -278,6 +450,10 @@ class LoadResult:
     rotation_skips: dict[str, RotationSkipInfo] = field(default_factory=dict)
     permission_skips: dict[str, PermissionSkipInfo] = field(default_factory=dict)
     file_spans: dict[str, tuple[FileSpan, ...]] = field(default_factory=dict)
+    quality: dict[str, LoadQuality] = field(default_factory=dict)
+    snapshots: dict[str, SourceSnapshot] = field(default_factory=dict)
+    fold_results: dict[str, dict[str, Any]] = field(default_factory=dict)
+    prepared_status: dict[str, PreparedStatus] = field(default_factory=dict)
 
 
 def _data_window(logs: dict[str, pd.DataFrame]) -> tuple[datetime, datetime] | None:

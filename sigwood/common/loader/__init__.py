@@ -5,8 +5,9 @@ directly. This ``__init__`` re-exports the FULL public + private symbol surface
 of the package, so every name is importable or monkeypatchable at
 ``sigwood.common.loader.<name>`` regardless of which submodule owns it.
 
-Submodule layout (acyclic; ``io``/``types``/``diagnostics`` are leaves):
-- ``io``          - ``_open_log`` + path-normalization primitives.
+Submodule layout (acyclic; ``limits`` is the hard-budget leaf):
+- ``limits``      - U1 chunk/record/file-delta product ceilings.
+- ``io``          - ``_open_log`` + bounded records + path primitives.
 - ``types``       - ``LoadResult`` / coverage / rotation-skip dataclasses, the
                     cross-frame window helper, column constants.
 - ``diagnostics`` - log-type + warning/wording helpers.
@@ -15,6 +16,7 @@ Submodule layout (acyclic; ``io``/``types``/``diagnostics`` are leaves):
 - ``discovery``   - per-family file discovery + dated-Zeek default window.
 - ``pipeline``    - ``run_load`` + the ``_SOURCE_LOADERS`` registry + the
                     public ``load_*`` shims + registry-policy accessors.
+- ``fold``        - content-stable snapshots + transactional sink execution.
 
 Canonical connection record schema
 ───────────────────────────────────
@@ -40,6 +42,7 @@ from __future__ import annotations
 from sigwood.common.display import progress
 
 from sigwood.common.loader.io import (
+    BoundedLogicalRecordReader,
     _open_log,
     _safe_resolve,
     _union_dedupe,
@@ -52,9 +55,25 @@ from sigwood.common.loader.types import (
     CoverageTracker,
     DirectorySkipInfo,
     FileSpan,
+    FoldDelta,
+    FoldSink,
     LoadResult,
+    LoadQuality,
+    DecodedChunk,
+    DualWindow,
+    MAX_CHUNK_DECODED_BYTES,
+    MAX_CHUNK_ROWS,
+    MAX_FILE_DELTA_BYTES,
+    MAX_LOGICAL_RECORD_BYTES,
     PermissionSkipInfo,
+    PositionalMask,
+    PreparedState,
+    PreparedStatus,
     RotationSkipInfo,
+    SinkPlan,
+    SnapshotFile,
+    SourceFileQuality,
+    SourceSnapshot,
     SourceCoverage,
     _data_window,
     _is_out_of_range_ts,
@@ -132,6 +151,16 @@ from sigwood.common.loader.journal import (
     _journal_strategy_parse,
     prepare_journal_capture,
 )
+from sigwood.common.loader.fold import (
+    FoldExecution,
+    SnapshotMutationError,
+    build_source_snapshot,
+    chunks_from_rows,
+    execute_sink_plan,
+    open_snapshot_text,
+    verify_snapshot_file,
+    verify_source_snapshot,
+)
 from sigwood.common.loader.pipeline import (
     _NORMALIZER_MAP,
     _SOURCE_LOADERS,
@@ -159,4 +188,5 @@ from sigwood.common.loader.pipeline import (
     load_zeek_log,
     resolve_load_windows,
     run_load,
+    run_folded_source,
 )

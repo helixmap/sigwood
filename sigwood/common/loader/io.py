@@ -12,6 +12,73 @@ import bz2
 import gzip
 import lzma
 from pathlib import Path
+from typing import Iterable, Iterator
+
+from sigwood.common.loader.limits import MAX_LOGICAL_RECORD_BYTES
+
+
+class BoundedLogicalRecordReader(Iterator[str]):
+    """Common decoded-record admission gate for ordinary and folded reads.
+
+    Line-oriented sources get one logical record per line. A document parser
+    may call :meth:`collect_document` after consuming its first fragment; that
+    method applies the same limit to the complete multi-line logical document
+    while draining an oversize value without retaining it.
+    """
+
+    def __init__(
+        self,
+        source: Iterable[str],
+        *,
+        max_record_bytes: int = MAX_LOGICAL_RECORD_BYTES,
+    ) -> None:
+        self._source = iter(source)
+        self.max_record_bytes = max_record_bytes
+        self.decoded_bytes = 0
+        self.decoded_records = 0
+        self.skipped_oversize = 0
+        self.last_record_bytes = 0
+
+    @staticmethod
+    def _decoded_size(text: str) -> int:
+        return len(text.encode("utf-8", errors="replace"))
+
+    def __iter__(self) -> "BoundedLogicalRecordReader":
+        return self
+
+    def __next__(self) -> str:
+        while True:
+            text = next(self._source)
+            size = self._decoded_size(text)
+            self.decoded_bytes += size
+            self.last_record_bytes = size
+            if size > self.max_record_bytes:
+                self.skipped_oversize += 1
+                continue
+            self.decoded_records += 1
+            return text
+
+    def collect_document(self, first_fragment: str) -> str | None:
+        """Collect the rest as one bounded document, draining on overflow."""
+        parts = [first_fragment]
+        total = self._decoded_size(first_fragment)
+        oversize = total > self.max_record_bytes
+        for text in self._source:
+            size = self._decoded_size(text)
+            self.decoded_bytes += size
+            total += size
+            if not oversize and total <= self.max_record_bytes:
+                parts.append(text)
+            else:
+                oversize = True
+        self.last_record_bytes = total
+        if oversize:
+            # The first fragment was provisionally counted when yielded; the
+            # complete logical document is rejected as one record.
+            self.decoded_records = max(0, self.decoded_records - 1)
+            self.skipped_oversize += 1
+            return None
+        return "".join(parts)
 
 
 def _open_log(path: Path):

@@ -6,6 +6,30 @@ All notable changes to sigwood are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **A bounded streaming foundation in the loader** for detectors that need to analyze a
+  large archive without holding it in memory. The streaming path is opt-in per run and no
+  shipped detector binds it yet: an ordinary hunt takes the same single-pass read path as
+  before and never pays the new snapshot hashing; records within the new 1 MiB limit load
+  exactly as they did. On the streaming path, input is processed in bounded chunks (at
+  most 65,536 rows and 32 MiB of decoded text at a time) from a content-stable snapshot
+  of the selected files: a file replaced, truncated, or rewritten mid-run is detected and
+  refused rather than silently misread, while a plain log that merely grows mid-run is
+  read to its captured boundary and the appended tail waits for the next run. Per-file
+  results commit only when the whole file read cleanly. Measured on the same 3.2 GB
+  Pi-hole archive: a full-archive streaming pass completed with a peak under 150 MB of
+  memory, where the previous release's whole-frame path was stopped at an 8 GB memory
+  safety ceiling without completing.
+
+### Changed
+
+- **A single log record larger than 1 MiB of decoded text is now skipped and disclosed**
+  with a per-file warning naming the file and the skipped count, instead of being passed
+  whole into parsing and analysis. Real log lines are thousands of times smaller; the
+  limit keeps an oversized record out of every parser, frame, and analysis result and
+  makes the omission visible. The count also appears in the load's quality accounting.
+
 ## [0.3.0] - 2026-08-08
 
 ### Added

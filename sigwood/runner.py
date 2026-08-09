@@ -61,7 +61,13 @@ from sigwood.common.errors import (
 )
 from sigwood.common.finding import DetectorContext, Finding, RunSummary
 from sigwood.common.journal_probe import probe_journal
-from sigwood.common.loader import DirectorySkipInfo, FileSpan, JournalCaptureOutcome
+from sigwood.common.loader import (
+    DirectorySkipInfo,
+    DualWindow,
+    FileSpan,
+    JournalCaptureOutcome,
+    PositionalMask,
+)
 from sigwood.common.output import OutputHandler, Reporter
 from sigwood.common.paths import (
     private_mkdir,
@@ -1031,6 +1037,53 @@ def _prepare_detector_context(
         data_window=data_window,
         data_sources=data_sources,
         home_net=home_net,
+    )
+
+
+def _positional_allowlist_mask(
+    frame: pd.DataFrame,
+    allowlist: Any,
+    channel: str,
+) -> PositionalMask:
+    """Build one duplicate-index-safe keep mask for a bounded chunk.
+
+    Suppression stays in the runner. The matcher receives a unique positional
+    index, and its surviving positions are projected back to a boolean vector;
+    no second resident filtered frame crosses the fold boundary.
+    """
+    positional = frame.reset_index(drop=True)
+    filtered = allowlist.filter_df(positional, channel)
+    surviving = set(int(value) for value in filtered.index)
+    if any(value < 0 or value >= len(positional) for value in surviving):
+        raise ValueError("allowlist returned a non-positional row index")
+    return PositionalMask(tuple(i in surviving for i in range(len(positional))))
+
+
+def _build_dual_window(
+    report_interval: tuple[datetime, datetime],
+    context_interval: tuple[datetime, datetime] | None = None,
+) -> DualWindow:
+    """Runner-owned constructor; loader types validate the temporal contract."""
+    return DualWindow(report_interval, context_interval)
+
+
+def _resolve_fold_dual_window(
+    report_interval: tuple[datetime, datetime],
+    *,
+    available_start: datetime | None,
+    bounded_explicit: bool,
+    load_all: bool,
+) -> DualWindow:
+    """Apply the D-02 pre-roll aperture without changing report membership."""
+    report_start, _ = report_interval
+    if load_all or bounded_explicit or available_start is None:
+        return _build_dual_window(report_interval)
+    context_end = report_start - timedelta(microseconds=1)
+    if available_start > context_end:
+        return _build_dual_window(report_interval)
+    return _build_dual_window(
+        report_interval,
+        (available_start, context_end),
     )
 
 

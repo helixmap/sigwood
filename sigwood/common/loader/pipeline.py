@@ -15,10 +15,10 @@ import itertools
 import json
 import lzma
 import sys
-from dataclasses import dataclass
-from datetime import datetime, timedelta
+from dataclasses import dataclass, replace
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Callable, Mapping, Sequence
+from typing import Any, Callable, Iterable, Iterator, Mapping, Sequence
 
 import pandas as pd
 
@@ -47,7 +47,18 @@ from sigwood.common.loader.discovery import (
     discover_cloudtrail_files,
     discover_zeek_files,
 )
-from sigwood.common.loader.io import _safe_resolve, _union_dedupe
+from sigwood.common.loader.io import (
+    BoundedLogicalRecordReader,
+    _safe_resolve,
+    _union_dedupe,
+)
+from sigwood.common.loader.fold import (
+    FoldExecution,
+    build_source_snapshot,
+    chunks_from_rows,
+    execute_sink_plan,
+    open_snapshot_text,
+)
 from sigwood.common.loader.journal import (
     _discover_journal_capture,
     _journal_read_error,
@@ -61,9 +72,19 @@ from sigwood.common.loader.types import (
     CoverageTracker,
     DirectorySkipInfo,
     FileSpan,
+    LoadQuality,
+    DecodedChunk,
+    DualWindow,
+    MAX_CHUNK_DECODED_BYTES,
+    MAX_CHUNK_ROWS,
     LoadResult,
     PermissionSkipInfo,
     RotationSkipInfo,
+    PreparedStatus,
+    SinkPlan,
+    SnapshotFile,
+    SourceFileQuality,
+    SourceSnapshot,
     SourceCoverage,
     _coerce_usable_ts,
     _data_window,
@@ -317,11 +338,13 @@ def _zeek_parse_from_lines(
 def _parse_ndjson_file(path: Path, show_progress: bool = True) -> pd.DataFrame:
     """Parse a single Zeek NDJSON log file, return unfiltered Zeek-native DataFrame."""
     with _loader._open_log(path) as fh:
-        line_iter = _loader.progress(
-            fh,
-            desc=f"loaded {strip_control(path.name)}",
-            show_progress=show_progress,
-            unit=" lines",
+        line_iter = BoundedLogicalRecordReader(
+            _loader.progress(
+                fh,
+                desc=f"loaded {strip_control(path.name)}",
+                show_progress=show_progress,
+                unit=" lines",
+            )
         )
         records = _zeek_records_from_lines(line_iter)
     return _records_frame(records)
@@ -521,7 +544,12 @@ def _cloudtrail_strategy_parse(line_iter, *, path, warnings):
         first_value = json.loads(first_line)
     except json.JSONDecodeError:
         # First line is a fragment of a pretty-printed multi-line document.
-        full_text = first_line + "".join(line_iter)
+        if hasattr(line_iter, "collect_document"):
+            full_text = line_iter.collect_document(first_line)
+            if full_text is None:
+                return
+        else:
+            full_text = first_line + "".join(line_iter)
         for event in _events_from_whole_document(full_text, path, warnings):
             row = _parse_cloudtrail_event(event)
             if row is not None:
@@ -537,7 +565,12 @@ def _cloudtrail_strategy_parse(line_iter, *, path, warnings):
     if isinstance(first_value, dict):
         if "Records" in first_value:
             # Envelope: accumulate rest from the same wrapped iterator.
-            full_text = first_line + "".join(line_iter)
+            if hasattr(line_iter, "collect_document"):
+                full_text = line_iter.collect_document(first_line)
+                if full_text is None:
+                    return
+            else:
+                full_text = first_line + "".join(line_iter)
             for event in _events_from_whole_document(full_text, path, warnings):
                 row = _parse_cloudtrail_event(event)
                 if row is not None:
@@ -651,6 +684,7 @@ def run_load(
     _coverage: dict | None = None,
     _permission_skips: dict[str, PermissionSkipInfo] | None = None,
     _file_spans: list[FileSpan] | None = None,
+    _quality: LoadQuality | None = None,
 ) -> pd.DataFrame:
     """The uniform load pipeline. Owns progress wrap, coverage tracking,
     windowing, corruption rail, verbose-gated wrong-family skip.
@@ -743,18 +777,20 @@ def run_load(
             attempted += 1
             tracker.note_file_read()
             with _loader._open_log(path) as fh:
-                line_iter = _loader.progress(
-                    fh,
-                    desc=(
-                        "loaded "
-                        + strip_control(
-                            strategy.display_label
-                            or _qualified_label(path)
-                            or path.name
-                        )
-                    ),
-                    show_progress=show_progress,
-                    unit=strategy.unit,
+                line_iter = BoundedLogicalRecordReader(
+                    _loader.progress(
+                        fh,
+                        desc=(
+                            "loaded "
+                            + strip_control(
+                                strategy.display_label
+                                or _qualified_label(path)
+                                or path.name
+                            )
+                        ),
+                        show_progress=show_progress,
+                        unit=strategy.unit,
+                    )
                 )
                 if strategy.mode == "stream":
                     for row in strategy.parse(
@@ -817,6 +853,17 @@ def run_load(
                                 float(post["ts"].max()),
                             )
                         tracker.mark_kept()
+                if _quality is not None:
+                    _quality.decoded_records += line_iter.decoded_records
+                    _quality.decoded_bytes += line_iter.decoded_bytes
+                    _quality.skipped_oversize += line_iter.skipped_oversize
+                if line_iter.skipped_oversize and _warnings is not None:
+                    noun = "record" if line_iter.skipped_oversize == 1 else "records"
+                    _warnings.append(
+                        f"{strip_control(path.name)}: skipped "
+                        f"{line_iter.skipped_oversize} oversized logical {noun} "
+                        "(limit 1 MiB)"
+                    )
         except PermissionError as exc:
             if strategy.read_error_factory is not None:
                 raise strategy.read_error_factory(exc) from None
@@ -844,6 +891,8 @@ def run_load(
                     )
                 )
             continue
+        if _quality is not None:
+            _quality.committed_files += 1
         if strategy.mode == "stream":
             if (
                 strategy.records_file_spans
@@ -861,6 +910,8 @@ def run_load(
             denied=len(permission_paths),
             paths=tuple(permission_paths),
         )
+    if _quality is not None:
+        _quality.attempted_files += attempted
 
     if strategy.mode == "stream":
         if not rows:
@@ -895,6 +946,274 @@ def run_load(
             if sc is not None:
                 _coverage["coverage"] = sc
     return result
+
+
+def _chunk_from_frame(
+    frame: pd.DataFrame,
+    decoded_bytes: int,
+    first_ordinal: int,
+    window: DualWindow,
+) -> DecodedChunk:
+    """Normalize positional identity and derive instant-membership vectors."""
+    frame = frame.reset_index(drop=True)
+    report: list[bool] = []
+    context: list[bool] = []
+    for value in frame.get("ts", pd.Series(index=frame.index, dtype=float)).tolist():
+        try:
+            in_report, in_context = window.membership(float(value))
+        except (TypeError, ValueError, OverflowError, OSError):
+            in_report, in_context = False, False
+        report.append(in_report)
+        context.append(in_context)
+    return DecodedChunk(
+        frame=frame,
+        decoded_bytes=decoded_bytes,
+        report_mask=tuple(report),
+        context_mask=tuple(context),
+        first_ordinal=first_ordinal,
+    )
+
+
+def _fold_stream_chunks(
+    strategy: SourceLoader,
+    item: SnapshotFile,
+    window: DualWindow,
+    warnings: list[str],
+    quality_out: dict[Path, SourceFileQuality],
+) -> Iterator[DecodedChunk]:
+    """Parse a stream strategy once and emit canonical bounded chunks."""
+    with open_snapshot_text(item) as handle:
+        reader = BoundedLogicalRecordReader(handle)
+        parsed = iter(strategy.parse(reader, path=item.path, warnings=warnings))
+        prior_bytes = 0
+
+        def rows() -> Iterator[tuple[dict[str, Any], int]]:
+            nonlocal prior_bytes
+            for row in parsed:
+                consumed = reader.decoded_bytes - prior_bytes
+                prior_bytes = reader.decoded_bytes
+                ts = row.get("ts")
+                if _is_infinite_ts(ts) or _is_out_of_range_ts(ts):
+                    continue
+                if _missing_ts(ts):
+                    if strategy.ts_policy == "drop":
+                        continue
+                else:
+                    normalized = _coerce_usable_ts(ts)
+                    if normalized is None:
+                        continue
+                    row["ts"] = normalized
+                yield row, consumed
+
+        yield from chunks_from_rows(
+            rows(),
+            columns=strategy.columns,
+            window=window,
+            keep_null=strategy.ts_policy == "keep",
+        )
+        if reader.skipped_oversize:
+            noun = "record" if reader.skipped_oversize == 1 else "records"
+            warnings.append(
+                f"{strip_control(item.path.name)}: skipped "
+                f"{reader.skipped_oversize} oversized logical {noun} (limit 1 MiB)"
+            )
+        quality_out[item.path] = SourceFileQuality(
+            decoded_records=reader.decoded_records,
+            decoded_bytes=reader.decoded_bytes,
+            skipped_oversize=reader.skipped_oversize,
+        )
+
+
+def _fold_zeek_chunks(
+    strategy: SourceLoader,
+    item: SnapshotFile,
+    pattern: str,
+    window: DualWindow,
+    warnings: list[str],
+    quality_out: dict[Path, SourceFileQuality],
+    message_drops_out: dict[Path, int],
+) -> Iterator[DecodedChunk]:
+    """Bound Zeek NDJSON/TSV before DataFrame construction."""
+    aggregate_message_drops = _log_type(pattern) == "syslog"
+    message_drops = 0
+
+    def normalize(raw: pd.DataFrame) -> pd.DataFrame:
+        nonlocal message_drops
+        if strategy.normalize is None:
+            return raw
+        post = strategy.normalize(
+            raw,
+            pattern,
+            warnings=None if aggregate_message_drops else warnings,
+        )
+        if aggregate_message_drops:
+            message_drops += len(raw) - len(post)
+        return post
+
+    with open_snapshot_text(item) as handle:
+        reader = BoundedLogicalRecordReader(handle)
+        prefix: list[str] = []
+        prefix_bytes = 0
+        first_data: str | None = None
+        first_data_bytes = 0
+        has_separator = False
+        for line in reader:
+            stripped = line.strip()
+            if stripped and not stripped.startswith("#"):
+                first_data = line
+                first_data_bytes = reader.last_record_bytes
+                break
+            prefix.append(line)
+            prefix_bytes += reader.last_record_bytes
+            if stripped.startswith("#separator"):
+                has_separator = True
+            if prefix_bytes > MAX_CHUNK_DECODED_BYTES:
+                raise ValueError("Zeek header exceeds the decoded chunk byte limit")
+        if first_data is None:
+            return
+
+        ordinal = 0
+        is_ndjson = first_data.lstrip().startswith("{")
+        if is_ndjson:
+            buffered: list[tuple[dict[str, Any], int]] = []
+            buffered_bytes = prefix_bytes
+            parsed_records = 0
+
+            def flush() -> DecodedChunk | None:
+                nonlocal ordinal, buffered, buffered_bytes
+                if not buffered:
+                    return None
+                raw = _records_frame([row for row, _ in buffered])
+                post = normalize(raw)
+                chunk = _chunk_from_frame(post, buffered_bytes, ordinal, window)
+                ordinal += len(post)
+                buffered = []
+                buffered_bytes = 0
+                return chunk
+
+            for line, size in itertools.chain(
+                [(first_data, first_data_bytes)],
+                ((line, reader.last_record_bytes) for line in reader),
+            ):
+                records = _zeek_records_from_lines([line])
+                if not records:
+                    continue
+                parsed_records += 1
+                if buffered and (
+                    len(buffered) >= MAX_CHUNK_ROWS
+                    or buffered_bytes + size > MAX_CHUNK_DECODED_BYTES
+                ):
+                    chunk = flush()
+                    if chunk is not None:
+                        yield chunk
+                buffered.append((records[0], size))
+                buffered_bytes += size
+            chunk = flush()
+            if chunk is not None:
+                yield chunk
+            if parsed_records == 0:
+                warnings.append(_zeek_no_records_warning(item.path))
+        elif has_separator:
+            data_lines: list[str] = []
+            decoded = prefix_bytes
+            bad_lines_all: list[tuple[int, str]] = []
+            prior_data_lines = 0
+
+            def flush_tsv() -> DecodedChunk | None:
+                nonlocal ordinal, data_lines, decoded, prior_data_lines
+                if not data_lines:
+                    return None
+                bad_lines: list[tuple[int, str]] = []
+                raw = _parse_tsv_log(itertools.chain(prefix, data_lines), bad_lines=bad_lines)
+                bad_lines_all.extend(
+                    (line_number + prior_data_lines, reason)
+                    for line_number, reason in bad_lines
+                )
+                post = normalize(raw)
+                chunk = _chunk_from_frame(post, decoded, ordinal, window)
+                ordinal += len(post)
+                prior_data_lines += len(data_lines)
+                data_lines = []
+                decoded = 0
+                return chunk
+
+            for line, size in itertools.chain(
+                [(first_data, first_data_bytes)],
+                ((line, reader.last_record_bytes) for line in reader),
+            ):
+                if line.startswith("#close"):
+                    break
+                if data_lines and (
+                    len(data_lines) >= MAX_CHUNK_ROWS
+                    or decoded + size > MAX_CHUNK_DECODED_BYTES
+                ):
+                    chunk = flush_tsv()
+                    if chunk is not None:
+                        yield chunk
+                data_lines.append(line)
+                decoded += size
+            chunk = flush_tsv()
+            if chunk is not None:
+                yield chunk
+            if bad_lines_all:
+                warnings.append(_zeek_bad_lines_warning(item.path, bad_lines_all))
+        else:
+            warnings.append(_zeek_no_records_warning(item.path))
+
+        if reader.skipped_oversize:
+            noun = "record" if reader.skipped_oversize == 1 else "records"
+            warnings.append(
+                f"{strip_control(item.path.name)}: skipped "
+                f"{reader.skipped_oversize} oversized logical {noun} (limit 1 MiB)"
+            )
+        quality_out[item.path] = SourceFileQuality(
+            decoded_records=reader.decoded_records,
+            decoded_bytes=reader.decoded_bytes,
+            skipped_oversize=reader.skipped_oversize,
+        )
+        message_drops_out[item.path] = message_drops
+
+
+def run_folded_source(
+    strategy: SourceLoader,
+    snapshot: SourceSnapshot,
+    pattern: str,
+    window: DualWindow,
+    plan: SinkPlan,
+    *,
+    warnings: list[str] | None = None,
+) -> FoldExecution:
+    """Run one snapshot through independent frame/fold sinks transactionally."""
+    warning_sink = warnings if warnings is not None else []
+    file_quality: dict[Path, SourceFileQuality] = {}
+    message_value_drops: dict[Path, int] = {}
+
+    def chunks(item: SnapshotFile) -> Iterable[DecodedChunk]:
+        if strategy.mode == "stream":
+            return _fold_stream_chunks(
+                strategy, item, window, warning_sink, file_quality
+            )
+        return _fold_zeek_chunks(
+            strategy,
+            item,
+            pattern,
+            window,
+            warning_sink,
+            file_quality,
+            message_value_drops,
+        )
+
+    execution = execute_sink_plan(snapshot, plan, chunks)
+    total_message_drops = sum(message_value_drops.values())
+    if total_message_drops:
+        warning_sink.append(
+            _zeek_message_value_warning(pattern, total_message_drops)
+        )
+    execution.file_quality = {
+        item.path: file_quality.get(item.path, SourceFileQuality())
+        for item in snapshot.files
+    }
+    return execution
 
 
 # Source-family strategy registry. A new format = one entry here → inherits
@@ -1154,6 +1473,8 @@ def load_required_logs(
     show_progress: bool = True,
     file_select_windows: dict[str, tuple[datetime | None, datetime | None]] | None = None,
     trusted_files: Mapping[str, Sequence[Path]] | None = None,
+    sink_plans: Mapping[str, SinkPlan] | None = None,
+    dual_windows: Mapping[str, DualWindow] | None = None,
     _directory_skips: (
         dict[tuple[str, Path], DirectorySkipInfo] | None
     ) = None,
@@ -1202,9 +1523,19 @@ def load_required_logs(
     rotation_skips: dict[str, RotationSkipInfo] = {}
     permission_skips: dict[str, PermissionSkipInfo] = {}
     file_spans: dict[str, tuple[FileSpan, ...]] = {}
+    quality: dict[str, LoadQuality] = {}
     source_windows = source_windows or {}
     file_select_windows = file_select_windows or {}
     trusted_files = trusted_files or {}
+    sink_plans = sink_plans or {}
+    dual_windows = dual_windows or {}
+    snapshots: dict[str, SourceSnapshot] = {}
+    fold_results: dict[str, dict[str, Any]] = {}
+    prepared_status: dict[str, PreparedStatus] = {}
+    snapshot_cache: dict[
+        tuple[str, tuple[Path, ...], datetime | None, datetime | None],
+        SourceSnapshot,
+    ] = {}
 
     for pattern, source in needed_logs.items():
         paths = source_dirs.get(source) or []
@@ -1322,13 +1653,100 @@ def load_required_logs(
 
         cov_dict: dict = {}
         pattern_spans: list[FileSpan] = []
-        df = run_load(
-            strategy, files, pattern, s_since, s_until,
-            show_progress=show_progress, verbose=verbose,
-            _warnings=warnings, _coverage=cov_dict,
-            _permission_skips=permission_skips,
-            _file_spans=pattern_spans,
-        )
+        pattern_quality = LoadQuality()
+        sink_plan = sink_plans.get(pattern)
+        if sink_plan is not None and sink_plan.requires_snapshot:
+            dual_window = dual_windows.get(pattern)
+            if dual_window is None:
+                raise ValueError(f"fold plan for {pattern!r} requires a DualWindow")
+            snapshot_key = (
+                source,
+                tuple(_safe_resolve(path) for path in files),
+                s_since,
+                s_until,
+            )
+            snapshot = snapshot_cache.get(snapshot_key)
+            if snapshot is None:
+                snapshot = build_source_snapshot(
+                    files,
+                    source,
+                    scan_interval=(s_since, s_until),
+                )
+                snapshot_cache[snapshot_key] = snapshot
+            execution = run_folded_source(
+                strategy,
+                snapshot,
+                pattern,
+                dual_window,
+                sink_plan,
+                warnings=warnings,
+            )
+            quality_snapshot = replace(
+                snapshot,
+                files=tuple(
+                    replace(
+                        item,
+                        quality=execution.file_quality.get(
+                            item.path,
+                            SourceFileQuality(),
+                        ),
+                    )
+                    for item in snapshot.files
+                ),
+            )
+            snapshots[pattern] = quality_snapshot
+            fold_results[pattern] = execution.results
+            for channel, status in execution.statuses.items():
+                if channel in prepared_status:
+                    raise ValueError(f"duplicate fold channel {channel!r}")
+                prepared_status[channel] = status
+            warnings.extend(execution.file_errors)
+            df = execution.frame
+            if strategy.records_file_spans:
+                pattern_spans.extend(
+                    FileSpan(path, span[0], span[1])
+                    for path, span in execution.file_spans.items()
+                )
+            if df.empty:
+                if not snapshot.files:
+                    cov_dict["coverage"] = SourceCoverage(None, None)
+                elif execution.observed_valid_rows == 0:
+                    cov_dict["coverage"] = SourceCoverage(0, None)
+                elif execution.observed_span is not None:
+                    cov_dict["coverage"] = SourceCoverage(
+                        execution.observed_valid_rows,
+                        (
+                            datetime.fromtimestamp(
+                                execution.observed_span[0],
+                                tz=timezone.utc,
+                            ),
+                            datetime.fromtimestamp(
+                                execution.observed_span[1],
+                                tz=timezone.utc,
+                            ),
+                        ),
+                    )
+            pattern_quality.attempted_files = execution.attempted_files
+            pattern_quality.committed_files = execution.committed_files
+            pattern_quality.decoded_records = sum(
+                item.decoded_records for item in execution.file_quality.values()
+            )
+            pattern_quality.decoded_bytes = sum(
+                item.decoded_bytes for item in execution.file_quality.values()
+            )
+            pattern_quality.skipped_oversize = sum(
+                item.skipped_oversize for item in execution.file_quality.values()
+            )
+        else:
+            df = run_load(
+                strategy, files, pattern, s_since, s_until,
+                show_progress=show_progress, verbose=verbose,
+                _warnings=warnings, _coverage=cov_dict,
+                _permission_skips=permission_skips,
+                _file_spans=pattern_spans,
+                _quality=pattern_quality,
+            )
+        quality[pattern] = pattern_quality
         if pattern_spans:
             file_spans[pattern] = tuple(pattern_spans)
 
@@ -1356,6 +1774,10 @@ def load_required_logs(
         rotation_skips=rotation_skips,
         permission_skips=permission_skips,
         file_spans=file_spans,
+        quality=quality,
+        snapshots=snapshots,
+        fold_results=fold_results,
+        prepared_status=prepared_status,
     )
 
 

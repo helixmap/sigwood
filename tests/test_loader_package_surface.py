@@ -21,11 +21,19 @@ _SURFACE = [
     # display re-export (imported module-global, monkeypatched in 12 tests)
     "progress",
     # io
-    "_open_log", "_safe_resolve", "_union_dedupe",
+    "BoundedLogicalRecordReader", "_open_log", "_safe_resolve", "_union_dedupe",
     # types
     "LoadResult", "CoverageTracker", "SourceCoverage", "RotationSkipInfo",
     "_data_window", "_PIHOLE_COLUMNS", "_CLOUDTRAIL_COLUMNS", "_SYSLOG_COLUMNS",
     "_LOG_SUFFIXES",
+    # U1 neutral fold foundation
+    "MAX_CHUNK_ROWS", "MAX_CHUNK_DECODED_BYTES", "MAX_LOGICAL_RECORD_BYTES",
+    "MAX_FILE_DELTA_BYTES", "SnapshotFile", "SourceSnapshot", "DualWindow",
+    "DecodedChunk", "PositionalMask", "FoldDelta", "FoldSink", "SinkPlan",
+    "PreparedState", "PreparedStatus", "LoadQuality", "SourceFileQuality",
+    "FoldExecution", "SnapshotMutationError", "build_source_snapshot",
+    "verify_snapshot_file", "verify_source_snapshot", "open_snapshot_text",
+    "chunks_from_rows", "execute_sink_plan", "run_folded_source",
     # diagnostics
     "_log_type", "_schema_warning", "_zeek_file_read_warning",
     "_cloudtrail_parse_warning", "_zeek_file_parse_warning",

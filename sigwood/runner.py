@@ -655,6 +655,8 @@ def _run_analyze(
                 pass
             else:
                 notes.extend(_format_auth_summary_notes(auth_facts))
+    if prepared_dnsblock is not None:
+        notes.extend(_format_dnsblock_summary_notes(prepared_dnsblock))
     nudge = _dns_nudge(data_sources)
     if nudge:
         notes.append(nudge)
@@ -1275,6 +1277,67 @@ def _plan_and_load(
             ),
             pass_wall_seconds=tuple(sorted(pass_wall_seconds.items())),
         )
+        if (
+            dnsblock_prepared.preflight.state is loader.PreparedState.READY
+            and dnsblock_prepared.analysis is not None
+            and dnsblock_prepared.analysis.cadence_worklist
+        ):
+            cadence_results: dict[tuple[str, str], Any] = {}
+            cadence_status = loader.PreparedStatus(loader.PreparedState.READY)
+            cadence_started = time.monotonic()
+            for pair in dnsblock_prepared.analysis.cadence_worklist:
+                cadence_load = loader.load_required_logs(
+                    one_pattern,
+                    source_dirs,
+                    since,
+                    until,
+                    verbose=verbose_level >= 1,
+                    source_windows=source_windows,
+                    show_progress=not quiet,
+                    file_select_windows=file_select_windows,
+                    sink_plans={
+                        pattern: loader.SinkPlan(
+                            (
+                                dnsblock_mod.make_cadence_sink(
+                                    pair,
+                                    population_inventory,
+                                    mask,
+                                ),
+                            ),
+                            preserve_frame=False,
+                        )
+                    },
+                    dual_windows={pattern: fold_window},
+                    prepared_snapshots={pattern: snapshot},
+                    _directory_skips=plan.directory_skips,
+                )
+                pair_status = cadence_load.prepared_status.get(
+                    "dnsblock.cadence",
+                    loader.PreparedStatus(
+                        loader.PreparedState.FAILED,
+                        "cadence pass unavailable",
+                    ),
+                )
+                if pair_status.state is not loader.PreparedState.READY:
+                    cadence_status = pair_status
+                    break
+                pair_result = cadence_load.fold_results.get(pattern, {}).get(
+                    "dnsblock.cadence"
+                )
+                if pair_result is None:
+                    cadence_status = loader.PreparedStatus(
+                        loader.PreparedState.FAILED,
+                        "cadence pass produced no reducer state",
+                    )
+                    break
+                cadence_results[pair] = pair_result
+            pass_wall_seconds["cadence"] = time.monotonic() - cadence_started
+            dnsblock_prepared = dnsblock_mod.finalize_cadence(
+                dnsblock_prepared,
+                status=cadence_status,
+                results=cadence_results,
+                pass_wall_seconds=tuple(sorted(pass_wall_seconds.items())),
+            )
     coverage_decisions = {
         pattern: _select_coverage_lane(
             load_result.availability.get(pattern, ()), report_interval,
@@ -1388,7 +1451,7 @@ def _resolve_fold_dual_window(
 
 
 def _write_dnsblock_evidence_payload(path: Path, payload: Mapping[str, Any]) -> None:
-    """Atomically persist an aggregate-only internal U2b evidence payload."""
+    """Atomically persist an aggregate-only internal dnsblock evidence payload."""
     target = Path(path)
     if target.name in {"", ".", ".."}:
         raise ValueError("dnsblock preflight artifact needs a file path")
@@ -1454,7 +1517,33 @@ def _write_dnsblock_preflight_progress(
 
 
 def _write_dnsblock_preflight_artifact(path: Path, prepared: Any) -> None:
-    """Atomically persist the completed aggregate-only U2b evidence carrier."""
+    """Atomically persist the completed aggregate-only dnsblock evidence carrier."""
+    analysis = prepared.analysis
+    aggregate: dict[str, Any] = {
+        "channels": {},
+        "burst_grids": [],
+        "final_shape_routes": [],
+        "recurring": None,
+        "summary_notes": _format_dnsblock_summary_notes(prepared),
+    }
+    if analysis is not None:
+        aggregate.update(
+            {
+                "channels": {
+                    "burst": asdict(analysis.burst_channel),
+                    "recurring": {
+                        "status": analysis.recurring.status,
+                        "cause": analysis.recurring.cause,
+                    },
+                },
+                "burst_grids": [asdict(cell) for cell in analysis.burst_grids],
+                "final_shape_routes": list(analysis.final_shape_routes),
+                "withheld_arrival_burst_pairs": (
+                    analysis.withheld_arrival_burst_pairs
+                ),
+                "recurring": asdict(analysis.recurring),
+            }
+        )
     _write_dnsblock_evidence_payload(
         path,
         {
@@ -1462,6 +1551,7 @@ def _write_dnsblock_preflight_artifact(path: Path, prepared: Any) -> None:
             "detector": "dnsblock",
             "status": "planned",
             "preflight": asdict(prepared.preflight),
+            **aggregate,
         },
     )
 
@@ -2826,6 +2916,140 @@ def _default_opt_in_note(
         f"default hunt - not run: {names} "
         f"(opt-in; {action} by name or with --detect=all)"
     )
+
+
+_DNSBLOCK_CAP_NOTES: tuple[tuple[str, str, str], ...] = (
+    ("association cells exceed", "association cells", "10,000,000"),
+    ("address-name pairs exceed", "address-name pairs", "500,000"),
+    ("pair-period cells exceed", "pair-period cells", "5,000,000"),
+    ("name-date cells exceed", "name-date cells", "2,000,000"),
+    ("address-date cells exceed", "address-date cells", "1,000,000"),
+    ("names exceed", "names", "100,000"),
+    ("addresses exceed", "addresses", "20,000"),
+    ("families exceed", "families", "50,000"),
+    ("coverage spans exceed", "coverage spans", "100,000"),
+    ("worklist exceeds", "worklist entries", "50,000"),
+    ("per-window routes exceed", "per-window routes", "1,000,000"),
+    ("retained strings exceed", "retained strings", "256 MiB"),
+    ("findings exceed", "findings", "1,000"),
+    ("cadence gaps exceed", "cadence gaps", "10,000"),
+)
+
+
+def _dnsblock_cap_note(cause: str) -> str | None:
+    for token, axis, limit in _DNSBLOCK_CAP_NOTES:
+        if token in cause:
+            return (
+                f"dnsblock: analysis stopped \N{EM DASH} {axis} exceeded its bound "
+                f"({limit}); no findings emitted this run"
+            )
+    return None
+
+
+def _format_dnsblock_summary_notes(prepared: Any) -> list[str]:
+    """Project detector-owned dnsblock facts into the frozen runner note order."""
+    lines: list[str] = []
+    preflight = prepared.preflight
+    if preflight.coverage_lane is CoverageLane.WEAK:
+        lines.append(
+            "period coverage is not verifiable from these logs; period counts use "
+            "data-bearing periods, and burst and recurring activity were not evaluated"
+        )
+    analysis = prepared.analysis
+    cap_line = _dnsblock_cap_note(preflight.cause)
+    if analysis is None:
+        if cap_line:
+            lines.append(cap_line)
+        return lines
+    facts = analysis.notes
+    if facts.insufficient_context_periods is not None:
+        lines.append(
+            "dnsblock: arrival analysis needs at least "
+            f"{facts.arrival_history_required} prior periods; the "
+            f"loaded window has {facts.insufficient_context_periods}"
+        )
+    elif facts.insufficient_history_pairs:
+        count = facts.insufficient_history_pairs
+        lines.append(
+            f"dnsblock: {count} candidate {plural(count, 'pair')} withheld "
+            "\N{EM DASH} not "
+            "enough prior history in the loaded window"
+        )
+    if facts.insufficient_arrival_coverage is not None:
+        lines.append(
+            "dnsblock: first-activity analysis needs "
+            f"{facts.arrival_days_required} eligible periods; the "
+            f"window has {facts.insufficient_arrival_coverage}"
+        )
+    if (
+        preflight.coverage_lane is CoverageLane.STRONG
+        and facts.burst_status.value == "ABSTAINED"
+        and facts.burst_cause == "insufficient_coverage"
+    ):
+        lines.append(
+            "dnsblock: burst analysis needs "
+            f"{facts.burst_active_required} eligible periods; the "
+            f"window has {facts.burst_eligible_periods}"
+        )
+    if (
+        preflight.coverage_lane is CoverageLane.STRONG
+        and facts.recurring_status.value == "ABSTAINED"
+        and facts.recurring_cause == "incomplete_strong_coverage"
+    ):
+        lines.append(
+            "dnsblock: recurring analysis needs every report period strongly "
+            f"covered; {facts.recurring_missing_periods} of "
+            f"{facts.recurring_periods_total} were not"
+        )
+    if facts.synchronized_pairs:
+        count = facts.synchronized_pairs
+        lines.append(
+            f"dnsblock: {count} synchronized first {plural(count, 'appearance')} "
+            f"withheld ({facts.synchronized_addresses} addresses reached the same "
+            "family in one period)"
+        )
+    if cap_line:
+        lines.append(cap_line)
+    suppressed_report = (
+        facts.raw_block_report_rows - facts.filtered_block_report_rows
+    )
+    suppressed_context = (
+        facts.raw_block_context_rows - facts.filtered_block_context_rows
+    )
+    if (
+        suppressed_report >= 0
+        and suppressed_context >= 0
+        and (suppressed_report or suppressed_context)
+    ):
+        lines.append(
+            "dnsblock: the allowlist removed "
+            f"{suppressed_report} block-outcome "
+            f"{plural(suppressed_report, 'row')} from the report interval and "
+            f"{suppressed_context} from context"
+        )
+    if (
+        not cap_line
+        and facts.entity_findings == 0
+        and facts.context_findings == 0
+    ):
+        raw_blocks = facts.raw_block_report_rows + facts.raw_block_context_rows
+        filtered_blocks = (
+            facts.filtered_block_report_rows + facts.filtered_block_context_rows
+        )
+        if facts.raw_query_rows == 0:
+            lines.append("dnsblock: no Pi-hole query rows in the window")
+        elif raw_blocks == 0:
+            lines.append("dnsblock: no blocked-name outcomes logged in the window")
+        elif filtered_blocks == 0:
+            lines.append(
+                "dnsblock: all block-outcome rows were removed by the allowlist"
+            )
+        else:
+            lines.append(
+                "dnsblock: blocked-name activity found, but nothing met the "
+                "reporting thresholds"
+            )
+    return lines
 
 
 def _format_auth_summary_notes(facts: Any) -> list[str]:

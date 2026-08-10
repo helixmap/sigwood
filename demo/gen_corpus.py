@@ -66,8 +66,10 @@ FLOW = {
     "exfil": 0x1A,
 }
 
-WINDOW_SECONDS = 86_400  # a 24h corpus
+WINDOW_SECONDS = 86_400  # primary story window; dnsblock adds bounded prehistory
 PIHOLE_DGA_COUNT = 20    # below pihole min_cluster_size so the burst stays noise
+DNSBLOCK_DEMO_ADDRESS = "192.0.2.88"
+DNSBLOCK_DEMO_NAME = "arrival.example.org"
 BELOW_GATE_SUBDOMAIN_COUNT = 8
 BELOW_GATE_QUIET_VOLUME = 40
 BELOW_GATE_LOUD_VOLUME = 4_000
@@ -653,6 +655,32 @@ def _gen_pihole(
                 lines, anchor, offset + 0.04,
                 f"regex denied {domain} is 0.0.0.0",
             )
+
+    # dnsblock trip-direction seed.  The older, different-name queries prove
+    # address and candidate-prefix readiness; exactly three report-period
+    # same-day query/block associations make one first-activity row.  This is a
+    # plumbing/demoability control only, never calibration or a detection-power
+    # claim.  All identities are reserved examples/RFC 5737.
+    for day in range(20, 2, -1):
+        _pihole_emit(
+            lines,
+            anchor,
+            -day * 86_400 + 3600,
+            "query[A] history.example.net from " + DNSBLOCK_DEMO_ADDRESS,
+        )
+    for offset in (-2 * 86_400 + 7200, -86_400 + 7200, 12 * 3600):
+        _pihole_emit(
+            lines,
+            anchor,
+            offset,
+            f"query[A] {DNSBLOCK_DEMO_NAME} from {DNSBLOCK_DEMO_ADDRESS}",
+        )
+        _pihole_emit(
+            lines,
+            anchor,
+            offset + 0.04,
+            f"gravity blocked (demo) {DNSBLOCK_DEMO_NAME} is 0.0.0.0",
+        )
 
     lines.sort(key=lambda x: x[0])
 

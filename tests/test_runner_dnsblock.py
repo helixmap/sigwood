@@ -11,7 +11,14 @@ from sigwood.common.loader import (
     AvailabilityReason,
     AvailabilityState,
     ExportAvailability,
+    PROVENANCE_MANIFEST_NAME,
+    PROVENANCE_SCHEMA_VERSION,
+    ProvenanceEntry,
+    ProvenanceManifest,
+    canonical_manifest_bytes,
+    hash_file,
 )
+from sigwood.common.paths import private_write_bytes
 import sigwood.common.loader.pipeline as pipeline
 from sigwood.detectors import dnsblock
 
@@ -36,6 +43,25 @@ def _write_log(path) -> None:
         "gravity blocked x.example is 0.0.0.0\n",
         encoding="utf-8",
     )
+
+
+def _write_arrival_log(path, name="a.example.com") -> None:
+    lines = []
+    for day in range(1, 28):
+        lines.append(
+            f"Jan {day:2d} 12:00:00 resolver.example.test dnsmasq[1]: "
+            "query[A] background.example.net from 192.0.2.7"
+        )
+    for month, day in (("Jan", 28), ("Jan", 30), ("Feb", 1)):
+        lines.extend(
+            [
+                f"{month} {day:2d} 12:00:00 resolver.example.test dnsmasq[1]: "
+                f"query[A] {name} from 192.0.2.7",
+                f"{month} {day:2d} 12:00:01 resolver.example.test dnsmasq[1]: "
+                f"gravity blocked {name} is 0.0.0.0",
+            ]
+        )
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def test_injected_planned_detector_traverses_runner_and_receives_preflight(
@@ -67,6 +93,66 @@ def test_injected_planned_detector_traverses_runner_and_receives_preflight(
         "anchor_block",
         "population",
     }
+
+
+@pytest.mark.parametrize(
+    ("suppress_blocks", "expected"),
+    [
+        (
+            False,
+            "dnsblock: blocked-name activity found, but nothing met the reporting thresholds",
+        ),
+        (
+            True,
+            "dnsblock: all block-outcome rows were removed by the allowlist",
+        ),
+    ],
+)
+def test_real_population_path_selects_honest_zero_cause(
+    tmp_path, monkeypatch, suppress_blocks, expected,
+):
+    from sigwood.common import allowlist as allowlist_mod
+
+    source = tmp_path / "logs"
+    source.mkdir()
+    _write_log(source / "pihole.log")
+    config = {
+        "sigwood": {"root": str(tmp_path), "warn_above": 0},
+    }
+    no_allowlist = True
+    if suppress_blocks:
+        monkeypatch.setattr(allowlist_mod, "_SHIPPED_LISTS", ())
+        (source / "pihole.log").write_text(
+            "Jan 20 00:00:00 resolver.example.test dnsmasq[1]: "
+            "query[A] retained.example from 192.0.2.7\n"
+            "Jan 20 00:00:01 resolver.example.test dnsmasq[1]: "
+            "gravity blocked x.example is 0.0.0.0\n",
+            encoding="utf-8",
+        )
+        allowlist_dir = tmp_path / "allowlist.d"
+        allowlist_dir.mkdir()
+        (allowlist_dir / "domains_u4").write_text("x.example\n", encoding="utf-8")
+        config["allowlist"] = {
+            "allowlist_dir": str(allowlist_dir),
+            "domain_patterns": [],
+            "connection_rules": [],
+        }
+        no_allowlist = False
+    artifact = tmp_path / "aggregate.json"
+    assert runner.run(
+        config=config,
+        detect="dnsblock",
+        pihole_dir=source,
+        since=datetime(2026, 1, 19, tzinfo=UTC),
+        until=datetime(2026, 1, 21, tzinfo=UTC),
+        no_allowlist=no_allowlist,
+        quiet=True,
+        _detector_selection=_selection(),
+        _dnsblock_preflight_path=artifact,
+    ) == 0
+    payload = json.loads(artifact.read_text(encoding="utf-8"))
+    assert payload["summary_notes"][-1] == expected
+    assert payload["summary_notes"][-1] != "dnsblock: no Pi-hole query rows in the window"
 
 
 def test_dnsblock_only_passes_never_retain_a_second_frame(
@@ -237,3 +323,232 @@ def test_first_pass_timing_survives_population_failure(tmp_path, monkeypatch):
 
 def test_public_discovery_does_not_expose_planned_dnsblock():
     assert "dnsblock" not in runner.discover_detectors()
+
+
+def test_arrival_traverses_real_discovery_loader_runner_and_cadence(tmp_path):
+    source = tmp_path / "logs"
+    source.mkdir()
+    _write_arrival_log(source / "pihole.log")
+    output = tmp_path / "arrival.json"
+    captured = {}
+    real_run = dnsblock.run
+
+    def observe(context, *, _prepared=None):
+        captured["prepared"] = _prepared
+        return real_run(context, _prepared=_prepared)
+
+    original = dnsblock.run
+    dnsblock.run = observe
+    try:
+        rc = runner.run(
+            config={
+                "sigwood": {
+                    "root": "",
+                    "warn_above": 0,
+                    "default_window": "7d",
+                }
+            },
+            detect="dnsblock",
+            pihole_dir=source,
+            output_format="json",
+            output_file=output,
+            no_allowlist=True,
+            quiet=True,
+            use_utc=True,
+            _detector_selection=_selection(),
+        )
+    finally:
+        dnsblock.run = original
+    assert rc == 0
+    prepared = captured["prepared"]
+    assert prepared.cadence_complete is True
+    assert {label for label, _seconds in prepared.preflight.pass_wall_seconds} == {
+        "anchor_block",
+        "population",
+        "cadence",
+    }
+    payload = json.loads(output.read_text(encoding="utf-8"))
+    arrivals = [
+        finding
+        for finding in payload["findings"]
+        if finding["evidence"].get("kind") == "arrival"
+    ]
+    assert len(arrivals) == 1
+    assert arrivals[0]["title"] == "192.0.2.7 → example.com"
+
+
+def test_u4_strong_burst_and_recurring_use_real_manifest_loader_runner_route(
+    tmp_path, monkeypatch,
+):
+    source = tmp_path / "receipted"
+    source.mkdir()
+    log = source / "pihole.log"
+    lines = []
+    for day in range(1, 27):
+        lines.append(
+            f"Jan {day:2d} 12:00:00 resolver.example.test dnsmasq[1]: "
+            "query[A] background.example.net from 192.0.2.7"
+        )
+    # Earlier activity makes the steady pair recurring rather than arrival.
+    lines.append(
+        "Jan 10 12:00:00 resolver.example.test dnsmasq[1]: "
+        "query[A] recurring.example.org from 192.0.2.9"
+    )
+    for day, burst_count in ((28, 5), (29, 100), (30, 5), (31, 5)):
+        for second in range(burst_count):
+            lines.append(
+                f"Jan {day:2d} 12:{second // 60:02d}:{second % 60:02d} "
+                "resolver.example.test dnsmasq[1]: query[A] "
+                "burst.example.com from 192.0.2.7"
+            )
+        lines.append(
+            f"Jan {day:2d} 12:02:00 resolver.example.test dnsmasq[1]: "
+            "gravity blocked burst.example.com is 0.0.0.0"
+        )
+        lines.append(
+            f"Jan {day:2d} 13:00:00 resolver.example.test dnsmasq[1]: "
+            "query[A] recurring.example.org from 192.0.2.9"
+        )
+        lines.append(
+            f"Jan {day:2d} 13:00:01 resolver.example.test dnsmasq[1]: "
+            "gravity blocked recurring.example.org is 0.0.0.0"
+        )
+    lines.append(
+        "Feb  1 12:00:00 resolver.example.test dnsmasq[1]: "
+        "query[A] background.example.net from 192.0.2.7"
+    )
+    log.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    entry = ProvenanceEntry(
+        PROVENANCE_SCHEMA_VERSION,
+        hash_file(log),
+        log.stat().st_size,
+        datetime(2026, 1, 1, tzinfo=UTC),
+        datetime(2026, 2, 2, tzinfo=UTC),
+        "Etc/UTC",
+        None,
+        "sigwood",
+        "synthetic",
+        "success",
+    )
+    private_write_bytes(
+        source / PROVENANCE_MANIFEST_NAME,
+        canonical_manifest_bytes(
+            ProvenanceManifest(
+                PROVENANCE_SCHEMA_VERSION,
+                1,
+                datetime(2026, 2, 2, tzinfo=UTC),
+                {log.name: entry},
+            )
+        ),
+    )
+    output = tmp_path / "u4.json"
+    artifact = tmp_path / "u4-aggregate.json"
+    captured = {}
+    real_run = dnsblock.run
+
+    def observe(context, *, _prepared=None):
+        captured["prepared"] = _prepared
+        return real_run(context, _prepared=_prepared)
+
+    monkeypatch.setattr(dnsblock, "run", observe)
+    assert runner.run(
+        config={
+            "sigwood": {"root": "", "warn_above": 0, "default_window": "5d"}
+        },
+        detect="dnsblock",
+        pihole_dir=source,
+        output_format="json",
+        output_file=output,
+        no_allowlist=True,
+        quiet=True,
+        use_utc=True,
+        _detector_selection=_selection(),
+        _dnsblock_preflight_path=artifact,
+    ) == 0
+    prepared = captured["prepared"]
+    assert prepared.preflight.coverage_lane.value == "strong"
+    assert len(prepared.analysis.burst_grids) == 75
+    assert len(prepared.analysis.bursts) == 1
+    assert prepared.analysis.recurring.pair_count == 1
+    report = json.loads(output.read_text(encoding="utf-8"))
+    assert [item["evidence"]["kind"] for item in report["findings"]] == [
+        "burst",
+        "recurring_activity",
+    ]
+    aggregate = json.loads(artifact.read_text(encoding="utf-8"))
+    assert aggregate["channels"]["burst"]["status"] == "READY"
+    assert len(aggregate["burst_grids"]) == 75
+    serialized = artifact.read_text(encoding="utf-8")
+    assert "192.0.2." not in serialized
+    assert "burst.example" not in serialized
+
+
+@pytest.mark.parametrize(
+    ("pattern", "name", "force_off", "expected_arrivals", "unknown_suffix"),
+    [
+        (r"re:\.example\.com$", "example.com", False, 0, False),
+        ("a.example.com", "b.example.com", False, 1, False),
+        ("*.example.com", "b.example.com", False, 0, False),
+        (
+            "invalid-sigwood-suffix",
+            "host.invalid-sigwood-suffix",
+            False,
+            1,
+            True,
+        ),
+        ("*.example.com", "b.example.com", True, 1, False),
+    ],
+)
+def test_matcher_parity_through_real_runner_route(
+    tmp_path,
+    monkeypatch,
+    pattern,
+    name,
+    force_off,
+    expected_arrivals,
+    unknown_suffix,
+):
+    from sigwood.common import allowlist as allowlist_mod
+
+    monkeypatch.setattr(allowlist_mod, "_SHIPPED_LISTS", ())
+    source = tmp_path / "logs"
+    source.mkdir()
+    _write_arrival_log(source / "pihole.log", name)
+    allowlist_dir = tmp_path / "allowlist.d"
+    allowlist_dir.mkdir()
+    (allowlist_dir / "domains_u3").write_text(pattern + "\n", encoding="utf-8")
+    output = tmp_path / "report.json"
+    captured = {}
+    real_run = dnsblock.run
+
+    def observe(context, *, _prepared=None):
+        captured["prepared"] = _prepared
+        return real_run(context, _prepared=_prepared)
+
+    monkeypatch.setattr(dnsblock, "run", observe)
+    assert runner.run(
+        config={
+            "sigwood": {
+                "root": str(tmp_path),
+                "warn_above": 0,
+                "default_window": "7d",
+            },
+            "allowlist": {
+                "allowlist_dir": str(allowlist_dir),
+                "domain_patterns": [],
+                "connection_rules": [],
+            },
+        },
+        detect="dnsblock",
+        pihole_dir=source,
+        output_format="json",
+        output_file=output,
+        no_allowlist=force_off,
+        quiet=True,
+        use_utc=True,
+        _detector_selection=_selection(),
+    ) == 0
+    prepared = captured["prepared"]
+    assert len(prepared.analysis.arrivals) == expected_arrivals
+    if expected_arrivals:
+        assert prepared.analysis.arrivals[0].unknown_suffix is unknown_suffix

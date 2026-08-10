@@ -1,8 +1,8 @@
-"""Bounded preflight population for the planned Pi-hole dnsblock detector.
+"""Bounded analysis for the planned Pi-hole dnsblock detector.
 
-U2b deliberately emits no findings.  The runner owns files, windows,
-suppression, coverage selection, and ordered snapshot passes; this module owns
-only pure reducers and typed population facts.
+The runner owns files, windows, suppression, coverage selection, and ordered
+snapshot passes. This module owns pure reducers, typed analytical facts,
+candidate routing, cadence statistics, and finding construction.
 """
 
 from __future__ import annotations
@@ -12,7 +12,7 @@ import ipaddress
 import json
 import math
 from collections import Counter, defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timedelta, timezone
 from enum import Enum
 from typing import Any, Callable, Iterable, Mapping
@@ -20,7 +20,7 @@ from typing import Any, Callable, Iterable, Mapping
 import numpy as np
 import pandas as pd
 
-from sigwood.common.finding import DetectorContext, Finding
+from sigwood.common.finding import DetectorContext, Finding, Severity
 from sigwood.common.loader import (
     CoverageDecision,
     CoverageLane,
@@ -49,7 +49,24 @@ _BLOCK_EVENTS = frozenset({"gravity_blocked", "regex_blocked"})
 _HANDLING_EVENTS = frozenset({"forwarded", "cached"})
 _GRID_DAYS = (2, 3, 4, 5)
 _GRID_CHANNEL = (7, 14, 21)
+_BURST_GRID_ABS = (25, 50, 100, 200, 400)
+_BURST_GRID_MULT = (4, 6, 8, 12, 16)
+_BURST_GRID_ACTIVE = (2, 3, 4)
 _DAY_SECONDS = 86_400.0
+_CADENCE_MAX_GAP_SECONDS = 6 * 60 * 60
+
+# Arrival construction constants. These are deliberately non-ratified: C1 owns
+# the only transition from a construction vector to shipped calibration.
+ARRIVAL_DAYS = 3
+ARRIVAL_HISTORY = 14
+ARRIVAL_VECTOR_RATIFIED = False
+SYNC_ADDRESSES = 3
+FOLD_MIN_MEMBERS = 4
+BURST_ABS = 100
+BURST_MULT = 8
+BURST_ACTIVE = 3
+BURST_VECTOR_RATIFIED = False
+RECURRING_PERIODS = 4
 
 
 @dataclass(frozen=True)
@@ -67,6 +84,11 @@ class DnsblockLimits:
     per_window_routes: int = 1_000_000
     string_bytes: int = 256 * 1024 * 1024
     temp_bytes: int = 1024 * 1024 * 1024
+    cadence_gaps: int = 10_000
+    prior_addresses: int = 100
+    fold_members: int = 100
+    disposition_days: int = 62
+    findings: int = 1_000
 
 
 LIMITS = DnsblockLimits()
@@ -96,6 +118,18 @@ class PairRoute(str, Enum):
     INSUFFICIENT_ACTIVE_PERIODS = "insufficient_active_periods"
     SYNC_WITHHELD = "sync_withheld"
     QUALIFYING = "qualifying"
+
+
+class BurstRoute(str, Enum):
+    INSUFFICIENT_ACTIVE_PERIODS = "insufficient_active_periods"
+    BELOW_ABSOLUTE_PEAK = "below_absolute_peak"
+    BELOW_PEAK_MULTIPLE = "below_peak_multiple"
+    QUALIFYING = "qualifying"
+
+
+class ChannelStatus(str, Enum):
+    READY = "READY"
+    ABSTAINED = "ABSTAINED"
 
 
 @dataclass
@@ -153,15 +187,29 @@ class PopulationState:
     names: set[str] = field(default_factory=set)
     association: dict[tuple[str, str, date], AssocCell] = field(default_factory=dict)
     pair_period: dict[tuple[str, str, int], AssocCell] = field(default_factory=dict)
+    a1_pair: dict[tuple[str, str], AssocCell] = field(default_factory=dict)
     pair_first: dict[tuple[str, str], float] = field(default_factory=dict)
     address_first: dict[str, float] = field(default_factory=dict)
     address_dates: set[tuple[str, date]] = field(default_factory=set)
     handling_dates: dict[str, set[date]] = field(default_factory=dict)
+    block_first_dates: dict[str, date] = field(default_factory=dict)
     handling_date_cells: int = 0
     query_periods: set[int] = field(default_factory=set)
     report_pairs: set[tuple[str, str]] = field(default_factory=set)
     a1_rows: int = 0
     a2_rows: int = 0
+    report_query_rows: int = 0
+    report_query_rows_by_address: Counter[str] = field(default_factory=Counter)
+    a1_rows_by_address: Counter[str] = field(default_factory=Counter)
+    disposition: dict[tuple[str, date], Counter[str]] = field(default_factory=dict)
+    disposition_date_cells: int = 0
+    raw_window_rows: int = 0
+    filtered_window_rows: int = 0
+    raw_query_rows: int = 0
+    raw_block_report_rows: int = 0
+    raw_block_context_rows: int = 0
+    filtered_block_report_rows: int = 0
+    filtered_block_context_rows: int = 0
     string_bytes: int = 0
 
 
@@ -172,6 +220,170 @@ class GridFacts:
     route_counts: tuple[tuple[str, int], ...]
     qualifying_pairs: int
     identity_digest: str
+
+
+@dataclass(frozen=True)
+class DispositionFacts:
+    gravity_blocked: int
+    regex_blocked: int
+    forwarded: int
+    cached: int
+    by_day: tuple[tuple[str, int, int, int, int], ...]
+    by_day_omitted: int
+
+
+@dataclass(frozen=True)
+class CadenceFacts:
+    cadence_available: bool
+    gap_count: int | None
+    gap_cv: float | None
+    gap_median_s: float | None
+
+
+@dataclass(frozen=True)
+class ArrivalCandidate:
+    address: str
+    family_key: str
+    unknown_suffix: bool
+    qualifying_names: tuple[str, ...]
+    attributed_query_count: int
+    qualifying_name_count: int
+    active_periods: int
+    eligible_periods: int
+    first_associated_ts: float
+    prior_other_address_count: int
+    prior_other_address_count_at_cap: bool
+    disposition: DispositionFacts
+
+
+@dataclass(frozen=True)
+class ArrivalSubsetFacts:
+    novelty_noun: str
+    first_associated_ts: float
+    active_periods: int
+    eligible_periods: int
+    prior_other_address_count: int
+    prior_other_address_count_at_cap: bool
+    arrival_attributed_query_count: int
+    arrival_qualifying_name_count: int
+
+
+@dataclass(frozen=True)
+class BurstCandidate:
+    address: str
+    family_key: str
+    unknown_suffix: bool
+    peak_count: int
+    peak_period_start: float
+    baseline_median_twice: int
+    active_periods: int
+    eligible_periods: int
+    attributed_query_count: int
+    disposition: DispositionFacts
+    association_names: tuple[str, ...]
+    arrival_subset: ArrivalSubsetFacts | None = None
+
+
+@dataclass(frozen=True)
+class BurstGridFacts:
+    absolute_required: int
+    multiple_required: int
+    active_required: int
+    route_counts: tuple[tuple[str, int], ...]
+    qualifying_pairs: int
+    identity_digest: str
+
+
+@dataclass(frozen=True)
+class ChannelFacts:
+    status: ChannelStatus
+    cause: str
+    periods_required: int
+    eligible_periods: int
+
+
+@dataclass(frozen=True)
+class RecurringFacts:
+    status: ChannelStatus
+    cause: str
+    periods_required: int
+    periods_total: int
+    eligible_periods: int
+    missing_periods: int
+    pair_count: int
+    family_count: int
+    address_count: int
+
+
+@dataclass(frozen=True)
+class DnsblockNoteFacts:
+    coverage_lane: CoverageLane
+    arrival_days_required: int
+    arrival_history_required: int
+    insufficient_history_pairs: int = 0
+    insufficient_context_periods: int | None = None
+    insufficient_arrival_coverage: int | None = None
+    burst_status: ChannelStatus = ChannelStatus.READY
+    burst_cause: str = ""
+    burst_active_required: int = BURST_ACTIVE
+    burst_eligible_periods: int = 0
+    recurring_status: ChannelStatus = ChannelStatus.READY
+    recurring_cause: str = ""
+    recurring_periods_required: int = RECURRING_PERIODS
+    recurring_periods_total: int = 0
+    recurring_missing_periods: int = 0
+    synchronized_pairs: int = 0
+    synchronized_addresses: int = 0
+    raw_window_rows: int = 0
+    filtered_window_rows: int = 0
+    raw_query_rows: int = 0
+    raw_block_report_rows: int = 0
+    raw_block_context_rows: int = 0
+    filtered_block_report_rows: int = 0
+    filtered_block_context_rows: int = 0
+    entity_findings: int = 0
+    context_findings: int = 0
+    cap_cause: str = ""
+
+
+@dataclass(frozen=True)
+class AnalysisFacts:
+    arrivals: tuple[ArrivalCandidate, ...]
+    bursts: tuple[BurstCandidate, ...]
+    burst_grids: tuple[BurstGridFacts, ...]
+    burst_channel: ChannelFacts
+    recurring: RecurringFacts
+    final_shape_routes: tuple[tuple[str, int], ...]
+    withheld_arrival_burst_pairs: int
+    cadence_worklist: tuple[tuple[str, str], ...]
+    pair_routes: tuple[tuple[str, int], ...]
+    prior_handling_names: int
+    prior_handling_memberships: int
+    report_query_rows: int
+    report_query_rows_by_address: tuple[tuple[str, int], ...]
+    a1_rows: int
+    a1_rows_by_address: tuple[tuple[str, int], ...]
+    notes: DnsblockNoteFacts
+
+
+@dataclass
+class CadenceState:
+    first_ts: float | None = None
+    last_ts: float | None = None
+    included_gaps: list[float] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class _RoutingResult:
+    name_routes: Counter[str]
+    pair_routes: Counter[str]
+    arrivals: tuple[ArrivalCandidate, ...]
+    qualified_ids: tuple[str, ...]
+    prior_handling_names: frozenset[str]
+    prior_handling_memberships: frozenset[tuple[str, str]]
+    max_history_periods: int
+    synchronized_pairs: int
+    synchronized_addresses: int
 
 
 @dataclass(frozen=True)
@@ -201,6 +413,9 @@ class DnsblockPreflight:
 @dataclass(frozen=True)
 class DnsblockPrepared:
     preflight: DnsblockPreflight
+    analysis: AnalysisFacts | None = None
+    cadence: tuple[tuple[str, str, CadenceFacts], ...] = ()
+    cadence_complete: bool = False
 
 
 def _finite_ts(value: Any) -> float | None:
@@ -242,8 +457,11 @@ def normalize_address(value: Any) -> tuple[str | None, DropReason | None]:
 
 def _family(name: str) -> tuple[str, bool]:
     rolled = roll_domain(name, "domain")
-    # A PSL miss returns the normalized input; keep it as an honest fallback.
-    return rolled, rolled == name and name.count(".") == 1
+    suffix = roll_domain(name, "tld")
+    # A PSL miss returns the normalized input for both requested levels.  An
+    # ordinary registrable apex also equals ``rolled``, so the tld-level probe is
+    # what distinguishes that valid apex from the shared owner's fallback.
+    return rolled, suffix == name
 
 
 def _utc_date(ts: float) -> date:
@@ -291,11 +509,16 @@ def _resident_population(state: PopulationState) -> int:
         state.string_bytes
         + len(state.association) * 72
         + len(state.pair_period) * 64
+        + len(state.a1_pair) * 56
         + len(state.pair_first) * 48
         + len(state.address_first) * 32
         + len(state.address_dates) * 32
         + state.handling_date_cells * 24
+        + len(state.block_first_dates) * 32
         + len(state.query_periods) * 16
+        + len(state.report_query_rows_by_address) * 32
+        + len(state.a1_rows_by_address) * 32
+        + state.disposition_date_cells * 96
     )
 
 
@@ -610,15 +833,35 @@ def make_population_sink(
     def consume(delta: FoldDelta, chunk: DecodedChunk, keep_mask: PositionalMask) -> FoldDelta:
         state: PopulationState = delta.value
         state.rows_seen += len(chunk.frame)
+        kept_array = np.asarray(keep_mask.keep, dtype=bool)
+        report_array = np.asarray(chunk.report_mask, dtype=bool)
+        context_array = np.asarray(chunk.context_mask, dtype=bool)
+        window_array = report_array | context_array
+        block_array = chunk.frame["event_type"].isin(_BLOCK_EVENTS).to_numpy()
+        query_array = (chunk.frame["event_type"] == "query").to_numpy()
+        state.raw_window_rows += int(window_array.sum())
+        state.filtered_window_rows += int((kept_array & window_array).sum())
+        state.raw_query_rows += int((query_array & window_array).sum())
+        state.raw_block_report_rows += int((block_array & report_array).sum())
+        state.raw_block_context_rows += int((block_array & context_array).sum())
+        state.filtered_block_report_rows += int(
+            (block_array & report_array & kept_array).sum()
+        )
+        state.filtered_block_context_rows += int(
+            (block_array & context_array & kept_array).sum()
+        )
         kept_positions = [pos for pos, kept in enumerate(keep_mask.keep) if kept]
         state.rows_kept += len(kept_positions)
         state.rows_suppressed += len(chunk.frame) - len(kept_positions)
         selected = chunk.frame.iloc[kept_positions].copy()
         selected["chunk_pos"] = kept_positions
+        selected_in_window = selected[
+            selected["chunk_pos"].map(lambda pos: bool(window_array[int(pos)]))
+        ]
         state.event_counts.update(
             {
                 str(key): int(value)
-                for key, value in selected["event_type"].value_counts(dropna=False).items()
+                for key, value in selected_in_window["event_type"].value_counts(dropna=False).items()
             }
         )
         relevant = selected[
@@ -637,6 +880,58 @@ def make_population_sink(
         in_window = relevant["in_report"] | relevant["in_context"]
         state.drops[DropReason.OUTSIDE_WINDOW.value] += int((~in_window).sum())
         relevant = relevant[in_window]
+
+        mechanisms = selected[
+            selected["event_type"].isin(_BLOCK_EVENTS | _HANDLING_EVENTS)
+        ].copy()
+        if not mechanisms.empty:
+            mechanisms["in_window"] = mechanisms["chunk_pos"].map(
+                lambda pos: bool(window_array[int(pos)])
+            )
+            mechanisms = mechanisms[mechanisms["in_window"]]
+        if not mechanisms.empty:
+            mechanisms["numeric_ts"] = pd.to_numeric(
+                mechanisms["ts"], errors="coerce"
+            )
+            mechanisms = mechanisms[
+                mechanisms["numeric_ts"].notna()
+                & np.isfinite(mechanisms["numeric_ts"])
+            ]
+        if not mechanisms.empty:
+            disposition_name_map = {
+                value: normalize_name(value)
+                for value in mechanisms["query"].drop_duplicates().tolist()
+            }
+            mechanisms["normalized_name"] = mechanisms["query"].map(
+                {value: result[0] for value, result in disposition_name_map.items()}
+            )
+            mechanisms = mechanisms[
+                mechanisms["normalized_name"].isin(block_names)
+            ]
+        if not mechanisms.empty:
+            mechanisms["event_day"] = pd.to_datetime(
+                mechanisms["numeric_ts"], unit="s", utc=True
+            ).dt.date
+            grouped_disposition = mechanisms.groupby(
+                ["normalized_name", "event_day", "event_type"],
+                sort=False,
+            ).size()
+            for (name_value, day, event), count in grouped_disposition.items():
+                name = str(name_value)
+                add_name(state, name)
+                key = (name, day)
+                if key not in state.disposition:
+                    if (
+                        state.disposition_date_cells
+                        + state.handling_date_cells
+                        >= limits.name_date_cells
+                    ):
+                        raise FoldAbstention(
+                            "dnsblock name-date cells exceed 2,000,000"
+                        )
+                    state.disposition[key] = Counter()
+                    state.disposition_date_cells += 1
+                state.disposition[key][str(event)] += int(count)
 
         queries = relevant[relevant["event_type"] == "query"].copy()
         if not queries.empty:
@@ -666,6 +961,18 @@ def make_population_sink(
             ].value_counts(dropna=False).items():
                 reason = name_map[value][1] or DropReason.INVALID_NAME
                 state.drops[reason.value] += int(count)
+            queries = queries[queries["normalized_name"].notna()]
+
+            valid_report_queries = queries[queries["in_report"]]
+            state.report_query_rows += len(valid_report_queries)
+            state.report_query_rows_by_address.update(
+                {
+                    str(address): int(count)
+                    for address, count in valid_report_queries["address"]
+                    .value_counts()
+                    .items()
+                }
+            )
 
             for address, first_ts in queries.groupby("address")["numeric_ts"].min().items():
                 add_address(state, address)
@@ -706,7 +1013,11 @@ def make_population_sink(
             ]
             if not blocked_queries.empty:
                 for name in blocked_queries["normalized_name"].unique():
-                    add_name(state, str(name))
+                    normalized = str(name)
+                    add_name(state, normalized)
+                    dates = block_dates.get(normalized, ())
+                    if dates:
+                        state.block_first_dates[normalized] = min(dates)
                 first_by_pair = blocked_queries.groupby(
                     ["address", "normalized_name"], sort=False
                 )["numeric_ts"].min()
@@ -747,6 +1058,35 @@ def make_population_sink(
                 ).isin(block_membership)
                 a1_queries = report_queries[membership]
                 state.a1_rows += len(a1_queries)
+                state.a1_rows_by_address.update(
+                    {
+                        str(address): int(count)
+                        for address, count in a1_queries["address"]
+                        .value_counts()
+                        .items()
+                    }
+                )
+                a1_pairs = a1_queries.groupby(
+                    ["address", "normalized_name"], sort=False
+                )["numeric_ts"].agg(["count", "min", "max"])
+                for (address, name), count, first_ts, last_ts in zip(
+                    a1_pairs.index,
+                    a1_pairs["count"].to_numpy(),
+                    a1_pairs["min"].to_numpy(),
+                    a1_pairs["max"].to_numpy(),
+                ):
+                    key = (str(address), str(name))
+                    if (
+                        key not in state.a1_pair
+                        and len(state.a1_pair) >= limits.address_name_pairs
+                    ):
+                        raise FoldAbstention(
+                            "dnsblock address-name pairs exceed 500,000"
+                        )
+                    cell = state.a1_pair.setdefault(key, AssocCell())
+                    cell.count += int(count)
+                    cell.first_ts = min(cell.first_ts, float(first_ts))
+                    cell.last_ts = max(cell.last_ts, float(last_ts))
                 period_queries = a1_queries[a1_queries["period_valid"]]
                 periods = period_queries.groupby(
                     ["address", "normalized_name", "period"], sort=False
@@ -787,7 +1127,12 @@ def make_population_sink(
                 add_name(state, name)
                 values = state.handling_dates.setdefault(name, set())
                 incoming = set(days) - values
-                if state.handling_date_cells + len(incoming) > limits.name_date_cells:
+                if (
+                    state.handling_date_cells
+                    + state.disposition_date_cells
+                    + len(incoming)
+                    > limits.name_date_cells
+                ):
                     raise FoldAbstention("dnsblock name-date cells exceed 2,000,000")
                 values.update(incoming)
                 state.handling_date_cells += len(incoming)
@@ -814,6 +1159,15 @@ def make_population_sink(
             target.count += cell.count
             target.first_ts = min(target.first_ts, cell.first_ts)
             target.last_ts = max(target.last_ts, cell.last_ts)
+        for key, cell in part.a1_pair.items():
+            if key not in run.a1_pair and len(run.a1_pair) >= limits.address_name_pairs:
+                raise FoldAbstention(
+                    "dnsblock address-name pairs exceed 500,000"
+                )
+            target = run.a1_pair.setdefault(key, AssocCell())
+            target.count += cell.count
+            target.first_ts = min(target.first_ts, cell.first_ts)
+            target.last_ts = max(target.last_ts, cell.last_ts)
         for key, value in part.pair_first.items():
             if key not in run.pair_first and len(run.pair_first) >= limits.address_name_pairs:
                 raise FoldAbstention("dnsblock address-name pairs exceed 500,000")
@@ -826,10 +1180,32 @@ def make_population_sink(
         for name, values in part.handling_dates.items():
             target = run.handling_dates.setdefault(name, set())
             incoming = values - target
-            if run.handling_date_cells + len(incoming) > limits.name_date_cells:
+            if (
+                run.handling_date_cells
+                + run.disposition_date_cells
+                + len(incoming)
+                > limits.name_date_cells
+            ):
                 raise FoldAbstention("dnsblock name-date cells exceed 2,000,000")
             target.update(incoming)
             run.handling_date_cells += len(incoming)
+        for name, first_day in part.block_first_dates.items():
+            run.block_first_dates[name] = min(
+                run.block_first_dates.get(name, first_day), first_day
+            )
+        for key, counts in part.disposition.items():
+            if key not in run.disposition:
+                if (
+                    run.disposition_date_cells
+                    + run.handling_date_cells
+                    >= limits.name_date_cells
+                ):
+                    raise FoldAbstention(
+                        "dnsblock name-date cells exceed 2,000,000"
+                    )
+                run.disposition[key] = Counter()
+                run.disposition_date_cells += 1
+            run.disposition[key].update(counts)
         run.query_periods.update(part.query_periods)
         run.report_pairs.update(part.report_pairs)
         run.rows_seen += part.rows_seen
@@ -837,6 +1213,16 @@ def make_population_sink(
         run.rows_suppressed += part.rows_suppressed
         run.a1_rows += part.a1_rows
         run.a2_rows += part.a2_rows
+        run.report_query_rows += part.report_query_rows
+        run.report_query_rows_by_address.update(part.report_query_rows_by_address)
+        run.a1_rows_by_address.update(part.a1_rows_by_address)
+        run.raw_window_rows += part.raw_window_rows
+        run.filtered_window_rows += part.filtered_window_rows
+        run.raw_query_rows += part.raw_query_rows
+        run.raw_block_report_rows += part.raw_block_report_rows
+        run.raw_block_context_rows += part.raw_block_context_rows
+        run.filtered_block_report_rows += part.filtered_block_report_rows
+        run.filtered_block_context_rows += part.filtered_block_context_rows
         _merge_counter(run.event_counts, part.event_counts)
         _merge_counter(run.drops, part.drops)
         return run
@@ -870,16 +1256,55 @@ def _covered_periods(
     return eligible
 
 
-def _population_facts(
+def _disposition_facts(
+    state: PopulationState,
+    names: Iterable[str],
+    limits: DnsblockLimits,
+) -> DispositionFacts:
+    wanted = frozenset(names)
+    totals: Counter[str] = Counter()
+    daily: dict[date, Counter[str]] = defaultdict(Counter)
+    for (name, day), counts in state.disposition.items():
+        if name not in wanted:
+            continue
+        totals.update(counts)
+        daily[day].update(counts)
+    ordered = sorted(daily.items())
+    omitted = max(0, len(ordered) - limits.disposition_days)
+    kept = ordered[omitted:]
+    by_day = tuple(
+        (
+            day.isoformat(),
+            int(counts["gravity_blocked"]),
+            int(counts["regex_blocked"]),
+            int(counts["forwarded"]),
+            int(counts["cached"]),
+        )
+        for day, counts in kept
+    )
+    return DispositionFacts(
+        int(totals["gravity_blocked"]),
+        int(totals["regex_blocked"]),
+        int(totals["forwarded"]),
+        int(totals["cached"]),
+        by_day,
+        omitted,
+    )
+
+
+def _route_population(
     state: PopulationState,
     window: DualWindow,
     decision: CoverageDecision,
     limits: DnsblockLimits,
-) -> tuple[Counter[str], tuple[GridFacts, ...]]:
+    *,
+    days_required: int,
+    history_required: int,
+    materialize: bool,
+) -> _RoutingResult:
     full_report = _full_report_periods(window)
     eligible = _covered_periods(window, decision, state.query_periods)
-    by_pair: dict[tuple[str, str], dict[str, Any]] = {}
-    families: set[str] = set()
+    eligible_report = {period for period in eligible if period < full_report}
     periods_by_name_pair: dict[tuple[str, str], set[int]] = defaultdict(set)
     first_by_name_period: dict[tuple[str, str, int], float] = {}
     for key, cell in state.pair_period.items():
@@ -887,106 +1312,635 @@ def _population_facts(
         periods_by_name_pair[(address, name)].add(period)
         first_by_name_period[key] = cell.first_ts
 
+    by_pair: dict[tuple[str, str], set[str]] = {}
+    families: set[str] = set()
     for address, name in state.report_pairs:
         family, _unknown = _family(name)
         families.add(family)
         if len(families) > limits.families:
             raise FoldAbstention("dnsblock families exceed 50,000")
-        item = by_pair.setdefault((address, family), {"names": set(), "periods": set()})
+        by_pair.setdefault((address, family), set()).add(name)
         if len(by_pair) > limits.worklist:
             raise FoldAbstention("dnsblock worklist exceeds 50,000")
-        item["names"].add(name)
-        item["periods"].update(
-            period
-            for period in periods_by_name_pair.get((address, name), ())
-            if period < full_report
-        )
 
     name_routes: Counter[str] = Counter()
+    pair_routes: Counter[str] = Counter()
+    prior_names: set[str] = set()
+    prior_memberships: set[tuple[str, str]] = set()
+    provisional: list[
+        tuple[tuple[str, str], int, tuple[str, ...], set[int], bool]
+    ] = []
+    max_history = 0
+    for pair, pair_names in sorted(by_pair.items()):
+        address, family = pair
+        qualifying_names: list[str] = []
+        candidate_periods: list[int] = []
+        unknown_suffix = False
+        for name in sorted(pair_names):
+            _family_key, name_unknown = _family(name)
+            unknown_suffix = unknown_suffix or name_unknown
+            periods = sorted(
+                period
+                for period in periods_by_name_pair.get((address, name), ())
+                if period < full_report
+            )
+            if not periods:
+                name_routes[NameRoute.INELIGIBLE_NAME.value] += 1
+                continue
+            candidate = max(periods)
+            first_associated = first_by_name_period[(address, name, candidate)]
+            candidate_day = state.block_first_dates.get(
+                name, _utc_date(first_associated)
+            )
+            handling = state.handling_dates.get(name, set())
+            if any(day < candidate_day for day in handling):
+                name_routes[NameRoute.PRIOR_HANDLING.value] += 1
+                prior_names.add(name)
+                prior_memberships.add((address, name))
+                continue
+            if candidate_day in handling:
+                name_routes[NameRoute.SAME_DAY_AMBIGUOUS.value] += 1
+                continue
+            if state.pair_first.get((address, name), math.inf) < first_associated:
+                name_routes[NameRoute.PRIOR_ADDRESS_QUERY.value] += 1
+                continue
+            name_routes[NameRoute.QUALIFYING.value] += 1
+            qualifying_names.append(name)
+            candidate_periods.append(candidate)
+        if not qualifying_names:
+            pair_routes[PairRoute.NO_QUALIFYING_NAME.value] += 1
+            continue
+        candidate = max(candidate_periods)
+        candidate_start = window.report_interval[1] - timedelta(days=candidate + 1)
+        history_count = sum(1 for period in eligible if period > candidate)
+        max_history = max(max_history, history_count)
+        if history_count < history_required:
+            pair_routes[PairRoute.INSUFFICIENT_HISTORY.value] += 1
+            continue
+        if state.address_first.get(address, math.inf) >= candidate_start.timestamp():
+            pair_routes[PairRoute.NO_PRIOR_ADDRESS_ACTIVITY.value] += 1
+            continue
+        active = {
+            period
+            for name in qualifying_names
+            for period in periods_by_name_pair.get((address, name), ())
+            if period in eligible_report
+        }
+        if len(active) < days_required:
+            pair_routes[PairRoute.INSUFFICIENT_ACTIVE_PERIODS.value] += 1
+            continue
+        provisional.append(
+            (pair, candidate, tuple(qualifying_names), active, unknown_suffix)
+        )
+
+    sync_groups: Counter[tuple[str, int]] = Counter(
+        (family, candidate)
+        for (_address, family), candidate, _names, _active, _unknown in provisional
+    )
+    arrivals: list[ArrivalCandidate] = []
+    qualified_ids: list[str] = []
+    sync_pairs = 0
+    sync_addresses = 0
+    first_addresses_by_name: dict[str, list[tuple[str, float]]] = defaultdict(list)
+    if materialize:
+        for (seen_address, seen_name), first_ts in state.pair_first.items():
+            first_addresses_by_name[seen_name].append((seen_address, first_ts))
+    for pair, candidate, qualifying_names, active, unknown_suffix in provisional:
+        address, family = pair
+        group_size = sync_groups[(family, candidate)]
+        if group_size >= SYNC_ADDRESSES:
+            pair_routes[PairRoute.SYNC_WITHHELD.value] += 1
+            sync_pairs += 1
+            sync_addresses = max(sync_addresses, group_size)
+            continue
+        pair_routes[PairRoute.QUALIFYING.value] += 1
+        qualified_ids.append(f"{address}\0{family}")
+        if not materialize:
+            continue
+        cells = [
+            state.a1_pair[(address, name)]
+            for name in qualifying_names
+            if (address, name) in state.a1_pair
+        ]
+        attributed = sum(cell.count for cell in cells)
+        first_associated = min(cell.first_ts for cell in cells)
+        candidate_start = window.report_interval[1] - timedelta(days=candidate + 1)
+        other_addresses: set[str] = set()
+        for name in qualifying_names:
+            for other_address, first_ts in first_addresses_by_name.get(name, ()):
+                if (
+                    other_address != address
+                    and first_ts < candidate_start.timestamp()
+                ):
+                    other_addresses.add(other_address)
+                    if len(other_addresses) >= limits.prior_addresses:
+                        break
+            if len(other_addresses) >= limits.prior_addresses:
+                break
+        at_cap = len(other_addresses) >= limits.prior_addresses
+        arrivals.append(
+            ArrivalCandidate(
+                address=address,
+                family_key=family,
+                unknown_suffix=unknown_suffix,
+                qualifying_names=qualifying_names,
+                attributed_query_count=attributed,
+                qualifying_name_count=len(qualifying_names),
+                active_periods=len(active),
+                eligible_periods=len(eligible_report),
+                first_associated_ts=first_associated,
+                prior_other_address_count=min(
+                    len(other_addresses), limits.prior_addresses
+                ),
+                prior_other_address_count_at_cap=at_cap,
+                disposition=_disposition_facts(state, qualifying_names, limits),
+            )
+        )
+    if sum(pair_routes.values()) > limits.per_window_routes:
+        raise FoldAbstention("dnsblock per-window routes exceed 1,000,000")
+    if sum(pair_routes.values()) != len(by_pair):
+        raise ValueError("dnsblock pair routing did not conserve its worklist")
+    return _RoutingResult(
+        name_routes,
+        pair_routes,
+        tuple(arrivals),
+        tuple(sorted(qualified_ids)),
+        frozenset(prior_names),
+        frozenset(prior_memberships),
+        max_history,
+        sync_pairs,
+        sync_addresses,
+    )
+
+
+def _population_facts(
+    state: PopulationState,
+    window: DualWindow,
+    decision: CoverageDecision,
+    limits: DnsblockLimits,
+) -> tuple[Counter[str], tuple[GridFacts, ...]]:
+    actual_routes: Counter[str] = Counter()
     grids: list[GridFacts] = []
     for days_required in _GRID_DAYS:
         for history_required in _GRID_CHANNEL:
-            routes: Counter[str] = Counter()
-            qualified_ids: list[str] = []
-            provisional: list[tuple[tuple[str, str], int]] = []
-            for pair, item in sorted(by_pair.items()):
-                address, family = pair
-                qualifying_names: list[str] = []
-                candidate_periods: list[int] = []
-                for name in sorted(item["names"]):
-                    periods = sorted(
-                        period
-                        for period in periods_by_name_pair.get((address, name), ())
-                        if period < full_report
-                    )
-                    if not periods:
-                        if days_required == _GRID_DAYS[0] and history_required == _GRID_CHANNEL[0]:
-                            name_routes[NameRoute.INELIGIBLE_NAME.value] += 1
-                        continue
-                    candidate = max(periods)  # oldest associated report period
-                    candidate_start = window.report_interval[1] - timedelta(days=candidate + 1)
-                    first_associated = first_by_name_period[(address, name, candidate)]
-                    candidate_day = _utc_date(first_associated)
-                    handling = state.handling_dates.get(name, set())
-                    if any(day < candidate_day for day in handling):
-                        if days_required == _GRID_DAYS[0] and history_required == _GRID_CHANNEL[0]:
-                            name_routes[NameRoute.PRIOR_HANDLING.value] += 1
-                        continue
-                    if candidate_day in handling:
-                        if days_required == _GRID_DAYS[0] and history_required == _GRID_CHANNEL[0]:
-                            name_routes[NameRoute.SAME_DAY_AMBIGUOUS.value] += 1
-                        continue
-                    first_pair = state.pair_first.get((address, name), math.inf)
-                    if first_pair < first_associated:
-                        if days_required == _GRID_DAYS[0] and history_required == _GRID_CHANNEL[0]:
-                            name_routes[NameRoute.PRIOR_ADDRESS_QUERY.value] += 1
-                        continue
-                    if days_required == _GRID_DAYS[0] and history_required == _GRID_CHANNEL[0]:
-                        name_routes[NameRoute.QUALIFYING.value] += 1
-                    qualifying_names.append(name)
-                    candidate_periods.append(candidate)
-                if not qualifying_names:
-                    routes[PairRoute.NO_QUALIFYING_NAME.value] += 1
-                    continue
-                candidate = max(candidate_periods)
-                candidate_start = window.report_interval[1] - timedelta(days=candidate + 1)
-                history_count = sum(1 for period in eligible if period > candidate)
-                if history_count < history_required:
-                    routes[PairRoute.INSUFFICIENT_HISTORY.value] += 1
-                    continue
-                if state.address_first.get(address, math.inf) >= candidate_start.timestamp():
-                    routes[PairRoute.NO_PRIOR_ADDRESS_ACTIVITY.value] += 1
-                    continue
-                active = {period for period in item["periods"] if period in eligible}
-                if len(active) < days_required:
-                    routes[PairRoute.INSUFFICIENT_ACTIVE_PERIODS.value] += 1
-                    continue
-                provisional.append((pair, candidate))
-
-            sync_groups: Counter[tuple[str, int]] = Counter(
-                (family, candidate) for (_address, family), candidate in provisional
+            routed = _route_population(
+                state,
+                window,
+                decision,
+                limits,
+                days_required=days_required,
+                history_required=history_required,
+                materialize=False,
             )
-            for (address, family), candidate in provisional:
-                if sync_groups[(family, candidate)] >= 3:
-                    routes[PairRoute.SYNC_WITHHELD.value] += 1
-                else:
-                    routes[PairRoute.QUALIFYING.value] += 1
-                    qualified_ids.append(f"{address}\0{family}")
-            if sum(routes.values()) > limits.per_window_routes:
-                raise FoldAbstention("dnsblock per-window routes exceed 1,000,000")
+            if (
+                days_required == ARRIVAL_DAYS
+                and history_required == ARRIVAL_HISTORY
+            ):
+                actual_routes = routed.name_routes
             digest = hashlib.sha256(
-                json.dumps(sorted(qualified_ids), separators=(",", ":")).encode()
+                json.dumps(routed.qualified_ids, separators=(",", ":")).encode()
             ).hexdigest()
             grids.append(
                 GridFacts(
                     days_required,
                     history_required,
-                    tuple(sorted(routes.items())),
-                    len(qualified_ids),
+                    tuple(sorted(routed.pair_routes.items())),
+                    len(routed.qualified_ids),
                     digest,
                 )
             )
-    return name_routes, tuple(grids)
+    return actual_routes, tuple(grids)
+
+
+def _median_twice(values: Iterable[int]) -> int:
+    ordered = sorted(int(value) for value in values)
+    if not ordered:
+        raise ValueError("dnsblock burst baseline is empty")
+    middle = len(ordered) // 2
+    if len(ordered) % 2:
+        return 2 * ordered[middle]
+    return ordered[middle - 1] + ordered[middle]
+
+
+def _report_family_names(
+    state: PopulationState,
+    limits: DnsblockLimits,
+) -> dict[tuple[str, str], set[str]]:
+    grouped: dict[tuple[str, str], set[str]] = {}
+    for address, name in state.report_pairs:
+        pair = (address, _family(name)[0])
+        grouped.setdefault(pair, set()).add(name)
+        if len(grouped) > limits.worklist:
+            raise FoldAbstention("dnsblock worklist exceeds 50,000")
+    return grouped
+
+
+def _burst_route(
+    period_counts: Mapping[int, int],
+    eligible_periods: set[int],
+    *,
+    absolute_required: int,
+    multiple_required: int,
+    active_required: int,
+) -> tuple[BurstRoute, tuple[int, int, int] | None]:
+    active = {
+        period: int(period_counts.get(period, 0))
+        for period in eligible_periods
+        if int(period_counts.get(period, 0)) > 0
+    }
+    if len(active) < active_required:
+        return BurstRoute.INSUFFICIENT_ACTIVE_PERIODS, None
+    peak_count = max(active.values())
+    # Period zero is newest.  The largest tied index is therefore the earliest
+    # instant in wall-clock time, independent of dictionary/input orientation.
+    peak_period = max(
+        period for period, count in active.items() if count == peak_count
+    )
+    baseline_twice = _median_twice(
+        count for period, count in active.items() if period != peak_period
+    )
+    facts = (peak_period, peak_count, baseline_twice)
+    if peak_count < absolute_required:
+        return BurstRoute.BELOW_ABSOLUTE_PEAK, facts
+    if 2 * peak_count < multiple_required * baseline_twice:
+        return BurstRoute.BELOW_PEAK_MULTIPLE, facts
+    return BurstRoute.QUALIFYING, facts
+
+
+def _build_burst_facts(
+    state: PopulationState,
+    window: DualWindow,
+    coverage: CoverageDecision,
+    limits: DnsblockLimits,
+) -> tuple[tuple[BurstGridFacts, ...], tuple[BurstCandidate, ...], ChannelFacts]:
+    full_report = _full_report_periods(window)
+    eligible_report = {
+        period
+        for period in _covered_periods(window, coverage, state.query_periods)
+        if period < full_report
+    }
+    if coverage.lane is CoverageLane.WEAK:
+        return (
+            (),
+            (),
+            ChannelFacts(
+                ChannelStatus.ABSTAINED,
+                "weak_coverage",
+                BURST_ACTIVE,
+                len(eligible_report),
+            ),
+        )
+
+    pair_names = _report_family_names(state, limits)
+    counts: dict[tuple[str, str], Counter[int]] = {
+        pair: Counter() for pair in pair_names
+    }
+    association_names: dict[tuple[str, str], set[str]] = defaultdict(set)
+    for (address, name), _cell in state.a1_pair.items():
+        association_names[(address, _family(name)[0])].add(name)
+    for (address, name, period), cell in state.pair_period.items():
+        pair = (address, _family(name)[0])
+        if pair in counts and period < full_report:
+            counts[pair][period] += cell.count
+
+    grids: list[BurstGridFacts] = []
+    candidates: list[BurstCandidate] = []
+    channel = ChannelFacts(
+        (
+            ChannelStatus.READY
+            if len(eligible_report) >= BURST_ACTIVE
+            else ChannelStatus.ABSTAINED
+        ),
+        "" if len(eligible_report) >= BURST_ACTIVE else "insufficient_coverage",
+        BURST_ACTIVE,
+        len(eligible_report),
+    )
+    for absolute_required in _BURST_GRID_ABS:
+        for multiple_required in _BURST_GRID_MULT:
+            for active_required in _BURST_GRID_ACTIVE:
+                routes: Counter[str] = Counter()
+                qualified: list[str] = []
+                for pair in sorted(pair_names):
+                    route, route_facts = _burst_route(
+                        counts[pair],
+                        eligible_report,
+                        absolute_required=absolute_required,
+                        multiple_required=multiple_required,
+                        active_required=active_required,
+                    )
+                    routes[route.value] += 1
+                    if route is not BurstRoute.QUALIFYING:
+                        continue
+                    address, family = pair
+                    qualified.append(f"{address}\0{family}")
+                    if (
+                        absolute_required != BURST_ABS
+                        or multiple_required != BURST_MULT
+                        or active_required != BURST_ACTIVE
+                        or channel.status is not ChannelStatus.READY
+                    ):
+                        continue
+                    assert route_facts is not None
+                    peak_period, peak_count, baseline_twice = route_facts
+                    names = tuple(sorted(association_names.get(pair, ())))
+                    candidates.append(
+                        BurstCandidate(
+                            address=address,
+                            family_key=family,
+                            unknown_suffix=any(_family(name)[1] for name in names),
+                            peak_count=peak_count,
+                            peak_period_start=(
+                                window.report_interval[1]
+                                - timedelta(days=peak_period + 1)
+                            ).timestamp(),
+                            baseline_median_twice=baseline_twice,
+                            active_periods=sum(
+                                1
+                                for period in eligible_report
+                                if counts[pair].get(period, 0) > 0
+                            ),
+                            eligible_periods=len(eligible_report),
+                            attributed_query_count=sum(
+                                state.a1_pair[(address, name)].count
+                                for name in names
+                                if (address, name) in state.a1_pair
+                            ),
+                            disposition=_disposition_facts(state, names, limits),
+                            association_names=names,
+                        )
+                    )
+                if sum(routes.values()) != len(pair_names):
+                    raise ValueError("dnsblock burst routing did not conserve its worklist")
+                digest = hashlib.sha256(
+                    json.dumps(tuple(qualified), separators=(",", ":")).encode()
+                ).hexdigest()
+                grids.append(
+                    BurstGridFacts(
+                        absolute_required,
+                        multiple_required,
+                        active_required,
+                        tuple((route.value, routes[route.value]) for route in BurstRoute),
+                        len(qualified),
+                        digest,
+                    )
+                )
+    if len(grids) != 75:
+        raise ValueError("dnsblock burst grid did not evaluate all 75 cells")
+    return tuple(grids), tuple(candidates), channel
+
+
+def _build_recurring_facts(
+    state: PopulationState,
+    window: DualWindow,
+    coverage: CoverageDecision,
+    surfaced: set[tuple[str, str]],
+    limits: DnsblockLimits,
+) -> RecurringFacts:
+    full_report = _full_report_periods(window)
+    eligible_report = {
+        period
+        for period in _covered_periods(window, coverage, state.query_periods)
+        if period < full_report
+    }
+    if coverage.lane is CoverageLane.WEAK:
+        return RecurringFacts(
+            ChannelStatus.ABSTAINED,
+            "weak_coverage",
+            RECURRING_PERIODS,
+            full_report,
+            len(eligible_report),
+            max(0, full_report - len(eligible_report)),
+            0,
+            0,
+            0,
+        )
+    if full_report < RECURRING_PERIODS:
+        return RecurringFacts(
+            ChannelStatus.ABSTAINED,
+            "insufficient_report_span",
+            RECURRING_PERIODS,
+            full_report,
+            len(eligible_report),
+            max(0, full_report - len(eligible_report)),
+            0,
+            0,
+            0,
+        )
+    missing = len(set(range(full_report)) - eligible_report)
+    if missing:
+        return RecurringFacts(
+            ChannelStatus.ABSTAINED,
+            "incomplete_strong_coverage",
+            RECURRING_PERIODS,
+            full_report,
+            len(eligible_report),
+            missing,
+            0,
+            0,
+            0,
+        )
+
+    active: dict[tuple[str, str], set[int]] = defaultdict(set)
+    report_pairs = _report_family_names(state, limits)
+    for (address, name, period), cell in state.pair_period.items():
+        pair = (address, _family(name)[0])
+        if pair in report_pairs and period < full_report and cell.count > 0:
+            active[pair].add(period)
+    recurring = {
+        pair
+        for pair, periods in active.items()
+        if pair not in surfaced and len(periods) >= RECURRING_PERIODS
+    }
+    return RecurringFacts(
+        ChannelStatus.READY,
+        "",
+        RECURRING_PERIODS,
+        full_report,
+        len(eligible_report),
+        0,
+        len(recurring),
+        len({family for _address, family in recurring}),
+        len({address for address, _family_key in recurring}),
+    )
+
+
+def _build_analysis(
+    state: PopulationState,
+    window: DualWindow,
+    coverage: CoverageDecision,
+    limits: DnsblockLimits,
+) -> AnalysisFacts:
+    routed = _route_population(
+        state,
+        window,
+        coverage,
+        limits,
+        days_required=ARRIVAL_DAYS,
+        history_required=ARRIVAL_HISTORY,
+        materialize=True,
+    )
+    burst_grids, raw_bursts, burst_channel = _build_burst_facts(
+        state, window, coverage, limits
+    )
+    arrivals_by_pair = {
+        (item.address, item.family_key): item for item in routed.arrivals
+    }
+    bursts: list[BurstCandidate] = []
+    burst_pairs: set[tuple[str, str]] = set()
+    for burst in raw_bursts:
+        pair = (burst.address, burst.family_key)
+        burst_pairs.add(pair)
+        arrival = arrivals_by_pair.get(pair)
+        if arrival is None:
+            bursts.append(burst)
+            continue
+        bursts.append(
+            replace(
+                burst,
+                arrival_subset=ArrivalSubsetFacts(
+                    "first_available_history",
+                    arrival.first_associated_ts,
+                    arrival.active_periods,
+                    arrival.eligible_periods,
+                    arrival.prior_other_address_count,
+                    arrival.prior_other_address_count_at_cap,
+                    arrival.attributed_query_count,
+                    arrival.qualifying_name_count,
+                ),
+            )
+        )
+    pure_arrivals = tuple(
+        item
+        for item in routed.arrivals
+        if (item.address, item.family_key) not in burst_pairs
+    )
+    pure_arrival_pairs = {
+        (item.address, item.family_key) for item in pure_arrivals
+    }
+    all_pairs = set(_report_family_names(state, limits))
+    final_routes: Counter[str] = Counter()
+    for pair in all_pairs:
+        arrival = pair in arrivals_by_pair
+        burst = pair in burst_pairs
+        if arrival and burst:
+            final_routes["overlap_burst_wins"] += 1
+        elif burst:
+            final_routes["burst_only"] += 1
+        elif arrival:
+            final_routes["arrival_only"] += 1
+        else:
+            final_routes["neither"] += 1
+    if sum(final_routes.values()) != len(all_pairs):
+        raise ValueError("dnsblock final primary-shape routing did not conserve its worklist")
+
+    arrivals_by_address: Counter[str] = Counter(
+        item.address for item in pure_arrivals
+    )
+    entity_count = len(bursts) + sum(
+        1 if count >= FOLD_MIN_MEMBERS else count
+        for count in arrivals_by_address.values()
+    )
+    surfaced = burst_pairs | pure_arrival_pairs
+    recurring = _build_recurring_facts(
+        state, window, coverage, surfaced, limits
+    )
+    # U5 replaces this construction gate with D-27's projection-tier rule so a
+    # measured recurring row can appear in verbose/context output without an
+    # entity finding.  Until that projector exists, keep the typed facts only.
+    recurring_row = bool(recurring.pair_count and entity_count)
+    context_count = int(bool(routed.prior_handling_names)) + int(recurring_row)
+    if entity_count + context_count > limits.findings:
+        raise FoldAbstention("dnsblock findings exceed 1,000")
+    full_report = _full_report_periods(window)
+    eligible_report = {
+        period
+        for period in _covered_periods(window, coverage, state.query_periods)
+        if period < full_report
+    }
+    pair_routes = routed.pair_routes
+    insufficient_history = int(
+        pair_routes[PairRoute.INSUFFICIENT_HISTORY.value]
+    )
+    insufficient_context = None
+    if insufficient_history and routed.max_history_periods < ARRIVAL_HISTORY:
+        # The whole-channel form is reserved for a truly degenerate prefix.  If
+        # any pair got beyond history, the per-candidate count remains honest.
+        beyond_history = sum(
+            count
+            for route, count in pair_routes.items()
+            if route
+            not in {
+                PairRoute.NO_QUALIFYING_NAME.value,
+                PairRoute.INSUFFICIENT_HISTORY.value,
+            }
+        )
+        if beyond_history == 0:
+            insufficient_context = routed.max_history_periods
+            insufficient_history = 0
+    notes = DnsblockNoteFacts(
+        coverage_lane=coverage.lane,
+        arrival_days_required=ARRIVAL_DAYS,
+        arrival_history_required=ARRIVAL_HISTORY,
+        insufficient_history_pairs=insufficient_history,
+        insufficient_context_periods=insufficient_context,
+        insufficient_arrival_coverage=(
+            len(eligible_report)
+            if state.report_pairs and len(eligible_report) < ARRIVAL_DAYS
+            else None
+        ),
+        burst_status=burst_channel.status,
+        burst_cause=burst_channel.cause,
+        burst_active_required=burst_channel.periods_required,
+        burst_eligible_periods=burst_channel.eligible_periods,
+        recurring_status=recurring.status,
+        recurring_cause=recurring.cause,
+        recurring_periods_required=recurring.periods_required,
+        recurring_periods_total=recurring.periods_total,
+        recurring_missing_periods=recurring.missing_periods,
+        synchronized_pairs=routed.synchronized_pairs,
+        synchronized_addresses=routed.synchronized_addresses,
+        raw_window_rows=state.raw_window_rows,
+        filtered_window_rows=state.filtered_window_rows,
+        raw_query_rows=state.raw_query_rows,
+        raw_block_report_rows=state.raw_block_report_rows,
+        raw_block_context_rows=state.raw_block_context_rows,
+        filtered_block_report_rows=state.filtered_block_report_rows,
+        filtered_block_context_rows=state.filtered_block_context_rows,
+        entity_findings=entity_count,
+        context_findings=context_count,
+    )
+    return AnalysisFacts(
+        arrivals=pure_arrivals,
+        bursts=tuple(bursts),
+        burst_grids=burst_grids,
+        burst_channel=burst_channel,
+        recurring=recurring,
+        final_shape_routes=tuple(
+            (route, final_routes[route])
+            for route in (
+                "burst_only",
+                "arrival_only",
+                "overlap_burst_wins",
+                "neither",
+            )
+        ),
+        withheld_arrival_burst_pairs=sum(
+            1 for pair in burst_pairs if pair not in arrivals_by_pair
+        ),
+        cadence_worklist=tuple(
+            sorted(surfaced)
+        ),
+        pair_routes=tuple(sorted(pair_routes.items())),
+        prior_handling_names=len(routed.prior_handling_names),
+        prior_handling_memberships=len(routed.prior_handling_memberships),
+        report_query_rows=state.report_query_rows,
+        report_query_rows_by_address=tuple(
+            sorted(state.report_query_rows_by_address.items())
+        ),
+        a1_rows=state.a1_rows,
+        a1_rows_by_address=tuple(sorted(state.a1_rows_by_address.items())),
+        notes=notes,
+    )
 
 
 def build_prepared(
@@ -1026,11 +1980,12 @@ def build_prepared(
             retained_coverage,
             (), (), 0, 0, 0, 0, 0, 0, (), (), 0, pass_wall_seconds,
         )
-        return DnsblockPrepared(facts)
+        return DnsblockPrepared(facts, cadence_complete=True)
     if population.a1_rows > population.a2_rows:
         raise ValueError("dnsblock A1 population is not a subset of A2")
     try:
         name_routes, grids = _population_facts(population, window, coverage, limits)
+        analysis = _build_analysis(population, window, coverage, limits)
     except FoldAbstention as exc:
         facts = DnsblockPreflight(
             PreparedState.ABSTAINED,
@@ -1051,7 +2006,7 @@ def build_prepared(
             len(population.pair_first),
             (), (), _resident_population(population), pass_wall_seconds,
         )
-        return DnsblockPrepared(facts)
+        return DnsblockPrepared(facts, cadence_complete=True)
     facts = DnsblockPreflight(
         PreparedState.READY,
         "",
@@ -1074,7 +2029,256 @@ def build_prepared(
         _resident_population(population) + _resident_block(blocks),
         pass_wall_seconds,
     )
-    return DnsblockPrepared(facts)
+    return DnsblockPrepared(
+        facts,
+        analysis=analysis,
+        cadence_complete=not analysis.cadence_worklist,
+    )
+
+
+def make_cadence_sink(
+    pair: tuple[str, str],
+    inventory: BlockInventory,
+    mask: Callable[[pd.DataFrame], PositionalMask],
+    *,
+    limits: DnsblockLimits = LIMITS,
+) -> FoldSink:
+    """Collect exact included gaps for one surfaced address-family pair."""
+    address_wanted, family_wanted = pair
+    block_membership = frozenset(
+        (name, day)
+        for name, days in inventory.block_dates.items()
+        for day in days
+    )
+
+    def append_gap(state: CadenceState, gap: float) -> None:
+        if not (0 <= gap < _CADENCE_MAX_GAP_SECONDS):
+            return
+        if len(state.included_gaps) >= limits.cadence_gaps:
+            raise FoldAbstention("dnsblock cadence gaps exceed 10,000")
+        state.included_gaps.append(gap)
+
+    def consume(
+        delta: FoldDelta,
+        chunk: DecodedChunk,
+        keep_mask: PositionalMask,
+    ) -> FoldDelta:
+        state: CadenceState = delta.value
+        selected_positions = [
+            pos
+            for pos, (kept, report) in enumerate(
+                zip(keep_mask.keep, chunk.report_mask)
+            )
+            if kept and report
+        ]
+        selected = chunk.frame.iloc[selected_positions]
+        selected = selected[selected["event_type"] == "query"].copy()
+        if selected.empty:
+            return FoldDelta(state, 64 + len(state.included_gaps) * 8)
+        selected["numeric_ts"] = pd.to_numeric(selected["ts"], errors="coerce")
+        selected = selected[
+            selected["numeric_ts"].notna() & np.isfinite(selected["numeric_ts"])
+        ]
+        if selected.empty:
+            return FoldDelta(state, 64 + len(state.included_gaps) * 8)
+        address_map = {
+            value: normalize_address(value)
+            for value in selected["src"].drop_duplicates().tolist()
+        }
+        name_map = {
+            value: normalize_name(value)
+            for value in selected["query"].drop_duplicates().tolist()
+        }
+        selected["address"] = selected["src"].map(
+            {value: result[0] for value, result in address_map.items()}
+        )
+        selected["name"] = selected["query"].map(
+            {value: result[0] for value, result in name_map.items()}
+        )
+        selected = selected[
+            (selected["address"] == address_wanted) & selected["name"].notna()
+        ]
+        if selected.empty:
+            return FoldDelta(state, 64 + len(state.included_gaps) * 8)
+        selected["day"] = pd.to_datetime(
+            selected["numeric_ts"], unit="s", utc=True
+        ).dt.date
+        selected = selected[
+            [
+                (str(name), day) in block_membership
+                and _family(str(name))[0] == family_wanted
+                for name, day in zip(selected["name"], selected["day"])
+            ]
+        ]
+        for ts in sorted(float(value) for value in selected["numeric_ts"]):
+            if state.last_ts is not None:
+                if ts < state.last_ts:
+                    raise ValueError("dnsblock cadence rows are not chronological within a file")
+                append_gap(state, ts - state.last_ts)
+            if state.first_ts is None:
+                state.first_ts = ts
+            state.last_ts = ts
+        return FoldDelta(state, 64 + len(state.included_gaps) * 8)
+
+    def commit(run: CadenceState, delta: FoldDelta) -> CadenceState:
+        part: CadenceState = delta.value
+        if part.first_ts is None:
+            return run
+        if run.first_ts is None:
+            run.first_ts = part.first_ts
+            run.last_ts = part.last_ts
+            run.included_gaps.extend(part.included_gaps)
+            return run
+        assert part.last_ts is not None and run.first_ts is not None
+        if part.last_ts > run.first_ts:
+            raise ValueError("dnsblock cadence source files overlap or are out of order")
+        combined = list(part.included_gaps)
+        boundary = run.first_ts - part.last_ts
+        if 0 <= boundary < _CADENCE_MAX_GAP_SECONDS:
+            if len(combined) + len(run.included_gaps) >= limits.cadence_gaps:
+                raise FoldAbstention("dnsblock cadence gaps exceed 10,000")
+            combined.append(boundary)
+        if len(combined) + len(run.included_gaps) > limits.cadence_gaps:
+            raise FoldAbstention("dnsblock cadence gaps exceed 10,000")
+        combined.extend(run.included_gaps)
+        run.first_ts = part.first_ts
+        run.included_gaps = combined
+        return run
+
+    return FoldSink(
+        "dnsblock.cadence",
+        lambda: FoldDelta(CadenceState(), 0),
+        consume,
+        CadenceState,
+        commit,
+        mask,
+    )
+
+
+def _cadence_facts(state: CadenceState) -> CadenceFacts:
+    gaps = np.asarray(state.included_gaps, dtype=float)
+    if gaps.size < 20:
+        return CadenceFacts(False, None, None, None)
+    mean = float(gaps.mean())
+    cv = 0.0 if mean == 0 else float(gaps.std(ddof=0) / mean)
+    return CadenceFacts(True, int(gaps.size), cv, float(np.median(gaps)))
+
+
+def finalize_cadence(
+    prepared: DnsblockPrepared,
+    *,
+    status: PreparedStatus,
+    results: Mapping[tuple[str, str], CadenceState],
+    pass_wall_seconds: tuple[tuple[str, float], ...],
+) -> DnsblockPrepared:
+    if prepared.analysis is None or prepared.preflight.state is not PreparedState.READY:
+        return replace(prepared, cadence_complete=True)
+    updated_preflight = replace(
+        prepared.preflight,
+        pass_wall_seconds=pass_wall_seconds,
+    )
+    if status.state is not PreparedState.READY:
+        updated_preflight = replace(
+            updated_preflight,
+            state=status.state,
+            cause=status.cause or "dnsblock cadence preparation unavailable",
+            name_routes=(),
+            grids=(),
+        )
+        return DnsblockPrepared(updated_preflight, cadence_complete=True)
+    missing = set(prepared.analysis.cadence_worklist) - set(results)
+    if missing:
+        raise ValueError("dnsblock cadence enrichment did not conserve its worklist")
+    cadence = tuple(
+        (address, family, _cadence_facts(results[(address, family)]))
+        for address, family in prepared.analysis.cadence_worklist
+    )
+    return DnsblockPrepared(
+        updated_preflight,
+        analysis=prepared.analysis,
+        cadence=cadence,
+        cadence_complete=True,
+    )
+
+
+def _disposition_evidence(
+    disposition: DispositionFacts,
+    grain: str,
+) -> dict[str, Any]:
+    return {
+        "gravity_blocked": disposition.gravity_blocked,
+        "regex_blocked": disposition.regex_blocked,
+        "forwarded": disposition.forwarded,
+        "cached": disposition.cached,
+        "disposition_grain": grain,
+        "disposition_by_day": [
+            {
+                "date": day,
+                "gravity_blocked": gravity,
+                "regex_blocked": regex,
+                "forwarded": forwarded,
+                "cached": cached,
+            }
+            for day, gravity, regex, forwarded, cached in disposition.by_day
+        ],
+        "disposition_by_day_omitted": disposition.by_day_omitted,
+    }
+
+
+def _cadence_evidence(facts: CadenceFacts) -> dict[str, Any]:
+    return {
+        "cadence_available": facts.cadence_available,
+        "gap_count": facts.gap_count,
+        "gap_cv": facts.gap_cv,
+        "gap_median_s": facts.gap_median_s,
+    }
+
+
+def _merge_dispositions(
+    candidates: Iterable[ArrivalCandidate],
+    *,
+    day_limit: int,
+) -> DispositionFacts:
+    totals: Counter[str] = Counter()
+    days: dict[str, Counter[str]] = defaultdict(Counter)
+    for candidate in candidates:
+        facts = candidate.disposition
+        totals.update(
+            {
+                "gravity_blocked": facts.gravity_blocked,
+                "regex_blocked": facts.regex_blocked,
+                "forwarded": facts.forwarded,
+                "cached": facts.cached,
+            }
+        )
+        for day, gravity, regex, forwarded, cached in facts.by_day:
+            days[day].update(
+                {
+                    "gravity_blocked": gravity,
+                    "regex_blocked": regex,
+                    "forwarded": forwarded,
+                    "cached": cached,
+                }
+            )
+    ordered = sorted(days.items())
+    omitted = max(0, len(ordered) - day_limit)
+    return DispositionFacts(
+        totals["gravity_blocked"],
+        totals["regex_blocked"],
+        totals["forwarded"],
+        totals["cached"],
+        tuple(
+            (
+                day,
+                counts["gravity_blocked"],
+                counts["regex_blocked"],
+                counts["forwarded"],
+                counts["cached"],
+            )
+            for day, counts in ordered[omitted:]
+        ),
+        omitted,
+    )
 
 
 def run(
@@ -1082,7 +2286,305 @@ def run(
     *,
     _prepared: DnsblockPrepared | None = None,
 ) -> list[Finding]:
-    """Validate the runner-prepared U2b carrier; findings begin in U3."""
+    """Construct burst, arrival/fold, and identity-free context findings."""
     if not isinstance(_prepared, DnsblockPrepared):
         raise ValueError("dnsblock requires runner-prepared preflight")
-    return []
+    if _prepared.preflight.state is PreparedState.ABSTAINED:
+        return []
+    if _prepared.preflight.state is PreparedState.FAILED:
+        raise ValueError(_prepared.preflight.cause)
+    if _prepared.analysis is None:
+        return []
+    if not _prepared.cadence_complete:
+        raise ValueError("dnsblock requires runner-prepared cadence enrichment")
+
+    analysis = _prepared.analysis
+    cadence = {
+        (address, family): facts
+        for address, family, facts in _prepared.cadence
+    }
+    report_counts = dict(analysis.report_query_rows_by_address)
+    a1_counts = dict(analysis.a1_rows_by_address)
+    distinct_report_addresses = sum(1 for count in report_counts.values() if count > 0)
+    now = datetime.now(timezone.utc)
+    window = _prepared.preflight.report_interval
+
+    def iso(ts: float) -> str:
+        return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
+
+    def cadence_for(candidate: ArrivalCandidate | BurstCandidate) -> CadenceFacts:
+        try:
+            return cadence[(candidate.address, candidate.family_key)]
+        except KeyError as exc:
+            raise ValueError("dnsblock cadence facts missing for surfaced pair") from exc
+
+    def next_steps(address: str, family: str, first: str) -> list[str]:
+        return [
+            f"Identify the address owner or forwarder behind {address}",
+            f"Inspect this address's blocked queries grouped under {family} around {first}",
+            "If this activity is expected, review `sigwood allowlist` and add only the exact name patterns you intend to suppress",
+        ]
+
+    ordered: list[tuple[float, str, str, Finding]] = []
+    burst_ordered: list[tuple[int, float, str, str, Finding]] = []
+    for candidate in analysis.bursts:
+        peak_iso = iso(candidate.peak_period_start)
+        if candidate.baseline_median_twice % 2:
+            median_text = f"{candidate.baseline_median_twice // 2}.5"
+        else:
+            median_text = str(candidate.baseline_median_twice // 2)
+        evidence: dict[str, Any] = {
+            "kind": "burst",
+            "coverage_lane": CoverageLane.STRONG.value,
+            "address": candidate.address,
+            "family_key": candidate.family_key,
+            "peak_count": candidate.peak_count,
+            "peak_period_start": peak_iso,
+            "baseline_median_twice": candidate.baseline_median_twice,
+            "multiplier_numerator": candidate.peak_count,
+            "multiplier_denominator_twice": candidate.baseline_median_twice,
+            "active_periods": candidate.active_periods,
+            "eligible_periods": candidate.eligible_periods,
+            "attributed_query_count": candidate.attributed_query_count,
+            "arrival_qualified": candidate.arrival_subset is not None,
+        }
+        if candidate.unknown_suffix:
+            evidence["unknown_suffix"] = True
+        if candidate.arrival_subset is not None:
+            subset = candidate.arrival_subset
+            evidence["arrival_subset"] = {
+                "novelty_noun": subset.novelty_noun,
+                "first_associated_period": iso(subset.first_associated_ts),
+                "active_periods": subset.active_periods,
+                "eligible_periods": subset.eligible_periods,
+                "prior_other_address_count": subset.prior_other_address_count,
+                "prior_other_address_count_at_cap": (
+                    subset.prior_other_address_count_at_cap
+                ),
+                "arrival_attributed_query_count": (
+                    subset.arrival_attributed_query_count
+                ),
+                "arrival_qualifying_name_count": (
+                    subset.arrival_qualifying_name_count
+                ),
+            }
+        evidence.update(
+            _disposition_evidence(
+                candidate.disposition,
+                "global_events_over_association_qualified_names",
+            )
+        )
+        evidence.update(_cadence_evidence(cadence_for(candidate)))
+        finding = Finding(
+            detector=DETECTOR_NAME,
+            severity=Severity.LOW,
+            title=f"{candidate.address} → {candidate.family_key}",
+            description=(
+                "Queries for blocked-logged names from this address peaked at "
+                f"{candidate.peak_count} in one 24-hour period against a median "
+                f"of {median_text} across its other active periods."
+            ),
+            evidence=evidence,
+            next_steps=next_steps(
+                candidate.address, candidate.family_key, peak_iso
+            ),
+            ts_generated=now,
+            data_window=window,
+        )
+        burst_ordered.append(
+            (
+                -candidate.peak_count,
+                candidate.peak_period_start,
+                candidate.address,
+                candidate.family_key,
+                finding,
+            )
+        )
+    by_address: dict[str, list[ArrivalCandidate]] = defaultdict(list)
+    for candidate in analysis.arrivals:
+        by_address[candidate.address].append(candidate)
+
+    for address, candidates in sorted(by_address.items()):
+        candidates = sorted(
+            candidates,
+            key=lambda item: (item.first_associated_ts, item.family_key),
+        )
+        if len(candidates) >= FOLD_MIN_MEMBERS:
+            first_ts = min(item.first_associated_ts for item in candidates)
+            first_iso = iso(first_ts)
+            kept = candidates[:LIMITS.fold_members]
+            members = []
+            for member in kept:
+                member_evidence: dict[str, Any] = {
+                    "family_key": member.family_key,
+                    "first_associated_period": iso(member.first_associated_ts),
+                    "attributed_query_count": member.attributed_query_count,
+                    "qualifying_name_count": member.qualifying_name_count,
+                    "cadence": _cadence_evidence(cadence_for(member)),
+                }
+                if member.unknown_suffix:
+                    member_evidence["unknown_suffix"] = True
+                members.append(member_evidence)
+            shares_available = (
+                distinct_report_addresses >= 2
+                and analysis.a1_rows > 0
+                and analysis.report_query_rows > 0
+            )
+            evidence: dict[str, Any] = {
+                "kind": "arrival_fold",
+                "coverage_lane": _prepared.preflight.coverage_lane.value,
+                "address": address,
+                "member_count": len(candidates),
+                "earliest_first_associated_period": first_iso,
+                "members": members,
+                "members_omitted": len(candidates) - len(kept),
+                "attributed_share_num": a1_counts.get(address) if shares_available else None,
+                "attributed_share_den": analysis.a1_rows if shares_available else None,
+                "query_share_num": report_counts.get(address) if shares_available else None,
+                "query_share_den": analysis.report_query_rows if shares_available else None,
+                "distinct_report_addresses": distinct_report_addresses,
+                "shares_available": shares_available,
+            }
+            evidence.update(
+                _disposition_evidence(
+                    _merge_dispositions(candidates, day_limit=LIMITS.disposition_days),
+                    "global_events_over_fold_member_arrival_qualifying_names",
+                )
+            )
+            finding = Finding(
+                detector=DETECTOR_NAME,
+                severity=Severity.LOW,
+                title=address,
+                description=(
+                    f"{len(candidates)} family-keyed qualifying-name arrivals for "
+                    "this address were folded to one row."
+                ),
+                evidence=evidence,
+                next_steps=[
+                    f"Identify the address owner or forwarder behind {address}",
+                    "Inspect this address's blocked queries in the Pi-hole query log "
+                    f"around {first_iso}",
+                    "If this activity is expected, review `sigwood allowlist` and add only the exact name patterns you intend to suppress",
+                ],
+                ts_generated=now,
+                data_window=window,
+            )
+            ordered.append((first_ts, address, "", finding))
+            continue
+
+        for candidate in candidates:
+            first_iso = iso(candidate.first_associated_ts)
+            lane = _prepared.preflight.coverage_lane
+            if lane is CoverageLane.STRONG:
+                novelty_noun = "first_available_history"
+                description = (
+                    "This was the first available-history activity for this address "
+                    "and qualifying names grouped under this family key. "
+                    f"Those queries appeared in {candidate.active_periods} of "
+                    f"{candidate.eligible_periods} covered export periods."
+                )
+            else:
+                novelty_noun = "first_observed_available_rows"
+                description = (
+                    "These qualifying names were first observed for this address in "
+                    "the available rows. "
+                    f"Those queries appeared in {candidate.active_periods} of "
+                    f"{candidate.eligible_periods} data-bearing 24-hour report periods."
+                )
+            evidence = {
+                "kind": "arrival",
+                "coverage_lane": lane.value,
+                "address": candidate.address,
+                "family_key": candidate.family_key,
+                "novelty_noun": novelty_noun,
+                "attributed_query_count": candidate.attributed_query_count,
+                "qualifying_name_count": candidate.qualifying_name_count,
+                "active_periods": candidate.active_periods,
+                "eligible_periods": candidate.eligible_periods,
+                "first_associated_period": first_iso,
+                "prior_other_address_count": candidate.prior_other_address_count,
+                "prior_other_address_count_at_cap": (
+                    candidate.prior_other_address_count_at_cap
+                ),
+            }
+            if candidate.unknown_suffix:
+                evidence["unknown_suffix"] = True
+            evidence.update(
+                _disposition_evidence(
+                    candidate.disposition,
+                    "global_events_over_arrival_qualifying_names",
+                )
+            )
+            evidence.update(_cadence_evidence(cadence_for(candidate)))
+            finding = Finding(
+                detector=DETECTOR_NAME,
+                severity=Severity.LOW,
+                title=f"{candidate.address} → {candidate.family_key}",
+                description=description,
+                evidence=evidence,
+                next_steps=next_steps(
+                    candidate.address, candidate.family_key, first_iso
+                ),
+                ts_generated=now,
+                data_window=window,
+            )
+            ordered.append(
+                (
+                    candidate.first_associated_ts,
+                    candidate.address,
+                    candidate.family_key,
+                    finding,
+                )
+            )
+
+    findings = [item[4] for item in sorted(burst_ordered, key=lambda item: item[:4])]
+    findings.extend(item[3] for item in sorted(ordered, key=lambda item: item[:3]))
+    if analysis.prior_handling_names:
+        findings.append(
+            Finding(
+                detector=DETECTOR_NAME,
+                severity=Severity.INFO,
+                title="names withheld from novelty because Pi-hole logged earlier handling",
+                description=(
+                    f"{analysis.prior_handling_names} names "
+                    f"({analysis.prior_handling_memberships} address-name memberships) "
+                    "were withheld because forwarded or cached handling was logged "
+                    "on an earlier day."
+                ),
+                evidence={
+                    "kind": "prior_handling_exclusions",
+                    "withheld_name_count": analysis.prior_handling_names,
+                    "withheld_membership_count": analysis.prior_handling_memberships,
+                },
+                next_steps=[],
+                ts_generated=now,
+                data_window=window,
+            )
+        )
+    recurring = analysis.recurring
+    if recurring.pair_count and analysis.notes.entity_findings:
+        findings.append(
+            Finding(
+                detector=DETECTOR_NAME,
+                severity=Severity.INFO,
+                title="recurring blocked-name activity",
+                description=(
+                    f"{recurring.pair_count} otherwise-unsurfaced address-family "
+                    f"pairs were active in at least {recurring.periods_required} of "
+                    f"{recurring.periods_total} covered export periods."
+                ),
+                evidence={
+                    "kind": "recurring_activity",
+                    "coverage_lane": CoverageLane.STRONG.value,
+                    "pair_count": recurring.pair_count,
+                    "family_count": recurring.family_count,
+                    "address_count": recurring.address_count,
+                    "periods_required": recurring.periods_required,
+                    "periods_total": recurring.periods_total,
+                },
+                next_steps=[],
+                ts_generated=now,
+                data_window=window,
+            )
+        )
+    return findings

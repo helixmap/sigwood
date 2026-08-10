@@ -39,11 +39,24 @@ def test_harness_uses_real_runner_and_writes_aggregate_preflight(tmp_path):
         check=False,
     )
     assert result.returncode == 0, result.stderr
+    assert result.stdout == ""
     payload = json.loads(artifact.read_text(encoding="utf-8"))
     assert payload["detector"] == "dnsblock"
     assert payload["status"] == "planned"
     assert payload["preflight"]["state"] == "READY"
     assert len(payload["preflight"]["grids"]) == 12
+    assert payload["channels"]["burst"] == {
+        "cause": "weak_coverage",
+        "eligible_periods": 1,
+        "periods_required": 3,
+        "status": "ABSTAINED",
+    }
+    assert payload["channels"]["recurring"]["status"] == "ABSTAINED"
+    assert payload["burst_grids"] == []
+    assert payload["summary_notes"][0] == (
+        "period coverage is not verifiable from these logs; period counts use "
+        "data-bearing periods, and burst and recurring activity were not evaluated"
+    )
     assert {label for label, _seconds in payload["preflight"]["pass_wall_seconds"]} == {
         "anchor_block",
         "population",

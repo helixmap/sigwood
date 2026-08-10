@@ -17,7 +17,7 @@ from pathlib import Path
 from sigwood import runner
 from sigwood.common import config as config_module
 from sigwood.common.loader import load_pihole, load_syslog
-from sigwood.detectors import beacon, exfil
+from sigwood.detectors import beacon, dnsblock, exfil
 from sigwood.detectors.dns import DEFAULT_CONFIG as DNS_DEFAULT_CONFIG
 from sigwood.parsers.dnsmasq import parse_line as parse_dnsmasq_line
 from sigwood.parsers.syslog import parse_timestamp
@@ -239,6 +239,52 @@ def test_generated_pihole_story_shape(
     lengths = frame["query"].dropna().astype(str).str.len()
     assert lengths.max() / lengths.median() > 3.0
     assert query_rows["qtype"].nunique() >= 4
+
+
+def test_dnsblock_seed_trips_u3_through_real_product_route(
+    tmp_path: Path,
+    monkeypatch,
+    pin_tz,
+    capsys,
+) -> None:
+    pin_tz("Etc/GMT+6")
+    out_dir = tmp_path / "corpus"
+    _run_generator(monkeypatch, out_dir)
+    capsys.readouterr()
+    output = tmp_path / "dnsblock.json"
+    selection = runner.DetectorSelection(
+        {"dnsblock": dnsblock},
+        ["dnsblock"],
+        {},
+        vocab={"dnsblock": {}},
+    )
+    assert runner.run(
+        {
+            "sigwood": {
+                "root": "",
+                "warn_above": 0,
+                "default_window": "7d",
+            }
+        },
+        detect="dnsblock",
+        pihole_dir=out_dir / "pihole",
+        output_format="json",
+        output_file=output,
+        no_allowlist=True,
+        quiet=True,
+        use_utc=True,
+        _detector_selection=selection,
+    ) == 0
+    payload = json.loads(output.read_text(encoding="utf-8"))
+    arrivals = [
+        finding
+        for finding in payload["findings"]
+        if finding["evidence"].get("kind") == "arrival"
+    ]
+    assert [finding["title"] for finding in arrivals] == [
+        f"{gen_corpus.DNSBLOCK_DEMO_ADDRESS} → example.org"
+    ]
+    assert arrivals[0]["severity"] == "low"
 
 
 def test_generated_syslog_has_one_canonical_useradd_member_seed(

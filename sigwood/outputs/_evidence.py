@@ -127,6 +127,32 @@ def curated_evidence(finding: Finding) -> dict[str, Any]:
             )
             extra = ("was_blocked", "block_ratio") if "was_blocked" in ev else ()
             keys = base + extra
+    elif det == "dnsblock":
+        kind = ev.get("kind")
+        if kind == "arrival":
+            keys = (
+                "coverage_lane", "qualifying_name_count", "attributed_query_count",
+                "active_periods", "eligible_periods", "first_associated_period",
+                "prior_other_address_count", "prior_other_address_count_at_cap",
+            )
+        elif kind == "burst":
+            keys = (
+                "coverage_lane", "peak_count", "peak_period_start",
+                "baseline_median_twice", "active_periods", "eligible_periods",
+                "attributed_query_count", "arrival_qualified",
+            )
+        elif kind == "arrival_fold":
+            keys = (
+                "coverage_lane", "member_count", "earliest_first_associated_period",
+                "members_omitted", "distinct_report_addresses", "shares_available",
+            )
+        elif kind == "prior_handling_exclusions":
+            keys = ("withheld_name_count", "withheld_membership_count")
+        elif kind == "recurring_activity":
+            keys = (
+                "coverage_lane", "pair_count", "family_count", "address_count",
+                "periods_required", "periods_total",
+            )
     elif det == "syslog":
         tier = ev.get("tier")
         if tier == "burst":
@@ -185,6 +211,23 @@ def curated_evidence(finding: Finding) -> dict[str, Any]:
         for k in keys
         if k in ev and (k in always_keys or not is_empty(ev[k]))
     }
+    if det == "dnsblock":
+        if ev.get("kind") == "arrival_fold" and ev.get("shares_available"):
+            ordered: dict[str, Any] = {}
+            for key, value in out.items():
+                ordered[key] = value
+                if key == "member_count":
+                    ordered["attributed_share"] = (
+                        f"{ev['attributed_share_num']}/{ev['attributed_share_den']}"
+                    )
+                    ordered["query_share"] = (
+                        f"{ev['query_share_num']}/{ev['query_share_den']}"
+                    )
+            out = ordered
+        block = int(ev.get("gravity_blocked", 0)) + int(ev.get("regex_blocked", 0))
+        total = block + int(ev.get("forwarded", 0)) + int(ev.get("cached", 0))
+        if ev.get("kind") in ("arrival", "burst", "arrival_fold") and total > 0:
+            out["block_ratio"] = round(block / total, 4)
     # Cap the burst action/service lists at level 1 so a broad sweep (dozens of
     # actions across dozens of services) stays readable; -vv keeps the full list.
     if det == "aws" and ev.get("tier") == "burst":

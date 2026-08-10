@@ -28,6 +28,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from math import gcd
 
 from sigwood.common.display import (
     fmt_compact_span,
@@ -186,6 +187,55 @@ def _partition_auth(findings: list[Finding]) -> list[Section]:
     return [Section(None, ordered, len(ordered))]
 
 
+def _partition_dnsblock(findings: list[Finding]) -> list[Section]:
+    """dnsblock's frozen operator order, independent of detector emission order."""
+    kinds: dict[str, list[Finding]] = {
+        "arrival": [],
+        "burst": [],
+        "arrival_fold": [],
+        "context": [],
+        "other": [],
+    }
+    for finding in findings:
+        kind = str(finding.evidence.get("kind", ""))
+        if kind in ("prior_handling_exclusions", "recurring_activity"):
+            kinds["context"].append(finding)
+        elif kind in kinds:
+            kinds[kind].append(finding)
+        else:
+            kinds["other"].append(finding)
+    kinds["arrival"].sort(key=lambda f: (
+        str(f.evidence.get("first_associated_period", "")),
+        str(f.evidence.get("address", "")),
+        str(f.evidence.get("family_key", "")),
+    ))
+    kinds["burst"].sort(key=lambda f: (
+        -int(f.evidence.get("peak_count", 0)),
+        str(f.evidence.get("peak_period_start", "")),
+        str(f.evidence.get("address", "")),
+        str(f.evidence.get("family_key", "")),
+    ))
+    kinds["arrival_fold"].sort(key=lambda f: (
+        str(f.evidence.get("earliest_first_associated_period", "")),
+        str(f.evidence.get("address", "")),
+    ))
+    context_order = {"prior_handling_exclusions": 0, "recurring_activity": 1}
+    kinds["context"].sort(
+        key=lambda f: context_order.get(str(f.evidence.get("kind", "")), 99)
+    )
+    out: list[Section] = []
+    for key, label in (
+        ("arrival", "first activity"),
+        ("burst", "query bursts"),
+        ("arrival_fold", "folded first activity"),
+        ("context", "context"),
+        ("other", "other"),
+    ):
+        if kinds[key]:
+            out.append(Section(label, kinds[key], len(kinds[key])))
+    return out
+
+
 def _partition_flat(findings: list[Finding]) -> list[Section]:
     """Flat detector - one section with no label."""
     return [Section(None, findings, len(findings))]
@@ -196,6 +246,7 @@ _PARTITIONERS = {
     "aws": _partition_aws,
     "syslog": _partition_syslog,
     "auth": _partition_auth,
+    "dnsblock": _partition_dnsblock,
 }
 
 # Per-detector severity-sort opt-out. Severity sort is the
@@ -206,7 +257,7 @@ _PARTITIONERS = {
 # - so severity-sort is a no-op anyway, and what matters is preserving ts-order
 # WITHIN a section (a burst sits next to the reboot near it in time). Listing
 # syslog here keeps that incoming order explicit.
-_SEVERITY_SORT_EXEMPT: frozenset[str] = frozenset({"syslog"})
+_SEVERITY_SORT_EXEMPT: frozenset[str] = frozenset({"syslog", "dnsblock"})
 
 # Synthetic always-show finding tiers. These are
 # all-clear / quiet-summary rows the detector designed to render
@@ -223,7 +274,14 @@ _ALWAYS_SHOW_TIERS: frozenset[str] = frozenset({"ranked_summary", "scan_summary"
 
 def _is_always_show(finding: Finding) -> bool:
     """True for synthetic always-show findings. Exempt from the cap."""
-    return finding.evidence.get("tier") in _ALWAYS_SHOW_TIERS
+    return (
+        finding.evidence.get("tier") in _ALWAYS_SHOW_TIERS
+        or (
+            finding.detector == "dnsblock"
+            and finding.evidence.get("kind")
+            in ("prior_handling_exclusions", "recurring_activity")
+        )
+    )
 
 
 def _build_renderable(
@@ -246,9 +304,17 @@ def _build_renderable(
     BEFORE the cap so the group header NEVER drifts to post-cap counts -
     the pre-cap regression test in tests/test_text_output.py guards this.
     """
-    # No detector has a finding-visibility-by-level rule. Verbosity changes
-    # evidence depth only; every produced finding remains visible.
     visible = list(findings)
+    if detector == "dnsblock" and verbose_level <= 0:
+        has_entity = any(
+            finding.evidence.get("kind") in ("arrival", "burst", "arrival_fold")
+            for finding in findings
+        )
+        if not has_entity:
+            visible = [
+                finding for finding in visible
+                if finding.evidence.get("kind") != "recurring_activity"
+            ]
 
     partition = _PARTITIONERS.get(detector, _partition_flat)
     sections = partition(visible)
@@ -669,6 +735,74 @@ def _project_auth(f: Finding) -> list[Cell]:
     return cells
 
 
+def _dnsblock_time(value: object) -> str:
+    try:
+        return fmt_timestamp(datetime.fromisoformat(str(value)))
+    except (TypeError, ValueError):
+        return str(value or "")
+
+
+def _half_integer(value: object) -> str:
+    twice = int(value)
+    return str(twice // 2) if twice % 2 == 0 else f"{twice // 2}.5"
+
+
+def _closed_multiplier(peak: object, baseline_twice: object) -> str:
+    numerator = 2 * int(peak)
+    denominator = int(baseline_twice)
+    if denominator == 0:
+        return "multiplier unavailable"
+    if numerator % denominator == 0:
+        return f"{numerator // denominator}×"
+    common = gcd(numerator, denominator)
+    return f"{numerator // common}/{denominator // common}×"
+
+
+def _project_dnsblock(f: Finding) -> list[Cell]:
+    ev = f.evidence
+    kind = ev.get("kind")
+    if kind not in (
+        "arrival",
+        "burst",
+        "arrival_fold",
+        "prior_handling_exclusions",
+        "recurring_activity",
+    ):
+        return [Cell(None, f.title, full_width=True)]
+    if kind in ("prior_handling_exclusions", "recurring_activity"):
+        return [Cell(None, f.title, full_width=True)]
+    if kind == "arrival_fold":
+        return [
+            Cell(None, str(ev.get("address", f.title))),
+            Cell("members", f"{int(ev.get('member_count', 0))} members", align="right"),
+            Cell("first", _dnsblock_time(ev.get("earliest_first_associated_period"))),
+        ]
+    if kind == "burst":
+        peak = int(ev.get("peak_count", 0))
+        baseline_twice = int(ev.get("baseline_median_twice", 0))
+        return [
+            Cell(None, f.title),
+            Cell("peak", f"peak={peak:,}", align="right"),
+            Cell("median", f"median={_half_integer(baseline_twice)}", align="right"),
+            Cell("multiple", _closed_multiplier(peak, baseline_twice), align="right"),
+            Cell("periods", f"{int(ev.get('active_periods', 0))}/{int(ev.get('eligible_periods', 0))} periods", align="right"),
+            Cell("queries", f"{int(ev.get('attributed_query_count', 0)):,} queries", align="right"),
+        ]
+    prior = (
+        "≥100"
+        if ev.get("prior_other_address_count_at_cap")
+        else str(int(ev.get("prior_other_address_count", 0)))
+    )
+    return [
+        Cell(None, f.title),
+        Cell("names", f"{int(ev.get('qualifying_name_count', 0)):,} names", align="right"),
+        Cell("queries", f"{int(ev.get('attributed_query_count', 0)):,} queries", align="right"),
+        Cell("periods", f"{int(ev.get('active_periods', 0))}/{int(ev.get('eligible_periods', 0))} periods", align="right"),
+        Cell("first", _dnsblock_time(ev.get("first_associated_period"))),
+        Cell("prior", f"prior={prior}", align="right"),
+    ]
+
+
 _PROJECTORS = {
     "beacon": _project_beacon,
     "dns": _project_dns,
@@ -677,6 +811,7 @@ _PROJECTORS = {
     "exfil": _project_exfil,
     "aws": _project_aws,
     "auth": _project_auth,
+    "dnsblock": _project_dnsblock,
 }
 
 

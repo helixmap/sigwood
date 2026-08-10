@@ -364,7 +364,7 @@ def test_harness_rejects_unsafe_provisional_note_before_final_artifact(
     assert not final.exists()
 
 
-def test_recurring_typed_state_is_preserved_when_default_row_is_hidden():
+def test_recurring_typed_state_is_constructed_without_entity_for_u5_projection():
     prepared = _prepared()
     analysis = prepared.analysis
     hidden = replace(
@@ -380,7 +380,10 @@ def test_recurring_typed_state_is_preserved_when_default_row_is_hidden():
         _prepared=hidden_prepared,
     )
     assert hidden.recurring.pair_count == 1
-    assert not any(item.evidence["kind"] == "recurring_activity" for item in findings)
+    assert [item.evidence["kind"] for item in findings] == [
+        "prior_handling_exclusions",
+        "recurring_activity",
+    ]
 
 
 def test_burst_grid_and_candidates_are_deterministic_under_state_permutation():

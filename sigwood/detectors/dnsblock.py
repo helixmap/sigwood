@@ -1844,10 +1844,9 @@ def _build_analysis(
     recurring = _build_recurring_facts(
         state, window, coverage, surfaced, limits
     )
-    # U5 replaces this construction gate with D-27's projection-tier rule so a
-    # measured recurring row can appear in verbose/context output without an
-    # entity finding.  Until that projector exists, keep the typed facts only.
-    recurring_row = bool(recurring.pair_count and entity_count)
+    # The measured recurring context row is always constructed.  Reading
+    # surfaces hide a no-entity row at the default level.
+    recurring_row = bool(recurring.pair_count)
     context_count = int(bool(routed.prior_handling_names)) + int(recurring_row)
     if entity_count + context_count > limits.findings:
         raise FoldAbstention("dnsblock findings exceed 1,000")
@@ -2562,7 +2561,7 @@ def run(
             )
         )
     recurring = analysis.recurring
-    if recurring.pair_count and analysis.notes.entity_findings:
+    if recurring.pair_count:
         findings.append(
             Finding(
                 detector=DETECTOR_NAME,

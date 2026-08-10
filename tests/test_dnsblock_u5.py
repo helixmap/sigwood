@@ -1,0 +1,340 @@
+"""dnsblock U5: reading projections, output split, and semantic digest."""
+
+from __future__ import annotations
+
+import copy
+import csv
+import io
+import json
+from datetime import datetime, timezone
+
+import sigwood.outputs.pdf as pdf_output
+from sigwood.common.finding import Finding, RunSummary, Severity
+from sigwood.outputs._evidence import curated_evidence
+from sigwood.outputs._render_model import _build_renderable, project_row
+from sigwood.outputs.csv import CsvHandler
+from sigwood.outputs.html import HtmlHandler
+from sigwood.outputs.json import JsonHandler
+from sigwood.outputs.pdf import PdfHandler
+from sigwood.outputs.text import TextHandler
+from tools.dnsblock_c1_harness import semantic_digest
+
+
+_W = (
+    datetime(2026, 1, 1, tzinfo=timezone.utc),
+    datetime(2026, 1, 8, tzinfo=timezone.utc),
+)
+
+
+def _finding(kind: str, **evidence: object) -> Finding:
+    base: dict[str, object] = {"kind": kind}
+    base.update(evidence)
+    return Finding(
+        detector="dnsblock",
+        severity=Severity.INFO if kind.endswith("activity") or kind.startswith("prior") else Severity.LOW,
+        title={
+            "recurring_activity": "recurring blocked-name activity",
+            "prior_handling_exclusions": "names withheld from novelty because Pi-hole logged earlier handling",
+        }.get(kind, str(evidence.get("address", "192.0.2.7"))),
+        description="measured dnsblock activity",
+        evidence=base,
+        next_steps=[],
+        ts_generated=_W[1],
+        data_window=_W,
+    )
+
+
+def _summary() -> RunSummary:
+    return RunSummary(
+        data_window=_W,
+        record_counts={"pihole": 1},
+        data_size_bytes=42,
+        detectors_run=["dnsblock"],
+        detectors_skipped={},
+        generated_at=_W[1],
+    )
+
+
+def test_recurring_visibility_matrix_is_output_owned_and_counts_are_pre_cap() -> None:
+    recurring = _finding("recurring_activity", pair_count=2)
+    prior = _finding("prior_handling_exclusions", withheld_name_count=1)
+    assert _build_renderable("dnsblock", [recurring], 0, 100).level_visible_total == 0
+    assert _build_renderable("dnsblock", [recurring], 1, 100).level_visible_total == 1
+    assert _build_renderable("dnsblock", [recurring], 2, 100).level_visible_total == 1
+
+    arrival = _finding(
+        "arrival",
+        address="192.0.2.7",
+        family_key="example.test",
+        first_associated_period="2026-01-02T00:00:00+00:00",
+    )
+    for level in (0, 1, 2):
+        rendered = _build_renderable("dnsblock", [recurring, arrival], level, 100)
+        assert rendered.level_visible_total == 2
+        assert rendered.severity_breakdown == {Severity.INFO: 1, Severity.LOW: 1}
+
+    assert _build_renderable("dnsblock", [prior, recurring], 0, 100).level_visible_total == 1
+
+
+def test_context_rows_are_last_full_width_and_outside_the_cap_budget() -> None:
+    arrivals = [
+        _finding(
+            "arrival",
+            address=f"192.0.2.{number}",
+            family_key=f"f{number}.test",
+            first_associated_period=f"2026-01-0{number}T00:00:00+00:00",
+        )
+        for number in (3, 2, 1)
+    ]
+    prior = _finding("prior_handling_exclusions")
+    recurring = _finding("recurring_activity")
+    rendered = _build_renderable(
+        "dnsblock", [recurring, *arrivals, prior], 0, 1
+    )
+    assert [section.label for section in rendered.sections] == ["first activity", "context"]
+    assert rendered.cap_truncated == 2
+    assert [f.evidence["kind"] for f in rendered.sections[-1].findings] == [
+        "prior_handling_exclusions",
+        "recurring_activity",
+    ]
+    assert all(project_row(f)[0].full_width for f in rendered.sections[-1].findings)
+
+
+def test_unknown_kind_is_preserved_in_a_trailing_full_width_section() -> None:
+    unknown = _finding("future_shape", address="192.0.2.9")
+    arrival = _finding(
+        "arrival",
+        address="192.0.2.7",
+        first_associated_period="2026-01-02T00:00:00+00:00",
+    )
+    rendered = _build_renderable("dnsblock", [unknown, arrival], 0, 100)
+    assert [section.label for section in rendered.sections] == ["first activity", "other"]
+    assert rendered.sections[-1].findings == [unknown]
+    assert project_row(unknown)[0].full_width
+
+
+def test_dnsblock_headline_projection_formats_exact_sufficient_statistics() -> None:
+    arrival = _finding(
+        "arrival",
+        address="192.0.2.7",
+        family_key="example.test",
+        qualifying_name_count=3,
+        attributed_query_count=12,
+        active_periods=2,
+        eligible_periods=5,
+        first_associated_period="2026-01-02T00:00:00+00:00",
+        prior_other_address_count=100,
+        prior_other_address_count_at_cap=True,
+    )
+    assert [cell.value for cell in project_row(arrival)][-1] == "prior=≥100"
+
+    burst = _finding(
+        "burst",
+        address="192.0.2.7",
+        family_key="example.test",
+        peak_count=25,
+        baseline_median_twice=5,
+        active_periods=4,
+        eligible_periods=5,
+        attributed_query_count=40,
+    )
+    values = [cell.value for cell in project_row(burst)]
+    assert "median=2.5" in values
+    assert "10×" in values
+
+    burst.evidence["peak_count"] = 13
+    burst.evidence["baseline_median_twice"] = 6
+    assert "13/3×" in [cell.value for cell in project_row(burst)]
+
+    unavailable = copy.deepcopy(burst)
+    unavailable.evidence["baseline_median_twice"] = 0
+    assert "multiplier unavailable" in [cell.value for cell in project_row(unavailable)]
+
+
+def test_fold_curated_evidence_has_exact_shares_and_omits_unavailable_ratios() -> None:
+    fold = _finding(
+        "arrival_fold",
+        member_count=4,
+        earliest_first_associated_period="2026-01-02T00:00:00+00:00",
+        members_omitted=2,
+        distinct_report_addresses=3,
+        shares_available=True,
+        attributed_share_num=3,
+        attributed_share_den=7,
+        query_share_num=11,
+        query_share_den=19,
+        gravity_blocked=3,
+        regex_blocked=1,
+        forwarded=2,
+        cached=2,
+    )
+    curated = curated_evidence(fold)
+    assert list(curated)[:4] == [
+        "member_count", "attributed_share", "query_share",
+        "earliest_first_associated_period",
+    ]
+    assert curated["members_omitted"] == 2
+    assert curated["attributed_share"] == "3/7"
+    assert curated["query_share"] == "11/19"
+    assert curated["block_ratio"] == 0.5
+    assert not {"gravity_blocked", "regex_blocked", "forwarded", "cached"} & curated.keys()
+
+    unavailable = copy.deepcopy(fold)
+    unavailable.evidence["shares_available"] = False
+    assert "attributed_share" not in curated_evidence(unavailable)
+    assert "query_share" not in curated_evidence(unavailable)
+
+
+def test_entity_curated_evidence_derives_one_ratio_without_mechanism_split() -> None:
+    mechanism_keys = {"gravity_blocked", "regex_blocked", "forwarded", "cached"}
+    for kind in ("arrival", "burst", "arrival_fold"):
+        finding = _finding(
+            kind,
+            gravity_blocked=2,
+            regex_blocked=1,
+            forwarded=2,
+            cached=1,
+        )
+        curated = curated_evidence(finding)
+        assert curated["block_ratio"] == 0.5
+        assert not mechanism_keys & curated.keys()
+
+
+def test_all_five_handlers_receive_dnsblock_and_keep_machine_surfaces_uncapped(
+    monkeypatch,
+) -> None:
+    arrival = _finding(
+        "arrival",
+        address="192.0.2.7",
+        family_key="example.test",
+        qualifying_name_count=2,
+        attributed_query_count=6,
+        active_periods=2,
+        eligible_periods=5,
+        first_associated_period="2026-01-02T00:00:00+00:00",
+        prior_other_address_count=0,
+        prior_other_address_count_at_cap=False,
+    )
+    recurring = _finding("recurring_activity", pair_count=1)
+    hostile = '=SUM(1,1)<script>&"\x1b\x7f'
+    arrival.title = hostile
+    findings = [arrival, recurring]
+
+    text = io.StringIO()
+    text_handler = TextHandler(text, max_findings_per_detector=1)
+    text_handler.begin(_summary())
+    text_handler.write(findings)
+    text_handler.end()
+    assert "first activity (1)" in text.getvalue()
+    assert "recurring blocked-name activity" in text.getvalue()
+    assert "\x1b" not in text.getvalue() and "\x7f" not in text.getvalue()
+
+    csv_stream = io.StringIO()
+    csv_handler = CsvHandler(csv_stream)
+    csv_handler.begin(_summary())
+    csv_handler.write(findings)
+    csv_handler.end()
+    csv_rows = list(csv.DictReader(io.StringIO(csv_stream.getvalue())))
+    assert len(csv_rows) == 2
+    assert csv_rows[0]["finding"].startswith("'=SUM")
+    assert "\x1b" not in csv_stream.getvalue() and "\x7f" not in csv_stream.getvalue()
+
+    json_stream = io.StringIO()
+    json_handler = JsonHandler(json_stream)
+    json_handler.begin(_summary())
+    json_handler.write(findings)
+    json_handler.end()
+    assert len(json.loads(json_stream.getvalue())["findings"]) == 2
+    assert "\x1b" not in json_stream.getvalue() and "\x7f" not in json_stream.getvalue()
+
+    html_stream = io.StringIO()
+    html_handler = HtmlHandler(stream=html_stream, max_findings_per_detector=1)
+    html_handler.begin(_summary())
+    html_handler.write(findings)
+    html_handler.end()
+    assert "first activity" in html_stream.getvalue()
+    assert "recurring blocked-name activity" in html_stream.getvalue()
+    assert "&lt;script&gt;" in html_stream.getvalue()
+    assert "\x1b" not in html_stream.getvalue() and "\x7f" not in html_stream.getvalue()
+
+    captured: dict[str, str] = {}
+
+    def render_pdf(source: str) -> bytes:
+        captured["html"] = source
+        return b"%PDF-u5"
+
+    monkeypatch.setattr(pdf_output, "_render_pdf_bytes", render_pdf)
+    pdf_stream = io.BytesIO()
+    pdf_handler = PdfHandler(stream=pdf_stream, max_findings_per_detector=1)
+    pdf_handler.begin(_summary())
+    pdf_handler.write(findings)
+    pdf_handler.end()
+    assert pdf_stream.getvalue() == b"%PDF-u5"
+    assert "recurring blocked-name activity" in captured["html"]
+    assert "&lt;script&gt;" in captured["html"]
+    assert "href" not in captured["html"]
+
+
+def _json_payload() -> dict:
+    return {
+        "sigwood_version": "0.0.dev1",
+        "schema_version": 1,
+        "run_summary": {
+            "data_window": ["2026-01-01T00:00:00+00:00", "2026-01-08T00:00:00+00:00"],
+            "record_counts": {"pihole": 3},
+            "record_labels": {"pihole": "Pi-hole DNS"},
+            "data_size_bytes": 42,
+            "detectors_run": ["dnsblock"],
+            "detectors_skipped": {},
+            "detectors_failed": {},
+            "notes": [],
+            "data_sources": ["dnsmasq_dns"],
+            "detector_methods": {"dnsblock": {"label": "pattern", "named": False}},
+            "requested_span": 604800.0,
+            "suppression": None,
+            "generated_at": "2026-01-08T01:00:00+00:00",
+            "invocation": "sigwood --private-path /tmp/a",
+        },
+        "findings": [{
+            "detector": "dnsblock",
+            "severity": "info",
+            "title": "recurring blocked-name activity",
+            "description": "measured",
+            "next_steps": [],
+            "evidence": {"kind": "recurring_activity", "pair_count": 2},
+            "ts_generated": "2026-01-08T01:00:00+00:00",
+            "data_window": ["2026-01-01T00:00:00+00:00", "2026-01-08T00:00:00+00:00"],
+        }],
+    }
+
+
+def test_semantic_digest_ignores_volatile_fields_and_moves_on_meaning() -> None:
+    first = _json_payload()
+    volatile = copy.deepcopy(first)
+    volatile["sigwood_version"] = "99.0"
+    volatile["run_summary"]["generated_at"] = "2030-01-01T00:00:00+00:00"
+    volatile["run_summary"]["invocation"] = "sigwood --private-path /tmp/b"
+    volatile["findings"][0]["ts_generated"] = "2030-01-01T00:00:00+00:00"
+    assert semantic_digest(first) == semantic_digest(volatile)
+
+    path_a = copy.deepcopy(first)
+    path_b = copy.deepcopy(first)
+    path_a["run_summary"]["notes"] = ["could not read /private/tmp/a.log"]
+    path_b["run_summary"]["notes"] = ["could not read /private/tmp/b.log"]
+    assert semantic_digest(path_a) == semantic_digest(path_b)
+
+    permuted = copy.deepcopy(first)
+    permuted["findings"][0]["evidence"] = dict(
+        reversed(list(permuted["findings"][0]["evidence"].items()))
+    )
+    permuted["run_summary"]["record_counts"] = dict(
+        reversed(list(permuted["run_summary"]["record_counts"].items()))
+    )
+    assert semantic_digest(first) == semantic_digest(permuted)
+
+    changed = copy.deepcopy(first)
+    changed["findings"][0]["evidence"]["pair_count"] = 3
+    assert semantic_digest(first)["sha256"] != semantic_digest(changed)["sha256"]
+    assert set(semantic_digest(first)) == {
+        "schema", "version", "sha256", "finding_count", "format"
+    }

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import io
 import json
 import os
 import resource
@@ -20,6 +21,7 @@ from pathlib import Path
 from sigwood import runner
 from sigwood.common.paths import private_mkdir, private_write_text
 from sigwood.detectors import dnsblock
+from sigwood.outputs._serialize import to_jsonable
 
 
 _FOLD_RSS_GREEN = 1536 * 1024 * 1024
@@ -27,6 +29,11 @@ _MIXED_INCREMENT_GREEN = 512 * 1024 * 1024
 _WALL_GREEN_SECONDS = 15 * 60
 _WATCHDOG_RSS = 8 * 1024 * 1024 * 1024
 _WATCHDOG_SECONDS = 30 * 60
+_JSON_CAPTURE_LIMIT = 8 * 1024 * 1024
+_SEMANTIC_DIGEST_SCHEMA = "sigwood.dnsblock.semantic-digest"
+_SEMANTIC_DIGEST_VERSION = 1
+_ABSOLUTE_PATH = re.compile(r"(?<![A-Za-z0-9])(?:/[^\s,;]+|[A-Za-z]:\\[^\s,;]+)")
+_PATH_KEYS = frozenset({"artifact", "artifact_path", "output_path", "source_path"})
 
 
 _NOTE_PATTERNS = tuple(
@@ -78,6 +85,101 @@ def _sha256(path: Path) -> str:
         while block := handle.read(1024 * 1024):
             digest.update(block)
     return digest.hexdigest()
+
+
+class _BoundedTextCapture(io.StringIO):
+    """In-memory text sink with an explicit byte ceiling."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._bytes_written = 0
+
+    def write(self, value: str) -> int:
+        size = len(value.encode("utf-8"))
+        if self._bytes_written + size > _JSON_CAPTURE_LIMIT:
+            raise ValueError("dnsblock json render exceeded the harness capture bound")
+        written = super().write(value)
+        self._bytes_written += size
+        return written
+
+
+def canonical_semantic_payload(payload: dict) -> dict:
+    """Version-1 stable subset of an actual JsonHandler payload."""
+    summary = payload.get("run_summary")
+    if not isinstance(summary, dict):
+        summary = {}
+    summary_keys = (
+        "data_window",
+        "record_counts",
+        "record_labels",
+        "data_size_bytes",
+        "detectors_run",
+        "detectors_skipped",
+        "detectors_failed",
+        "notes",
+        "data_sources",
+        "detector_methods",
+        "requested_span",
+        "suppression",
+    )
+    finding_keys = (
+        "detector",
+        "severity",
+        "title",
+        "description",
+        "next_steps",
+        "evidence",
+        "data_window",
+    )
+    findings = payload.get("findings")
+    if not isinstance(findings, list):
+        findings = []
+    canonical = {
+        "digest_schema": _SEMANTIC_DIGEST_SCHEMA,
+        "digest_version": _SEMANTIC_DIGEST_VERSION,
+        "json_schema_version": payload.get("schema_version"),
+        "run_summary": {key: summary.get(key) for key in summary_keys},
+        "findings": [
+            {key: finding.get(key) for key in finding_keys}
+            for finding in findings
+            if isinstance(finding, dict)
+        ],
+    }
+    return to_jsonable(_exclude_paths(canonical))
+
+
+def _exclude_paths(value):
+    """Drop path fields and neutralize absolute paths inside otherwise-stable prose."""
+    if isinstance(value, dict):
+        return {
+            key: _exclude_paths(item)
+            for key, item in value.items()
+            if str(key).casefold() not in _PATH_KEYS
+        }
+    if isinstance(value, list):
+        return [_exclude_paths(item) for item in value]
+    if isinstance(value, str):
+        return _ABSOLUTE_PATH.sub("<path>", value)
+    return value
+
+
+def semantic_digest(payload: dict, *, format_token: str = "json") -> dict:
+    canonical = canonical_semantic_payload(payload)
+    encoded = json.dumps(
+        canonical,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        allow_nan=False,
+    ).encode("utf-8")
+    findings = canonical["findings"]
+    return {
+        "schema": _SEMANTIC_DIGEST_SCHEMA,
+        "version": _SEMANTIC_DIGEST_VERSION,
+        "sha256": hashlib.sha256(encoded).hexdigest(),
+        "finding_count": len(findings),
+        "format": format_token,
+    }
 
 
 def _validate_summary_notes(payload: dict) -> None:
@@ -174,8 +276,9 @@ def main(argv: list[str] | None = None) -> int:
             # The harness proves the real Reporter path but never persists or echoes
             # estate identities.  The runner writes a private provisional aggregate;
             # only grammar-validated notes may reach the requested final artifact.
+            json_capture = _BoundedTextCapture() if args.output_format == "json" else None
             with open(os.devnull, "w", encoding="utf-8") as report_sink, redirect_stdout(
-                report_sink
+                json_capture if json_capture is not None else report_sink
             ):
                 rc = runner.run(
                     config=effective_config,
@@ -196,6 +299,10 @@ def main(argv: list[str] | None = None) -> int:
                 )
         payload = json.loads(evidence_path.read_text(encoding="utf-8"))
         _validate_summary_notes(payload)
+        rendered_digest = None
+        if json_capture is not None:
+            rendered_payload = json.loads(json_capture.getvalue())
+            rendered_digest = semantic_digest(rendered_payload)
     elapsed = time.monotonic() - started
     peak_rss = int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
     if sys.platform != "darwin":
@@ -238,6 +345,8 @@ def main(argv: list[str] | None = None) -> int:
             else "reexport_retained_upstream_data_with_manifests_or_keep_strong_channels_dormant"
         ),
     }
+    if rendered_digest is not None:
+        payload["harness"]["semantic_digest"] = rendered_digest
     _atomic_json(artifact, payload)
     if rc != 0:
         return rc

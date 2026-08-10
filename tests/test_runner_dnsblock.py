@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import csv
+import io
 import json
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
@@ -496,6 +498,13 @@ def test_u4_strong_burst_and_recurring_use_real_manifest_loader_runner_route(
             1,
             True,
         ),
+        (
+            "unrelated.invalid-sigwood-suffix",
+            '=tag<script>&".invalid-sigwood-suffix',
+            False,
+            1,
+            True,
+        ),
         ("*.example.com", "b.example.com", True, 1, False),
     ],
 )
@@ -552,3 +561,76 @@ def test_matcher_parity_through_real_runner_route(
     assert len(prepared.analysis.arrivals) == expected_arrivals
     if expected_arrivals:
         assert prepared.analysis.arrivals[0].unknown_suffix is unknown_suffix
+
+
+def test_control_bearing_name_is_dropped_on_real_loader_runner_route(tmp_path):
+    source = tmp_path / "logs"
+    source.mkdir()
+    hostile = "bad\x00name.invalid-sigwood-suffix"
+    _write_arrival_log(source / "pihole.log", hostile)
+    output = tmp_path / "report.json"
+    captured = {}
+    real_run = dnsblock.run
+
+    def observe(context, *, _prepared=None):
+        captured["prepared"] = _prepared
+        return real_run(context, _prepared=_prepared)
+
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        monkeypatch.setattr(dnsblock, "run", observe)
+        assert runner.run(
+            config={"sigwood": {"root": "", "warn_above": 0, "default_window": "7d"}},
+            detect="dnsblock",
+            pihole_dir=source,
+            output_format="json",
+            output_file=output,
+            no_allowlist=True,
+            quiet=True,
+            use_utc=True,
+            _detector_selection=_selection(),
+        ) == 0
+
+    drops = dict(captured["prepared"].preflight.drop_counts)
+    assert drops["control_in_name"] >= 1
+    rendered = output.read_text(encoding="utf-8")
+    assert "bad\\u0000name" not in rendered
+
+
+@pytest.mark.parametrize("output_format", ["text", "csv", "html", "json"])
+def test_admissible_hostile_unknown_suffix_traverses_real_reading_routes(
+    tmp_path,
+    output_format,
+):
+    source = tmp_path / "logs"
+    source.mkdir()
+    hostile = '=tag<script>&".invalid-sigwood-suffix'
+    _write_arrival_log(source / "pihole.log", hostile)
+    output = tmp_path / f"report.{output_format}"
+    assert runner.run(
+        config={"sigwood": {"root": "", "warn_above": 0, "default_window": "7d"}},
+        detect="dnsblock",
+        pihole_dir=source,
+        output_format=output_format,
+        output_file=output,
+        no_allowlist=True,
+        quiet=True,
+        use_utc=True,
+        _detector_selection=_selection(),
+    ) == 0
+    rendered = output.read_text(encoding="utf-8")
+    if output_format == "html":
+        assert "&lt;script&gt;" in rendered
+        assert "href" not in rendered
+    elif output_format == "json":
+        titles = [item["title"] for item in json.loads(rendered)["findings"]]
+        assert any(hostile in title for title in titles)
+    elif output_format == "csv":
+        rows = list(csv.DictReader(io.StringIO(rendered)))
+        assert any(hostile in row["finding"] for row in rows)
+        assert not any(
+            value.startswith(("=", "+", "-", "@", "\t", "\r"))
+            for row in rows
+            for value in row.values()
+        )
+    else:
+        assert hostile in rendered

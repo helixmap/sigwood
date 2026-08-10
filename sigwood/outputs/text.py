@@ -682,11 +682,31 @@ class TextHandler(OutputHandler):
             return self._render_aws_group(live)
         if detector == "auth":
             return self._render_auth_group(live)
+        if detector == "dnsblock":
+            return self._render_dnsblock_group(live)
         # Generic fallback - flat detector, one Section with label=None.
         out: list[str] = []
         for s in live:
             for f in s.findings:
                 out.append(self._render_finding(f))
+        return out
+
+    def _render_dnsblock_group(self, sections: list[Section]) -> list[str]:
+        """Render dnsblock's shared projection in its declared section order."""
+        indent = "     "
+        out: list[str] = []
+        for si, section in enumerate(sections):
+            if si:
+                out.append("")
+            out.append(f"{section.label} ({section.pre_cap_count})")
+            for finding in section.findings:
+                cells = project_row(finding)
+                tag = f"{str(finding.severity):<4}"
+                line = f"  {tag}  " + "  ".join(
+                    _sanitize(cell.value) for cell in cells
+                )
+                tail = _level_tail(finding, indent, self._verbose_level)
+                out.append(line + ("\n" + "\n".join(tail) if tail else ""))
         return out
 
     def _render_auth_group(self, sections: list[Section]) -> list[str]:

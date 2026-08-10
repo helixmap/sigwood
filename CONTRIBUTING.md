@@ -214,6 +214,11 @@ pip install -e '.[dev]'      # runtime extras + pytest
 python -m pytest             # from the repo root
 ```
 
+On NixOS the pip route above fails outright; manylinux wheels expect system
+libraries at paths Nix doesn't provide. `nix develop` gives you the same `.venv`,
+bootstrapped automatically, with the native library paths wired (including the
+`[pdf]` stack). Community-contributed and best-effort (CI doesn't exercise it).
+
 To exercise the archive boundary as well as the editable checkout, install the
 packaging tools and run the same distribution check as CI:
 

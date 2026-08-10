@@ -60,6 +60,7 @@ from sigwood.common.loader.types import (
     CoverageLane,
     DirectorySkipInfo,
     FileSpan,
+    FoldAbstention,
     FoldDelta,
     FoldSink,
     LoadResult,

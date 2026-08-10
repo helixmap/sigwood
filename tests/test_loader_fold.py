@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -203,6 +204,71 @@ def test_snapshot_ordered_dedupe_and_content_identity(tmp_path):
     snapshot = loader.build_source_snapshot([first, first, second], "flat")
     assert [item.path for item in snapshot.files] == [first, second]
     assert len(snapshot.identity_sha256) == 64
+
+
+def test_prepared_snapshot_reuse_performs_no_rediscovery_or_recapture(
+    tmp_path, monkeypatch,
+):
+    path = tmp_path / "pihole.log"
+    path.write_text(
+        "Jan  2 00:00:00 dnsmasq[1]: query[A] a.example from 192.0.2.1\n",
+        encoding="utf-8",
+    )
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    window = loader.DualWindow((start, start + timedelta(days=2)))
+    needed = {"pihole*.log*": "pihole_dir"}
+    first = loader.load_required_logs(
+        needed,
+        {"pihole_dir": [path]},
+        sink_plans={
+            "pihole*.log*": loader.SinkPlan((_count_sink("first"),))
+        },
+        dual_windows={"pihole*.log*": window},
+        show_progress=False,
+    )
+    snapshot = first.snapshots["pihole*.log*"]
+    monkeypatch.setitem(
+        pipeline._SOURCE_LOADERS,
+        "pihole_dir",
+        replace(
+            pipeline._SOURCE_LOADERS["pihole_dir"],
+            discover=lambda *a, **k: pytest.fail(
+                "prepared population must not rediscover"
+            ),
+        ),
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "build_source_snapshot",
+        lambda *a, **k: pytest.fail("prepared population must not recapture"),
+    )
+    second = loader.load_required_logs(
+        needed,
+        {},
+        sink_plans={
+            "pihole*.log*": loader.SinkPlan((_count_sink("second"),))
+        },
+        dual_windows={"pihole*.log*": window},
+        prepared_snapshots={"pihole*.log*": snapshot},
+        show_progress=False,
+    )
+    assert second.snapshots["pihole*.log*"].identity_sha256 == snapshot.identity_sha256
+    assert second.fold_results["pihole*.log*"]["second"] == 1
+
+
+def test_prepared_snapshot_rejects_source_mismatch(tmp_path):
+    path = tmp_path / "one.log"
+    path.write_text("one\n", encoding="utf-8")
+    snapshot = loader.build_source_snapshot([path], "syslog_dir")
+    with pytest.raises(ValueError, match="belongs to"):
+        loader.load_required_logs(
+            {"pihole*.log*": "pihole_dir"},
+            {},
+            sink_plans={"pihole*.log*": loader.SinkPlan((_count_sink("x"),))},
+            dual_windows={"pihole*.log*": _window()},
+            prepared_snapshots={"pihole*.log*": snapshot},
+            show_progress=False,
+        )
 
 
 def test_file_transaction_discards_corrupt_file_and_commits_sibling(tmp_path):

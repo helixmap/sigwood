@@ -27,6 +27,7 @@ from sigwood.common.loader.io import _safe_resolve, _union_dedupe
 from sigwood.common.loader.types import (
     DecodedChunk,
     DualWindow,
+    FoldAbstention,
     FoldDelta,
     MAX_CHUNK_DECODED_BYTES,
     MAX_CHUNK_ROWS,
@@ -362,6 +363,13 @@ def execute_sink_plan(
                             file_deltas.pop(sink.channel, None)
                             continue
                         file_deltas[sink.channel] = delta
+                    except FoldAbstention as exc:
+                        statuses[sink.channel] = PreparedStatus(
+                            PreparedState.ABSTAINED,
+                            _bounded_reason(exc),
+                        )
+                        run_states.pop(sink.channel, None)
+                        file_deltas.pop(sink.channel, None)
                     except Exception as exc:
                         statuses[sink.channel] = PreparedStatus(
                             PreparedState.FAILED,
@@ -419,6 +427,12 @@ def execute_sink_plan(
                 run_states[sink.channel] = sink.commit_file(
                     run_states[sink.channel], file_deltas[sink.channel]
                 )
+            except FoldAbstention as exc:
+                statuses[sink.channel] = PreparedStatus(
+                    PreparedState.ABSTAINED,
+                    _bounded_reason(exc),
+                )
+                run_states.pop(sink.channel, None)
             except Exception as exc:
                 statuses[sink.channel] = PreparedStatus(
                     PreparedState.FAILED,

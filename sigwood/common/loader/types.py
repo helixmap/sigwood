@@ -289,6 +289,10 @@ class PreparedStatus:
     cause: str = ""
 
 
+class FoldAbstention(RuntimeError):
+    """A reducer-owned hard admission refusal with no partial result."""
+
+
 class AvailabilityState(str, Enum):
     """Trust state for one selected data object's export availability."""
 
@@ -302,6 +306,7 @@ class AvailabilityReason(str, Enum):
     TRUSTED = "trusted"
     MANIFEST_MISSING = "manifest_missing"
     MANIFEST_MALFORMED = "manifest_malformed"
+    MANIFEST_UNREADABLE = "manifest_unreadable"
     ENTRY_MISSING = "entry_missing"
     INCOMPLETE = "incomplete"
     BINDING_MISMATCH = "binding_mismatch"

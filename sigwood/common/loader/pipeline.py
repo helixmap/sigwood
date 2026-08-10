@@ -1479,6 +1479,7 @@ def load_required_logs(
     trusted_files: Mapping[str, Sequence[Path]] | None = None,
     sink_plans: Mapping[str, SinkPlan] | None = None,
     dual_windows: Mapping[str, DualWindow] | None = None,
+    prepared_snapshots: Mapping[str, SourceSnapshot] | None = None,
     _directory_skips: (
         dict[tuple[str, Path], DirectorySkipInfo] | None
     ) = None,
@@ -1515,6 +1516,11 @@ def load_required_logs(
     permission-accounting path. It is keyed by pattern because one source
     family can load multiple patterns.
 
+    ``prepared_snapshots`` reuses an exact content-bound population for a later
+    fold pass. A prepared pattern bypasses discovery, rotation selection, and
+    snapshot recapture; the existing fold verifier still checks every captured
+    byte boundary. Patterns absent from the mapping retain the ordinary path.
+
     ``_directory_skips`` is the caller-owned plan sink for pre-candidate input-root
     listing denials. Discovery updates it by ``(source, realpath)``; it is not
     copied into ``LoadResult``. CloudTrail does not claim recursive-child coverage.
@@ -1533,6 +1539,7 @@ def load_required_logs(
     trusted_files = trusted_files or {}
     sink_plans = sink_plans or {}
     dual_windows = dual_windows or {}
+    prepared_snapshots = prepared_snapshots or {}
     snapshots: dict[str, SourceSnapshot] = {}
     fold_results: dict[str, dict[str, Any]] = {}
     prepared_status: dict[str, PreparedStatus] = {}
@@ -1545,7 +1552,8 @@ def load_required_logs(
     for pattern, source in needed_logs.items():
         paths = source_dirs.get(source) or []
         trusted = list(trusted_files.get(pattern, ()))
-        if not paths and not trusted:
+        prepared_snapshot = prepared_snapshots.get(pattern)
+        if not paths and not trusted and prepared_snapshot is None:
             warnings.append(f"{source} not configured - {pattern} not loaded")
             continue
 
@@ -1566,7 +1574,22 @@ def load_required_logs(
         s_since, s_until = source_windows.get(source, (since, until))
 
         skip_info: RotationSkipInfo | None = None
-        if strategy.window_select is None:
+        if prepared_snapshot is not None:
+            if prepared_snapshot.source != source:
+                raise ValueError(
+                    f"prepared snapshot for {pattern!r} belongs to "
+                    f"{prepared_snapshot.source!r}, not {source!r}"
+                )
+            files = [item.path for item in prepared_snapshot.files]
+            resolved_files = {_safe_resolve(path) for path in files}
+            unexpected_trusted = [
+                path for path in trusted if _safe_resolve(path) not in resolved_files
+            ]
+            if unexpected_trusted:
+                raise ValueError(
+                    f"trusted file is outside prepared snapshot for {pattern!r}"
+                )
+        elif strategy.window_select is None:
             # Zeek / CloudTrail: normal inputs retain their existing discovery
             # behavior. Trusted explicit files bypass only a discovery name-gate
             # (for example, an arbitrarily named but sniff-approved Zeek file),
@@ -1654,10 +1677,19 @@ def load_required_logs(
 
         availability[pattern] = validate_selected_files(files)
 
+        captured_sizes = (
+            {item.path: item.stat_bytes for item in prepared_snapshot.files}
+            if prepared_snapshot is not None
+            else {}
+        )
         for path in files:
             try:
                 if path.is_file():
-                    data_size_bytes += path.stat().st_size
+                    data_size_bytes += (
+                        captured_sizes[path]
+                        if path in captured_sizes
+                        else path.stat().st_size
+                    )
             except OSError as exc:
                 if strategy.read_error_factory is not None:
                     raise strategy.read_error_factory(exc) from None
@@ -1679,7 +1711,7 @@ def load_required_logs(
                 s_since,
                 s_until,
             )
-            snapshot = snapshot_cache.get(snapshot_key)
+            snapshot = prepared_snapshot or snapshot_cache.get(snapshot_key)
             if snapshot is None:
                 snapshot = build_source_snapshot(
                     files,

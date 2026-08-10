@@ -12,13 +12,15 @@ Responsibilities:
 from __future__ import annotations
 
 import importlib
+import json
 import math
 import os
 import pkgutil
 import shlex
 import sys
+import time
 from contextlib import ExitStack
-from dataclasses import dataclass, field, replace
+from dataclasses import asdict, dataclass, field, replace
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Collection, Mapping, Sequence
@@ -72,6 +74,7 @@ from sigwood.common.loader import (
     FileSpan,
     JournalCaptureOutcome,
     PositionalMask,
+    PreparedState,
 )
 from sigwood.common.output import OutputHandler, Reporter
 from sigwood.common.paths import (
@@ -147,6 +150,7 @@ class _LoadedPlan:
     load_windows: list[Any]
     default_spec: str
     coverage_decisions: dict[str, CoverageDecision]
+    dnsblock_prepared: Any | None = None
 
 
 def _select_coverage_lane(
@@ -246,6 +250,7 @@ def run(
     use_utc: bool = False,
     syslog_source: object | None = None,
     _detector_selection: DetectorSelection | None = None,
+    _dnsblock_preflight_path: Path | None = None,
     invocation: str | None = None,
 ) -> int:
     """Main entry point for a detection run. Called by CLI dispatch functions.
@@ -304,6 +309,7 @@ def run(
             use_utc=use_utc,
             syslog_source=syslog_source,
             _detector_selection=_detector_selection,
+            _dnsblock_preflight_path=_dnsblock_preflight_path,
             invocation=invocation,
         )
 
@@ -330,6 +336,7 @@ def _run_analyze(
     use_utc: bool = False,
     syslog_source: object | None = None,
     _detector_selection: DetectorSelection | None = None,
+    _dnsblock_preflight_path: Path | None = None,
     invocation: str | None = None,
 ) -> int:
     cfg_sigwood = config.get("sigwood", {})
@@ -423,6 +430,12 @@ def _run_analyze(
     if not load_all and since is None and until is None:
         default_span = parse_window_span(default_spec)
 
+    # One matcher for the entire run. Folded detectors receive positional masks
+    # from this exact instance; ordinary detector preparation and suppression
+    # accounting reuse it after loading.
+    allowlist_plan = resolve_allowlist_plan(config)
+    allowlist = matcher_from_plan(allowlist_plan, force_off=no_allowlist)
+
     decision: SyslogProviderDecision
     loaded_or_rc: _LoadedPlan | int | None = None
     with ExitStack() as captures:
@@ -475,7 +488,10 @@ def _run_analyze(
                 until=until,
                 verbose_level=verbose_level,
                 quiet=quiet,
+                allowlist=allowlist,
                 pre_resolved_windows=pre_resolved,
+                dnsblock_preflight_path=_dnsblock_preflight_path,
+                dnsblock_unsuppressed=no_allowlist,
             )
 
     if decision.provider is not SyslogProvider.JOURNAL:
@@ -493,6 +509,9 @@ def _run_analyze(
             until=until,
             verbose_level=verbose_level,
             quiet=quiet,
+            allowlist=allowlist,
+            dnsblock_preflight_path=_dnsblock_preflight_path,
+            dnsblock_unsuppressed=no_allowlist,
         )
 
     assert loaded_or_rc is not None
@@ -504,6 +523,14 @@ def _run_analyze(
     load_result = loaded_or_rc.load_result
     load_windows = loaded_or_rc.load_windows
     _default_spec = loaded_or_rc.default_spec
+    prepared_dnsblock = loaded_or_rc.dnsblock_prepared
+    if _dnsblock_preflight_path is not None:
+        if prepared_dnsblock is None:
+            raise ValueError("dnsblock preflight artifact requested without dnsblock")
+        _write_dnsblock_preflight_artifact(
+            _dnsblock_preflight_path,
+            prepared_dnsblock,
+        )
     default_window_active = bool(load_windows)
 
     # Post-load precise trim for every family whose default window engaged with a
@@ -587,8 +614,6 @@ def _run_analyze(
     # notes inspect the exact post-allowlist view the detector will receive; the two
     # older source-shape notes below deliberately retain their raw-loaded population.
     # Both remain pre-loop, so RunSummary is still complete before reporter.begin().
-    allowlist_plan = resolve_allowlist_plan(config)
-    allowlist = matcher_from_plan(allowlist_plan, force_off=no_allowlist)
     suppression_enabled = (not no_allowlist) and allowlist_plan.master_enabled
     prepared_contexts: dict[str, DetectorContext] = {}
     prepared_auth: Any | None = None
@@ -884,7 +909,11 @@ def _run_analyze(
                     findings = (
                         mod.run(ctx, _prepared=prepared_auth)
                         if name == "auth" and prepared_auth is not None
-                        else mod.run(ctx)
+                        else (
+                            mod.run(ctx, _prepared=prepared_dnsblock)
+                            if name == "dnsblock"
+                            else mod.run(ctx)
+                        )
                     )
                     # The seal is a terse live completion record - "this
                     # detector finished" - NOT a tally. The report header
@@ -997,7 +1026,10 @@ def _plan_and_load(
     until: datetime | None,
     verbose_level: int,
     quiet: bool,
+    allowlist: Any,
     pre_resolved_windows: Mapping[str, Any] | None = None,
+    dnsblock_preflight_path: Path | None = None,
+    dnsblock_unsuppressed: bool = False,
 ) -> _LoadedPlan | int:
     """Build the final plan and eagerly load its one-provider source map."""
     from sigwood.common import loader
@@ -1053,22 +1085,196 @@ def _plan_and_load(
     )
     if load_windows and not quiet:
         _estderr(default_window_advisory(default_spec))
-    load_result = loader.load_required_logs(
-        plan.needed_logs,
-        source_dirs,
-        since,
-        until,
-        verbose=verbose_level >= 1,
-        source_windows=source_windows,
-        show_progress=not quiet,
-        file_select_windows=file_select_windows,
-        _directory_skips=plan.directory_skips,
-    )
+    dnsblock_prepared: Any | None = None
     report_interval = (
-        (since, until)
-        if since is not None and until is not None
-        else None
+        (since, until) if since is not None and until is not None else None
     )
+    if "dnsblock" not in plan.will_run:
+        load_result = loader.load_required_logs(
+            plan.needed_logs,
+            source_dirs,
+            since,
+            until,
+            verbose=verbose_level >= 1,
+            source_windows=source_windows,
+            show_progress=not quiet,
+            file_select_windows=file_select_windows,
+            _directory_skips=plan.directory_skips,
+        )
+    else:
+        dnsblock_mod = plan.detectors["dnsblock"]
+        pattern = "pihole*.log*"
+        pihole_source = plan.needed_logs.get(pattern)
+        if pihole_source != "pihole_dir":
+            raise ValueError("dnsblock requires the canonical Pi-hole source pattern")
+        one_pattern = {pattern: pihole_source}
+        mask = (
+            (lambda frame: PositionalMask((True,) * len(frame)))
+            if dnsblock_unsuppressed
+            else lambda frame: _positional_allowlist_mask(frame, allowlist, "dnsblock")
+        )
+        broad_window = loader.DualWindow(
+            (
+                datetime.min.replace(tzinfo=timezone.utc),
+                datetime.max.replace(tzinfo=timezone.utc),
+            )
+        )
+        pass_wall_seconds: dict[str, float] = {}
+        first_pass_started = time.monotonic()
+        anchor_block_result = loader.load_required_logs(
+            one_pattern,
+            source_dirs,
+            since,
+            until,
+            verbose=verbose_level >= 1,
+            source_windows=source_windows,
+            show_progress=not quiet,
+            file_select_windows=file_select_windows,
+            sink_plans={
+                pattern: loader.SinkPlan(
+                    (dnsblock_mod.make_anchor_block_sink(mask),),
+                    preserve_frame=False,
+                )
+            },
+            dual_windows={pattern: broad_window},
+            _directory_skips=plan.directory_skips,
+        )
+        pass_wall_seconds["anchor_block"] = time.monotonic() - first_pass_started
+        snapshot = anchor_block_result.snapshots.get(pattern)
+        anchor_block_facts = anchor_block_result.fold_results.get(pattern, {}).get(
+            "dnsblock.anchor_blocks"
+        )
+        anchor_facts = (
+            anchor_block_facts.anchor if anchor_block_facts is not None else None
+        )
+
+        captured_now = datetime.now(timezone.utc)
+        available_start: datetime | None = None
+        if anchor_facts is not None and anchor_facts.minimum_ts is not None:
+            available_start = datetime.fromtimestamp(
+                anchor_facts.minimum_ts, tz=timezone.utc
+            )
+        if report_interval is None:
+            observed_start = available_start
+            observed_end = (
+                datetime.fromtimestamp(anchor_facts.maximum_ts, tz=timezone.utc)
+                if anchor_facts is not None and anchor_facts.maximum_ts is not None
+                else None
+            )
+            if load_all:
+                end = observed_end or captured_now
+                report_interval = (observed_start or end, end)
+            elif since is not None:
+                report_interval = (since, max(since, observed_end or captured_now))
+            elif until is not None:
+                report_interval = (min(observed_start or until, until), until)
+            else:
+                end = observed_end or captured_now
+                report_interval = (end - parse_window_span(default_spec), end)
+
+        explicit_file = any(
+            path.is_file() for path in source_dirs.get("pihole_dir", ())
+        )
+        fold_window = _resolve_fold_dual_window(
+            report_interval,
+            available_start=available_start,
+            bounded_explicit=(
+                since is not None or until is not None or explicit_file
+            ),
+            load_all=load_all,
+        )
+        if snapshot is None:
+            raise ValueError("dnsblock could not establish a source snapshot")
+        block_status = anchor_block_result.prepared_status.get(
+            "dnsblock.anchor_blocks",
+            loader.PreparedStatus(
+                loader.PreparedState.FAILED,
+                "anchor/block pass unavailable",
+            ),
+        )
+        block_inventory = None
+        if (
+            block_status.state is loader.PreparedState.READY
+            and anchor_block_facts is not None
+        ):
+            try:
+                block_inventory = dnsblock_mod.finalize_block_inventory(
+                    anchor_block_facts.blocks,
+                    report_interval,
+                )
+            except loader.FoldAbstention as exc:
+                block_status = loader.PreparedStatus(
+                    loader.PreparedState.ABSTAINED,
+                    str(exc),
+                )
+        if dnsblock_preflight_path is not None:
+            _write_dnsblock_preflight_progress(
+                dnsblock_preflight_path,
+                snapshot_identity=snapshot.identity_sha256,
+                report_interval=report_interval,
+                block_status=block_status,
+                pass_wall_seconds=tuple(sorted(pass_wall_seconds.items())),
+            )
+        population_inventory = block_inventory or dnsblock_mod.BlockInventory()
+        sibling_needs_frame = any(
+            name != "dnsblock"
+            and any(
+                req.get("pattern") == pattern
+                for req in list(getattr(plan.detectors[name], "REQUIRED_LOGS", ()))
+                + list(getattr(plan.detectors[name], "OPTIONAL_LOGS", ()))
+            )
+            for name in plan.will_run
+        )
+        population_started = time.monotonic()
+        load_result = loader.load_required_logs(
+            plan.needed_logs,
+            source_dirs,
+            since,
+            until,
+            verbose=verbose_level >= 1,
+            source_windows=source_windows,
+            show_progress=not quiet,
+            file_select_windows=file_select_windows,
+            sink_plans={
+                pattern: loader.SinkPlan(
+                    (
+                        dnsblock_mod.make_population_sink(
+                            population_inventory,
+                            fold_window,
+                            mask,
+                        ),
+                    ),
+                    preserve_frame=sibling_needs_frame,
+                )
+            },
+            dual_windows={pattern: fold_window},
+            prepared_snapshots={pattern: snapshot},
+            _directory_skips=plan.directory_skips,
+        )
+        pass_wall_seconds["population"] = time.monotonic() - population_started
+        # R3: only this final population pass may choose and feed the lane.
+        final_coverage = _select_coverage_lane(
+            load_result.availability.get(pattern, ()), report_interval
+        )
+        population_status = load_result.prepared_status.get(
+            "dnsblock.population",
+            loader.PreparedStatus(
+                loader.PreparedState.FAILED,
+                "population pass unavailable",
+            ),
+        )
+        dnsblock_prepared = dnsblock_mod.build_prepared(
+            snapshot_identity=snapshot.identity_sha256,
+            window=fold_window,
+            coverage=final_coverage,
+            block_status=block_status,
+            population_status=population_status,
+            blocks=block_inventory,
+            population=load_result.fold_results.get(pattern, {}).get(
+                "dnsblock.population"
+            ),
+            pass_wall_seconds=tuple(sorted(pass_wall_seconds.items())),
+        )
     coverage_decisions = {
         pattern: _select_coverage_lane(
             load_result.availability.get(pattern, ()), report_interval,
@@ -1082,6 +1288,7 @@ def _plan_and_load(
         load_windows=load_windows,
         default_spec=default_spec,
         coverage_decisions=coverage_decisions,
+        dnsblock_prepared=dnsblock_prepared,
     )
 
 
@@ -1177,6 +1384,85 @@ def _resolve_fold_dual_window(
     return _build_dual_window(
         report_interval,
         (available_start, context_end),
+    )
+
+
+def _write_dnsblock_evidence_payload(path: Path, payload: Mapping[str, Any]) -> None:
+    """Atomically persist an aggregate-only internal U2b evidence payload."""
+    target = Path(path)
+    if target.name in {"", ".", ".."}:
+        raise ValueError("dnsblock preflight artifact needs a file path")
+    private_mkdir(target.parent)
+    temporary = target.with_name(f".{target.name}.tmp-{os.getpid()}")
+
+    def encode(value: Any) -> Any:
+        if isinstance(value, (datetime, date)):
+            return value.isoformat()
+        if isinstance(value, Path):
+            return str(value)
+        if hasattr(value, "value"):
+            return value.value
+        raise TypeError(f"unsupported dnsblock evidence value: {type(value).__name__}")
+
+    try:
+        private_write_text(
+            temporary,
+            json.dumps(payload, sort_keys=True, separators=(",", ":"), default=encode)
+            + "\n",
+        )
+        os.replace(temporary, target)
+    finally:
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def _write_dnsblock_preflight_progress(
+    path: Path,
+    *,
+    snapshot_identity: str,
+    report_interval: tuple[datetime, datetime],
+    block_status: Any,
+    pass_wall_seconds: tuple[tuple[str, float], ...],
+) -> None:
+    """Leave useful aggregate timing evidence even if population is timed out."""
+    state = (
+        "IN_PROGRESS"
+        if block_status.state is PreparedState.READY
+        else block_status.state.value
+    )
+    _write_dnsblock_evidence_payload(
+        path,
+        {
+            "schema_version": 1,
+            "detector": "dnsblock",
+            "status": "planned",
+            "preflight": {
+                "state": state,
+                "cause": (
+                    "population pass in progress"
+                    if state == "IN_PROGRESS"
+                    else block_status.cause
+                ),
+                "snapshot_identity": snapshot_identity,
+                "report_interval": report_interval,
+                "pass_wall_seconds": pass_wall_seconds,
+            },
+        },
+    )
+
+
+def _write_dnsblock_preflight_artifact(path: Path, prepared: Any) -> None:
+    """Atomically persist the completed aggregate-only U2b evidence carrier."""
+    _write_dnsblock_evidence_payload(
+        path,
+        {
+            "schema_version": 1,
+            "detector": "dnsblock",
+            "status": "planned",
+            "preflight": asdict(prepared.preflight),
+        },
     )
 
 

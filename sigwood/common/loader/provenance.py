@@ -341,9 +341,13 @@ def validate_selected_files(files: Iterable[Path]) -> tuple[ExportAvailability, 
             for path in paths:
                 facts[path] = _unknown(path, AvailabilityReason.MANIFEST_MISSING)
             continue
-        except (OSError, ProvenanceManifestError):
+        except ProvenanceManifestError:
             for path in paths:
                 facts[path] = _unknown(path, AvailabilityReason.MANIFEST_MALFORMED)
+            continue
+        except OSError:
+            for path in paths:
+                facts[path] = _unknown(path, AvailabilityReason.MANIFEST_UNREADABLE)
             continue
         for path in paths:
             entry = manifest.entries.get(path.name)

@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from sigwood import exporters, runner
+import sigwood.common.loader.provenance as provenance
 from sigwood.common.finding import DetectorContext
 from sigwood.common.loader import (
     AvailabilityReason,
@@ -462,6 +463,25 @@ def test_manifest_symlink_downgrades_selected_objects(tmp_path: Path) -> None:
     fact = validate_selected_files([data])[0]
     assert fact.state is AvailabilityState.UNKNOWN
     assert fact.reason is AvailabilityReason.MANIFEST_MALFORMED
+
+
+def test_unreadable_manifest_is_distinct_and_remains_unknown(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    data = tmp_path / "pihole.log"
+    data.write_bytes(b"row\n")
+    monkeypatch.setattr(
+        provenance,
+        "read_manifest",
+        lambda _path: (_ for _ in ()).throw(PermissionError("denied")),
+    )
+    fact = validate_selected_files([data])[0]
+    assert fact.state is AvailabilityState.UNKNOWN
+    assert fact.reason is AvailabilityReason.MANIFEST_UNREADABLE
+    decision = runner._select_coverage_lane([fact], (START, END))
+    assert decision.lane is CoverageLane.WEAK
+    assert decision.reason is CoverageDecisionReason.OBJECT_UNKNOWN
 
 
 def test_explicit_manifest_is_actionably_rejected_before_flat_routing(tmp_path: Path) -> None:

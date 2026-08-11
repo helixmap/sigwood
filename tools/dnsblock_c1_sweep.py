@@ -50,7 +50,11 @@ ALLOWED_LANES = ("default", "unsuppressed")
 ALLOWED_COVERAGE = ("strong", "weak")
 WINDOW_BATCH_SIZES = (2, 4, 8)
 ASSEMBLY_OVERHEAD_SECONDS = 600
+# PROVISIONAL-PENDING-MEASUREMENT: exceeds two times the worst observed
+# context-free single-window wall (1647s); freeze measured-plus-margin afterward.
+PER_WINDOW_WATCHDOG_SECONDS = 3600
 PREPATCH_HARNESS_SHA256 = "5b3570e46388e786e00123fee39a9e07a2147783a2789283fa690a8ff6053b20"
+FLAT_WATCHDOG_HARNESS_SHA256 = "aadb0d04317677db43da388c4575987ff9455b9e157968a2b3280d89407d5934"
 
 MATRIX_OBLIGATIONS: Mapping[str, tuple[str, ...]] = {
     "future_leak": (
@@ -1617,19 +1621,44 @@ def write_series_receipts(
     if isinstance(co_load, bool) or co_load not in (1, 2):
         raise ValueError("C1 patched series must state observed co-load")
     if watchdog_enforced:
-        batch_deadline = series.get("batch_deadline_seconds")
         assembly_overhead = series.get("assembly_overhead_seconds")
         series_deadline = series.get("series_deadline_seconds")
         batch_count = series.get("batch_count")
         if (
-            batch_deadline != 1800
-            or assembly_overhead != ASSEMBLY_OVERHEAD_SECONDS
+            assembly_overhead != ASSEMBLY_OVERHEAD_SECONDS
             or isinstance(batch_count, bool)
             or not isinstance(batch_count, int)
             or batch_count <= 0
-            or series_deadline != 1800 * batch_count + ASSEMBLY_OVERHEAD_SECONDS
         ):
             raise ValueError("C1 series watchdog facts are inconsistent")
+        if harness_sha256 == FLAT_WATCHDOG_HARNESS_SHA256:
+            if (
+                series.get("batch_deadline_seconds") != 1800
+                or series_deadline
+                != 1800 * batch_count + ASSEMBLY_OVERHEAD_SECONDS
+            ):
+                raise ValueError("C1 series watchdog facts are inconsistent")
+        else:
+            batch_window_counts = series.get("batch_window_counts")
+            batch_deadlines = series.get("batch_deadline_seconds_by_batch")
+            per_window = series.get("per_window_watchdog_seconds")
+            if (
+                per_window != PER_WINDOW_WATCHDOG_SECONDS
+                or not isinstance(batch_window_counts, list)
+                or len(batch_window_counts) != batch_count
+                or any(
+                    isinstance(count, bool)
+                    or not isinstance(count, int)
+                    or count <= 0
+                    for count in batch_window_counts
+                )
+                or sum(batch_window_counts) != window_count
+                or batch_deadlines
+                != [per_window * count for count in batch_window_counts]
+                or series_deadline
+                != sum(batch_deadlines) + ASSEMBLY_OVERHEAD_SECONDS
+            ):
+                raise ValueError("C1 series watchdog facts are inconsistent")
     expected_keys = [
         (ordinal, lane)
         for ordinal in range(window_count)
@@ -1715,6 +1744,19 @@ def write_series_receipts(
             "aggregate": aggregate,
             "semantic_digest": digest,
         }
+        if series.get("per_window_watchdog_seconds") is not None:
+            body.pop("batch_deadline_seconds")
+            body.update(
+                {
+                    "per_window_watchdog_seconds": series[
+                        "per_window_watchdog_seconds"
+                    ],
+                    "batch_window_counts": series.get("batch_window_counts"),
+                    "batch_deadline_seconds_by_batch": series.get(
+                        "batch_deadline_seconds_by_batch"
+                    ),
+                }
+            )
         path = receipt_dir / f"{mode.value.lower()}-{ordinal:04d}-{lane}.json"
         outcome = write_resumable_receipt(path, key=key, payload=body)
         rows.append(

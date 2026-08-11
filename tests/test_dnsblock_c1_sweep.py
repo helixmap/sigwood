@@ -996,10 +996,12 @@ def test_series_receipt_fanout_is_complete_exact_key_and_resumable(tmp_path):
         "series": {
             "window_count": 1,
             "batch_count": 1,
+            "batch_window_counts": [1],
             "watchdog_enforced": True,
-            "batch_deadline_seconds": 1800,
+            "per_window_watchdog_seconds": 3600,
+            "batch_deadline_seconds_by_batch": [3600],
             "assembly_overhead_seconds": 600,
-            "series_deadline_seconds": 2400,
+            "series_deadline_seconds": 4200,
             "co_load": 1,
             "corpus": {"manifest_sha256": "c" * 64},
         },
@@ -1017,10 +1019,44 @@ def test_series_receipt_fanout_is_complete_exact_key_and_resumable(tmp_path):
     assert all(row["resumed"] is False for row in first)
     second = sweep.write_series_receipts(artifact, **kwargs)
     assert all(row["resumed"] is True for row in second)
+    receipt_payload = sweep.verify_receipt(tmp_path / first[0]["receipt"])
+    assert receipt_payload["per_window_watchdog_seconds"] == 3600
+    assert receipt_payload["batch_window_counts"] == [1]
+    assert receipt_payload["batch_deadline_seconds_by_batch"] == [3600]
+    assert "batch_deadline_seconds" not in receipt_payload
+
+    flat = json.loads(json.dumps(artifact))
+    flat["series"].pop("per_window_watchdog_seconds")
+    flat["series"].pop("batch_deadline_seconds_by_batch")
+    flat["series"]["batch_deadline_seconds"] = 1800
+    flat["series"]["series_deadline_seconds"] = 2400
+    flat_kwargs = {
+        **kwargs,
+        "receipt_dir": tmp_path / "flat-watchdog",
+        "harness_sha256": sweep.FLAT_WATCHDOG_HARNESS_SHA256,
+    }
+    flat_rows = sweep.write_series_receipts(flat, **flat_kwargs)
+    assert len(flat_rows) == 2
+    flat_payload = sweep.verify_receipt(
+        flat_kwargs["receipt_dir"] / flat_rows[0]["receipt"]
+    )
+    assert "per_window_watchdog_seconds" not in flat_payload
+    assert "batch_deadline_seconds_by_batch" not in flat_payload
+
+    malformed = json.loads(json.dumps(artifact))
+    malformed["series"]["batch_window_counts"] = [0]
+    with pytest.raises(ValueError, match="watchdog facts are inconsistent"):
+        sweep.write_series_receipts(
+            malformed,
+            **{**kwargs, "receipt_dir": tmp_path / "malformed"},
+        )
+
     legacy = json.loads(json.dumps(artifact))
     for field in (
         "watchdog_enforced",
+        "per_window_watchdog_seconds",
         "batch_deadline_seconds",
+        "batch_deadline_seconds_by_batch",
         "assembly_overhead_seconds",
         "series_deadline_seconds",
         "co_load",
@@ -1037,6 +1073,8 @@ def test_series_receipt_fanout_is_complete_exact_key_and_resumable(tmp_path):
     )
     assert legacy_payload["watchdog_enforced"] is False
     assert legacy_payload["co_load"] == 1
+    assert "per_window_watchdog_seconds" not in legacy_payload
+    assert "batch_deadline_seconds_by_batch" not in legacy_payload
     with pytest.raises(ValueError, match="state watchdog enforcement"):
         sweep.write_series_receipts(
             legacy,

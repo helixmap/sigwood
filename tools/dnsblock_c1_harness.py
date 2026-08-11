@@ -46,7 +46,10 @@ _FOLD_RSS_GREEN = 1536 * 1024 * 1024
 _MIXED_INCREMENT_GREEN = 512 * 1024 * 1024
 _WALL_GREEN_SECONDS = 15 * 60
 _WATCHDOG_RSS = 8 * 1024 * 1024 * 1024
-_WATCHDOG_SECONDS = 30 * 60
+# PROVISIONAL-PENDING-MEASUREMENT: 3600 exceeds two times the worst observed
+# context-free single-window wall (1647s). Freeze measured-plus-margin after
+# the context-true rerun.
+_PER_WINDOW_WATCHDOG_SECONDS = 60 * 60
 # Supervisor ceiling for post-worker reducer/receipt/atomic-write assembly.
 # This is never a promotion wall and never relaxes the per-batch deadline.
 _ASSEMBLY_OVERHEAD_SECONDS = 600
@@ -67,10 +70,23 @@ class BatchWatchdogError(RuntimeError):
         self.ordinal = ordinal
 
 
-def _series_watchdog_seconds(batch_count: int) -> int:
-    if isinstance(batch_count, bool) or not isinstance(batch_count, int) or batch_count <= 0:
-        raise ValueError("dnsblock C1 watchdog requires a positive batch count")
-    return _WATCHDOG_SECONDS * batch_count + _ASSEMBLY_OVERHEAD_SECONDS
+def _batch_watchdog_seconds(window_count: int) -> int:
+    if (
+        isinstance(window_count, bool)
+        or not isinstance(window_count, int)
+        or window_count <= 0
+    ):
+        raise ValueError("dnsblock C1 watchdog requires a positive window count")
+    return _PER_WINDOW_WATCHDOG_SECONDS * window_count
+
+
+def _series_watchdog_seconds(batch_window_counts: tuple[int, ...]) -> int:
+    if not isinstance(batch_window_counts, tuple) or not batch_window_counts:
+        raise ValueError("dnsblock C1 watchdog requires non-empty batch window counts")
+    return sum(
+        _batch_watchdog_seconds(window_count)
+        for window_count in batch_window_counts
+    ) + _ASSEMBLY_OVERHEAD_SECONDS
 
 
 _NOTE_PATTERNS = tuple(
@@ -628,9 +644,11 @@ def _supervised_batch(
     ordinal_offset: int,
     batch_ordinal: int,
     transaction_parent: Path,
-    deadline_seconds: float = _WATCHDOG_SECONDS,
+    deadline_seconds: float | None = None,
 ) -> dict:
     """Run one private batch behind an external, process-group watchdog."""
+    if deadline_seconds is None:
+        deadline_seconds = _batch_watchdog_seconds(len(windows))
     private_mkdir(transaction_parent)
     transaction = Path(
         tempfile.mkdtemp(prefix=".dnsblock-c1-worker-", dir=transaction_parent)
@@ -778,6 +796,7 @@ def _run_batch(
     co_load: int,
 ) -> int:
     windows = _batch_windows(request)
+    batch_deadline_seconds = _batch_watchdog_seconds(len(windows))
     started = time.monotonic()
     try:
         batch = _supervised_batch(
@@ -787,6 +806,7 @@ def _run_batch(
             ordinal_offset=0,
             batch_ordinal=0,
             transaction_parent=artifact.parent,
+            deadline_seconds=batch_deadline_seconds,
         )
     except BatchWatchdogError as exc:
         _atomic_json(
@@ -796,7 +816,9 @@ def _run_batch(
                 "watchdog_enforced": True,
                 "failure": exc.kind,
                 "batch_ordinal": exc.ordinal,
-                "batch_deadline_seconds": _WATCHDOG_SECONDS,
+                "per_window_watchdog_seconds": _PER_WINDOW_WATCHDOG_SECONDS,
+                "batch_window_count": len(windows),
+                "batch_deadline_seconds": batch_deadline_seconds,
             },
         )
         return 124
@@ -829,7 +851,8 @@ def _run_batch(
             "pass_wall_seconds": batch["pass_wall_seconds"],
             "watchdog_enforced": True,
             "co_load": co_load,
-            "batch_deadline_seconds": _WATCHDOG_SECONDS,
+            "per_window_watchdog_seconds": _PER_WINDOW_WATCHDOG_SECONDS,
+            "batch_deadline_seconds": batch_deadline_seconds,
             "total_elapsed_seconds": elapsed,
             "source_head": subprocess.run(
                 ["git", "rev-parse", "HEAD"],
@@ -863,7 +886,12 @@ def _run_series(
     series_started = time.monotonic()
     windows = _series_windows(request)
     batches = _partition_series(windows, batch_size=batch_size)
-    series_deadline_seconds = _series_watchdog_seconds(len(batches))
+    batch_window_counts = tuple(len(batch) for batch in batches)
+    batch_deadline_seconds_by_batch = tuple(
+        _batch_watchdog_seconds(window_count)
+        for window_count in batch_window_counts
+    )
+    series_deadline_seconds = _series_watchdog_seconds(batch_window_counts)
     arrival_survivors = GridSurvivorAccumulator(12)
     burst_survivors = GridSurvivorAccumulator(75)
     repeat_appearances = []
@@ -880,7 +908,11 @@ def _run_series(
     batch_worker_walls = []
     worker_peak_rss = 0
     for batch_ordinal, window_batch in enumerate(batches):
+        batch_deadline_seconds = batch_deadline_seconds_by_batch[batch_ordinal]
         remaining = series_deadline_seconds - (time.monotonic() - series_started)
+        timed_batch_deadline_seconds = min(
+            batch_deadline_seconds, max(0.001, remaining)
+        )
         try:
             prepared_batch = _supervised_batch(
                 selected_source=selected_source,
@@ -889,7 +921,7 @@ def _run_series(
                 ordinal_offset=offset,
                 batch_ordinal=batch_ordinal,
                 transaction_parent=artifact.parent,
-                deadline_seconds=min(_WATCHDOG_SECONDS, max(0.001, remaining)),
+                deadline_seconds=timed_batch_deadline_seconds,
             )
         except BatchWatchdogError as exc:
             _atomic_json(
@@ -899,7 +931,13 @@ def _run_series(
                     "watchdog_enforced": True,
                     "failure": exc.kind,
                     "batch_ordinal": exc.ordinal,
-                    "batch_deadline_seconds": _WATCHDOG_SECONDS,
+                    "per_window_watchdog_seconds": _PER_WINDOW_WATCHDOG_SECONDS,
+                    "batch_window_count": len(window_batch),
+                    "batch_deadline_seconds": timed_batch_deadline_seconds,
+                    "configured_batch_deadline_seconds": batch_deadline_seconds,
+                    "batch_deadline_seconds_by_batch": list(
+                        batch_deadline_seconds_by_batch
+                    ),
                     "series_deadline_seconds": series_deadline_seconds,
                     "completed_batch_count": batch_ordinal,
                 },
@@ -946,7 +984,10 @@ def _run_series(
                 "watchdog_enforced": True,
                 "failure": "content_identity_mismatch",
                 "batch_ordinal": len(batches),
-                "batch_deadline_seconds": _WATCHDOG_SECONDS,
+                "per_window_watchdog_seconds": _PER_WINDOW_WATCHDOG_SECONDS,
+                "batch_deadline_seconds_by_batch": list(
+                    batch_deadline_seconds_by_batch
+                ),
                 "series_deadline_seconds": series_deadline_seconds,
                 "completed_batch_count": len(batches),
             },
@@ -964,7 +1005,7 @@ def _run_series(
             "window_count": len(windows),
             "batch_size": batch_size,
             "batch_count": len(batches),
-            "batch_window_counts": [len(batch) for batch in batches],
+            "batch_window_counts": list(batch_window_counts),
             "batch_partition": {
                 "ordering": "contiguous",
                 "limit": "at_most_batch_size",
@@ -980,7 +1021,10 @@ def _run_series(
             "elapsed_seconds": elapsed,
             "watchdog_enforced": True,
             "co_load": co_load,
-            "batch_deadline_seconds": _WATCHDOG_SECONDS,
+            "per_window_watchdog_seconds": _PER_WINDOW_WATCHDOG_SECONDS,
+            "batch_deadline_seconds_by_batch": list(
+                batch_deadline_seconds_by_batch
+            ),
             "assembly_overhead_seconds": _ASSEMBLY_OVERHEAD_SECONDS,
             "series_deadline_seconds": series_deadline_seconds,
             "batch_worker_wall_seconds": batch_worker_walls,
@@ -1020,7 +1064,10 @@ def _run_series(
                 "watchdog_enforced": True,
                 "failure": "series_watchdog_timeout",
                 "batch_ordinal": len(batches),
-                "batch_deadline_seconds": _WATCHDOG_SECONDS,
+                "per_window_watchdog_seconds": _PER_WINDOW_WATCHDOG_SECONDS,
+                "batch_deadline_seconds_by_batch": list(
+                    batch_deadline_seconds_by_batch
+                ),
                 "series_deadline_seconds": series_deadline_seconds,
                 "completed_batch_count": len(batches),
             },
@@ -1161,6 +1208,7 @@ def main(argv: list[str] | None = None) -> int:
     ):
         parser.error("private calibration vectors require a batch or series request")
     if not args.internal_legacy:
+        legacy_deadline_seconds = _batch_watchdog_seconds(1)
         root = Path(__file__).resolve().parents[1]
         child_argv = (
             str(Path(sys.executable).absolute()),
@@ -1187,7 +1235,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         try:
             try:
-                return process.wait(timeout=_WATCHDOG_SECONDS)
+                return process.wait(timeout=legacy_deadline_seconds)
             except subprocess.TimeoutExpired:
                 _terminate_worker_group(process)
                 try:
@@ -1201,7 +1249,11 @@ def main(argv: list[str] | None = None) -> int:
                         "watchdog_enforced": True,
                         "failure": "legacy_watchdog_timeout",
                         "batch_ordinal": 0,
-                        "batch_deadline_seconds": _WATCHDOG_SECONDS,
+                        "per_window_watchdog_seconds": (
+                            _PER_WINDOW_WATCHDOG_SECONDS
+                        ),
+                        "batch_window_count": 1,
+                        "batch_deadline_seconds": legacy_deadline_seconds,
                     },
                 )
                 return 124
@@ -1270,9 +1322,10 @@ def main(argv: list[str] | None = None) -> int:
         "wall_green": elapsed <= _WALL_GREEN_SECONDS,
         "wall_limit_seconds": _WALL_GREEN_SECONDS,
         "watchdog_rss_bytes": _WATCHDOG_RSS,
-        "watchdog_seconds": _WATCHDOG_SECONDS,
+        "watchdog_seconds": _PER_WINDOW_WATCHDOG_SECONDS,
         "watchdog_enforced": True,
-        "batch_deadline_seconds": _WATCHDOG_SECONDS,
+        "per_window_watchdog_seconds": _PER_WINDOW_WATCHDOG_SECONDS,
+        "batch_deadline_seconds": _batch_watchdog_seconds(1),
         "co_load": 1,
         "source_head": subprocess.run(
             ["git", "rev-parse", "HEAD"],

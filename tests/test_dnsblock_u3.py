@@ -189,6 +189,43 @@ def test_u3_arrival_uses_frozen_voice_evidence_and_cadence_floor():
     assert "a.example.com" not in repr(finding.evidence)
 
 
+def test_private_arrival_vector_materializes_one_frozen_grid_cell_only():
+    window, population = _arrival_population()
+    default = dnsblock.build_prepared(
+        snapshot_identity="a" * 64,
+        window=window,
+        coverage=_weak(window),
+        block_status=PreparedStatus(PreparedState.READY),
+        population_status=PreparedStatus(PreparedState.READY),
+        blocks=dnsblock.BlockInventory(),
+        population=population,
+    )
+    selected = dnsblock.build_prepared(
+        snapshot_identity="a" * 64,
+        window=window,
+        coverage=_weak(window),
+        block_status=PreparedStatus(PreparedState.READY),
+        population_status=PreparedStatus(PreparedState.READY),
+        blocks=dnsblock.BlockInventory(),
+        population=population,
+        calibration_vector=dnsblock.DnsblockCalibrationVector(
+            arrival_days=4,
+            arrival_history=14,
+        ),
+    )
+    assert len(default.preflight.grids) == len(selected.preflight.grids) == 12
+    assert default.preflight.grids == selected.preflight.grids
+    assert len(default.analysis.arrivals) == 1
+    assert selected.analysis.arrivals == ()
+    assert selected.analysis.notes.arrival_days_required == 4
+    assert selected.analysis.notes.arrival_history_required == 14
+
+
+def test_private_calibration_vector_rejects_values_outside_frozen_grids():
+    with pytest.raises(ValueError, match="outside the frozen grid"):
+        dnsblock.DnsblockCalibrationVector(arrival_days=6)
+
+
 def test_u3_strong_arrival_uses_available_history_voice():
     prepared = _prepared(strong=True)
     finding = dnsblock.run(_context(prepared), _prepared=prepared)[0]
@@ -301,6 +338,149 @@ def test_cadence_reducer_excludes_six_hour_gap_and_allows_exact_cap():
         frame,
     )
     assert state.included_gaps == [3600.0]
+
+
+def test_cadence_batch_matches_independent_pair_reducers():
+    start = datetime(2026, 1, 20, tzinfo=UTC)
+    rows = []
+    for address, name, offset in (
+        ("192.0.2.7", "a.example.com", 0),
+        ("192.0.2.8", "b.example.net", 15),
+    ):
+        for index in range(22):
+            rows.append(
+                {
+                    "ts": (start + timedelta(seconds=offset, minutes=index)).timestamp(),
+                    "src": address,
+                    "query": name,
+                    "event_type": "query",
+                    "qtype": "A",
+                    "host": "",
+                }
+            )
+    frame = pd.DataFrame(rows).sort_values("ts").reset_index(drop=True)
+    inventory = dnsblock.BlockInventory(
+        names={"a.example.com", "b.example.net"},
+        block_dates={
+            "a.example.com": {start.date()},
+            "b.example.net": {start.date()},
+        },
+    )
+    pairs = (("192.0.2.7", "example.com"), ("192.0.2.8", "example.net"))
+    batch = _run_sink(
+        dnsblock.make_cadence_batch_sink(pairs, inventory, _keep), frame
+    )
+    for pair in pairs:
+        independent = _run_sink(
+            dnsblock.make_cadence_sink(pair, inventory, _keep), frame
+        )
+        assert batch.states[pair] == independent
+
+
+def test_cadence_batch_enforces_total_in_flight_gap_cap():
+    start = datetime(2026, 1, 20, tzinfo=UTC)
+    frame = pd.DataFrame(
+        {
+            "ts": [
+                start.timestamp(),
+                (start + timedelta(minutes=1)).timestamp(),
+                (start + timedelta(seconds=30)).timestamp(),
+                (start + timedelta(minutes=1, seconds=30)).timestamp(),
+            ],
+            "src": ["192.0.2.7", "192.0.2.7", "192.0.2.8", "192.0.2.8"],
+            "query": ["a.example.com", "a.example.com", "b.example.net", "b.example.net"],
+            "event_type": ["query"] * 4,
+            "qtype": ["A"] * 4,
+            "host": [""] * 4,
+        }
+    )
+    inventory = dnsblock.BlockInventory(
+        names={"a.example.com", "b.example.net"},
+        block_dates={
+            "a.example.com": {start.date()},
+            "b.example.net": {start.date()},
+        },
+    )
+    with pytest.raises(FoldAbstention, match="cadence gaps exceed"):
+        _run_sink(
+            dnsblock.make_cadence_batch_sink(
+                (("192.0.2.7", "example.com"), ("192.0.2.8", "example.net")),
+                inventory,
+                _keep,
+                limits=replace(dnsblock.LIMITS, cadence_gaps=1),
+            ),
+            frame,
+        )
+
+
+def test_sink_local_window_classification_overrides_broad_physical_masks():
+    report_start = datetime(2026, 1, 2, tzinfo=UTC)
+    report_end = datetime(2026, 1, 3, tzinfo=UTC)
+    context_start = datetime(2026, 1, 1, tzinfo=UTC)
+    context_end = report_start - timedelta(microseconds=1)
+    instants = (
+        context_start,
+        context_end,
+        report_start,
+        report_end,
+        report_end + timedelta(microseconds=1),
+    )
+    frame = pd.DataFrame(
+        {
+            "ts": [instant.timestamp() for instant in instants],
+            "src": ["192.0.2.7"] * len(instants),
+            "query": ["a.example.com"] * len(instants),
+            "event_type": ["query"] * len(instants),
+            "qtype": ["A"] * len(instants),
+            "host": [""] * len(instants),
+        }
+    )
+    chunk = DecodedChunk(
+        frame,
+        100,
+        (True,) * len(frame),
+        (False,) * len(frame),
+        0,
+    )
+    report, context = dnsblock._sink_membership_masks(
+        chunk,
+        DualWindow((report_start, report_end), (context_start, context_end)),
+    )
+    assert report.tolist() == [False, False, True, True, False]
+    assert context.tolist() == [True, True, False, False, False]
+
+
+def test_cadence_batch_uses_each_sink_local_report_interval():
+    start = datetime(2026, 1, 20, tzinfo=UTC)
+    frame = pd.DataFrame(
+        {
+            "ts": [
+                (start - timedelta(minutes=1)).timestamp(),
+                start.timestamp(),
+                (start + timedelta(minutes=1)).timestamp(),
+            ],
+            "src": ["192.0.2.7"] * 3,
+            "query": ["a.example.com"] * 3,
+            "event_type": ["query"] * 3,
+            "qtype": ["A"] * 3,
+            "host": [""] * 3,
+        }
+    )
+    inventory = dnsblock.BlockInventory(
+        names={"a.example.com"},
+        block_dates={"a.example.com": {start.date()}},
+    )
+    pair = ("192.0.2.7", "example.com")
+    batch = _run_sink(
+        dnsblock.make_cadence_batch_sink(
+            (pair,),
+            inventory,
+            _keep,
+            window=DualWindow((start, start + timedelta(minutes=1))),
+        ),
+        frame,
+    )
+    assert batch.states[pair].included_gaps == [60.0]
 
 
 def test_cadence_floor_even_median_and_ddof_zero_are_exact():

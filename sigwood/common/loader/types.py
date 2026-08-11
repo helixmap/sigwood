@@ -389,6 +389,7 @@ class SourceSnapshot:
     source: str
     files: tuple[SnapshotFile, ...]
     identity_sha256: str
+    content_identity_sha256: str
 
 
 @dataclass(frozen=True)

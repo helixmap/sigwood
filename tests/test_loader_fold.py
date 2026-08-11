@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from dataclasses import replace
@@ -204,6 +205,43 @@ def test_snapshot_ordered_dedupe_and_content_identity(tmp_path):
     snapshot = loader.build_source_snapshot([first, first, second], "flat")
     assert [item.path for item in snapshot.files] == [first, second]
     assert len(snapshot.identity_sha256) == 64
+    assert len(snapshot.content_identity_sha256) == 64
+
+
+def test_snapshot_content_identity_excludes_only_scan_interval(tmp_path):
+    path = tmp_path / "one.log"
+    path.write_text("1\n", encoding="utf-8")
+    first = datetime(2026, 1, 1, tzinfo=UTC)
+    second = datetime(2026, 2, 1, tzinfo=UTC)
+    left = loader.build_source_snapshot([path], "flat", scan_interval=(first, second))
+    right = loader.build_source_snapshot([path], "flat", scan_interval=(second, None))
+    assert left.identity_sha256 != right.identity_sha256
+    assert left.content_identity_sha256 == right.content_identity_sha256
+
+
+def test_snapshot_scan_bound_identity_keeps_pre_c1_canonical_bytes(tmp_path):
+    path = tmp_path / "one.log"
+    path.write_text("1\n", encoding="utf-8")
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    end = datetime(2026, 2, 1, tzinfo=UTC)
+    snapshot = loader.build_source_snapshot([path], "flat", scan_interval=(start, end))
+    item = snapshot.files[0]
+    old_payload = [
+        {
+            "resolved": str(item.resolved_path),
+            "source": item.source,
+            "device": item.device,
+            "inode": item.inode,
+            "compressed": item.compressed,
+            "stat_bytes": item.stat_bytes,
+            "mtime_ns": item.mtime_ns,
+            "readable_bytes": item.readable_bytes,
+            "sha256": item.content_sha256,
+            "scan": [start.isoformat(), end.isoformat()],
+        }
+    ]
+    encoded = json.dumps(old_payload, sort_keys=True, separators=(",", ":")).encode()
+    assert snapshot.identity_sha256 == hashlib.sha256(encoded).hexdigest()
 
 
 def test_prepared_snapshot_reuse_performs_no_rediscovery_or_recapture(

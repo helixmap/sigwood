@@ -163,7 +163,23 @@ def build_source_snapshot(
     identity = hashlib.sha256(
         json.dumps(identity_payload, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()
-    return SourceSnapshot(source=source, files=tuple(planned), identity_sha256=identity)
+    content_identity_payload = [
+        {key: value for key, value in item.items() if key != "scan"}
+        for item in identity_payload
+    ]
+    content_identity = hashlib.sha256(
+        json.dumps(
+            content_identity_payload,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+    ).hexdigest()
+    return SourceSnapshot(
+        source=source,
+        files=tuple(planned),
+        identity_sha256=identity,
+        content_identity_sha256=content_identity,
+    )
 
 
 def verify_snapshot_file(item: SnapshotFile) -> None:

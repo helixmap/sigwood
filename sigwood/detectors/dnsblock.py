@@ -70,6 +70,30 @@ RECURRING_PERIODS = 4
 
 
 @dataclass(frozen=True)
+class DnsblockCalibrationVector:
+    """Private C1 materialization choice over the already-frozen grids."""
+
+    arrival_days: int = ARRIVAL_DAYS
+    arrival_history: int = ARRIVAL_HISTORY
+    burst_absolute: int = BURST_ABS
+    burst_multiple: int = BURST_MULT
+    burst_active: int = BURST_ACTIVE
+    burst_enabled: bool = True
+
+    def __post_init__(self) -> None:
+        if self.arrival_days not in _GRID_DAYS:
+            raise ValueError("dnsblock calibration arrival days are outside the frozen grid")
+        if self.arrival_history not in _GRID_CHANNEL:
+            raise ValueError("dnsblock calibration arrival history is outside the frozen grid")
+        if self.burst_absolute not in _BURST_GRID_ABS:
+            raise ValueError("dnsblock calibration burst absolute is outside the frozen grid")
+        if self.burst_multiple not in _BURST_GRID_MULT:
+            raise ValueError("dnsblock calibration burst multiple is outside the frozen grid")
+        if self.burst_active not in _BURST_GRID_ACTIVE:
+            raise ValueError("dnsblock calibration burst active is outside the frozen grid")
+
+
+@dataclass(frozen=True)
 class DnsblockLimits:
     association_cells: int = 10_000_000
     address_name_pairs: int = 500_000
@@ -181,6 +205,8 @@ class PopulationState:
     rows_seen: int = 0
     rows_kept: int = 0
     rows_suppressed: int = 0
+    report_first_ts: float | None = None
+    report_last_ts: float | None = None
     event_counts: Counter[str] = field(default_factory=Counter)
     drops: Counter[str] = field(default_factory=Counter)
     addresses: set[str] = field(default_factory=set)
@@ -356,6 +382,7 @@ class AnalysisFacts:
     final_shape_routes: tuple[tuple[str, int], ...]
     withheld_arrival_burst_pairs: int
     cadence_worklist: tuple[tuple[str, str], ...]
+    cadence_query_event_upper_bounds: tuple[tuple[str, str, int], ...]
     pair_routes: tuple[tuple[str, int], ...]
     prior_handling_names: int
     prior_handling_memberships: int
@@ -371,6 +398,13 @@ class CadenceState:
     first_ts: float | None = None
     last_ts: float | None = None
     included_gaps: list[float] = field(default_factory=list)
+
+
+@dataclass
+class CadenceBatchState:
+    """Independent per-pair cadence reducers sharing one physical scan."""
+
+    states: dict[tuple[str, str], CadenceState] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -408,6 +442,8 @@ class DnsblockPreflight:
     grids: tuple[GridFacts, ...]
     resident_bytes: int
     pass_wall_seconds: tuple[tuple[str, float], ...] = ()
+    observed_data_window: tuple[datetime, datetime] | None = None
+    data_size_bytes: int = 0
 
 
 @dataclass(frozen=True)
@@ -416,6 +452,15 @@ class DnsblockPrepared:
     analysis: AnalysisFacts | None = None
     cadence: tuple[tuple[str, str, CadenceFacts], ...] = ()
     cadence_complete: bool = False
+    calibration_survivors: CalibrationSurvivorFacts | None = None
+
+
+@dataclass(frozen=True)
+class CalibrationSurvivorFacts:
+    """Private in-memory grid memberships; never written to C1 artifacts."""
+
+    arrival_memberships: tuple[tuple[str, int], ...]
+    burst_memberships: tuple[tuple[str, int], ...]
 
 
 def _finite_ts(value: Any) -> float | None:
@@ -655,12 +700,15 @@ def _merge_block_cells(
 def make_anchor_block_sink(
     mask: Callable[[pd.DataFrame], PositionalMask],
     *,
+    channel: str = "dnsblock.anchor_blocks",
     limits: DnsblockLimits = LIMITS,
 ) -> FoldSink:
     """Collect the all-event anchor and bounded block cells in one parse."""
 
     def consume(delta: FoldDelta, chunk: DecodedChunk, keep_mask: PositionalMask) -> FoldDelta:
         state: AnchorBlockFacts = delta.value
+        if chunk.frame.empty:
+            return FoldDelta(state, 256 + _resident_block_cells(state.blocks))
         numeric = chunk.frame["ts"].to_numpy(dtype=float, na_value=np.nan)
         numeric = numeric[np.isfinite(numeric)]
         if numeric.size:
@@ -691,7 +739,7 @@ def make_anchor_block_sink(
         return run
 
     return FoldSink(
-        "dnsblock.anchor_blocks",
+        channel,
         lambda: FoldDelta(AnchorBlockFacts(), 0),
         consume,
         AnchorBlockFacts,
@@ -806,6 +854,9 @@ def make_population_sink(
     window: DualWindow,
     mask: Callable[[pd.DataFrame], PositionalMask],
     *,
+    channel: str = _CHANNEL_POPULATION,
+    sink_local_window: bool = False,
+    capture_summary_window: bool = False,
     limits: DnsblockLimits = LIMITS,
 ) -> FoldSink:
     block_names = frozenset(inventory.names)
@@ -832,14 +883,41 @@ def make_population_sink(
 
     def consume(delta: FoldDelta, chunk: DecodedChunk, keep_mask: PositionalMask) -> FoldDelta:
         state: PopulationState = delta.value
-        state.rows_seen += len(chunk.frame)
+        if chunk.frame.empty or "ts" not in chunk.frame.columns:
+            return FoldDelta(state, _resident_population(state))
         kept_array = np.asarray(keep_mask.keep, dtype=bool)
-        report_array = np.asarray(chunk.report_mask, dtype=bool)
-        context_array = np.asarray(chunk.context_mask, dtype=bool)
+        if sink_local_window:
+            report_array, context_array = _sink_membership_masks(chunk, window)
+        else:
+            report_array = np.asarray(chunk.report_mask, dtype=bool)
+            context_array = np.asarray(chunk.context_mask, dtype=bool)
         window_array = report_array | context_array
+        if sink_local_window and not bool(window_array.any()):
+            return FoldDelta(state, _resident_population(state))
+        if "event_type" not in chunk.frame.columns:
+            raise ValueError("dnsblock population chunk is missing event_type")
+        state.rows_seen += int(window_array.sum()) if sink_local_window else len(chunk.frame)
         block_array = chunk.frame["event_type"].isin(_BLOCK_EVENTS).to_numpy()
         query_array = (chunk.frame["event_type"] == "query").to_numpy()
         state.raw_window_rows += int(window_array.sum())
+        if capture_summary_window and bool(report_array.any()):
+            report_ts = pd.to_numeric(
+                chunk.frame.loc[report_array, "ts"], errors="coerce"
+            ).to_numpy(dtype=float)
+            finite_ts = report_ts[np.isfinite(report_ts)]
+            if finite_ts.size:
+                first_ts = float(finite_ts.min())
+                last_ts = float(finite_ts.max())
+                state.report_first_ts = (
+                    first_ts
+                    if state.report_first_ts is None
+                    else min(state.report_first_ts, first_ts)
+                )
+                state.report_last_ts = (
+                    last_ts
+                    if state.report_last_ts is None
+                    else max(state.report_last_ts, last_ts)
+                )
         state.filtered_window_rows += int((kept_array & window_array).sum())
         state.raw_query_rows += int((query_array & window_array).sum())
         state.raw_block_report_rows += int((block_array & report_array).sum())
@@ -850,9 +928,17 @@ def make_population_sink(
         state.filtered_block_context_rows += int(
             (block_array & context_array & kept_array).sum()
         )
-        kept_positions = [pos for pos, kept in enumerate(keep_mask.keep) if kept]
+        kept_positions = [
+            pos
+            for pos, kept in enumerate(keep_mask.keep)
+            if kept and (bool(window_array[pos]) if sink_local_window else True)
+        ]
         state.rows_kept += len(kept_positions)
-        state.rows_suppressed += len(chunk.frame) - len(kept_positions)
+        state.rows_suppressed += (
+            int(window_array.sum()) - len(kept_positions)
+            if sink_local_window
+            else len(chunk.frame) - len(kept_positions)
+        )
         selected = chunk.frame.iloc[kept_positions].copy()
         selected["chunk_pos"] = kept_positions
         selected_in_window = selected[
@@ -868,10 +954,10 @@ def make_population_sink(
             selected["event_type"].isin(("query", "forwarded", "cached"))
         ].copy()
         relevant["in_report"] = relevant["chunk_pos"].map(
-            lambda pos: chunk.report_mask[int(pos)]
+            lambda pos: bool(report_array[int(pos)])
         )
         relevant["in_context"] = relevant["chunk_pos"].map(
-            lambda pos: chunk.context_mask[int(pos)]
+            lambda pos: bool(context_array[int(pos)])
         )
         relevant["numeric_ts"] = pd.to_numeric(relevant["ts"], errors="coerce")
         finite = relevant["numeric_ts"].notna() & np.isfinite(relevant["numeric_ts"])
@@ -1211,6 +1297,18 @@ def make_population_sink(
         run.rows_seen += part.rows_seen
         run.rows_kept += part.rows_kept
         run.rows_suppressed += part.rows_suppressed
+        if part.report_first_ts is not None:
+            run.report_first_ts = (
+                part.report_first_ts
+                if run.report_first_ts is None
+                else min(run.report_first_ts, part.report_first_ts)
+            )
+        if part.report_last_ts is not None:
+            run.report_last_ts = (
+                part.report_last_ts
+                if run.report_last_ts is None
+                else max(run.report_last_ts, part.report_last_ts)
+            )
         run.a1_rows += part.a1_rows
         run.a2_rows += part.a2_rows
         run.report_query_rows += part.report_query_rows
@@ -1228,13 +1326,37 @@ def make_population_sink(
         return run
 
     return FoldSink(
-        _CHANNEL_POPULATION,
+        channel,
         lambda: FoldDelta(PopulationState(), 0),
         consume,
         PopulationState,
         commit,
         mask,
     )
+
+
+def _sink_membership_masks(
+    chunk: DecodedChunk,
+    window: DualWindow,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Classify one sink's exact intervals inside a broad physical read."""
+    numeric = pd.to_numeric(chunk.frame["ts"], errors="coerce").to_numpy(dtype=float)
+    finite = np.isfinite(numeric)
+    report_start, report_end = window.report_interval
+    report = (
+        finite
+        & (numeric >= report_start.timestamp())
+        & (numeric <= report_end.timestamp())
+    )
+    context = np.zeros(len(chunk.frame), dtype=bool)
+    if window.context_interval is not None:
+        context_start, context_end = window.context_interval
+        context = (
+            finite
+            & (numeric >= context_start.timestamp())
+            & (numeric <= context_end.timestamp())
+        )
+    return report, context
 
 
 def _covered_periods(
@@ -1478,9 +1600,14 @@ def _population_facts(
     window: DualWindow,
     decision: CoverageDecision,
     limits: DnsblockLimits,
+    *,
+    selected_days: int = ARRIVAL_DAYS,
+    selected_history: int = ARRIVAL_HISTORY,
+    calibration_memberships: dict[str, int] | None = None,
 ) -> tuple[Counter[str], tuple[GridFacts, ...]]:
     actual_routes: Counter[str] = Counter()
     grids: list[GridFacts] = []
+    cell_index = 0
     for days_required in _GRID_DAYS:
         for history_required in _GRID_CHANNEL:
             routed = _route_population(
@@ -1493,10 +1620,16 @@ def _population_facts(
                 materialize=False,
             )
             if (
-                days_required == ARRIVAL_DAYS
-                and history_required == ARRIVAL_HISTORY
+                days_required == selected_days
+                and history_required == selected_history
             ):
                 actual_routes = routed.name_routes
+            if calibration_memberships is not None:
+                bit = 1 << cell_index
+                for identity in routed.qualified_ids:
+                    calibration_memberships[identity] = (
+                        calibration_memberships.get(identity, 0) | bit
+                    )
             digest = hashlib.sha256(
                 json.dumps(routed.qualified_ids, separators=(",", ":")).encode()
             ).hexdigest()
@@ -1509,6 +1642,7 @@ def _population_facts(
                     digest,
                 )
             )
+            cell_index += 1
     return actual_routes, tuple(grids)
 
 
@@ -1572,6 +1706,12 @@ def _build_burst_facts(
     window: DualWindow,
     coverage: CoverageDecision,
     limits: DnsblockLimits,
+    *,
+    selected_absolute: int = BURST_ABS,
+    selected_multiple: int = BURST_MULT,
+    selected_active: int = BURST_ACTIVE,
+    materialize: bool = True,
+    calibration_memberships: dict[str, int] | None = None,
 ) -> tuple[tuple[BurstGridFacts, ...], tuple[BurstCandidate, ...], ChannelFacts]:
     full_report = _full_report_periods(window)
     eligible_report = {
@@ -1586,7 +1726,7 @@ def _build_burst_facts(
             ChannelFacts(
                 ChannelStatus.ABSTAINED,
                 "weak_coverage",
-                BURST_ACTIVE,
+                selected_active,
                 len(eligible_report),
             ),
         )
@@ -1608,13 +1748,14 @@ def _build_burst_facts(
     channel = ChannelFacts(
         (
             ChannelStatus.READY
-            if len(eligible_report) >= BURST_ACTIVE
+            if len(eligible_report) >= selected_active
             else ChannelStatus.ABSTAINED
         ),
-        "" if len(eligible_report) >= BURST_ACTIVE else "insufficient_coverage",
-        BURST_ACTIVE,
+        "" if len(eligible_report) >= selected_active else "insufficient_coverage",
+        selected_active,
         len(eligible_report),
     )
+    cell_index = 0
     for absolute_required in _BURST_GRID_ABS:
         for multiple_required in _BURST_GRID_MULT:
             for active_required in _BURST_GRID_ACTIVE:
@@ -1634,9 +1775,10 @@ def _build_burst_facts(
                     address, family = pair
                     qualified.append(f"{address}\0{family}")
                     if (
-                        absolute_required != BURST_ABS
-                        or multiple_required != BURST_MULT
-                        or active_required != BURST_ACTIVE
+                        not materialize
+                        or absolute_required != selected_absolute
+                        or multiple_required != selected_multiple
+                        or active_required != selected_active
                         or channel.status is not ChannelStatus.READY
                     ):
                         continue
@@ -1669,6 +1811,12 @@ def _build_burst_facts(
                             association_names=names,
                         )
                     )
+                if calibration_memberships is not None:
+                    bit = 1 << cell_index
+                    for identity in qualified:
+                        calibration_memberships[identity] = (
+                            calibration_memberships.get(identity, 0) | bit
+                        )
                 if sum(routes.values()) != len(pair_names):
                     raise ValueError("dnsblock burst routing did not conserve its worklist")
                 digest = hashlib.sha256(
@@ -1684,6 +1832,7 @@ def _build_burst_facts(
                         digest,
                     )
                 )
+                cell_index += 1
     if len(grids) != 75:
         raise ValueError("dnsblock burst grid did not evaluate all 75 cells")
     return tuple(grids), tuple(candidates), channel
@@ -1769,18 +1918,29 @@ def _build_analysis(
     window: DualWindow,
     coverage: CoverageDecision,
     limits: DnsblockLimits,
+    vector: DnsblockCalibrationVector,
+    *,
+    burst_calibration_memberships: dict[str, int] | None = None,
 ) -> AnalysisFacts:
     routed = _route_population(
         state,
         window,
         coverage,
         limits,
-        days_required=ARRIVAL_DAYS,
-        history_required=ARRIVAL_HISTORY,
+        days_required=vector.arrival_days,
+        history_required=vector.arrival_history,
         materialize=True,
     )
     burst_grids, raw_bursts, burst_channel = _build_burst_facts(
-        state, window, coverage, limits
+        state,
+        window,
+        coverage,
+        limits,
+        selected_absolute=vector.burst_absolute,
+        selected_multiple=vector.burst_multiple,
+        selected_active=vector.burst_active,
+        materialize=vector.burst_enabled,
+        calibration_memberships=burst_calibration_memberships,
     )
     arrivals_by_pair = {
         (item.address, item.family_key): item for item in routed.arrivals
@@ -1861,7 +2021,7 @@ def _build_analysis(
         pair_routes[PairRoute.INSUFFICIENT_HISTORY.value]
     )
     insufficient_context = None
-    if insufficient_history and routed.max_history_periods < ARRIVAL_HISTORY:
+    if insufficient_history and routed.max_history_periods < vector.arrival_history:
         # The whole-channel form is reserved for a truly degenerate prefix.  If
         # any pair got beyond history, the per-candidate count remains honest.
         beyond_history = sum(
@@ -1878,13 +2038,13 @@ def _build_analysis(
             insufficient_history = 0
     notes = DnsblockNoteFacts(
         coverage_lane=coverage.lane,
-        arrival_days_required=ARRIVAL_DAYS,
-        arrival_history_required=ARRIVAL_HISTORY,
+        arrival_days_required=vector.arrival_days,
+        arrival_history_required=vector.arrival_history,
         insufficient_history_pairs=insufficient_history,
         insufficient_context_periods=insufficient_context,
         insufficient_arrival_coverage=(
             len(eligible_report)
-            if state.report_pairs and len(eligible_report) < ARRIVAL_DAYS
+            if state.report_pairs and len(eligible_report) < vector.arrival_days
             else None
         ),
         burst_status=burst_channel.status,
@@ -1926,8 +2086,14 @@ def _build_analysis(
         withheld_arrival_burst_pairs=sum(
             1 for pair in burst_pairs if pair not in arrivals_by_pair
         ),
-        cadence_worklist=tuple(
-            sorted(surfaced)
+        cadence_worklist=tuple(sorted(surfaced)),
+        cadence_query_event_upper_bounds=tuple(
+            (
+                address,
+                family,
+                int(state.report_query_rows_by_address.get(address, 0)),
+            )
+            for address, family in sorted(surfaced)
         ),
         pair_routes=tuple(sorted(pair_routes.items())),
         prior_handling_names=len(routed.prior_handling_names),
@@ -1952,8 +2118,14 @@ def build_prepared(
     blocks: BlockInventory | None,
     population: PopulationState | None,
     pass_wall_seconds: tuple[tuple[str, float], ...] = (),
+    calibration_vector: DnsblockCalibrationVector | None = None,
+    summary_population: PopulationState | None = None,
+    data_size_bytes: int = 0,
     limits: DnsblockLimits = LIMITS,
 ) -> DnsblockPrepared:
+    vector = calibration_vector or DnsblockCalibrationVector()
+    if not isinstance(vector, DnsblockCalibrationVector):
+        raise ValueError("dnsblock calibration vector has the wrong type")
     status = population_status
     retained_coverage = coverage.trusted_intervals
     if block_status.state is not PreparedState.READY:
@@ -1983,8 +2155,25 @@ def build_prepared(
     if population.a1_rows > population.a2_rows:
         raise ValueError("dnsblock A1 population is not a subset of A2")
     try:
-        name_routes, grids = _population_facts(population, window, coverage, limits)
-        analysis = _build_analysis(population, window, coverage, limits)
+        arrival_memberships = {} if calibration_vector is not None else None
+        burst_memberships = {} if calibration_vector is not None else None
+        name_routes, grids = _population_facts(
+            population,
+            window,
+            coverage,
+            limits,
+            selected_days=vector.arrival_days,
+            selected_history=vector.arrival_history,
+            calibration_memberships=arrival_memberships,
+        )
+        analysis = _build_analysis(
+            population,
+            window,
+            coverage,
+            limits,
+            vector,
+            burst_calibration_memberships=burst_memberships,
+        )
     except FoldAbstention as exc:
         facts = DnsblockPreflight(
             PreparedState.ABSTAINED,
@@ -2027,11 +2216,30 @@ def build_prepared(
         grids,
         _resident_population(population) + _resident_block(blocks),
         pass_wall_seconds,
+        (
+            (
+                datetime.fromtimestamp(summary_population.report_first_ts, timezone.utc),
+                datetime.fromtimestamp(summary_population.report_last_ts, timezone.utc),
+            )
+            if summary_population is not None
+            and summary_population.report_first_ts is not None
+            and summary_population.report_last_ts is not None
+            else None
+        ),
+        data_size_bytes,
     )
     return DnsblockPrepared(
         facts,
         analysis=analysis,
         cadence_complete=not analysis.cadence_worklist,
+        calibration_survivors=(
+            CalibrationSurvivorFacts(
+                tuple(sorted(arrival_memberships.items())),
+                tuple(sorted(burst_memberships.items())),
+            )
+            if arrival_memberships is not None and burst_memberships is not None
+            else None
+        ),
     )
 
 
@@ -2040,6 +2248,8 @@ def make_cadence_sink(
     inventory: BlockInventory,
     mask: Callable[[pd.DataFrame], PositionalMask],
     *,
+    window: DualWindow | None = None,
+    channel: str = "dnsblock.cadence",
     limits: DnsblockLimits = LIMITS,
 ) -> FoldSink:
     """Collect exact included gaps for one surfaced address-family pair."""
@@ -2063,10 +2273,17 @@ def make_cadence_sink(
         keep_mask: PositionalMask,
     ) -> FoldDelta:
         state: CadenceState = delta.value
+        if chunk.frame.empty:
+            return FoldDelta(state, 64 + len(state.included_gaps) * 8)
+        report_mask = (
+            _sink_membership_masks(chunk, window)[0]
+            if window is not None
+            else np.asarray(chunk.report_mask, dtype=bool)
+        )
         selected_positions = [
             pos
             for pos, (kept, report) in enumerate(
-                zip(keep_mask.keep, chunk.report_mask)
+                zip(keep_mask.keep, report_mask)
             )
             if kept and report
         ]
@@ -2145,10 +2362,176 @@ def make_cadence_sink(
         return run
 
     return FoldSink(
-        "dnsblock.cadence",
+        channel,
         lambda: FoldDelta(CadenceState(), 0),
         consume,
         CadenceState,
+        commit,
+        mask,
+    )
+
+
+def make_cadence_batch_sink(
+    pairs: tuple[tuple[str, str], ...],
+    inventory: BlockInventory,
+    mask: Callable[[pd.DataFrame], PositionalMask],
+    *,
+    window: DualWindow | None = None,
+    channel: str = "dnsblock.cadence_batch",
+    limits: DnsblockLimits = LIMITS,
+) -> FoldSink:
+    """Collect cadence for a bounded pair batch in one physical source scan.
+
+    The runner admits a batch only when the sum of its query-event upper bounds
+    is at most ``limits.cadence_gaps``.  This reducer independently enforces the
+    existing per-pair cap and the same total in-flight cap as a second line of
+    defense; it never combines one pair's gap series with another's.
+    """
+    ordered_pairs = tuple(sorted(pairs))
+    if not ordered_pairs or len(ordered_pairs) != len(set(ordered_pairs)):
+        raise ValueError("dnsblock cadence batch pairs must be unique and non-empty")
+    wanted = frozenset(ordered_pairs)
+    wanted_addresses = frozenset(address for address, _family_key in ordered_pairs)
+    block_membership = frozenset(
+        (name, day)
+        for name, days in inventory.block_dates.items()
+        for day in days
+    )
+
+    def resident(state: CadenceBatchState) -> int:
+        return 64 * len(state.states) + 8 * sum(
+            len(item.included_gaps) for item in state.states.values()
+        )
+
+    def enforce_total(state: CadenceBatchState) -> None:
+        if sum(len(item.included_gaps) for item in state.states.values()) > limits.cadence_gaps:
+            raise FoldAbstention("dnsblock cadence gaps exceed 10,000")
+
+    def append_gap(state: CadenceState, gap: float) -> None:
+        if not (0 <= gap < _CADENCE_MAX_GAP_SECONDS):
+            return
+        if len(state.included_gaps) >= limits.cadence_gaps:
+            raise FoldAbstention("dnsblock cadence gaps exceed 10,000")
+        state.included_gaps.append(gap)
+
+    def consume(
+        delta: FoldDelta,
+        chunk: DecodedChunk,
+        keep_mask: PositionalMask,
+    ) -> FoldDelta:
+        batch: CadenceBatchState = delta.value
+        if chunk.frame.empty:
+            return FoldDelta(batch, resident(batch))
+        report_mask = (
+            _sink_membership_masks(chunk, window)[0]
+            if window is not None
+            else np.asarray(chunk.report_mask, dtype=bool)
+        )
+        positions = [
+            pos
+            for pos, (kept, report) in enumerate(
+                zip(keep_mask.keep, report_mask)
+            )
+            if kept and report
+        ]
+        selected = chunk.frame.iloc[positions]
+        selected = selected[selected["event_type"] == "query"].copy()
+        if selected.empty:
+            return FoldDelta(batch, resident(batch))
+        selected["numeric_ts"] = pd.to_numeric(selected["ts"], errors="coerce")
+        selected = selected[
+            selected["numeric_ts"].notna() & np.isfinite(selected["numeric_ts"])
+        ]
+        if selected.empty:
+            return FoldDelta(batch, resident(batch))
+        address_map = {
+            value: normalize_address(value)
+            for value in selected["src"].drop_duplicates().tolist()
+        }
+        name_map = {
+            value: normalize_name(value)
+            for value in selected["query"].drop_duplicates().tolist()
+        }
+        selected["address"] = selected["src"].map(
+            {value: result[0] for value, result in address_map.items()}
+        )
+        selected["name"] = selected["query"].map(
+            {value: result[0] for value, result in name_map.items()}
+        )
+        selected = selected[
+            selected["address"].isin(wanted_addresses) & selected["name"].notna()
+        ]
+        if selected.empty:
+            return FoldDelta(batch, resident(batch))
+        selected["day"] = pd.to_datetime(
+            selected["numeric_ts"], unit="s", utc=True
+        ).dt.date
+        selected["family"] = selected["name"].map(lambda value: _family(str(value))[0])
+        selected = selected[
+            [
+                (str(address), str(family)) in wanted
+                and (str(name), day) in block_membership
+                for address, family, name, day in zip(
+                    selected["address"],
+                    selected["family"],
+                    selected["name"],
+                    selected["day"],
+                )
+            ]
+        ]
+        for (address, family), frame in selected.groupby(
+            ["address", "family"], sort=False
+        ):
+            key = (str(address), str(family))
+            state = batch.states.setdefault(key, CadenceState())
+            for ts in sorted(float(value) for value in frame["numeric_ts"]):
+                if state.last_ts is not None:
+                    if ts < state.last_ts:
+                        raise ValueError(
+                            "dnsblock cadence rows are not chronological within a file"
+                        )
+                    append_gap(state, ts - state.last_ts)
+                if state.first_ts is None:
+                    state.first_ts = ts
+                state.last_ts = ts
+        enforce_total(batch)
+        return FoldDelta(batch, resident(batch))
+
+    def commit(run: CadenceBatchState, delta: FoldDelta) -> CadenceBatchState:
+        part: CadenceBatchState = delta.value
+        for pair, incoming in part.states.items():
+            if incoming.first_ts is None:
+                continue
+            state = run.states.setdefault(pair, CadenceState())
+            if state.first_ts is None:
+                state.first_ts = incoming.first_ts
+                state.last_ts = incoming.last_ts
+                state.included_gaps.extend(incoming.included_gaps)
+                continue
+            assert incoming.last_ts is not None and state.first_ts is not None
+            if incoming.last_ts > state.first_ts:
+                raise ValueError(
+                    "dnsblock cadence source files overlap or are out of order"
+                )
+            combined = list(incoming.included_gaps)
+            boundary = state.first_ts - incoming.last_ts
+            if 0 <= boundary < _CADENCE_MAX_GAP_SECONDS:
+                if len(combined) + len(state.included_gaps) >= limits.cadence_gaps:
+                    raise FoldAbstention("dnsblock cadence gaps exceed 10,000")
+                combined.append(boundary)
+            if len(combined) + len(state.included_gaps) > limits.cadence_gaps:
+                raise FoldAbstention("dnsblock cadence gaps exceed 10,000")
+            combined.extend(state.included_gaps)
+            state.first_ts = incoming.first_ts
+            state.included_gaps = combined
+        enforce_total(run)
+        return run
+
+    return FoldSink(
+        channel,
+        lambda: FoldDelta(CadenceBatchState(), 0),
+        consume,
+        CadenceBatchState,
         commit,
         mask,
     )
@@ -2184,7 +2567,11 @@ def finalize_cadence(
             name_routes=(),
             grids=(),
         )
-        return DnsblockPrepared(updated_preflight, cadence_complete=True)
+        return DnsblockPrepared(
+            updated_preflight,
+            cadence_complete=True,
+            calibration_survivors=prepared.calibration_survivors,
+        )
     missing = set(prepared.analysis.cadence_worklist) - set(results)
     if missing:
         raise ValueError("dnsblock cadence enrichment did not conserve its worklist")
@@ -2197,6 +2584,7 @@ def finalize_cadence(
         analysis=prepared.analysis,
         cadence=cadence,
         cadence_complete=True,
+        calibration_survivors=prepared.calibration_survivors,
     )
 
 

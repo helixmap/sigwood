@@ -17,6 +17,8 @@ from sigwood.common.loader import (
     PROVENANCE_SCHEMA_VERSION,
     ProvenanceEntry,
     ProvenanceManifest,
+    DualWindow,
+    PositionalMask,
     canonical_manifest_bytes,
     hash_file,
 )
@@ -26,6 +28,101 @@ from sigwood.detectors import dnsblock
 
 
 UTC = timezone.utc
+
+
+def test_cadence_batch_packing_is_deterministic_and_preserves_oversize_singletons():
+    pairs = (("a", "one"), ("b", "two"), ("c", "three"), ("d", "four"))
+    assert runner._pack_dnsblock_cadence_batches(
+        pairs,
+        {pairs[0]: 4, pairs[1]: 6, pairs[2]: 11, pairs[3]: 3},
+        limit=10,
+    ) == ((pairs[0], pairs[1]), (pairs[2],), (pairs[3],))
+
+
+def test_cadence_batch_packing_rejects_missing_or_negative_bounds():
+    pair = ("a", "one")
+    with pytest.raises(ValueError, match="do not conserve"):
+        runner._pack_dnsblock_cadence_batches((pair,), {}, limit=10)
+    with pytest.raises(ValueError, match="non-negative"):
+        runner._pack_dnsblock_cadence_batches((pair,), {pair: -1}, limit=10)
+
+
+def test_private_calibration_batch_shares_physical_passes_and_isolates_windows_lanes(
+    tmp_path, monkeypatch,
+):
+    log = tmp_path / "pihole.log"
+    _write_log(log)
+    windows = (
+        DualWindow(
+            (
+                datetime(2026, 1, 19, tzinfo=UTC),
+                datetime(2026, 1, 21, tzinfo=UTC),
+            )
+        ),
+        DualWindow(
+            (
+                datetime(2026, 1, 21, tzinfo=UTC),
+                datetime(2026, 1, 22, tzinfo=UTC),
+            )
+        ),
+    )
+
+    def default_mask(frame):
+        return PositionalMask(
+            tuple(value != "query" for value in frame["event_type"])
+        )
+
+    def unsuppressed(frame):
+        return PositionalMask((True,) * len(frame))
+
+    from sigwood.common import loader
+
+    calls = 0
+    real_load = loader.load_required_logs
+
+    def observed_load(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return real_load(*args, **kwargs)
+
+    monkeypatch.setattr(loader, "load_required_logs", observed_load)
+    batch = runner._prepare_dnsblock_calibration_batch(
+        source_paths=(log,),
+        windows=windows,
+        lane_masks={"default": default_mask, "unsuppressed": unsuppressed},
+        dnsblock_mod=dnsblock,
+    )
+    assert calls == 2  # one shared anchor/block pass + one shared population pass
+    assert set(batch.prepared) == {
+        (0, "default"),
+        (0, "unsuppressed"),
+        (1, "default"),
+        (1, "unsuppressed"),
+    }
+    assert batch.prepared[(0, "default")].preflight.a2_rows == 0
+    assert batch.prepared[(0, "unsuppressed")].preflight.a2_rows == 1
+    assert batch.prepared[(1, "default")].preflight.a2_rows == 0
+    assert batch.prepared[(1, "unsuppressed")].preflight.a2_rows == 0
+    assert all(
+        item.preflight.snapshot_identity == batch.snapshot_identity_sha256
+        for item in batch.prepared.values()
+    )
+    assert 0 <= batch.max_window_routes <= dnsblock.LIMITS.per_window_routes
+    assert 0 <= batch.max_inflight_cadence_gaps <= dnsblock.LIMITS.cadence_gaps
+
+
+def test_cross_carrier_cadence_packing_enforces_one_total_bound():
+    work = (
+        ((0, "default"), ("a", "one"), 4),
+        ((0, "unsuppressed"), ("a", "one"), 6),
+        ((1, "default"), ("b", "two"), 11),
+        ((1, "unsuppressed"), ("b", "two"), 3),
+    )
+    assert runner._pack_dnsblock_calibration_work(work, limit=10) == (
+        (work[0], work[1]),
+        (work[2],),
+        (work[3],),
+    )
 
 
 def _selection() -> runner.DetectorSelection:

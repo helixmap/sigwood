@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import Counter
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
+import json
 
 import pytest
 
@@ -17,7 +18,7 @@ from sigwood.common.loader import (
     PreparedStatus,
 )
 from sigwood.detectors import dnsblock
-from tools import dnsblock_c1_harness
+from tools import dnsblock_c1_harness, dnsblock_c1_sweep
 
 
 UTC = timezone.utc
@@ -146,6 +147,83 @@ def _prepared(*, weak: bool = False, days: int = 5):
         results=results,
         pass_wall_seconds=(),
     )
+
+
+def test_private_burst_vector_and_arrival_only_arm_keep_complete_grid(tmp_path):
+    window = _window()
+    population = _population(window)
+    strict = dnsblock.build_prepared(
+        snapshot_identity="b" * 64,
+        window=window,
+        coverage=_coverage(window),
+        block_status=PreparedStatus(PreparedState.READY),
+        population_status=PreparedStatus(PreparedState.READY),
+        blocks=dnsblock.BlockInventory(),
+        population=population,
+        calibration_vector=dnsblock.DnsblockCalibrationVector(
+            burst_absolute=200,
+            burst_multiple=8,
+            burst_active=3,
+        ),
+    )
+    arrival_only = dnsblock.build_prepared(
+        snapshot_identity="b" * 64,
+        window=window,
+        coverage=_coverage(window),
+        block_status=PreparedStatus(PreparedState.READY),
+        population_status=PreparedStatus(PreparedState.READY),
+        blocks=dnsblock.BlockInventory(),
+        population=population,
+        calibration_vector=dnsblock.DnsblockCalibrationVector(
+            burst_enabled=False,
+        ),
+    )
+    assert len(strict.analysis.burst_grids) == 75
+    assert strict.analysis.bursts == ()
+    assert strict.calibration_survivors is not None
+    assert strict.calibration_survivors.arrival_memberships
+    assert strict.calibration_survivors.burst_memberships
+    assert all(
+        0 < mask < (1 << 12)
+        for _identity, mask in strict.calibration_survivors.arrival_memberships
+    )
+    assert all(
+        0 < mask < (1 << 75)
+        for _identity, mask in strict.calibration_survivors.burst_memberships
+    )
+    arrival_union = dnsblock_c1_sweep.GridSurvivorAccumulator(12)
+    arrival_union.ingest(strict.calibration_survivors.arrival_memberships)
+    assert [row["identity_digest"] for row in arrival_union.aggregate()] == [
+        cell.identity_digest for cell in strict.preflight.grids
+    ]
+    burst_union = dnsblock_c1_sweep.GridSurvivorAccumulator(75)
+    burst_union.ingest(strict.calibration_survivors.burst_memberships)
+    assert [row["identity_digest"] for row in burst_union.aggregate()] == [
+        cell.identity_digest for cell in strict.analysis.burst_grids
+    ]
+    assert len(arrival_only.analysis.burst_grids) == 75
+    assert arrival_only.analysis.bursts == ()
+    assert arrival_only.analysis.notes.burst_active_required == dnsblock.BURST_ACTIVE
+    aggregate = tmp_path / "aggregate.json"
+    runner._write_dnsblock_preflight_artifact(aggregate, strict)
+    payload = json.loads(aggregate.read_text(encoding="utf-8"))
+    assert "calibration_survivors" not in payload
+    assert payload["burden"] == {
+        "entity_findings": strict.analysis.notes.entity_findings,
+        "context_findings": strict.analysis.notes.context_findings,
+    }
+
+    cadence = {
+        pair: dnsblock.CadenceState(included_gaps=[60.0] * 20)
+        for pair in strict.analysis.cadence_worklist
+    }
+    finalized = dnsblock.finalize_cadence(
+        strict,
+        status=PreparedStatus(PreparedState.READY),
+        results=cadence,
+        pass_wall_seconds=(),
+    )
+    assert finalized.calibration_survivors == strict.calibration_survivors
 
 
 def test_burst_grid_routes_all_pairs_once_and_uses_earliest_wall_clock_argmax():
@@ -359,6 +437,7 @@ def test_harness_rejects_unsafe_provisional_note_before_final_artifact(
                 "2026-01-01T00:00:00Z",
                 "--until",
                 "2026-01-02T00:00:00Z",
+                "--internal-legacy",
             ]
         )
     assert not final.exists()

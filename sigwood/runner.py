@@ -130,6 +130,19 @@ class RunPlan:
 
 
 @dataclass(frozen=True)
+class DnsblockCalibrationBatch:
+    """Private aggregate carrier returned by the planned C1 preparation path."""
+
+    prepared: Mapping[tuple[int, str], Any]
+    snapshot_identity_sha256: str
+    content_identity_sha256: str
+    pass_wall_seconds: tuple[tuple[str, float], ...]
+    data_size_bytes: int
+    max_window_routes: int
+    max_inflight_cadence_gaps: int
+
+
+@dataclass(frozen=True)
 class DetectorSelection:
     """Detector discovery, vocabulary, and selection before source probing."""
 
@@ -1285,7 +1298,35 @@ def _plan_and_load(
             cadence_results: dict[tuple[str, str], Any] = {}
             cadence_status = loader.PreparedStatus(loader.PreparedState.READY)
             cadence_started = time.monotonic()
-            for pair in dnsblock_prepared.analysis.cadence_worklist:
+            upper_bounds = {
+                (address, family): count
+                for address, family, count in (
+                    dnsblock_prepared.analysis.cadence_query_event_upper_bounds
+                )
+            }
+            cadence_batches = _pack_dnsblock_cadence_batches(
+                dnsblock_prepared.analysis.cadence_worklist,
+                upper_bounds,
+                limit=dnsblock_mod.LIMITS.cadence_gaps,
+            )
+            for batch in cadence_batches:
+                over_bound_singleton = (
+                    len(batch) == 1
+                    and upper_bounds[batch[0]] > dnsblock_mod.LIMITS.cadence_gaps
+                )
+                cadence_sink = (
+                    dnsblock_mod.make_cadence_sink(
+                        batch[0],
+                        population_inventory,
+                        mask,
+                    )
+                    if over_bound_singleton
+                    else dnsblock_mod.make_cadence_batch_sink(
+                        batch,
+                        population_inventory,
+                        mask,
+                    )
+                )
                 cadence_load = loader.load_required_logs(
                     one_pattern,
                     source_dirs,
@@ -1298,11 +1339,7 @@ def _plan_and_load(
                     sink_plans={
                         pattern: loader.SinkPlan(
                             (
-                                dnsblock_mod.make_cadence_sink(
-                                    pair,
-                                    population_inventory,
-                                    mask,
-                                ),
+                                cadence_sink,
                             ),
                             preserve_frame=False,
                         )
@@ -1311,8 +1348,9 @@ def _plan_and_load(
                     prepared_snapshots={pattern: snapshot},
                     _directory_skips=plan.directory_skips,
                 )
+                channel = cadence_sink.channel
                 pair_status = cadence_load.prepared_status.get(
-                    "dnsblock.cadence",
+                    channel,
                     loader.PreparedStatus(
                         loader.PreparedState.FAILED,
                         "cadence pass unavailable",
@@ -1321,16 +1359,22 @@ def _plan_and_load(
                 if pair_status.state is not loader.PreparedState.READY:
                     cadence_status = pair_status
                     break
-                pair_result = cadence_load.fold_results.get(pattern, {}).get(
-                    "dnsblock.cadence"
-                )
+                pair_result = cadence_load.fold_results.get(pattern, {}).get(channel)
                 if pair_result is None:
                     cadence_status = loader.PreparedStatus(
                         loader.PreparedState.FAILED,
                         "cadence pass produced no reducer state",
                     )
                     break
-                cadence_results[pair] = pair_result
+                if over_bound_singleton:
+                    cadence_results[batch[0]] = pair_result
+                else:
+                    cadence_results.update(
+                        {
+                            pair: pair_result.states.get(pair, dnsblock_mod.CadenceState())
+                            for pair in batch
+                        }
+                    )
             pass_wall_seconds["cadence"] = time.monotonic() - cadence_started
             dnsblock_prepared = dnsblock_mod.finalize_cadence(
                 dnsblock_prepared,
@@ -1353,6 +1397,361 @@ def _plan_and_load(
         coverage_decisions=coverage_decisions,
         dnsblock_prepared=dnsblock_prepared,
     )
+
+
+def _pack_dnsblock_cadence_batches(
+    worklist: tuple[tuple[str, str], ...],
+    upper_bounds: Mapping[tuple[str, str], int],
+    *,
+    limit: int,
+) -> tuple[tuple[tuple[str, str], ...], ...]:
+    """First-fit ordered batches under a conservative retained-gap bound.
+
+    An over-bound pair is deliberately emitted as a singleton so the caller can
+    preserve the original per-pair sink and its exact abstention behavior.
+    """
+    if limit <= 0:
+        raise ValueError("dnsblock cadence batch limit must be positive")
+    batches: list[tuple[tuple[str, str], ...]] = []
+    current: list[tuple[str, str]] = []
+    current_total = 0
+    for pair in worklist:
+        if pair not in upper_bounds:
+            raise ValueError("dnsblock cadence upper bounds do not conserve worklist")
+        bound = int(upper_bounds[pair])
+        if bound < 0:
+            raise ValueError("dnsblock cadence upper bound must be non-negative")
+        if bound > limit:
+            if current:
+                batches.append(tuple(current))
+                current = []
+                current_total = 0
+            batches.append((pair,))
+            continue
+        if current and current_total + bound > limit:
+            batches.append(tuple(current))
+            current = []
+            current_total = 0
+        current.append(pair)
+        current_total += bound
+    if current:
+        batches.append(tuple(current))
+    if tuple(pair for batch in batches for pair in batch) != worklist:
+        raise ValueError("dnsblock cadence batching did not conserve worklist order")
+    return tuple(batches)
+
+
+def _prepare_dnsblock_calibration_batch(
+    *,
+    source_paths: Sequence[Path],
+    windows: tuple[DualWindow, ...],
+    lane_masks: Mapping[str, Any],
+    dnsblock_mod: Any,
+    calibration_vector: Any | None = None,
+) -> DnsblockCalibrationBatch:
+    """Prepare 2/4/8 exact windows and both allowlist lanes on real fold sinks.
+
+    The broad ``DualWindow`` controls only physical I/O.  Every population and
+    cadence sink reclassifies rows against its own exact interval.  Results are
+    kept independent by unique fold channels and returned as ordinary
+    ``DnsblockPrepared`` values for detector routing and real serializer use.
+    """
+    from sigwood.common import loader
+
+    if getattr(dnsblock_mod, "STATUS", None) != "planned":
+        raise ValueError("dnsblock calibration requires planned detector status")
+    if not 1 <= len(windows) <= 8:
+        raise ValueError("dnsblock calibration window batch must contain 1 through 8 windows")
+    if set(lane_masks) != {"default", "unsuppressed"}:
+        raise ValueError("dnsblock calibration requires default and unsuppressed lanes")
+    if not source_paths:
+        raise ValueError("dnsblock calibration requires at least one source path")
+    for window in windows:
+        if not isinstance(window, DualWindow):
+            raise ValueError("dnsblock calibration windows must use DualWindow")
+
+    pattern = "pihole*.log*"
+    one_pattern = {pattern: "pihole_dir"}
+    source_dirs = {"pihole_dir": [Path(path) for path in source_paths]}
+    starts = [
+        window.context_interval[0]
+        if window.context_interval is not None
+        else window.report_interval[0]
+        for window in windows
+    ]
+    broad = DualWindow((min(starts), max(window.report_interval[1] for window in windows)))
+    pass_walls: dict[str, float] = {}
+
+    anchor_sinks = tuple(
+        dnsblock_mod.make_anchor_block_sink(
+            lane_masks[lane],
+            channel=f"dnsblock.anchor_blocks.{lane}",
+        )
+        for lane in ("default", "unsuppressed")
+    )
+    started = time.monotonic()
+    anchor_result = loader.load_required_logs(
+        one_pattern,
+        source_dirs,
+        broad.report_interval[0],
+        broad.report_interval[1],
+        show_progress=False,
+        sink_plans={pattern: loader.SinkPlan(anchor_sinks, preserve_frame=False)},
+        dual_windows={pattern: broad},
+    )
+    pass_walls["anchor_block_shared"] = time.monotonic() - started
+    snapshot = anchor_result.snapshots.get(pattern)
+    if snapshot is None:
+        raise ValueError("dnsblock calibration could not establish a source snapshot")
+
+    prepared: dict[tuple[int, str], Any] = {}
+    inventories: dict[tuple[int, str], Any] = {}
+    block_statuses: dict[tuple[int, str], Any] = {}
+    population_sinks = []
+    for index, window in enumerate(windows):
+        for lane in ("default", "unsuppressed"):
+            key = (index, lane)
+            channel = f"dnsblock.anchor_blocks.{lane}"
+            status = anchor_result.prepared_status.get(
+                channel,
+                loader.PreparedStatus(
+                    loader.PreparedState.FAILED,
+                    "anchor/block pass unavailable",
+                ),
+            )
+            facts = anchor_result.fold_results.get(pattern, {}).get(channel)
+            inventory = None
+            if status.state is loader.PreparedState.READY and facts is not None:
+                try:
+                    inventory = dnsblock_mod.finalize_block_inventory(
+                        facts.blocks,
+                        window.report_interval,
+                    )
+                except loader.FoldAbstention as exc:
+                    status = loader.PreparedStatus(loader.PreparedState.ABSTAINED, str(exc))
+            inventories[key] = inventory or dnsblock_mod.BlockInventory()
+            block_statuses[key] = status
+            population_sinks.append(
+                dnsblock_mod.make_population_sink(
+                    inventories[key],
+                    window,
+                    lane_masks[lane],
+                    channel=f"dnsblock.population.{index}.{lane}",
+                    sink_local_window=True,
+                    capture_summary_window=lane == "unsuppressed",
+                )
+            )
+
+    started = time.monotonic()
+    population_result = loader.load_required_logs(
+        one_pattern,
+        source_dirs,
+        broad.report_interval[0],
+        broad.report_interval[1],
+        show_progress=False,
+        sink_plans={
+            pattern: loader.SinkPlan(tuple(population_sinks), preserve_frame=False)
+        },
+        dual_windows={pattern: broad},
+        prepared_snapshots={pattern: snapshot},
+    )
+    pass_walls["population_shared"] = time.monotonic() - started
+    population_states = {
+        (index, lane): population_result.fold_results.get(pattern, {}).get(
+            f"dnsblock.population.{index}.{lane}"
+        )
+        for index, _window in enumerate(windows)
+        for lane in ("default", "unsuppressed")
+    }
+    for index, window in enumerate(windows):
+        for lane in ("default", "unsuppressed"):
+            key = (index, lane)
+            channel = f"dnsblock.population.{index}.{lane}"
+            coverage = _select_coverage_lane(
+                population_result.availability.get(pattern, ()),
+                window.report_interval,
+            )
+            population_status = population_result.prepared_status.get(
+                channel,
+                loader.PreparedStatus(
+                    loader.PreparedState.FAILED,
+                    "population pass unavailable",
+                ),
+            )
+            prepared[key] = dnsblock_mod.build_prepared(
+                snapshot_identity=snapshot.identity_sha256,
+                window=window,
+                coverage=coverage,
+                block_status=block_statuses[key],
+                population_status=population_status,
+                blocks=inventories[key],
+                population=population_states[key],
+                pass_wall_seconds=tuple(sorted(pass_walls.items())),
+                calibration_vector=calibration_vector,
+                summary_population=population_states[(index, "unsuppressed")],
+                data_size_bytes=population_result.data_size_bytes,
+            )
+
+    work: list[tuple[tuple[int, str], tuple[str, str], int]] = []
+    for key in sorted(prepared):
+        item = prepared[key]
+        if (
+            item.preflight.state is loader.PreparedState.READY
+            and item.analysis is not None
+        ):
+            bounds = {
+                (address, family): count
+                for address, family, count in item.analysis.cadence_query_event_upper_bounds
+            }
+            work.extend((key, pair, bounds[pair]) for pair in item.analysis.cadence_worklist)
+
+    cadence_results: dict[tuple[int, str], dict[tuple[str, str], Any]] = {
+        key: {} for key in prepared
+    }
+    cadence_statuses = {
+        key: loader.PreparedStatus(loader.PreparedState.READY) for key in prepared
+    }
+    cadence_started = time.monotonic()
+    cadence_batches = _pack_dnsblock_calibration_work(
+        tuple(work), limit=dnsblock_mod.LIMITS.cadence_gaps
+    )
+    max_inflight_cadence_gaps = max(
+        (
+            min(
+                sum(item[2] for item in cadence_batch),
+                dnsblock_mod.LIMITS.cadence_gaps,
+            )
+            for cadence_batch in cadence_batches
+        ),
+        default=0,
+    )
+    for batch in cadence_batches:
+        sinks = []
+        sink_meta: dict[str, tuple[tuple[int, str], tuple[tuple[str, str], ...], bool]] = {}
+        grouped: dict[tuple[int, str], list[tuple[tuple[str, str], int]]] = {}
+        for key, pair, bound in batch:
+            grouped.setdefault(key, []).append((pair, bound))
+        for key, values in grouped.items():
+            index, lane = key
+            pairs = tuple(pair for pair, _bound in values)
+            over_bound = len(values) == 1 and values[0][1] > dnsblock_mod.LIMITS.cadence_gaps
+            channel = f"dnsblock.cadence.{index}.{lane}"
+            sink = (
+                dnsblock_mod.make_cadence_sink(
+                    pairs[0],
+                    inventories[key],
+                    lane_masks[lane],
+                    window=windows[index],
+                    channel=channel,
+                )
+                if over_bound
+                else dnsblock_mod.make_cadence_batch_sink(
+                    pairs,
+                    inventories[key],
+                    lane_masks[lane],
+                    window=windows[index],
+                    channel=channel,
+                )
+            )
+            sinks.append(sink)
+            sink_meta[channel] = (key, pairs, over_bound)
+        cadence_load = loader.load_required_logs(
+            one_pattern,
+            source_dirs,
+            broad.report_interval[0],
+            broad.report_interval[1],
+            show_progress=False,
+            sink_plans={pattern: loader.SinkPlan(tuple(sinks), preserve_frame=False)},
+            dual_windows={pattern: broad},
+            prepared_snapshots={pattern: snapshot},
+        )
+        for channel, (key, pairs, over_bound) in sink_meta.items():
+            status = cadence_load.prepared_status.get(
+                channel,
+                loader.PreparedStatus(
+                    loader.PreparedState.FAILED,
+                    "cadence pass unavailable",
+                ),
+            )
+            if status.state is not loader.PreparedState.READY:
+                cadence_statuses[key] = status
+                continue
+            result = cadence_load.fold_results.get(pattern, {}).get(channel)
+            if result is None:
+                cadence_statuses[key] = loader.PreparedStatus(
+                    loader.PreparedState.FAILED,
+                    "cadence pass produced no reducer state",
+                )
+                continue
+            if over_bound:
+                cadence_results[key][pairs[0]] = result
+            else:
+                cadence_results[key].update(
+                    {
+                        pair: result.states.get(pair, dnsblock_mod.CadenceState())
+                        for pair in pairs
+                    }
+                )
+    pass_walls["cadence_shared"] = time.monotonic() - cadence_started
+    for key, item in tuple(prepared.items()):
+        prepared[key] = dnsblock_mod.finalize_cadence(
+            item,
+            status=cadence_statuses[key],
+            results=cadence_results[key],
+            pass_wall_seconds=tuple(sorted(pass_walls.items())),
+        )
+    max_window_routes = max(
+        (
+            sum(count for _route, count in item.analysis.pair_routes)
+            for item in prepared.values()
+            if item.analysis is not None
+        ),
+        default=0,
+    )
+    return DnsblockCalibrationBatch(
+        prepared=prepared,
+        snapshot_identity_sha256=snapshot.identity_sha256,
+        content_identity_sha256=snapshot.content_identity_sha256,
+        pass_wall_seconds=tuple(sorted(pass_walls.items())),
+        data_size_bytes=population_result.data_size_bytes,
+        max_window_routes=max_window_routes,
+        max_inflight_cadence_gaps=max_inflight_cadence_gaps,
+    )
+
+
+def _pack_dnsblock_calibration_work(
+    work: tuple[tuple[tuple[int, str], tuple[str, str], int], ...],
+    *,
+    limit: int,
+) -> tuple[tuple[tuple[tuple[int, str], tuple[str, str], int], ...], ...]:
+    """Pack cross-window/lane cadence work under one total conservative bound."""
+    if limit <= 0:
+        raise ValueError("dnsblock calibration cadence limit must be positive")
+    batches = []
+    current = []
+    total = 0
+    for item in work:
+        bound = int(item[2])
+        if bound < 0:
+            raise ValueError("dnsblock calibration cadence bound must be non-negative")
+        if bound > limit:
+            if current:
+                batches.append(tuple(current))
+                current = []
+                total = 0
+            batches.append((item,))
+            continue
+        if current and total + bound > limit:
+            batches.append(tuple(current))
+            current = []
+            total = 0
+        current.append(item)
+        total += bound
+    if current:
+        batches.append(tuple(current))
+    if tuple(item for batch in batches for item in batch) != work:
+        raise ValueError("dnsblock calibration cadence packing lost work")
+    return tuple(batches)
 
 
 def _prepare_detector_context(
@@ -1523,6 +1922,7 @@ def _write_dnsblock_preflight_artifact(path: Path, prepared: Any) -> None:
         "channels": {},
         "burst_grids": [],
         "final_shape_routes": [],
+        "burden": {"entity_findings": 0, "context_findings": 0},
         "recurring": None,
         "summary_notes": _format_dnsblock_summary_notes(prepared),
     }
@@ -1538,6 +1938,10 @@ def _write_dnsblock_preflight_artifact(path: Path, prepared: Any) -> None:
                 },
                 "burst_grids": [asdict(cell) for cell in analysis.burst_grids],
                 "final_shape_routes": list(analysis.final_shape_routes),
+                "burden": {
+                    "entity_findings": analysis.notes.entity_findings,
+                    "context_findings": analysis.notes.context_findings,
+                },
                 "withheld_arrival_burst_pairs": (
                     analysis.withheld_arrival_burst_pairs
                 ),

@@ -163,6 +163,57 @@ def _prepared(
     )
 
 
+def test_cadence_gap_bound_is_pair_scoped_and_uses_adjacent_day_runs():
+    address = "192.0.2.7"
+    other_address = "192.0.2.8"
+    day0 = datetime(2026, 1, 1, tzinfo=UTC).date()
+    day1 = day0 + timedelta(days=1)
+    day3 = day0 + timedelta(days=3)
+    state = dnsblock.PopulationState(
+        association={
+            (address, "a.example.com", day0): dnsblock.AssocCell(count=2),
+            (address, "b.example.com", day1): dnsblock.AssocCell(count=3),
+            (address, "a.example.com", day3): dnsblock.AssocCell(count=4),
+            (address, "other.test", day0): dnsblock.AssocCell(count=100),
+            (other_address, "a.example.com", day0): dnsblock.AssocCell(count=100),
+        }
+    )
+    blocks = dnsblock.BlockInventory(
+        block_dates={
+            "a.example.com": {day0, day3},
+            "b.example.com": {day1},
+            "other.test": {day0},
+        }
+    )
+
+    assert dnsblock._cadence_retained_gap_upper_bounds(
+        state,
+        blocks,
+        {(address, "example.com")},
+    ) == ((address, "example.com", 7),)
+
+
+def test_cadence_gap_bound_filters_a2_cells_to_exact_block_membership():
+    address = "192.0.2.7"
+    day0 = datetime(2026, 1, 1, tzinfo=UTC).date()
+    day1 = day0 + timedelta(days=1)
+    state = dnsblock.PopulationState(
+        association={
+            (address, "a.example.com", day0): dnsblock.AssocCell(count=2),
+            (address, "a.example.com", day1): dnsblock.AssocCell(count=50),
+        }
+    )
+    blocks = dnsblock.BlockInventory(
+        block_dates={"a.example.com": {day0}}
+    )
+
+    assert dnsblock._cadence_retained_gap_upper_bounds(
+        state,
+        blocks,
+        {(address, "example.com")},
+    ) == ((address, "example.com", 1),)
+
+
 def _context(prepared):
     return DetectorContext.unsuppressed(
         {}, data_window=prepared.preflight.report_interval

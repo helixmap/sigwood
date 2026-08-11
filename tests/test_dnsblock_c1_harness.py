@@ -31,16 +31,16 @@ def test_series_partition_is_contiguous_at_most_with_remainder_last():
 
 @pytest.mark.parametrize(
     ("window_count", "expected"),
-    ((1, 3600), (2, 7200), (3, 10800)),
+    ((1, 9000), (2, 18000), (3, 27000)),
 )
 def test_watchdog_scales_from_actual_batch_window_count(window_count, expected):
     assert harness._batch_watchdog_seconds(window_count) == expected
 
 
 def test_series_watchdog_sums_ordered_batch_bounds_plus_assembly():
-    assert harness._series_watchdog_seconds((1,)) == 4200
-    assert harness._series_watchdog_seconds((2, 1)) == 11400
-    assert harness._series_watchdog_seconds((3,)) == 11400
+    assert harness._series_watchdog_seconds((1,)) == 9600
+    assert harness._series_watchdog_seconds((2, 1)) == 27600
+    assert harness._series_watchdog_seconds((3,)) == 27600
 
 
 @pytest.mark.parametrize("window_count", (0, -1, True, 1.5))
@@ -124,8 +124,8 @@ def test_harness_uses_real_runner_and_writes_aggregate_preflight(tmp_path):
     }
     assert payload["harness"]["rss_bar"]["limit_bytes"] == 1536 * 1024 * 1024
     assert payload["harness"]["wall_limit_seconds"] == 15 * 60
-    assert payload["harness"]["per_window_watchdog_seconds"] == 3600
-    assert payload["harness"]["batch_deadline_seconds"] == 3600
+    assert payload["harness"]["per_window_watchdog_seconds"] == 9000
+    assert payload["harness"]["batch_deadline_seconds"] == 9000
     digest = payload["harness"]["semantic_digest"]
     assert digest["schema"] == "sigwood.dnsblock.semantic-digest"
     assert digest["version"] == 1
@@ -215,8 +215,8 @@ def test_harness_batch_request_uses_real_shared_runner_and_json_serializer(tmp_p
     assert payload["schema_version"] == 2
     assert payload["batch"]["window_count"] == 2
     assert payload["batch"]["watchdog_enforced"] is True
-    assert payload["batch"]["per_window_watchdog_seconds"] == 3600
-    assert payload["batch"]["batch_deadline_seconds"] == 7200
+    assert payload["batch"]["per_window_watchdog_seconds"] == 9000
+    assert payload["batch"]["batch_deadline_seconds"] == 18000
     assert len(payload["batch"]["content_identity_sha256"]) == 64
     assert payload["batch"]["allowlist_lanes"] == ["default", "unsuppressed"]
     assert payload["batch"]["peak_temp_bytes"] > 0
@@ -338,9 +338,9 @@ def test_harness_series_request_partitions_tail_and_emits_only_aggregate_unions(
     assert payload["series"]["watchdog_enforced"] is True
     assert payload["series"]["co_load"] == 2
     assert payload["series"]["assembly_overhead_seconds"] == 600
-    assert payload["series"]["per_window_watchdog_seconds"] == 3600
-    assert payload["series"]["batch_deadline_seconds_by_batch"] == [7200, 3600]
-    assert payload["series"]["series_deadline_seconds"] == 11400
+    assert payload["series"]["per_window_watchdog_seconds"] == 9000
+    assert payload["series"]["batch_deadline_seconds_by_batch"] == [18000, 9000]
+    assert payload["series"]["series_deadline_seconds"] == 27600
     assert payload["series"]["batch_partition"] == {
         "ordering": "contiguous",
         "limit": "at_most_batch_size",
@@ -445,12 +445,12 @@ def test_series_timeout_receipt_states_actual_timed_batch_bound(
     receipt = json.loads(
         artifact.with_suffix(".json.timeout.json").read_text(encoding="utf-8")
     )
-    assert receipt["per_window_watchdog_seconds"] == 3600
+    assert receipt["per_window_watchdog_seconds"] == 9000
     assert receipt["batch_window_count"] == 2
-    assert receipt["batch_deadline_seconds"] == 7200
-    assert receipt["configured_batch_deadline_seconds"] == 7200
-    assert receipt["batch_deadline_seconds_by_batch"] == [7200, 3600]
-    assert receipt["series_deadline_seconds"] == 11400
+    assert receipt["batch_deadline_seconds"] == 18000
+    assert receipt["configured_batch_deadline_seconds"] == 18000
+    assert receipt["batch_deadline_seconds_by_batch"] == [18000, 9000]
+    assert receipt["series_deadline_seconds"] == 27600
 
 
 def test_term_ignoring_worker_group_is_killed_and_reaped(monkeypatch):

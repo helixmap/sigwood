@@ -46,10 +46,9 @@ _FOLD_RSS_GREEN = 1536 * 1024 * 1024
 _MIXED_INCREMENT_GREEN = 512 * 1024 * 1024
 _WALL_GREEN_SECONDS = 15 * 60
 _WATCHDOG_RSS = 8 * 1024 * 1024 * 1024
-# PROVISIONAL-PENDING-MEASUREMENT: 3600 exceeds two times the worst observed
-# context-free single-window wall (1647s). Freeze measured-plus-margin after
-# the context-true rerun.
-_PER_WINDOW_WATCHDOG_SECONDS = 60 * 60
+# MEASURED: the heaviest context-true single window was approximately 7600s;
+# 9000s retains roughly 1.2x margin while tight bounds reduce expected work.
+_PER_WINDOW_WATCHDOG_SECONDS = 9_000
 # Supervisor ceiling for post-worker reducer/receipt/atomic-write assembly.
 # This is never a promotion wall and never relaxes the per-batch deadline.
 _ASSEMBLY_OVERHEAD_SECONDS = 600

@@ -1669,6 +1669,42 @@ def _report_family_names(
     return grouped
 
 
+def _cadence_retained_gap_upper_bounds(
+    state: PopulationState,
+    blocks: BlockInventory,
+    surfaced: set[tuple[str, str]],
+) -> tuple[tuple[str, str, int], ...]:
+    """Bound retained cadence gaps from exact A1 day memberships.
+
+    Cadence keeps only block-member query events for one address/family and
+    gaps shorter than six hours. Such a gap cannot cross an absent UTC day.
+    Therefore a maximal run of adjacent active days containing ``E`` events
+    contributes at most ``E - 1`` retained gaps, including cross-midnight and
+    cross-file boundary gaps.
+    """
+    daily_counts: dict[tuple[str, str], Counter[date]] = defaultdict(Counter)
+    for (address, name, day), cell in state.association.items():
+        pair = (address, _family(name)[0])
+        if pair not in surfaced or day not in blocks.block_dates.get(name, ()):
+            continue
+        daily_counts[pair][day] += cell.count
+
+    bounds: list[tuple[str, str, int]] = []
+    for address, family in sorted(surfaced):
+        event_count = 0
+        run_count = 0
+        previous_day: date | None = None
+        for day, count in sorted(daily_counts.get((address, family), {}).items()):
+            if count <= 0:
+                continue
+            if previous_day is None or day != previous_day + timedelta(days=1):
+                run_count += 1
+            event_count += count
+            previous_day = day
+        bounds.append((address, family, event_count - run_count))
+    return tuple(bounds)
+
+
 def _burst_route(
     period_counts: Mapping[int, int],
     eligible_periods: set[int],
@@ -1915,6 +1951,7 @@ def _build_recurring_facts(
 
 def _build_analysis(
     state: PopulationState,
+    blocks: BlockInventory,
     window: DualWindow,
     coverage: CoverageDecision,
     limits: DnsblockLimits,
@@ -2087,13 +2124,10 @@ def _build_analysis(
             1 for pair in burst_pairs if pair not in arrivals_by_pair
         ),
         cadence_worklist=tuple(sorted(surfaced)),
-        cadence_query_event_upper_bounds=tuple(
-            (
-                address,
-                family,
-                int(state.report_query_rows_by_address.get(address, 0)),
-            )
-            for address, family in sorted(surfaced)
+        cadence_query_event_upper_bounds=_cadence_retained_gap_upper_bounds(
+            state,
+            blocks,
+            surfaced,
         ),
         pair_routes=tuple(sorted(pair_routes.items())),
         prior_handling_names=len(routed.prior_handling_names),
@@ -2168,6 +2202,7 @@ def build_prepared(
         )
         analysis = _build_analysis(
             population,
+            blocks,
             window,
             coverage,
             limits,

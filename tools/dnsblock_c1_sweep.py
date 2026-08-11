@@ -50,11 +50,12 @@ ALLOWED_LANES = ("default", "unsuppressed")
 ALLOWED_COVERAGE = ("strong", "weak")
 WINDOW_BATCH_SIZES = (2, 4, 8)
 ASSEMBLY_OVERHEAD_SECONDS = 600
-# PROVISIONAL-PENDING-MEASUREMENT: exceeds two times the worst observed
-# context-free single-window wall (1647s); freeze measured-plus-margin afterward.
-PER_WINDOW_WATCHDOG_SECONDS = 3600
+# MEASURED: the heaviest context-true single window was approximately 7600s;
+# 9000s retains roughly 1.2x margin while tight bounds reduce expected work.
+PER_WINDOW_WATCHDOG_SECONDS = 9000
 PREPATCH_HARNESS_SHA256 = "5b3570e46388e786e00123fee39a9e07a2147783a2789283fa690a8ff6053b20"
 FLAT_WATCHDOG_HARNESS_SHA256 = "aadb0d04317677db43da388c4575987ff9455b9e157968a2b3280d89407d5934"
+PROVISIONAL_WATCHDOG_HARNESS_SHA256 = "bdc3886c40b28bda7485e12032f028f1c9d8f6f480577a4921d434bc37010903"
 
 MATRIX_OBLIGATIONS: Mapping[str, tuple[str, ...]] = {
     "future_leak": (
@@ -1642,8 +1643,13 @@ def write_series_receipts(
             batch_window_counts = series.get("batch_window_counts")
             batch_deadlines = series.get("batch_deadline_seconds_by_batch")
             per_window = series.get("per_window_watchdog_seconds")
+            expected_per_window = (
+                3600
+                if harness_sha256 == PROVISIONAL_WATCHDOG_HARNESS_SHA256
+                else PER_WINDOW_WATCHDOG_SECONDS
+            )
             if (
-                per_window != PER_WINDOW_WATCHDOG_SECONDS
+                per_window != expected_per_window
                 or not isinstance(batch_window_counts, list)
                 or len(batch_window_counts) != batch_count
                 or any(

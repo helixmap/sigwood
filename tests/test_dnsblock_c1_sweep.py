@@ -998,10 +998,10 @@ def test_series_receipt_fanout_is_complete_exact_key_and_resumable(tmp_path):
             "batch_count": 1,
             "batch_window_counts": [1],
             "watchdog_enforced": True,
-            "per_window_watchdog_seconds": 3600,
-            "batch_deadline_seconds_by_batch": [3600],
+            "per_window_watchdog_seconds": 9000,
+            "batch_deadline_seconds_by_batch": [9000],
             "assembly_overhead_seconds": 600,
-            "series_deadline_seconds": 4200,
+            "series_deadline_seconds": 9600,
             "co_load": 1,
             "corpus": {"manifest_sha256": "c" * 64},
         },
@@ -1020,10 +1020,30 @@ def test_series_receipt_fanout_is_complete_exact_key_and_resumable(tmp_path):
     second = sweep.write_series_receipts(artifact, **kwargs)
     assert all(row["resumed"] is True for row in second)
     receipt_payload = sweep.verify_receipt(tmp_path / first[0]["receipt"])
-    assert receipt_payload["per_window_watchdog_seconds"] == 3600
+    assert receipt_payload["per_window_watchdog_seconds"] == 9000
     assert receipt_payload["batch_window_counts"] == [1]
-    assert receipt_payload["batch_deadline_seconds_by_batch"] == [3600]
+    assert receipt_payload["batch_deadline_seconds_by_batch"] == [9000]
     assert "batch_deadline_seconds" not in receipt_payload
+
+    provisional = json.loads(json.dumps(artifact))
+    provisional["series"]["per_window_watchdog_seconds"] = 3600
+    provisional["series"]["batch_deadline_seconds_by_batch"] = [3600]
+    provisional["series"]["series_deadline_seconds"] = 4200
+    provisional_kwargs = {
+        **kwargs,
+        "receipt_dir": tmp_path / "provisional-watchdog",
+        "harness_sha256": sweep.PROVISIONAL_WATCHDOG_HARNESS_SHA256,
+    }
+    provisional_rows = sweep.write_series_receipts(
+        provisional,
+        **provisional_kwargs,
+    )
+    assert len(provisional_rows) == 2
+    provisional_payload = sweep.verify_receipt(
+        provisional_kwargs["receipt_dir"] / provisional_rows[0]["receipt"]
+    )
+    assert provisional_payload["per_window_watchdog_seconds"] == 3600
+    assert provisional_payload["batch_deadline_seconds_by_batch"] == [3600]
 
     flat = json.loads(json.dumps(artifact))
     flat["series"].pop("per_window_watchdog_seconds")

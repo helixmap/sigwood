@@ -997,6 +997,8 @@ def test_series_receipt_fanout_is_complete_exact_key_and_resumable(tmp_path):
             "window_count": 1,
             "batch_count": 1,
             "batch_window_counts": [1],
+            "batch_content_identities": ["1" * 64],
+            "content_identity_sha256": "1" * 64,
             "watchdog_enforced": True,
             "per_window_watchdog_seconds": 9000,
             "batch_deadline_seconds_by_batch": [9000],
@@ -1103,6 +1105,31 @@ def test_series_receipt_fanout_is_complete_exact_key_and_resumable(tmp_path):
     artifact["results"][0]["aggregate"]["status"] = "changed"
     with pytest.raises(ValueError, match="payload changed"):
         sweep.write_series_receipts(artifact, **kwargs)
+
+
+def test_union_content_harness_allows_window_dependent_batch_sets_only_by_exact_hash():
+    series = {
+        "batch_count": 2,
+        "batch_content_identities": ["a" * 64, "b" * 64],
+        "content_identity_sha256": "c" * 64,
+    }
+    sweep._validate_series_content_identity(
+        series, sweep.UNION_CONTENT_HARNESS_SHA256
+    )
+    with pytest.raises(ValueError, match="content identity is inconsistent"):
+        sweep._validate_series_content_identity(series, "d" * 64)
+
+
+def test_series_content_identity_validation_fails_closed_on_malformed_facts():
+    series = {
+        "batch_count": 2,
+        "batch_content_identities": ["a" * 64],
+        "content_identity_sha256": "b" * 64,
+    }
+    with pytest.raises(ValueError, match="content identity is malformed"):
+        sweep._validate_series_content_identity(
+            series, sweep.UNION_CONTENT_HARNESS_SHA256
+        )
 
 
 def _parity_aggregate(pass_wall):

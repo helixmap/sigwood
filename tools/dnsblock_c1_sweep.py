@@ -56,6 +56,7 @@ PER_WINDOW_WATCHDOG_SECONDS = 9000
 PREPATCH_HARNESS_SHA256 = "5b3570e46388e786e00123fee39a9e07a2147783a2789283fa690a8ff6053b20"
 FLAT_WATCHDOG_HARNESS_SHA256 = "aadb0d04317677db43da388c4575987ff9455b9e157968a2b3280d89407d5934"
 PROVISIONAL_WATCHDOG_HARNESS_SHA256 = "bdc3886c40b28bda7485e12032f028f1c9d8f6f480577a4921d434bc37010903"
+UNION_CONTENT_HARNESS_SHA256 = "9b918d6179dcb972a83a77884edf8296e7c0de3e8786aad7bfff53757a152877"
 
 MATRIX_OBLIGATIONS: Mapping[str, tuple[str, ...]] = {
     "future_leak": (
@@ -1577,6 +1578,28 @@ def verify_receipt(path: Path) -> dict[str, Any]:
     return payload
 
 
+def _validate_series_content_identity(
+    series: Mapping[str, Any], harness_sha256: str
+) -> None:
+    batch_count = series.get("batch_count")
+    batch_identities = series.get("batch_content_identities")
+    content_identity = series.get("content_identity_sha256")
+    if (
+        isinstance(batch_count, bool)
+        or not isinstance(batch_count, int)
+        or batch_count <= 0
+        or not isinstance(batch_identities, list)
+        or len(batch_identities) != batch_count
+        or not all(_is_sha256(value) for value in batch_identities)
+        or not _is_sha256(content_identity)
+    ):
+        raise ValueError("C1 series content identity is malformed")
+    if harness_sha256 != UNION_CONTENT_HARNESS_SHA256 and (
+        len(set(batch_identities)) != 1 or batch_identities[0] != content_identity
+    ):
+        raise ValueError("C1 series content identity is inconsistent")
+
+
 def write_series_receipts(
     artifact: Mapping[str, Any],
     *,
@@ -1610,6 +1633,7 @@ def write_series_receipts(
         raise ValueError("C1 series code identity is invalid")
     if overlay_diff_sha256 != "none" and not _is_sha256(overlay_diff_sha256):
         raise ValueError("C1 series overlay identity is invalid")
+    _validate_series_content_identity(series, harness_sha256)
     watchdog_enforced = series.get("watchdog_enforced")
     co_load = series.get("co_load")
     if harness_sha256 == PREPATCH_HARNESS_SHA256:

@@ -23,7 +23,8 @@ from pathlib import Path
 from sigwood import runner
 from sigwood.common.allowlist import matcher_from_plan, resolve_allowlist_plan
 from sigwood.common.finding import DetectorContext, RunSummary, SuppressionSummary
-from sigwood.common.loader import DualWindow, PositionalMask
+from sigwood.common.loader import DualWindow, PositionalMask, SourceSnapshot
+import sigwood.common.loader.pipeline as loader_pipeline
 from sigwood.common.output import Reporter
 from sigwood.common.paths import private_mkdir, private_write_text
 from sigwood.detectors import dnsblock
@@ -137,6 +138,124 @@ def _sha256(path: Path) -> str:
         while block := handle.read(1024 * 1024):
             digest.update(block)
     return digest.hexdigest()
+
+
+_CONTENT_MEMBER_KEYS = frozenset(
+    {
+        "resolved",
+        "source",
+        "device",
+        "inode",
+        "compressed",
+        "stat_bytes",
+        "mtime_ns",
+        "readable_bytes",
+        "sha256",
+    }
+)
+
+
+def _content_identity_sha256(members: list[dict]) -> str:
+    return hashlib.sha256(
+        json.dumps(members, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+
+
+def _snapshot_content_members(snapshot: SourceSnapshot) -> list[dict]:
+    members = [
+        {
+            "resolved": str(item.resolved_path),
+            "source": item.source,
+            "device": item.device,
+            "inode": item.inode,
+            "compressed": item.compressed,
+            "stat_bytes": item.stat_bytes,
+            "mtime_ns": item.mtime_ns,
+            "readable_bytes": item.readable_bytes,
+            "sha256": item.content_sha256,
+        }
+        for item in snapshot.files
+    ]
+    if _content_identity_sha256(members) != snapshot.content_identity_sha256:
+        raise ValueError("dnsblock C1 content-member payload diverged from loader identity")
+    return members
+
+
+def _validated_content_members(raw: object, expected_identity: str) -> list[dict]:
+    if not isinstance(raw, list) or not raw:
+        raise ValueError("dnsblock C1 worker content-member payload is malformed")
+    members = []
+    resolved_paths = set()
+    for raw_member in raw:
+        if not isinstance(raw_member, dict) or set(raw_member) != _CONTENT_MEMBER_KEYS:
+            raise ValueError("dnsblock C1 worker content-member payload is malformed")
+        member = dict(raw_member)
+        resolved = member["resolved"]
+        source = member["source"]
+        digest = member["sha256"]
+        numeric = (
+            member["device"],
+            member["inode"],
+            member["stat_bytes"],
+            member["mtime_ns"],
+            member["readable_bytes"],
+        )
+        if (
+            not isinstance(resolved, str)
+            or not resolved
+            or not Path(resolved).is_absolute()
+            or resolved in resolved_paths
+            or not isinstance(source, str)
+            or not source
+            or not isinstance(member["compressed"], bool)
+            or any(
+                isinstance(value, bool) or not isinstance(value, int) or value < 0
+                for value in numeric
+            )
+            or member["readable_bytes"] > member["stat_bytes"]
+            or not isinstance(digest, str)
+            or not re.fullmatch(r"[0-9a-f]{64}", digest)
+        ):
+            raise ValueError("dnsblock C1 worker content-member payload is malformed")
+        resolved_paths.add(resolved)
+        members.append(member)
+    if _content_identity_sha256(members) != expected_identity:
+        raise ValueError("dnsblock C1 worker content-member digest is inconsistent")
+    return members
+
+
+def _merge_batch_content_members(
+    batches: list[list[dict]],
+) -> tuple[list[dict], int]:
+    union = {}
+    disagreeing = set()
+    for members in batches:
+        for member in members:
+            resolved = member["resolved"]
+            previous = union.get(resolved)
+            if previous is not None and previous != member:
+                disagreeing.add(resolved)
+            elif previous is None:
+                union[resolved] = member
+    return [union[resolved] for resolved in sorted(union)], len(disagreeing)
+
+
+@contextmanager
+def _capture_batch_snapshot():
+    """Capture the exact loader-owned snapshot used by one private worker."""
+    snapshots: list[SourceSnapshot] = []
+    original = loader_pipeline.build_source_snapshot
+
+    def capture(*args, **kwargs):
+        snapshot = original(*args, **kwargs)
+        snapshots.append(snapshot)
+        return snapshot
+
+    loader_pipeline.build_source_snapshot = capture
+    try:
+        yield snapshots
+    finally:
+        loader_pipeline.build_source_snapshot = original
 
 
 class _BoundedTextCapture(io.StringIO):
@@ -444,13 +563,19 @@ def _prepare_render_batch(
         "unsuppressed": lambda frame: PositionalMask((True,) * len(frame)),
     }
     started = time.monotonic()
-    batch = runner._prepare_dnsblock_calibration_batch(
-        source_paths=(selected_source,),
-        windows=windows,
-        lane_masks=lane_masks,
-        dnsblock_mod=dnsblock,
-        calibration_vector=calibration_vector,
-    )
+    with _capture_batch_snapshot() as snapshots:
+        batch = runner._prepare_dnsblock_calibration_batch(
+            source_paths=(selected_source,),
+            windows=windows,
+            lane_masks=lane_masks,
+            dnsblock_mod=dnsblock,
+            calibration_vector=calibration_vector,
+        )
+    if len(snapshots) != 1:
+        raise ValueError("dnsblock C1 worker did not capture exactly one source snapshot")
+    content_members = _snapshot_content_members(snapshots[0])
+    if batch.content_identity_sha256 != snapshots[0].content_identity_sha256:
+        raise ValueError("dnsblock C1 runner content identity diverged from its snapshot")
     results = []
     peak_temp_bytes = 0
     with tempfile.TemporaryDirectory(prefix="dnsblock-c1-batch-") as temporary:
@@ -488,7 +613,7 @@ def _prepare_render_batch(
                 }
             )
     elapsed = time.monotonic() - started
-    return batch, results, elapsed, peak_temp_bytes
+    return batch, results, elapsed, peak_temp_bytes, content_members
 
 
 def _window_payload(window: DualWindow) -> dict[str, object]:
@@ -560,7 +685,7 @@ def _internal_worker(request_path: Path, partial_path: Path) -> int:
     effective_config = {
         "sigwood": {"root": "", "warn_above": 0, "default_window": "7d"}
     }
-    batch, results, elapsed, peak_temp_bytes = _prepare_render_batch(
+    batch, results, elapsed, peak_temp_bytes, content_members = _prepare_render_batch(
         selected_source=source,
         windows=tuple(windows),
         effective_config=effective_config,
@@ -599,6 +724,7 @@ def _internal_worker(request_path: Path, partial_path: Path) -> int:
             "result_count": len(results),
             "snapshot_identity_sha256": batch.snapshot_identity_sha256,
             "content_identity_sha256": batch.content_identity_sha256,
+            "content_members": content_members,
             "pass_wall_seconds": batch.pass_wall_seconds,
             "data_size_bytes": batch.data_size_bytes,
             "max_window_routes": batch.max_window_routes,
@@ -746,6 +872,14 @@ def _supervised_batch(
             or not re.fullmatch(r"[0-9a-f]{64}", str(partial.get("content_identity_sha256")))
         ):
             raise BatchWatchdogError("partial_validation_failure", batch_ordinal)
+        try:
+            partial["content_members"] = _validated_content_members(
+                partial.get("content_members"), partial["content_identity_sha256"]
+            )
+        except ValueError as exc:
+            raise BatchWatchdogError(
+                "partial_validation_failure", batch_ordinal
+            ) from exc
         expected_keys = {
             (ordinal_offset + index, lane)
             for index in range(len(windows))
@@ -897,6 +1031,7 @@ def _run_series(
     results = []
     snapshot_identities = []
     content_identities = []
+    batch_content_members = []
     pass_walls: dict[str, float] = {}
     elapsed = 0.0
     peak_temp_bytes = 0
@@ -951,6 +1086,7 @@ def _run_series(
         )
         snapshot_identities.append(prepared_batch["snapshot_identity_sha256"])
         content_identities.append(prepared_batch["content_identity_sha256"])
+        batch_content_members.append(prepared_batch["content_members"])
         peak_temp_bytes = max(peak_temp_bytes, batch_temp_bytes)
         max_window_routes = max(max_window_routes, prepared_batch["max_window_routes"])
         max_inflight_cadence_gaps = max(
@@ -975,7 +1111,10 @@ def _run_series(
         results.extend(batch_results)
         elapsed += batch_elapsed
         offset += len(window_batch)
-    if len(set(content_identities)) != 1:
+    union_content_members, disagreeing_shared_file_count = (
+        _merge_batch_content_members(batch_content_members)
+    )
+    if disagreeing_shared_file_count:
         _atomic_json(
             artifact.with_suffix(artifact.suffix + ".timeout.json"),
             {
@@ -989,9 +1128,12 @@ def _run_series(
                 ),
                 "series_deadline_seconds": series_deadline_seconds,
                 "completed_batch_count": len(batches),
+                "batch_content_identities": content_identities,
+                "disagreeing_shared_file_count": disagreeing_shared_file_count,
             },
         )
         return 2
+    content_identity = _content_identity_sha256(union_content_members)
     peak_rss = int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
     if sys.platform != "darwin":
         peak_rss *= 1024
@@ -1015,7 +1157,7 @@ def _run_series(
                 json.dumps(snapshot_identities, separators=(",", ":")).encode()
             ).hexdigest(),
             "batch_snapshot_identities": snapshot_identities,
-            "content_identity_sha256": content_identities[0],
+            "content_identity_sha256": content_identity,
             "batch_content_identities": content_identities,
             "elapsed_seconds": elapsed,
             "watchdog_enforced": True,

@@ -284,6 +284,65 @@ def test_harness_batch_request_uses_real_shared_runner_and_json_serializer(tmp_p
     assert "x.example" not in serialized
 
 
+def test_prepare_render_batch_captures_exact_loader_snapshot(
+    tmp_path, monkeypatch
+):
+    source = tmp_path / "pihole"
+    source.mkdir()
+    for rotation, day in (("pihole.log.1", 19), ("pihole.log", 20)):
+        lines = []
+        for index in range(12):
+            address = f"192.0.2.{index + 1}"
+            name = f"synthetic-{day}-{index}.example.test"
+            lines.extend(
+                (
+                    f"Jan {day} 00:{index:02d}:00 resolver.example.test "
+                    f"dnsmasq[1]: query[A] {name} from {address}\n",
+                    f"Jan {day} 00:{index:02d}:01 resolver.example.test "
+                    f"dnsmasq[1]: gravity blocked {name} is 0.0.0.0\n",
+                )
+            )
+        (source / rotation).write_text("".join(lines), encoding="utf-8")
+
+    captured = []
+    original = harness._snapshot_content_members
+
+    def observe(snapshot):
+        captured.append(snapshot)
+        return original(snapshot)
+
+    monkeypatch.setattr(harness, "_snapshot_content_members", observe)
+    window = harness.DualWindow(
+        (
+            harness._instant("2026-01-19T00:00:00Z"),
+            harness._instant("2026-01-21T00:00:00Z"),
+        )
+    )
+    batch, results, _elapsed, _peak_temp, content_members = (
+        harness._prepare_render_batch(
+            selected_source=source,
+            windows=(window,),
+            effective_config={
+                "sigwood": {"root": "", "warn_above": 0, "default_window": "7d"}
+            },
+            calibration_vector=harness.dnsblock.DnsblockCalibrationVector(),
+            ordinal_offset=0,
+        )
+    )
+
+    assert len(captured) == 1
+    assert len(content_members) == 2
+    assert {Path(member["resolved"]).name for member in content_members} == {
+        "pihole.log",
+        "pihole.log.1",
+    }
+    assert harness._validated_content_members(
+        content_members, batch.content_identity_sha256
+    ) == content_members
+    assert batch.content_identity_sha256 == captured[0].content_identity_sha256
+    assert len(results) == 2
+
+
 def test_harness_series_request_partitions_tail_and_emits_only_aggregate_unions(tmp_path):
     log = tmp_path / "pihole.log"
     log.write_text(
@@ -451,6 +510,152 @@ def test_series_timeout_receipt_states_actual_timed_batch_bound(
     assert receipt["configured_batch_deadline_seconds"] == 18000
     assert receipt["batch_deadline_seconds_by_batch"] == [18000, 9000]
     assert receipt["series_deadline_seconds"] == 27600
+
+
+def _content_member(path: Path, *, digest: str) -> dict:
+    return {
+        "resolved": str(path.resolve()),
+        "source": "pihole_dir",
+        "device": 1,
+        "inode": 1,
+        "compressed": False,
+        "stat_bytes": 1,
+        "mtime_ns": 1,
+        "readable_bytes": 1,
+        "sha256": digest,
+    }
+
+
+def _series_request(tmp_path: Path) -> Path:
+    request = tmp_path / "series-content.json"
+    request.write_text(
+        json.dumps(
+            {
+                "windows": [
+                    {
+                        "start": f"2026-01-{day:02d}T00:00:00Z",
+                        "end": f"2026-01-{day + 1:02d}T00:00:00Z",
+                    }
+                    for day in (19, 20, 21)
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    return request
+
+
+def _series_partial(kwargs: dict, members: list[dict]) -> dict:
+    windows = kwargs["windows"]
+    offset = kwargs["ordinal_offset"]
+    return {
+        "snapshot_identity_sha256": "f" * 64,
+        "content_identity_sha256": harness._content_identity_sha256(members),
+        "content_members": members,
+        "results": [
+            {
+                "window_ordinal": offset + index,
+                "allowlist_lane": lane,
+                "aggregate": {"preflight": {"state": "READY"}},
+            }
+            for index in range(len(windows))
+            for lane in ("default", "unsuppressed")
+        ],
+        "worker_elapsed_seconds": 0.1,
+        "peak_temp_bytes": 1,
+        "peak_process_rss_bytes": 1,
+        "data_size_bytes": 1,
+        "max_window_routes": 0,
+        "max_inflight_cadence_gaps": 0,
+        "pass_wall_seconds": [],
+        "survivor_batches": [],
+        "repeat_batches": [],
+    }
+
+
+def _run_mocked_content_series(
+    tmp_path: Path, monkeypatch, batch_members: list[list[dict]]
+) -> tuple[int, Path]:
+    artifact = tmp_path / "series-content-artifact.json"
+    request = _series_request(tmp_path)
+
+    def supervised(**kwargs):
+        return _series_partial(kwargs, batch_members[kwargs["batch_ordinal"]])
+
+    monkeypatch.setattr(harness, "_supervised_batch", supervised)
+    result = harness._run_series(
+        selected_source=tmp_path,
+        artifact=artifact,
+        request=request,
+        effective_config={},
+        corpus_facts=None,
+        calibration_vector=harness.dnsblock.DnsblockCalibrationVector(),
+        batch_size=2,
+        co_load=1,
+    )
+    return result, artifact
+
+
+def test_series_content_identity_allows_different_batch_file_sets(
+    tmp_path, monkeypatch
+):
+    first = _content_member(tmp_path / "pihole.log", digest="a" * 64)
+    shared = _content_member(tmp_path / "pihole.log.1", digest="b" * 64)
+    last = _content_member(tmp_path / "pihole.log.2", digest="c" * 64)
+    result, artifact = _run_mocked_content_series(
+        tmp_path, monkeypatch, [[first, shared], [shared, last]]
+    )
+    assert result == 0
+    payload = json.loads(artifact.read_text(encoding="utf-8"))
+    expected_union = sorted([first, shared, last], key=lambda item: item["resolved"])
+    assert payload["series"]["content_identity_sha256"] == (
+        harness._content_identity_sha256(expected_union)
+    )
+    assert len(set(payload["series"]["batch_content_identities"])) == 2
+
+
+def test_series_content_identity_rejects_changed_shared_file(tmp_path, monkeypatch):
+    first = _content_member(tmp_path / "pihole.log", digest="a" * 64)
+    shared = _content_member(tmp_path / "pihole.log.1", digest="b" * 64)
+    changed = {**shared, "sha256": "c" * 64}
+    result, artifact = _run_mocked_content_series(
+        tmp_path, monkeypatch, [[first, shared], [changed]]
+    )
+    assert result == 2
+    sidecar = json.loads(
+        artifact.with_suffix(".json.timeout.json").read_text(encoding="utf-8")
+    )
+    assert sidecar["failure"] == "content_identity_mismatch"
+    assert sidecar["disagreeing_shared_file_count"] == 1
+    assert len(sidecar["batch_content_identities"]) == 2
+    assert "resolved" not in json.dumps(sidecar)
+
+
+def test_series_single_file_content_identity_is_byte_compatible(
+    tmp_path, monkeypatch
+):
+    member = _content_member(tmp_path / "pihole.log", digest="a" * 64)
+    original_identity = harness._content_identity_sha256([member])
+    result, artifact = _run_mocked_content_series(
+        tmp_path, monkeypatch, [[member], [member]]
+    )
+    assert result == 0
+    payload = json.loads(artifact.read_text(encoding="utf-8"))
+    assert payload["series"]["content_identity_sha256"] == original_identity
+    assert payload["series"]["batch_content_identities"] == [
+        original_identity,
+        original_identity,
+    ]
+
+
+def test_worker_content_members_reject_malformed_or_inconsistent_payload(tmp_path):
+    member = _content_member(tmp_path / "pihole.log", digest="a" * 64)
+    identity = harness._content_identity_sha256([member])
+    assert harness._validated_content_members([member], identity) == [member]
+    with pytest.raises(ValueError, match="malformed"):
+        harness._validated_content_members([{**member, "unexpected": 1}], identity)
+    with pytest.raises(ValueError, match="inconsistent"):
+        harness._validated_content_members([member], "f" * 64)
 
 
 def test_term_ignoring_worker_group_is_killed_and_reaped(monkeypatch):

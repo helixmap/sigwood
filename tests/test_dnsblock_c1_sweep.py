@@ -627,6 +627,8 @@ def _shape_records():
                         "coverage_lane": "strong",
                         "allowlist_lane": lane,
                         "ordinal": ordinal,
+                        "state": "READY",
+                        "cause": "",
                         "cells": cells,
                     }
                 )
@@ -685,6 +687,8 @@ def test_global_burden_reducer_uses_closed_arms_and_shift_only_p95():
                 "coverage_lane": "strong",
                 "allowlist_lane": lane,
                 "ordinal": 0,
+                "state": "READY",
+                "cause": "",
                 "entity_findings": 20,
             }
         )
@@ -695,6 +699,8 @@ def test_global_burden_reducer_uses_closed_arms_and_shift_only_p95():
                     "coverage_lane": "strong",
                     "allowlist_lane": lane,
                     "ordinal": ordinal,
+                    "state": "READY",
+                    "cause": "",
                     "entity_findings": count,
                 }
             )
@@ -703,10 +709,121 @@ def test_global_burden_reducer_uses_closed_arms_and_shift_only_p95():
         coverage_lanes=("strong",),
         expected_shift_counts={"strong": 2},
     )
-    assert result == {"p50": 2.0, "p95": 2.0, "max": 20, "passes": True}
+    assert {key: result[key] for key in ("p50", "p95", "max", "passes")} == {
+        "p50": 2.0,
+        "p95": 2.0,
+        "max": 20,
+        "passes": True,
+    }
     with pytest.raises(ValueError, match="incomplete or out of frozen order"):
         sweep.reduce_global_burden(
             records[:-1],
+            coverage_lanes=("strong",),
+            expected_shift_counts={"strong": 2},
+        )
+
+
+def test_reducers_exclude_only_typed_abstentions_and_disclose_denominators():
+    axes, shape_records = _shape_records()
+    abstained_shape = [dict(row) for row in shape_records]
+    abstained_shape[-1] = {
+        **abstained_shape[-1],
+        "state": "ABSTAINED",
+        "cause": "cadence cap",
+        "cells": [],
+    }
+    reduced = sweep.reduce_shape_grid(
+        abstained_shape,
+        axes=axes,
+        vector_fields=("days", "history"),
+        coverage_lanes=("strong",),
+        expected_shift_counts={"strong": 2},
+    )
+    disclosure = reduced[(2, 7)]["exclusion_disclosure"]
+    assert disclosure["excluded_count"] == 1
+    assert disclosure["excluded_by_cause"] == {"cadence cap": 1}
+    assert disclosure["sample_counts"] == {
+        "W-TRAIL": {"expected": 2, "measured": 2},
+        "W-SHIFT": {"expected": 4, "measured": 3},
+    }
+    assert disclosure["sample_counts_by_allowlist_lane"]["unsuppressed"]["W-SHIFT"] == {
+        "expected": 2,
+        "measured": 1,
+    }
+    assert disclosure["bias_caveat"]["kind"] == "inference"
+
+    burden_records = []
+    for row in shape_records:
+        burden_records.append(
+            {
+                key: row[key]
+                for key in (
+                    "mode",
+                    "coverage_lane",
+                    "allowlist_lane",
+                    "ordinal",
+                    "state",
+                    "cause",
+                )
+            }
+            | {"entity_findings": 2}
+        )
+    burden_records[-1] = {
+        **burden_records[-1],
+        "state": "ABSTAINED",
+        "cause": "cadence cap",
+        "entity_findings": 0,
+    }
+    burden = sweep.reduce_global_burden(
+        burden_records,
+        coverage_lanes=("strong",),
+        expected_shift_counts={"strong": 2},
+    )
+    assert burden["p50"] == 2.0
+    assert burden["exclusion_disclosure"]["excluded_count"] == disclosure["excluded_count"]
+    assert burden["exclusion_disclosure"]["adjacent_burden_context"]["kind"] == "inference"
+
+    with pytest.raises(ValueError, match="incomplete or out of frozen order"):
+        sweep.reduce_global_burden(
+            burden_records[:-1],
+            coverage_lanes=("strong",),
+            expected_shift_counts={"strong": 2},
+        )
+    malformed = [dict(row) for row in abstained_shape]
+    malformed[-1] = {**malformed[-1], "cause": ""}
+    with pytest.raises(ValueError, match="state and cause are inconsistent"):
+        sweep.reduce_shape_grid(
+            malformed,
+            axes=axes,
+            vector_fields=("days", "history"),
+            coverage_lanes=("strong",),
+            expected_shift_counts={"strong": 2},
+        )
+    measured_abstention = [dict(row) for row in burden_records]
+    measured_abstention[-1] = {**measured_abstention[-1], "entity_findings": 1}
+    with pytest.raises(ValueError, match="abstained global burden record carries a measurement"):
+        sweep.reduce_global_burden(
+            measured_abstention,
+            coverage_lanes=("strong",),
+            expected_shift_counts={"strong": 2},
+        )
+
+    missing = abstained_shape[:-1]
+    with pytest.raises(ValueError, match="incomplete or out of frozen order"):
+        sweep.reduce_shape_grid(
+            missing,
+            axes=axes,
+            vector_fields=("days", "history"),
+            coverage_lanes=("strong",),
+            expected_shift_counts={"strong": 2},
+        )
+    ambiguous = [dict(row) for row in abstained_shape]
+    ambiguous[-1] = {**ambiguous[-1], "cells": shape_records[-1]["cells"]}
+    with pytest.raises(ValueError, match="abstained shape record carries a grid"):
+        sweep.reduce_shape_grid(
+            ambiguous,
+            axes=axes,
+            vector_fields=("days", "history"),
             coverage_lanes=("strong",),
             expected_shift_counts={"strong": 2},
         )

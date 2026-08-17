@@ -976,6 +976,155 @@ def _selection_keys(
     return tuple(expected_keys)
 
 
+def _selection_matrix(
+    records: Sequence[Mapping[str, Any]],
+    *,
+    coverage_lanes: Sequence[str],
+    expected_shift_counts: Mapping[str, int],
+    payload_field: str,
+) -> tuple[
+    tuple[tuple[str, str, str, int], ...],
+    dict[tuple[str, str, str, int], Mapping[str, Any]],
+]:
+    """Validate a complete ordered selection matrix without erasing abstention state."""
+    expected_keys = _selection_keys(coverage_lanes, expected_shift_counts)
+    indexed: dict[tuple[str, str, str, int], Mapping[str, Any]] = {}
+    expected_fields = {
+        "mode",
+        "coverage_lane",
+        "allowlist_lane",
+        "ordinal",
+        "state",
+        "cause",
+        payload_field,
+    }
+    for record in records:
+        if set(record) != expected_fields:
+            raise ValueError("C1 selection record fields are incomplete")
+        ordinal = record["ordinal"]
+        state = record["state"]
+        cause = record["cause"]
+        if isinstance(ordinal, bool) or not isinstance(ordinal, int):
+            raise ValueError("C1 selection record ordinal is invalid")
+        if state not in {"READY", "ABSTAINED"} or not isinstance(cause, str):
+            raise ValueError("C1 selection record state is invalid")
+        if (state == "READY" and cause) or (state == "ABSTAINED" and not cause):
+            raise ValueError("C1 selection record state and cause are inconsistent")
+        key = (
+            str(record["mode"]),
+            str(record["coverage_lane"]),
+            str(record["allowlist_lane"]),
+            ordinal,
+        )
+        if key in indexed:
+            raise ValueError("C1 selection matrix contains a duplicate record")
+        indexed[key] = record
+    if tuple(indexed) != expected_keys:
+        raise ValueError("C1 selection matrix is incomplete or out of frozen order")
+    return expected_keys, indexed
+
+
+def _selection_exclusion_disclosure(
+    expected_keys: Sequence[tuple[str, str, str, int]],
+    indexed: Mapping[tuple[str, str, str, int], Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Expose typed abstentions and denominator changes without treating them as zeroes."""
+    modes = (WindowMode.TRAIL.value, WindowMode.SHIFT.value)
+    expected = {mode: sum(key[0] == mode for key in expected_keys) for mode in modes}
+    measured = {
+        mode: sum(
+            key[0] == mode and indexed[key]["state"] == "READY"
+            for key in expected_keys
+        )
+        for mode in modes
+    }
+    by_lane = {}
+    for lane in ALLOWED_LANES:
+        by_lane[lane] = {
+            mode: {
+                "expected": sum(key[0] == mode and key[2] == lane for key in expected_keys),
+                "measured": sum(
+                    key[0] == mode
+                    and key[2] == lane
+                    and indexed[key]["state"] == "READY"
+                    for key in expected_keys
+                ),
+            }
+            for mode in modes
+        }
+    causes: dict[str, int] = {}
+    for key in expected_keys:
+        record = indexed[key]
+        if record["state"] == "ABSTAINED":
+            causes[record["cause"]] = causes.get(record["cause"], 0) + 1
+    return {
+        "excluded_count": sum(causes.values()),
+        "excluded_by_cause": dict(sorted(causes.items())),
+        "sample_counts": {
+            mode: {"expected": expected[mode], "measured": measured[mode]}
+            for mode in modes
+        },
+        "sample_counts_by_allowlist_lane": by_lane,
+        "bias_caveat": {
+            "kind": "inference",
+            "text": (
+                "Excluded abstentions are unmeasured, not zeroes; their removal can bias "
+                "the surviving distribution optimistically. Adjacent measured rows are "
+                "context, not measurements of excluded rows."
+            ),
+        },
+    }
+
+
+def _adjacent_burden_context(
+    expected_keys: Sequence[tuple[str, str, str, int]],
+    indexed: Mapping[tuple[str, str, str, int], Mapping[str, Any]],
+    counts: Mapping[tuple[str, str, str, int], int],
+) -> dict[str, Any]:
+    """Report nearby measured burden without projecting it onto abstained windows."""
+    by_coverage = []
+    for coverage in dict.fromkeys(key[1] for key in expected_keys):
+        measured_shifts = [
+            counts[key]
+            for key in expected_keys
+            if key[1] == coverage
+            and key[0] == WindowMode.SHIFT.value
+            and indexed[key]["state"] == "READY"
+        ]
+        adjacent = []
+        for key in expected_keys:
+            if (
+                key[1] != coverage
+                or key[0] != WindowMode.SHIFT.value
+                or indexed[key]["state"] != "ABSTAINED"
+            ):
+                continue
+            for ordinal in (key[3] - 1, key[3] + 1):
+                neighbor = (key[0], key[1], key[2], ordinal)
+                if neighbor in indexed and indexed[neighbor]["state"] == "READY":
+                    adjacent.append(counts[neighbor])
+        if adjacent:
+            median = nearest_rank(measured_shifts, 0.50)
+            by_coverage.append(
+                {
+                    "coverage_lane": coverage,
+                    "measured_shift_median": median,
+                    "adjacent_ready_count": len(adjacent),
+                    "adjacent_ready_above_median_count": sum(
+                        value > median for value in adjacent
+                    ),
+                }
+            )
+    return {
+        "kind": "inference",
+        "text": (
+            "Above-median burden in adjacent READY windows is context suggesting "
+            "possible optimism after exclusion, not a measurement of abstained windows."
+        ),
+        "by_coverage_lane": by_coverage,
+    }
+
+
 def reduce_shape_grid(
     records: Sequence[Mapping[str, Any]],
     *,
@@ -989,31 +1138,13 @@ def reduce_shape_grid(
     vector_fields = tuple(vector_fields)
     if len(axes) != len(vector_fields) or not axes or any(not axis for axis in axes):
         raise ValueError("C1 shape grid axes and vector fields must align")
-    expected_keys = _selection_keys(coverage_lanes, expected_shift_counts)
-    indexed: dict[tuple[str, str, str, int], Mapping[str, Any]] = {}
-    for record in records:
-        if set(record) != {
-            "mode",
-            "coverage_lane",
-            "allowlist_lane",
-            "ordinal",
-            "cells",
-        }:
-            raise ValueError("C1 shape record fields are incomplete")
-        ordinal = record["ordinal"]
-        if isinstance(ordinal, bool) or not isinstance(ordinal, int):
-            raise ValueError("C1 shape record ordinal is invalid")
-        key = (
-            str(record["mode"]),
-            str(record["coverage_lane"]),
-            str(record["allowlist_lane"]),
-            ordinal,
-        )
-        if key in indexed:
-            raise ValueError("C1 shape matrix contains a duplicate record")
-        indexed[key] = record
-    if tuple(indexed) != expected_keys:
-        raise ValueError("C1 shape matrix is incomplete or out of frozen order")
+    expected_keys, indexed = _selection_matrix(
+        records,
+        coverage_lanes=coverage_lanes,
+        expected_shift_counts=expected_shift_counts,
+        payload_field="cells",
+    )
+    disclosure = _selection_exclusion_disclosure(expected_keys, indexed)
 
     vectors = tuple(itertools.product(*axes))
     trail_values = {vector: [] for vector in vectors}
@@ -1024,6 +1155,10 @@ def reduce_shape_grid(
         cells = record["cells"]
         if not isinstance(cells, list):
             raise ValueError("C1 shape grid cells are missing")
+        if record["state"] == "ABSTAINED":
+            if cells:
+                raise ValueError("C1 abstained shape record carries a grid")
+            continue
         cell_index: dict[tuple[int, ...], Mapping[str, Any]] = {}
         for cell in cells:
             if not isinstance(cell, dict) or not set(vector_fields) <= set(cell):
@@ -1060,6 +1195,7 @@ def reduce_shape_grid(
             "identity_digest": _sha256_bytes(
                 canonical_json_bytes(identity_vectors[vector])
             ),
+            "exclusion_disclosure": disclosure,
         }
     return reduced
 
@@ -1069,39 +1205,40 @@ def reduce_global_burden(
     *,
     coverage_lanes: Sequence[str],
     expected_shift_counts: Mapping[str, int],
-) -> dict[str, float | int | bool]:
+) -> dict[str, Any]:
     """Grade the selected combined deck over a closed campaign keyspace."""
-    expected_keys = _selection_keys(coverage_lanes, expected_shift_counts)
-    indexed: dict[tuple[str, str, str, int], int] = {}
-    for record in records:
-        if set(record) != {
-            "mode",
-            "coverage_lane",
-            "allowlist_lane",
-            "ordinal",
-            "entity_findings",
-        }:
-            raise ValueError("C1 global burden record fields are incomplete")
-        ordinal = record["ordinal"]
+    expected_keys, indexed = _selection_matrix(
+        records,
+        coverage_lanes=coverage_lanes,
+        expected_shift_counts=expected_shift_counts,
+        payload_field="entity_findings",
+    )
+    counts: dict[tuple[str, str, str, int], int] = {}
+    for key, record in indexed.items():
         count = record["entity_findings"]
-        if isinstance(ordinal, bool) or not isinstance(ordinal, int):
-            raise ValueError("C1 global burden ordinal is invalid")
         if isinstance(count, bool) or not isinstance(count, int) or count < 0:
             raise ValueError("C1 global burden count is invalid")
-        key = (
-            str(record["mode"]),
-            str(record["coverage_lane"]),
-            str(record["allowlist_lane"]),
-            ordinal,
-        )
-        if key in indexed:
-            raise ValueError("C1 global burden matrix contains a duplicate record")
-        indexed[key] = count
-    if tuple(indexed) != expected_keys:
-        raise ValueError("C1 global burden matrix is incomplete or out of frozen order")
-    trail = [count for key, count in indexed.items() if key[0] == WindowMode.TRAIL.value]
-    shifts = [count for key, count in indexed.items() if key[0] == WindowMode.SHIFT.value]
-    return global_budget(trail, shifts)
+        if record["state"] == "ABSTAINED" and count != 0:
+            raise ValueError("C1 abstained global burden record carries a measurement")
+        counts[key] = count
+    trail = [
+        counts[key]
+        for key in expected_keys
+        if key[0] == WindowMode.TRAIL.value and indexed[key]["state"] == "READY"
+    ]
+    shifts = [
+        counts[key]
+        for key in expected_keys
+        if key[0] == WindowMode.SHIFT.value and indexed[key]["state"] == "READY"
+    ]
+    disclosure = _selection_exclusion_disclosure(expected_keys, indexed)
+    disclosure["adjacent_burden_context"] = _adjacent_burden_context(
+        expected_keys, indexed, counts
+    )
+    return {
+        **global_budget(trail, shifts),
+        "exclusion_disclosure": disclosure,
+    }
 
 
 def reduce_repeat_burden(

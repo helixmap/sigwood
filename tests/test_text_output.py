@@ -1698,3 +1698,70 @@ def test_failed_detector_tail_single_blank_separation() -> None:
     handler2.end()
     assert "\n\nfailed:" in stream2.getvalue()
     assert "\n\n\nfailed:" not in stream2.getvalue()
+
+
+def test_verbose_bounded_syslog_sample_discloses_its_bound() -> None:
+    """text must not present a three-line slice as the whole sample.
+
+    html already renders this note from the same owner and the same total; a
+    reading surface that silently truncates is the render-parity gap the
+    outputs rail exists to prevent.
+    """
+    finding = Finding(
+        detector="syslog",
+        severity=Severity.LOW,
+        title="host-a",
+        description="A set of rare log lines from a single program on this host.",
+        evidence={
+            "tier": "family",
+            "host": "host-a",
+            "program": "cron",
+            "line_count": 12,
+            "sample_raw": [f"line {n}" for n in range(12)],
+        },
+        next_steps=["Skim the sampled lines to confirm the cluster's cause"],
+        ts_generated=datetime(2026, 5, 4, tzinfo=timezone.utc),
+        data_window=(
+            datetime(2026, 5, 4, tzinfo=timezone.utc),
+            datetime(2026, 5, 5, tzinfo=timezone.utc),
+        ),
+    )
+
+    from sigwood.outputs._evidence import evidence_at_level
+    from sigwood.outputs.text import _verbose_tail
+
+    body = "\n".join(_verbose_tail(finding, "  ", evidence_at_level(finding, 1)))
+
+    assert "showing 3 of 12 rare lines" in body
+    # The note follows the lines it bounds, as html places it.
+    assert body.index("line 2") < body.index("showing 3 of 12")
+
+
+def test_unbounded_syslog_sample_emits_no_note() -> None:
+    """Vanish-don't-dash: nothing was withheld, so nothing is claimed."""
+    finding = Finding(
+        detector="syslog",
+        severity=Severity.LOW,
+        title="host-b",
+        description="A set of rare log lines from a single program on this host.",
+        evidence={
+            "tier": "family",
+            "host": "host-b",
+            "program": "cron",
+            "line_count": 2,
+            "sample_raw": ["line 0", "line 1"],
+        },
+        next_steps=[],
+        ts_generated=datetime(2026, 5, 4, tzinfo=timezone.utc),
+        data_window=(
+            datetime(2026, 5, 4, tzinfo=timezone.utc),
+            datetime(2026, 5, 5, tzinfo=timezone.utc),
+        ),
+    )
+
+    from sigwood.outputs._evidence import evidence_at_level
+    from sigwood.outputs.text import _verbose_tail
+
+    body = "\n".join(_verbose_tail(finding, "  ", evidence_at_level(finding, 1)))
+
+    assert "showing" not in body

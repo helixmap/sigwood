@@ -115,6 +115,22 @@ def test_non_psl_three_label_score_uses_maximum_subdomain_label() -> None:
     assert score > dns_mod.entropy("benign")
 
 
+def test_trailing_root_dot_does_not_misroute_high_entropy_subdomain_to_apex() -> None:
+    """A rooted FQDN keeps its high-entropy subdomain rather than the benign apex."""
+    import sigwood.detectors.dns as dns_mod
+
+    query = "api-409632fc.example.com"
+    undotted_score = dns_mod._max_subdomain_entropy(
+        query, dns_mod._TLD_EXTRACT(query),
+    )
+    dotted_score = dns_mod._max_subdomain_entropy(
+        f"{query}.", dns_mod._TLD_EXTRACT(f"{query}."),
+    )
+
+    assert undotted_score == pytest.approx(1.931806272092573)
+    assert dotted_score == pytest.approx(undotted_score)
+
+
 # ── Test 1 - minimal-schema run() doesn't raise ───────────────────────────────
 
 def test_run_minimal_schema_does_not_raise(monkeypatch) -> None:

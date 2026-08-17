@@ -411,16 +411,17 @@ def _max_subdomain_entropy(query: str, ext: Any) -> float:
     registrable domain (no subdomain prefix), the domain label itself is scored
     as a fallback.
     """
+    normalized_query = query.rstrip(".")
     reg = ext.top_domain_under_public_suffix
     if reg:
-        if query.endswith("." + reg):
-            prefix = query[: -(len(reg) + 1)]
+        if normalized_query.endswith("." + reg):
+            prefix = normalized_query[: -(len(reg) + 1)]
             labels = [lbl for lbl in prefix.split(".") if lbl]
         else:
             # query IS the registrable domain - score its domain label
             labels = [ext.domain] if ext.domain else []
     else:
-        parts = [label for label in query.split(".") if label]
+        parts = [label for label in normalized_query.split(".") if label]
         labels = parts[:-1] or parts
     return max(entropy(lbl) for lbl in labels) if labels else 0.0
 

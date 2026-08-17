@@ -38,7 +38,11 @@ from sigwood.common.finding import (
     SuppressionSummary,
 )
 from sigwood.common.output import OutputHandler, register_handler
-from sigwood.outputs._evidence import evidence_at_level, exfil_members_at_level
+from sigwood.outputs._evidence import (
+    evidence_at_level,
+    exfil_members_at_level,
+    sample_bound_note,
+)
 from sigwood.outputs._render_model import (
     DetectorRenderable,
     Section,
@@ -326,6 +330,13 @@ def _verbose_tail(finding: Finding, indent: str, extras: dict[str, Any] | None =
                 body.append(f"{indent}  sample_raw:")
                 for line in v:
                     body.append(f"{indent}    · {_sanitize(line)}")
+                # A bounded sample discloses its bound on EVERY reading surface.
+                # html renders this same note, from the same owner and the same
+                # total, immediately after the lines it bounds; text showing
+                # three of many in silence presents a slice as if it were whole.
+                note = sample_bound_note(finding.evidence.get("line_count"), len(v))
+                if note is not None:
+                    body.append(f"{indent}    {_sanitize(note)}")
             else:
                 body.append(f"{indent}  {_sanitize(k)}: {_sanitize(v)}")
     if finding.next_steps:

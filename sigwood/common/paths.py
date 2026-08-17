@@ -17,10 +17,14 @@ leaving every pre-existing directory untouched.
 from __future__ import annotations
 
 import errno
+import itertools
 import os
 import stat
 from pathlib import Path
 from typing import Any, NamedTuple, TextIO
+
+
+_TEMP_COUNTER = itertools.count()
 
 
 class ResolvedTarget(NamedTuple):
@@ -73,11 +77,143 @@ def private_mkdir(
             os.chmod(component, 0o700)
 
 
+def _validate_followed_directory(fd: int, component: str, path: object) -> None:
+    """Accept a symlinked path component only when it cannot be attacker-chosen.
+
+    Validation reads the OPENED DESCRIPTOR, never the name: a check against the
+    path could be invalidated between the check and the open, whereas fstat
+    describes exactly the directory that was opened. Accepted owners are the
+    running user and root; a group- or world-writable directory is refused
+    because any account able to write it can substitute what sits beneath it.
+    """
+    info = os.fstat(fd)
+    if info.st_uid not in (os.geteuid(), 0):
+        raise ValueError(
+            f"{path}: the directory component {component!r} is a symbolic link to a "
+            "directory owned by another user - refusing to write through it; "
+            "point it somewhere you own or write to a different location"
+        )
+    shared = bool(info.st_mode & (stat.S_IWGRP | stat.S_IWOTH))
+    # The STICKY bit is what separates a shared directory from a hostile one: in a
+    # sticky directory another account may create its own names but cannot remove or
+    # replace one it does not own, which is the standard safe-shared pattern and what
+    # `/tmp` relies on. Refusing every group- or world-writable target would reject
+    # `/tmp` outright - on macOS it is a symlink to a 1777 `/private/tmp` - and that
+    # is an ordinary place to write, not an attack. The ownership test above is what
+    # actually rejects an attacker-chosen destination.
+    if shared and not info.st_mode & stat.S_ISVTX:
+        raise ValueError(
+            f"{path}: the directory component {component!r} is a symbolic link to a "
+            "group- or world-writable directory without the sticky bit - refusing to "
+            "write through it; tighten its permissions or write to a different location"
+        )
+
+
+def _open_parent_dirfd(path: str | os.PathLike[str]) -> tuple[int | None, str]:
+    """Open the containing directory component-by-component, and the leaf name.
+
+    ``O_NOFOLLOW`` on the final name protects the file that is opened; it says
+    nothing about the directories walked to reach it, so a substituted PARENT
+    would still receive the write. Each component is therefore opened with
+    ``O_DIRECTORY | O_NOFOLLOW`` and, when that reports a link, followed only
+    after :func:`_validate_followed_directory` accepts what it opened.
+
+    A relocated directory is an ordinary and supported setup, so a symlink the
+    operator owns is followed; only one another account could have chosen is
+    refused. Returns ``(None, str(path))`` where the platform cannot open
+    relative to a descriptor, preserving the previous single-open behaviour.
+    """
+    target = Path(path)
+    name = target.name
+    if not name:
+        raise ValueError(f"{path}: no file name to write")
+    if os.open not in os.supports_dir_fd:
+        return None, str(target)
+
+    parent = target.parent
+    parts = list(parent.parts)
+    if not parts:
+        return None, str(target)
+
+    anchor = parts[0]
+    try:
+        dir_fd = os.open(anchor, os.O_RDONLY | os.O_DIRECTORY)
+    except OSError:
+        return None, str(target)
+
+    try:
+        for component in parts[1:]:
+            try:
+                nxt = os.open(
+                    component,
+                    os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                    dir_fd=dir_fd,
+                )
+            except OSError as exc:
+                # Refusing to follow a symlinked directory surfaces differently by
+                # platform: ELOOP on Linux, ENOTDIR on macOS, because O_DIRECTORY
+                # sees a non-directory once O_NOFOLLOW declines the link. ENOTDIR is
+                # ALSO the honest error for a component that is a regular file, so
+                # the link is confirmed by lstat rather than inferred from errno.
+                if exc.errno not in (errno.ELOOP, errno.ENOTDIR):
+                    raise
+                try:
+                    is_link = stat.S_ISLNK(
+                        os.lstat(component, dir_fd=dir_fd).st_mode
+                    )
+                except OSError:
+                    is_link = False
+                if not is_link:
+                    raise
+                nxt = os.open(component, os.O_RDONLY | os.O_DIRECTORY, dir_fd=dir_fd)
+                try:
+                    _validate_followed_directory(nxt, component, path)
+                except BaseException:
+                    os.close(nxt)
+                    raise
+            os.close(dir_fd)
+            dir_fd = nxt
+    except BaseException:
+        os.close(dir_fd)
+        raise
+    return dir_fd, name
+
+
+def _open_through_walked_parent(
+    path: str | os.PathLike[str], flags: int, mode: int,
+) -> int:
+    """Open one leaf relative to a freshly walked parent, retrying a lost parent once.
+
+    The walk holds a descriptor to the containing directory while the leaf is
+    opened, so a concurrent writer that removes and recreates that directory in
+    between leaves the descriptor pointing at the unlinked inode and the create
+    fails ENOENT. Resolving the whole path at open time never saw this, because
+    each open re-resolved the name. One re-walk covers the race; a parent that is
+    genuinely absent fails the second walk with its own error rather than looping.
+    """
+    last: OSError | None = None
+    for attempt in range(2):
+        dir_fd, leaf = _open_parent_dirfd(path)
+        try:
+            return os.open(leaf, flags, mode, dir_fd=dir_fd)
+        except OSError as exc:
+            last = exc
+            if not (exc.errno == errno.ENOENT and dir_fd is not None and attempt == 0):
+                raise
+        finally:
+            if dir_fd is not None:
+                try:
+                    os.close(dir_fd)
+                except OSError:
+                    pass
+    raise last  # pragma: no cover - the loop either returns or raises above
+
+
 def _write_fd(path: str | os.PathLike[str], *, private: bool) -> int:
     """Open one write-truncate fd, refuse a symlink leaf, and apply its mode."""
     requested_mode = 0o600 if private else 0o666
     try:
-        fd = os.open(
+        fd = _open_through_walked_parent(
             path,
             os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW,
             requested_mode,
@@ -123,32 +259,117 @@ def private_open(
         raise
 
 
+def _atomic_replace_write(
+    path: str | os.PathLike[str], payload: bytes, *, private: bool,
+) -> None:
+    """Write one complete value to a fresh name and rename it over the target.
+
+    Opening the destination with ``O_TRUNC`` empties it before anything is known
+    about it, so a HARD LINK at that name has its contents destroyed: the second
+    name refers to the same inode, and truncation reaches it. Creating a new name
+    with ``O_EXCL`` and renaming over the target never opens what is already
+    there, so a hard-linked victim keeps its contents and simply loses one of its
+    names.
+
+    Only whole-value writers use this. A streaming writer holds its handle across
+    partial writes and rotation, and the export provenance LOCK must keep opening
+    its own inode in place or two writers would each lock a private temporary and
+    both believe they hold it.
+    """
+    target = Path(path)
+    for attempt in range(2):
+        try:
+            _atomic_replace_once(target, payload, private=private)
+            return
+        except OSError as exc:
+            # Same lost-parent race the truncate path retries: a concurrent writer
+            # can remove and recreate the containing directory while its descriptor
+            # is held. One re-walk covers it; a genuinely absent parent fails again.
+            if exc.errno != errno.ENOENT or attempt == 1:
+                raise
+
+
+def _atomic_replace_once(
+    target: Path, payload: bytes, *, private: bool,
+) -> None:
+    """One attempt at the fresh-name write and rename."""
+    dir_fd, leaf = _open_parent_dirfd(target)
+    try:
+        # Preserve the operator-facing refusal: a symlink destination is reported
+        # rather than silently replaced. Renaming could not follow the link in any
+        # case, so this is a message, never the safety property.
+        try:
+            existing = (
+                os.lstat(leaf, dir_fd=dir_fd) if dir_fd is not None else os.lstat(leaf)
+            )
+        except OSError:
+            existing = None
+        if existing is not None and stat.S_ISLNK(existing.st_mode):
+            raise ValueError(
+                f"{path} is a symbolic link - refusing to write through it; "
+                "remove it or choose another target"
+            )
+
+        requested_mode = 0o600 if private else 0o666
+        temporary = f".{Path(leaf).name}.sigwood-{os.getpid()}-{next(_TEMP_COUNTER)}"
+        fd = os.open(
+            temporary,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+            requested_mode,
+            dir_fd=dir_fd,
+        )
+        try:
+            if private:
+                os.fchmod(fd, 0o600)
+            with os.fdopen(fd, "wb") as stream:
+                stream.write(payload)
+        except BaseException:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+            _unlink_quietly(temporary, dir_fd)
+            raise
+        try:
+            os.rename(temporary, leaf, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+        except BaseException:
+            _unlink_quietly(temporary, dir_fd)
+            raise
+    finally:
+        if dir_fd is not None:
+            try:
+                os.close(dir_fd)
+            except OSError:
+                pass
+
+
+def _unlink_quietly(name: str, dir_fd: int | None) -> None:
+    """Remove a temporary that never became the artifact."""
+    try:
+        os.unlink(name, dir_fd=dir_fd)
+    except OSError:
+        pass
+
+
 def private_write_text(
     path: str | os.PathLike[str], text: str, *, private: bool = True,
     encoding: str = "utf-8", newline: str | None = None,
 ) -> None:
-    """Write one text value through :func:`private_open`."""
-    with private_open(
-        path, private=private, encoding=encoding, newline=newline,
-    ) as stream:
-        stream.write(text)
+    """Write one text value, replacing the destination rather than emptying it."""
+    if newline is None:
+        payload = text.replace("\n", os.linesep) if os.linesep != "\n" else text
+    elif newline == "":
+        payload = text
+    else:
+        payload = text.replace("\n", newline)
+    _atomic_replace_write(path, payload.encode(encoding), private=private)
 
 
 def private_write_bytes(
     path: str | os.PathLike[str], data: bytes, *, private: bool = True,
 ) -> None:
-    """Write one byte value through the shared write-truncate fd path."""
-    fd = _write_fd(path, private=private)
-    try:
-        stream = os.fdopen(fd, "wb")
-    except BaseException:
-        try:
-            os.close(fd)
-        except OSError:
-            pass
-        raise
-    with stream:
-        stream.write(data)
+    """Write one byte value, replacing the destination rather than emptying it."""
+    _atomic_replace_write(path, data, private=private)
 
 
 def be_like_water(target: str) -> ResolvedTarget:

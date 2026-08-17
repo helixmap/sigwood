@@ -7,6 +7,7 @@ import errno
 import io
 import json
 import os
+import shutil
 import stat
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -291,7 +292,9 @@ def test_private_open_closes_fd_when_setup_fails(
     import sigwood.common.paths as paths_mod
 
     closed: list[int] = []
+    opened: list[int] = []
     real_close = paths_mod.os.close
+    real_open = paths_mod.os.open
 
     def _fail_fchmod(_fd: int, _mode: int) -> None:
         raise OSError("fchmod failed")
@@ -307,11 +310,21 @@ def test_private_open_closes_fd_when_setup_fails(
         monkeypatch.setattr(paths_mod.os, "fchmod", _fail_fchmod)
     else:
         monkeypatch.setattr(paths_mod.os, "fdopen", _fail_fdopen)
+    def _record_open(*args: object, **kwargs: object) -> int:
+        fd = real_open(*args, **kwargs)
+        opened.append(fd)
+        return fd
+
     monkeypatch.setattr(paths_mod.os, "close", _record_close)
+    monkeypatch.setattr(paths_mod.os, "open", _record_open)
 
     with pytest.raises(OSError, match=f"{failure} failed"):
         private_open(tmp_path / "artifact")
-    assert len(closed) == 1
+    # The invariant is that nothing LEAKS, not that exactly one descriptor was
+    # opened: walking the parent components opens a descriptor per level, and
+    # each must be released on the failure path too. Counting opens against
+    # closes states that directly instead of encoding one particular walk depth.
+    assert len(opened) == len(closed) != 0
 
 
 @_POSIX_ONLY
@@ -761,3 +774,180 @@ def test_sigwood_package_has_no_unowned_raw_write_primitives() -> None:
             _raw_write_violations(path.read_text(encoding="utf-8"), relative)
         )
     assert violations == []
+
+
+@_POSIX_ONLY
+def test_hostile_parent_symlink_does_not_receive_the_write(tmp_path: Path) -> None:
+    """A substituted parent directory must not capture an artifact.
+
+    O_NOFOLLOW on the final name protects the file that is opened and says
+    nothing about the directories walked to reach it, so before the parent walk
+    a planted symlink among the parents silently redirected findings into a
+    directory another account controls.
+    """
+    attacker = tmp_path / "attacker"
+    attacker.mkdir()
+    os.chmod(attacker, 0o777)
+    hijacked = tmp_path / "reports"
+    hijacked.symlink_to(attacker)
+
+    with pytest.raises(ValueError, match="refusing to write through it"):
+        private_write_text(hijacked / "findings.txt", "secret")
+
+    assert list(attacker.iterdir()) == []
+
+
+@_POSIX_ONLY
+def test_owner_relocated_parent_symlink_still_writes(tmp_path: Path) -> None:
+    """A relocated directory is ordinary and stays supported.
+
+    The refusal above must key on who could have chosen the link, not on the
+    presence of a link: pointing a reports directory at another disk is a normal
+    setup and documented as supported.
+    """
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir(mode=0o700)
+    relocated = tmp_path / "reports"
+    relocated.symlink_to(elsewhere)
+
+    private_write_text(relocated / "findings.txt", "ok")
+
+    written = elsewhere / "findings.txt"
+    assert written.read_text(encoding="utf-8") == "ok"
+    assert _mode(written) == 0o600
+
+
+@_POSIX_ONLY
+def test_sticky_shared_parent_symlink_is_not_treated_as_hostile(tmp_path: Path) -> None:
+    """A sticky shared directory is the safe-shared pattern, not an attack.
+
+    In a sticky directory another account may create its own names but cannot
+    remove or replace one it does not own. Refusing every world-writable target
+    rejects `/tmp` itself, which on macOS is a symlink to a 1777 `/private/tmp`,
+    and writing there is ordinary.
+    """
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    os.chmod(shared, 0o1777)
+    link = tmp_path / "reports"
+    link.symlink_to(shared)
+
+    private_write_text(link / "findings.txt", "ok")
+
+    assert (shared / "findings.txt").read_text(encoding="utf-8") == "ok"
+
+
+@_POSIX_ONLY
+def test_world_writable_parent_symlink_without_sticky_is_refused(tmp_path: Path) -> None:
+    """Without the sticky bit, any account can replace names beneath it."""
+    loose = tmp_path / "loose"
+    loose.mkdir()
+    os.chmod(loose, 0o777)
+    link = tmp_path / "reports"
+    link.symlink_to(loose)
+
+    with pytest.raises(ValueError, match="sticky"):
+        private_write_text(link / "findings.txt", "secret")
+
+    assert list(loose.iterdir()) == []
+
+
+@_POSIX_ONLY
+def test_hard_linked_destination_keeps_its_contents(tmp_path: Path) -> None:
+    """A hard link at the destination must lose a name, never its contents.
+
+    Opening with O_TRUNC empties the file before anything is known about it, and
+    a hard link is a second name for that same inode, so the other name's data
+    went with it. Creating a fresh name and renaming over the target never opens
+    what is already there.
+    """
+    victim = tmp_path / "evidence.txt"
+    victim.write_text("irreplaceable", encoding="utf-8")
+    target = tmp_path / "report.txt"
+    os.link(victim, target)
+    assert os.stat(victim).st_nlink == 2
+
+    private_write_text(target, "findings")
+
+    assert victim.read_text(encoding="utf-8") == "irreplaceable"
+    assert target.read_text(encoding="utf-8") == "findings"
+    assert os.stat(victim).st_nlink == 1
+    assert _mode(target) == 0o600
+
+
+@_POSIX_ONLY
+def test_hard_linked_destination_survives_the_bytes_writer(tmp_path: Path) -> None:
+    """The byte writer shares the replace path, so it shares the protection."""
+    victim = tmp_path / "evidence.bin"
+    victim.write_bytes(b"irreplaceable")
+    target = tmp_path / "report.bin"
+    os.link(victim, target)
+
+    private_write_bytes(target, b"findings")
+
+    assert victim.read_bytes() == b"irreplaceable"
+    assert target.read_bytes() == b"findings"
+
+
+@_POSIX_ONLY
+def test_failed_whole_value_write_leaves_no_temporary(tmp_path: Path) -> None:
+    """A write that dies mid-value must not leave a stray private file behind."""
+    import sigwood.common.paths as paths_mod
+
+    target = tmp_path / "report.txt"
+
+    class _Boom(bytes):
+        def __len__(self) -> int:  # pragma: no cover - exercised via the raise
+            raise OSError("write failed")
+
+    original = paths_mod.os.fdopen
+
+    def _explode(*args: object, **kwargs: object):
+        handle = original(*args, **kwargs)
+        handle.close()
+        raise OSError("write failed")
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(paths_mod.os, "fdopen", _explode)
+        with pytest.raises(OSError, match="write failed"):
+            private_write_text(target, "findings")
+
+    assert not target.exists()
+    assert [p.name for p in tmp_path.iterdir()] == []
+
+
+@_POSIX_ONLY
+def test_write_survives_a_parent_replaced_mid_walk(tmp_path: Path) -> None:
+    """A parent removed and recreated between the walk and the open must not fail.
+
+    Walking the path holds a descriptor to the containing directory while the
+    leaf is opened, so a concurrent writer that recreates that directory leaves
+    the descriptor pointing at an unlinked inode and the create fails ENOENT.
+    Resolving the whole path at open time never saw this, so the walk must retry
+    rather than regress the concurrency the export provenance writers rely on.
+    """
+    import sigwood.common.paths as paths_mod
+
+    parent = tmp_path / "reports"
+    parent.mkdir()
+    target = parent / "findings.txt"
+
+    real_walk = paths_mod._open_parent_dirfd
+    calls: list[int] = []
+
+    def _swap_parent_once(path: object) -> tuple[int | None, str]:
+        result = real_walk(path)
+        calls.append(1)
+        if len(calls) == 1:
+            # Stand in for the concurrent writer: the directory the descriptor
+            # refers to is unlinked and a fresh one takes its name.
+            shutil.rmtree(parent)
+            parent.mkdir()
+        return result
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(paths_mod, "_open_parent_dirfd", _swap_parent_once)
+        private_write_text(target, "findings")
+
+    assert target.read_text(encoding="utf-8") == "findings"
+    assert len(calls) == 2, "expected exactly one re-walk, not a retry loop"

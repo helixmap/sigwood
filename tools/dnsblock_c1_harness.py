@@ -116,6 +116,68 @@ def _instant(text: str) -> datetime:
     return value.astimezone(timezone.utc)
 
 
+_WALL_RATE_BAR_NOT_RATIFIED = "not_ratified"
+
+
+def _wall_rate_facts(
+    elapsed: float, corpus_facts: dict | None, pass_wall_seconds: object,
+) -> dict:
+    """Express the wall cost in the one unit that survives a changing corpus.
+
+    An absolute wall conflates three independent variables: how large the corpus
+    is, how many passes the topology runs, and how fast each pass is per byte.
+    The U3 estate run breached a 900 s bar at 292.6 s/GiB over THREE passes while
+    a green predecessor measured 177.2 s/GiB over TWO; per pass per GiB those are
+    97.5 against 88.6, so most of the difference was an added pass rather than a
+    slowdown. Reporting seconds per GiB per pass separates the terms, and records
+    the pass count so a topology change is visible instead of hidden inside a wall
+    figure.
+
+    The BAR ITSELF IS NOT SET HERE. Two observations cannot calibrate a threshold,
+    and a number chosen to make the current run green would be a preference wearing
+    a measurement's clothes. Until a bar is ratified the receipt carries the
+    measurement and says plainly that no bar applies, exactly as an unratified
+    bench width refuses to claim a watchdog margin.
+
+    KNOWN LIMIT, stated so the figure is not over-read: the pass ledger records one
+    entry per pass NAME, and the cadence enrichment is timed once around its whole
+    per-pair loop. A run that traverses the snapshot once per surfaced pair
+    therefore still counts as one cadence pass while its elapsed time grows, so a
+    MULTI-PAIR deck inflates this rate and reads as a per-pass slowdown when it is
+    really a pair multiplier. The rate separates corpus size and topology; it does
+    not separate pair count. Isolating that needs the pair count recorded as its own
+    fact, which only the runner can supply.
+    """
+    passes = (
+        len(pass_wall_seconds)
+        if isinstance(pass_wall_seconds, (list, tuple))
+        else None
+    )
+    member_bytes = (
+        corpus_facts.get("member_bytes") if isinstance(corpus_facts, dict) else None
+    )
+    gib = (
+        member_bytes / (1024 ** 3)
+        if isinstance(member_bytes, (int, float)) and member_bytes > 0
+        else None
+    )
+    rate = (
+        elapsed / gib / passes
+        if gib is not None and isinstance(passes, int) and passes > 0
+        else None
+    )
+    return {
+        "wall_rate_seconds_per_gib_per_pass": rate,
+        "wall_rate_pass_count": passes,
+        "wall_rate_corpus_bytes": member_bytes,
+        "wall_rate_bar": _WALL_RATE_BAR_NOT_RATIFIED,
+        # An absent corpus manifest or pass ledger leaves the rate uncomputable.
+        # That is reported as an absence rather than defaulted, so a missing
+        # denominator can never read as a passing measurement.
+        "wall_rate_measured": rate is not None,
+    }
+
+
 def _atomic_json(path: Path, payload: dict) -> None:
     private_mkdir(path.parent)
     temporary = path.with_name(f".{path.name}.tmp-{os.getpid()}")
@@ -1462,6 +1524,11 @@ def main(argv: list[str] | None = None) -> int:
         "rss_bar": rss_bar,
         "wall_green": elapsed <= _WALL_GREEN_SECONDS,
         "wall_limit_seconds": _WALL_GREEN_SECONDS,
+        **_wall_rate_facts(
+            elapsed,
+            payload.get("preflight", {}).get("corpus"),
+            payload.get("preflight", {}).get("pass_wall_seconds"),
+        ),
         "watchdog_rss_bytes": _WATCHDOG_RSS,
         "watchdog_seconds": _PER_WINDOW_WATCHDOG_SECONDS,
         "watchdog_enforced": True,

@@ -712,3 +712,64 @@ def test_supervisor_refuses_substituted_symlink_partial(tmp_path, monkeypatch):
             transaction_parent=tmp_path,
         )
     assert target.read_text(encoding="utf-8") == "{}"
+
+
+def test_wall_rate_separates_corpus_size_from_pass_count() -> None:
+    """The wall cost is reported in a unit that survives a changing corpus.
+
+    An absolute wall conflates corpus size, pass count and per-pass speed. The
+    two real runs below sat on opposite sides of a 900s bar, yet per pass per
+    GiB they differ by only ~10%: most of the gap was a third pass, not a
+    slowdown. Figures are the recorded facts of those runs.
+    """
+    from tools.dnsblock_c1_harness import _wall_rate_facts
+
+    green = _wall_rate_facts(
+        533.5491471248679,
+        {"member_bytes": 3232976285},
+        [["anchor_block", 257.97], ["population", 275.51]],
+    )
+    breach = _wall_rate_facts(
+        1316.7,
+        {"member_bytes": int(4.5 * 1024 ** 3)},
+        [["anchor", 431.0], ["cadence", 428.0], ["population", 457.0]],
+    )
+
+    assert green["wall_rate_pass_count"] == 2
+    assert breach["wall_rate_pass_count"] == 3
+    assert round(green["wall_rate_seconds_per_gib_per_pass"], 1) == 88.6
+    assert round(breach["wall_rate_seconds_per_gib_per_pass"], 1) == 97.5
+    # The absolute walls differ by 2.5x; per pass per GiB they differ by ~10%.
+    ratio = (
+        breach["wall_rate_seconds_per_gib_per_pass"]
+        / green["wall_rate_seconds_per_gib_per_pass"]
+    )
+    assert 1.05 < ratio < 1.15
+
+
+def test_wall_rate_reports_an_absent_denominator_rather_than_passing() -> None:
+    """A missing corpus manifest or pass ledger cannot read as a green run."""
+    from tools.dnsblock_c1_harness import _wall_rate_facts
+
+    for corpus, passes in (
+        (None, [["anchor", 1.0]]),
+        ({"member_bytes": 0}, [["anchor", 1.0]]),
+        ({"member_bytes": 1024 ** 3}, None),
+    ):
+        facts = _wall_rate_facts(100.0, corpus, passes)
+        assert facts["wall_rate_seconds_per_gib_per_pass"] is None
+        assert facts["wall_rate_measured"] is False
+
+
+def test_wall_rate_bar_is_not_invented_from_two_observations() -> None:
+    """No threshold ships until one is measured.
+
+    Two runs cannot calibrate a bar, and a value chosen to make the current run
+    green would be a preference wearing a measurement's clothes.
+    """
+    from tools.dnsblock_c1_harness import _wall_rate_facts
+
+    facts = _wall_rate_facts(100.0, {"member_bytes": 1024 ** 3}, [["anchor", 100.0]])
+
+    assert facts["wall_rate_bar"] == "not_ratified"
+    assert facts["wall_rate_measured"] is True

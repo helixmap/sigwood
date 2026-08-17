@@ -7,6 +7,8 @@ RFC1918 home network unless a test deliberately exercises local topology.
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import hashlib
+import json
 import re
 
 import pandas as pd
@@ -46,6 +48,56 @@ def _context(rows: list[dict[str, object]], **config: object) -> DetectorContext
         config={"min_outbound_bytes": _FLOOR, "min_orig_share": 0.6, **config},
         data_window=_WINDOW,
     )
+
+
+def _finding_snapshot(rows: list[dict[str, object]]) -> bytes:
+    """Stable UTF-8 serialization of all rendered-finding contract fields."""
+    payload = [
+        {
+            "data_window": [item.isoformat() for item in finding.data_window],
+            "description": finding.description,
+            "evidence": finding.evidence,
+            "next_steps": finding.next_steps,
+            "severity": finding.severity.value,
+            "title": finding.title,
+        }
+        for finding in exfil.run(_context(rows))
+    ]
+    return json.dumps(payload, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
+
+
+def test_shared_topology_migration_keeps_frozen_exfil_bytes_and_is_sensitivity_checked(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    home_net_fallback = _row(src="10.0.0.12", dst="203.0.113.31", bytes=1_300, resp_bytes=100)
+    home_net_fallback.pop("local_orig")
+    rows = [
+        *[
+            _row(dst=f"198.51.100.{host}", bytes=1_200, resp_bytes=100)
+            for host in (20, 21, 22, 23)
+        ],
+        _row(dst="203.0.113.30", bytes=1_300, resp_bytes=100),
+        _row(dst="203.0.113.30", bytes=500, resp_bytes=None),
+        _row(dst="2001:db8::20", bytes=1_300, resp_bytes=100),
+        _row(src="::ffff:10.0.0.11", dst="::ffff:203.0.113.20", bytes=1_400, resp_bytes=100),
+        home_net_fallback,
+        _row(dst="10.0.0.50", bytes=1_500, resp_bytes=100),
+        _row(dst="224.0.0.251", bytes=1_500, resp_bytes=100),
+    ]
+    frozen = _finding_snapshot(rows)
+
+    assert hashlib.sha256(frozen).hexdigest() == "905e022c089bd8de8453644629def7bc5e88ec22e15f30e5a085990b85e65b94"
+    assert _finding_snapshot(rows) == frozen
+
+    with monkeypatch.context() as altered:
+        altered.setattr(exfil, "is_non_routable", lambda _address: False)
+        assert _finding_snapshot(rows) != frozen
+    with monkeypatch.context() as altered:
+        altered.setattr(exfil, "parse_address", lambda _address: None)
+        assert _finding_snapshot(rows) != frozen
+    with monkeypatch.context() as altered:
+        altered.setattr(exfil, "in_home_net", lambda *_args, **_kwargs: False)
+        assert _finding_snapshot(rows) != frozen
 
 
 def test_constants_and_discovery_contract() -> None:

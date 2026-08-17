@@ -20,6 +20,7 @@ import pandas as pd
 
 from sigwood.common.display import human_bytes
 from sigwood.common.finding import DetectorContext, Finding, MethodTag, Severity
+from sigwood.common.topology import IPAddress, in_home_net, is_non_routable, parse_address
 
 DETECTOR_NAME = "exfil"
 STATUS = "available"
@@ -97,50 +98,6 @@ def _missing_scoring_columns(df: Any) -> tuple[str, ...]:
     return tuple(column for column in _REQUIRED_SCORING_COLUMNS if column not in columns)
 
 
-def _parse_ip(value: object) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
-    """Parse one address and normalize an IPv4-mapped IPv6 value to IPv4."""
-    try:
-        parsed = ipaddress.ip_address(str(value))
-    except (TypeError, ValueError):
-        return None
-    if isinstance(parsed, ipaddress.IPv6Address) and parsed.ipv4_mapped is not None:
-        return parsed.ipv4_mapped
-    return parsed
-
-
-def _is_non_routable_dst(dst: object) -> bool:
-    """Return whether a destination is multicast, local-scope, or unspecified.
-
-    This intentionally fails open for an unparsable value.  The eligibility
-    pipeline closes that gap before composing this predicate with home-network
-    membership.
-    """
-    parsed = _parse_ip(dst)
-    if parsed is None:
-        return False
-    return (
-        parsed.is_multicast
-        or parsed.is_link_local
-        or parsed.is_loopback
-        or parsed.is_unspecified
-        or (parsed.version == 4 and str(parsed) == "255.255.255.255")
-    )
-
-
-def _in_home_net(
-    address: ipaddress.IPv4Address | ipaddress.IPv6Address,
-    home_net: list[str],
-) -> bool:
-    """Return whether one already-parsed address is in the operator topology."""
-    for network in home_net:
-        try:
-            if address in ipaddress.ip_network(network, strict=False):
-                return True
-        except ValueError:
-            continue
-    return False
-
-
 def _finite_nonnegative(series: pd.Series) -> pd.Series:
     """Coerce a series to finite non-negative numbers while excluding booleans."""
     def clean(value: object) -> float:
@@ -216,9 +173,11 @@ def _surface_pair(orig_bytes: float, resp_bytes: float, cfg: dict) -> bool:
     )
 
 
-def _destination_pool_network(address: object) -> ipaddress.IPv4Network | ipaddress.IPv6Network:
+def _destination_pool_network(
+    address: object,
+) -> ipaddress.IPv4Network | ipaddress.IPv6Network:
     """Return the explicit rollup network for one already-normalized address."""
-    if not isinstance(address, (ipaddress.IPv4Address, ipaddress.IPv6Address)):
+    if not isinstance(address, IPAddress):
         raise TypeError("destination pool address must be parsed")
     return ipaddress.ip_network(
         f"{address}/{_DESTINATION_POOL_PREFIX[address.version]}", strict=False,
@@ -420,8 +379,8 @@ def _apply_eligibility(
         )
 
     prepared = df.copy()
-    parsed_src = prepared["src"].map(_parse_ip)
-    parsed_dst = prepared["dst"].map(_parse_ip)
+    parsed_src = prepared["src"].map(parse_address)
+    parsed_dst = prepared["dst"].map(parse_address)
     parse_mask = (parsed_src.notna() & parsed_dst.notna()).astype(bool)
     prepared = prepared[parse_mask].copy()
     parsed_src = parsed_src[parse_mask]
@@ -437,7 +396,7 @@ def _apply_eligibility(
     prepared["_src_ip"] = parsed_src
     prepared["_dst_ip"] = parsed_dst
     src_internal = pd.Series(
-        [_in_home_net(address, home_net) for address in parsed_src],
+        [in_home_net(address, home_net) for address in parsed_src],
         index=prepared.index,
         dtype=bool,
     )
@@ -456,7 +415,7 @@ def _apply_eligibility(
 
     dst_external = pd.Series(
         [
-            not _in_home_net(address, home_net) and not _is_non_routable_dst(address)
+            not in_home_net(address, home_net) and not is_non_routable(address)
             for address in prepared["_dst_ip"]
         ],
         index=prepared.index,

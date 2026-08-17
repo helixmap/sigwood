@@ -281,10 +281,35 @@ sigwood --help
 Prefer [uv](https://docs.astral.sh/uv/)? `uv tool install sigwood` does the same
 job. A plain virtualenv also works (`python3 -m venv venv && venv/bin/pip
 install sigwood`; a minimal Debian may need `sudo apt install python3-venv`
-first). Avoid `sudo pip install` - it will pollute your system Python and nobody
-wants that.
+first).
 
-Upgrade with `pipx upgrade sigwood`.
+### Upgrade an existing installation
+
+Use the upgrade command for the tool that owns the isolated environment, then confirm which
+version your shell finds:
+
+```bash
+pipx upgrade sigwood
+# or: uv tool upgrade sigwood
+sigwood --version
+```
+
+For an editable source installation, update the checkout through your normal Git workflow,
+then refresh the existing virtual environment and confirm its command directly:
+
+```bash
+.venv/bin/pip install -e '.[all]'
+.venv/bin/sigwood --version
+```
+
+Do not use `sudo pip install sigwood`. It modifies a system Python as root, can conflict with
+packages managed by the operating system, and can leave the command or its files owned by root.
+If that has already happened, use the package-management path that owns that system Python to
+remove or repair the system copy; there is no universally safe one-line uninstall command.
+Install a user-owned copy with pipx or uv instead. For pipx, run `pipx ensurepath` and reopen
+your shell so its executable directory is on PATH. Keep a user configuration under a writable
+`~/.sigwood` and run the isolated command as your user rather than with `sudo`; `/etc/sigwood`
+is the separate, deliberately system-administered configuration home.
 
 Optional extras (same spelling under pipx or pip):
 
@@ -353,6 +378,11 @@ Findings print to your terminal by default (pipeable). Set `report_dir`
 has is documented in a commented "engine room" section at the bottom of the
 generated config (you rarely need to mess around in there). And `sigwood
 <detector> --help` lists that command's flags.
+
+`sigwood era [DIR]` is a separate whole-archive measurement for dated Zeek archives.
+It reads the planner's complete calendar rather than the hunt default window, and is
+deliberately allowlist-blind: its counts include traffic a normal hunt suppresses.
+Use `--dry-run` to inspect its calendar and work estimate before it loads data.
 
 Everything sigwood writes is private by default: directories it creates are mode
 `0700` and files `0600`, whatever your umask, because reports and exports can carry

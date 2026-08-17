@@ -20,10 +20,16 @@ Breaking any of the above means 2.0.
 
 ## Verbs
 
-Thirteen, all of which stay recognized:
+Fourteen, all of which stay recognized:
 
 `hunt` · `auth` · `beacon` · `dns` · `syslog` · `scan` · `exfil` · `aws` ·
-`digest` · `graph` · `export` · `init` · `allowlist`
+`digest` · `graph` · `export` · `init` · `allowlist` · `era`
+
+`era` measures a complete dated Zeek archive. It accepts `[DIR]` as an archive-root
+override (otherwise `[sigwood].zeek_dir`), and only `--help`, `--config`, `--out`,
+`--format=text`, `--utc`, `--quiet`, `--yes`, `--verbose`, and `--dry-run`. Era does
+not accept timeframe, detector, allowlist, or source-directory flags. It is text-only,
+writes to stdout unless `--out` is explicit, and never uses `report_dir`.
 
 ## Flags
 

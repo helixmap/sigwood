@@ -21,6 +21,7 @@ the spec.
 from __future__ import annotations
 
 import os
+import io
 import re
 import shlex
 import stat
@@ -172,6 +173,9 @@ _EXPORT_ALLOWED: frozenset[str] = frozenset({
 })
 _INIT_ALLOWED: frozenset[str] = frozenset({"help"})
 _ALLOWLIST_ALLOWED: frozenset[str] = frozenset({"help", "config"})
+_ERA_ALLOWED: frozenset[str] = frozenset({
+    "help", "config", "out", "format", "utc", "quiet", "yes", "verbose", "dry_run",
+})
 
 
 _VERBS: dict[str, VerbSpec] = {
@@ -194,13 +198,15 @@ _VERBS: dict[str, VerbSpec] = {
     "digest":   VerbSpec("digest",   "orient-before-the-hunt card (schema sniffed)",
                          "[PATH ...]", _DIGEST_ALLOWED),
     "graph":    VerbSpec("graph",    "replay-oriented conn/DNS/Pi-hole HTML graph artifact",
-                         "[conn|dns|pihole] [PATH ...]", _GRAPH_ALLOWED),
+                         "[conn|dns|pihole] | [PATH ...]", _GRAPH_ALLOWED),
     "export":   VerbSpec("export",   "pull logs from external systems to local files",
                          "[BACKEND] [QUERY ...]", _EXPORT_ALLOWED),
     "init":     VerbSpec("init",     "first-run setup wizard",
                          "", _INIT_ALLOWED),
     "allowlist": VerbSpec("allowlist", "inspect & manage suppression lists",
                          "[show|enable|disable|copy] [NAME]", _ALLOWLIST_ALLOWED),
+    "era":      VerbSpec("era", "measure a whole dated Zeek archive (allowlist-blind)",
+                         "[DIR]", _ERA_ALLOWED),
 }
 
 
@@ -305,7 +311,7 @@ def _main(argv: list[str] | None = None) -> int:
     elif cand == "hunt":
         verb = "hunt"               # explicit verb - never requires a target
         rest = args[1:]
-    elif cand in ("digest", "graph", "init", "export", "allowlist"):
+    elif cand in ("digest", "graph", "init", "export", "allowlist", "era"):
         verb = cand
         rest = args[1:]
     elif cand.startswith("-") or _looks_like_path(cand):
@@ -346,6 +352,8 @@ def _main(argv: list[str] | None = None) -> int:
         _run_export(rest)
     elif verb == "allowlist":
         _run_allowlist(rest)
+    elif verb == "era":
+        return _run_era(rest) or 0
     elif verb == "hunt":
         return _run_hunt(
             rest,
@@ -415,12 +423,13 @@ def _global_usage_text(no_config: bool = False) -> str:
         "  sigwood digest [options] PATH    orient-before-the-hunt card; schema is",
         "                                   inferred from the file (conn, dns, syslog,",
         "                                   cloudtrail, or blob for unrecognized text)",
-        "  sigwood graph [options] [conn|dns|pihole] [PATH ...] "
+        "  sigwood graph [options] [conn|dns|pihole] | [PATH ...] "
         "replay-oriented conn/DNS/Pi-hole HTML artifact",
         "",
         "  sigwood export                   pull logs from external systems",
         "  sigwood init                     first-run setup wizard",
         "  sigwood allowlist                inspect & manage suppression lists",
+        "  sigwood era [DIR]                measure a whole dated Zeek archive (allowlist-blind)",
         "",
         "Common options (short forms shown for the frequently-typed flags):",
         "  --help, -h         --version, -V      --verbose, -v      --yes, -y",
@@ -463,7 +472,18 @@ def _render_verb_help(verb: str) -> str:
             head = f"  {spec.long}"
         if spec.takes_value:
             head += f"={spec.metavar}"
-        lines.append(f"{head:<32} {spec.help}".rstrip())
+        help_text = spec.help
+        if verb == "era" and spec.key == "verbose":
+            help_text = "show existing typed selection evidence"
+        elif verb == "era" and spec.key == "yes":
+            help_text = "assume yes to the compressed-archive confirmation"
+        elif verb == "era" and spec.key == "dry_run":
+            help_text = "show Era's plan without loading or writing output"
+        elif verb == "era" and spec.key == "format":
+            help_text = "output format (text; the only Era format)"
+        elif verb == "era" and spec.key == "utc":
+            help_text = "display Era timestamps and output dates in UTC"
+        lines.append(f"{head:<32} {help_text}".rstrip())
     return "\n".join(lines) + "\n"
 
 
@@ -518,7 +538,9 @@ def _parse_args(args: list[str], verb: str) -> dict[str, Any]:
         # `sigwood init -v`, never "unknown flag" / "needs a value".
         if arg == "-vv":
             v_spec = _FLAGS_BY_SHORT.get("v")
-            if v_spec is None or v_spec.key not in allowed:
+            # Era admits the bounded reading level `-v` only.  `-vv` is a
+            # separate registered token, not a spelling of two `-v`s.
+            if v_spec is None or v_spec.key not in allowed or verb == "era":
                 raise UsageError(_wrong_verb_short(v_spec))
             result["verbose_level"] = 2
             continue
@@ -667,6 +689,21 @@ def _resolve_digest_output_target(
     paths = parsed.get("paths") or []
     token = _digest_token(paths[0]) if paths else None
     return unique_path(resolved.path, _digest_basename(token)), None
+
+
+def _era_basename() -> str:
+    """Return Era's display-timezone dated text artifact name."""
+    date = to_display_timezone(datetime.now(timezone.utc)).strftime("%Y%m%d")
+    return f"sigwood-era_{date}.txt"
+
+
+def _resolve_era_output_target(parsed: dict[str, Any]) -> Path | None:
+    """Resolve Era's explicit-output-only policy; it never uses report_dir."""
+    cli_out = parsed.get("out") if "out" in parsed else None
+    if not cli_out or cli_out == "-":
+        return None
+    resolved = be_like_water(resolve_path(cli_out, ""))
+    return resolved.path if resolved.is_file else unique_path(resolved.path, _era_basename())
 
 
 def _graph_basename(kind: str) -> str:
@@ -1769,6 +1806,49 @@ def _digest_runner_kwargs(
         use_utc=use_utc,
         schema=schema,
     )
+
+
+def _run_era(args: list[str]) -> int:
+    """Run Era's text-only, whole-archive raw measurement."""
+    import sigwood.runner as runner
+
+    parsed = _parse_args(args, "era")
+    paths = parsed.get("paths") or []
+    if len(paths) > 1:
+        raise UsageError("era takes at most one archive DIR")
+    out_fmt = parsed.get("format", "text")
+    if out_fmt != "text":
+        raise UsageError(f"era currently supports only --format=text (got {out_fmt!r})")
+    config = _load_config(parsed)
+    use_utc = bool(parsed.get("utc")) or bool(config.get("sigwood", {}).get("use_utc", False))
+    set_display_utc(use_utc)
+    quiet = bool(parsed.get("quiet")) or bool(config.get("sigwood", {}).get("quiet", False))
+    if paths:
+        archive_root = Path(resolve_path(paths[0], "") or paths[0])
+    else:
+        configured = config.get("sigwood", {}).get("zeek_dir")
+        if not configured:
+            raise UsageError("era needs [sigwood].zeek_dir or one archive DIR")
+        archive_root = Path(resolve_path(str(configured), effective_root(config)) or str(configured))
+    output_file = None if parsed.get("dry_run") else _resolve_era_output_target(parsed)
+    stream = sys.stdout
+    if output_file is not None:
+        stream = io.StringIO()
+    runner.run_era(
+        config, archive_root=archive_root, stream=stream,
+        dry_run=bool(parsed.get("dry_run")), skip_confirm=bool(parsed.get("yes")),
+        quiet=quiet, verbose_level=_resolve_verbose_level(parsed),
+    )
+    if output_file is not None:
+        private_mkdir(output_file.parent)
+        with private_open(output_file, encoding="utf-8", newline="") as opened:
+            opened.write(stream.getvalue())
+    # A completed explicit artifact is an operator-visible fact even when the
+    # run itself was quiet.  ``-q`` suppresses progress/status, not the sole
+    # durable destination receipt.
+    if output_file is not None and not parsed.get("dry_run"):
+        print(f"wrote era to {strip_control(compact_home(output_file))}", file=sys.stderr)
+    return 0
 
 
 def _run_init(args: list[str]) -> None:

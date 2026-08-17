@@ -41,7 +41,7 @@ _WINDOW = (
 
 _VERBS = {
     "allowlist", "auth", "aws", "beacon", "digest", "dns", "exfil",
-    "export", "graph", "hunt", "init", "scan", "syslog",
+    "era", "export", "graph", "hunt", "init", "scan", "syslog",
 }
 _FORMATS = {"csv", "html", "json", "pdf", "text"}
 _FLAGS = (
@@ -260,7 +260,7 @@ def test_contract_page_tracks_the_atomic_auth_surface_inventory() -> None:
         Path(__file__).resolve().parents[1] / "docs" / "CONTRACT.md"
     ).read_text(encoding="utf-8")
 
-    assert "Thirteen, all of which stay recognized:" in contract
+    assert "Fourteen, all of which stay recognized:" in contract
     assert "`hunt` · `auth` · `beacon`" in contract
     assert "The seven callable detectors are `auth`, `aws`, `beacon`" in contract
     assert "exactly `auth` and `syslog` own the local system-log lane" in contract

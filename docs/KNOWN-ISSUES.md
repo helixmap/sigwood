@@ -5,6 +5,19 @@ the rough edges worth knowing before you lean on it. None of them lose or corrup
 data quietly: where sigwood can't do something well, it says so at run time where it
 can, and in this file where it can't yet. Found something that isn't here? Open an issue.
 
+**Era needs a long, dated archive for all ten cards to speak.** Era's long-horizon cards need
+twelve eligible weeks, not merely twelve calendar weeks. A shorter archive is still measured,
+but the deck may abstain where the evidence is insufficient. Era intentionally counts raw
+pre-allowlist traffic, so its totals are not expected to match a hunt after suppression.
+
+**`sigwood init` permission advice does not distinguish system and user homes.** When a config
+write fails, the current advice can suggest rerunning with `sudo` without first distinguishing
+the deliberately shared `/etc/sigwood` home from a user-owned `~/.sigwood` reached through
+pipx, uv, or a virtualenv. Elevation can be appropriate for `/etc/sigwood`; for a user home it
+can create root-owned files or invoke a root environment that cannot find the isolated command.
+Until a separate, home-aware product-code change corrects the runtime advice, keep the user home
+writable and run the isolated command as that user rather than with `sudo`.
+
 ## Detectors
 
 **Cross-feed syslog arbitration keeps the local rows - two narrow edges remain.** The
@@ -454,22 +467,24 @@ ranked summary and the dns scan summary - carry no event timestamp at all, by de
 `jq` timeline therefore has to know which key a given finding type uses. Every finding
 also carries the run's data window.
 
-**Symbolic-link refusal covers only the final file name, not hard links or parent
-directories.** sigwood checks, at the moment it opens the file, that
-the final name it was asked to write is not a symbolic link, and refuses rather than
-following it. Two shapes are outside that check. A **hard link** is not a link sigwood can
-detect this way — it is a second name for the same file, so opening it is opening that
-file, and its contents would be replaced. A **symbolic link among the parent directories**
-is followed normally, which is deliberate: a reports directory pointing at another disk is
-an ordinary thing to set up, and only the last component is checked.
+**Symbolic-link refusal does not cover hard links.** sigwood checks, at the moment it opens
+the file, that the final name it was asked to write is not a symbolic link, and refuses
+rather than following it. It also opens each directory along the way without blindly
+following links, so a symbolic link substituted among the parent directories cannot redirect
+an artifact into a directory another account controls. A directory you relocated yourself
+still works: a link is followed when the directory it points at is yours (or the system's)
+and is not one other accounts can write, and shared directories such as `/tmp` that carry
+the sticky bit are treated as ordinary rather than hostile.
 
-Both need the same thing to matter: another account able to create or replace a name in one
-of the directories along your output path. If every such directory is one only you can write
-to, neither applies. They need different fixes, and neither is a small one. Avoiding a hard
-link means not emptying the destination before knowing what it is — writing to a temporary
-name and moving it into place. A symbolic link among the parent directories is not addressed
-by that at all, because the temporary file would be created inside the substituted directory
-too; it needs each directory along the path opened without following links.
+Reports, decks and other whole files are written to a fresh name and moved into place, so a
+**hard link** at the destination loses one of its names rather than its contents: the file
+another name refers to is left as it was.
+
+One narrower shape remains. A few outputs are written as a stream rather than in one piece —
+exported logs, and reports rendered progressively — and those still open the destination
+directly, so a hard link there would have its contents replaced. It matters only where another
+account can create or replace a name in one of the directories along your output path; if
+every such directory is one only you can write to, it does not apply.
 
 **The conn digest is slow on very large frames.** The connection digest walks every
 row to build its histogram and per-flow summary, so a multi-million-row `conn.log`

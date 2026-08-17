@@ -231,7 +231,7 @@ Derivation rules - systemd journal (one compact-JSON object per entry):
              program tag drain3 (and reboot matching) rely on
 Journal rows carry no `facility`/`severity`. The journal is a loader-owned producer
 (`journalctl --output=json`, no sudo, a bounded private transient capture removed
-after load); see the loading/runner rails.
+after load).
 
 Ownership: parser/loader carry `facility` and `severity`; the detector
 receives them in the frame but never reads or assumes them - minimal-5 only.
@@ -490,3 +490,55 @@ selects the strategy and calls `run_load`.
 The `cloudtrail_raw` label in `data_sources` is derived in
 `runner._derive_data_sources()` from the source key, so a non-empty CloudTrail
 load lights it up for free.
+
+---
+
+## Era archive observation facts
+
+Era's archive planner consumes loader-owned discovery and exposes typed planning
+facts; it is not a parser or a detector. Its source calendar consists of UTC
+date groups. The exact `YYYY-MM-DD-TSVPRE` directory spelling is a source
+directory alias for its one canonical `YYYY-MM-DD` group. This records both
+facts: the canonical date is available through the collapse, while the exact
+canonical directory name can still be absent. Other suffixes are not aliases.
+
+The planner's work estimate is the sum of compressed on-disk file sizes from
+`stat()`. Gzip trailer sizes, decoded-byte probes, and row counts are not work
+estimates: trailers are advisory and the latter two require reading data.
+
+For each source family and date, era keeps three independent observation layers:
+
+- **availability**: whether the source was available for inventory;
+- **parse usability**: whether the loaded source produced usable timestamps;
+- **sensor completeness**: what the sensor's own capture-loss telemetry can
+  support.
+
+Missing capture-loss data is `completeness-unknown`, not proof that capture was
+complete. Thin telemetry is a distinct quality state. Capture-loss intervals
+remain attributed to their stable peer or stream. Weighted loss is calculated
+within that peer from its reported gaps and acknowledgements; overlapping peers
+are never combined into a made-up denominator.
+
+Source partitions are UTC half-open intervals. Era projects their availability
+and usable-timestamp floors onto display-calendar days: every overlapping UTC
+partition must clear its floor and a committed usable timestamp must land in
+the display day. A non-UTC display day can overlap two partitions, so failure of
+either makes that display day ineligible. Sensor-loss intervals project by their
+timestamps and peer but do not decide day eligibility.
+
+Era report reducers consume only loader-selected rows and retain aggregate facts.
+Their shards are complete UTC-midnight, half-open intervals wholly inside the
+absolute report interval and bound to the planner's canonical source groups;
+planned empty shards remain visible aggregate facts. Display timezone changes
+labels and projections, not source membership or committed totals. Card 2 publishes committed connection
+records and DNS-query rows independently. Its distinct destination-address count
+is exact only for classifiable, routable addresses outside the configured
+`home_net`; an address-cap or classification failure is displayed as an explicit
+non-measurement, never as a partial exact count.
+
+The canonical D19 report identity contains archive content identity, resolved
+configuration, CLI options, display timezone, partition zone, tldextract version,
+the effective PSL snapshot SHA-256, and sigwood version. Generated-at and output
+name are rendering metadata rather than identity inputs. D34 resource receipts
+are `PASS`, `COMPLETED_RSS_OVER_LIMIT`, or `NOT_MEASURED`; a non-measurement names
+whether the corpus, route, or measurement harness was unavailable.

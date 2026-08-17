@@ -63,7 +63,7 @@ def test_graph_kind_help_literals_track_supported_kinds() -> None:
     from sigwood.common.sources import graph_supported_kinds
 
     expected = (
-        "[" + "|".join(graph_supported_kinds()) + "] [PATH ...]"
+        "[" + "|".join(graph_supported_kinds()) + "] | [PATH ...]"
     )
 
     assert cli._VERBS["graph"].positional_shape == expected
@@ -71,6 +71,13 @@ def test_graph_kind_help_literals_track_supported_kinds() -> None:
         f"sigwood graph [options] {expected} "
         "replay-oriented conn/DNS/Pi-hole HTML artifact"
     ) in cli._global_usage_text()
+
+
+def test_graph_help_expresses_kind_and_path_as_alternatives() -> None:
+    rendered = cli._render_verb_help("graph")
+
+    assert "[conn|dns|pihole] | [PATH ...]" in rendered
+    assert "[conn|dns|pihole] [PATH ...]" not in rendered
 
 
 def test_init_help_only_lists_help(capsys: pytest.CaptureFixture[str]) -> None:

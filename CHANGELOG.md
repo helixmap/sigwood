@@ -8,6 +8,14 @@ All notable changes to sigwood are recorded here. The format follows
 
 ### Added
 
+- **`sigwood era` measures a whole dated Zeek archive as an allowlist-blind
+  retrospective.** It reads traffic before hunt suppression so the report includes traffic
+  that an allowlist would hide. The text-only ten-card report writes to stdout unless
+  `--out=PATH` is given and does not use the configured report directory; it has no
+  timeframe flags because it covers the archive as a whole. Short or gappy archives still
+  produce an honest short report: cards that lack enough usable history abstain and explain
+  why, while an archive with no usable dated data is refused. Large archives ask for
+  confirmation before a long run.
 - **A bounded streaming foundation in the loader** for detectors that need to analyze a
   large archive without holding it in memory. The streaming path is opt-in per run and no
   shipped detector binds it yet: an ordinary hunt takes the same single-pass read path as
@@ -38,6 +46,11 @@ All notable changes to sigwood are recorded here. The format follows
   whole into parsing and analysis. Real log lines are thousands of times smaller; the
   limit keeps an oversized record out of every parser, frame, and analysis result and
   makes the omission visible. The count also appears in the load's quality accounting.
+
+### Fixed
+
+- **Graph help now presents source-kind and source-path forms as alternatives, matching the
+  parser's exclusive choice.**
 
 ## [0.3.0] - 2026-08-08
 

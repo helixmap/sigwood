@@ -37,6 +37,25 @@ or world-accessible, each run prints a one-line stderr reminder until you
 The one exception is a system-wide `/etc/sigwood` config, which keeps ordinary
 shared permissions so non-root users can read it.
 
+### How do I upgrade, or recover from a `sudo pip install`?
+
+Use `pipx upgrade sigwood` or `uv tool upgrade sigwood`, matching the tool that installed it,
+then run `sigwood --version` to confirm which command your shell finds. For an editable source
+checkout, update it through your normal Git workflow and rerun its editable install in the
+existing virtual environment. The complete commands are in [Installation](../README.md#installation).
+
+Do not repair an isolated pipx, uv, or virtualenv install by rerunning it with `sudo`. A prior
+`sudo pip install` modified a system Python, so cleanup must follow the package-management path
+that owns that Python; a universal `sudo pip uninstall` recipe could damage operating-system
+packages. Install a user-owned copy with pipx or uv instead, run `pipx ensurepath` if needed,
+and keep its configuration in a writable user home.
+
+The configuration home decides whether elevation is appropriate. `/etc/sigwood` is deliberately
+shared and system-administered, so writing it can require administrator privileges.
+`~/.sigwood` belongs to the user running a pipx, uv, or virtualenv command; choose that writable
+home and run the user-owned command without `sudo`, which avoids root-owned files and a root
+environment that may not be able to find the isolated executable.
+
 ### Do I need Zeek?
 
 No. Pi-hole/dnsmasq, syslog, and CloudTrail each stand on their own. Zeek is simply where
@@ -110,6 +129,14 @@ A valid log always yields a graph. A very busy one that is too dense to animate 
 degrades rather than failing - it caps the smoothing, coarsens the time bins, or folds to the
 busiest hosts and services, and notes what it did in the header - so you always get an artifact
 to look at instead of an error.
+
+### What is `era`?
+
+`era` measures a complete dated Zeek archive as one ten-card historical deck. It is not a
+hunt and intentionally does not apply the allowlist, so its traffic counts include known
+infrastructure that a hunt suppresses. Long-horizon cards need at least twelve eligible weeks;
+a short archive still runs, but those cards may honestly abstain. `sigwood era --dry-run` shows
+the planner calendar and work estimate without loading the archive.
 
 ### What log sources can it read?
 

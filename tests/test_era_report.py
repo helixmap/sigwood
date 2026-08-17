@@ -375,6 +375,95 @@ def _weekly_reducer(weeks: int = 12) -> tuple[EraReducer, tuple[datetime, ...]]:
     return reducer, starts
 
 
+def _full_deck() -> tuple[tuple[EraCard, ...], tuple[object, ...], frozenset[int]]:
+    """Build all ten speaking cards from controlled, privacy-safe inputs."""
+    starts = tuple(
+        datetime(2026, 1, 5, tzinfo=UTC) + timedelta(days=index)
+        for index in range(12 * 7)
+    )
+    reducer = EraReducer(
+        ReportInterval(starts[0], starts[-1] + timedelta(days=1)),
+        home_net=["192.0.2.0/24"],
+        source_shards=starts,
+    )
+    for start in starts:
+        reducer.set_conn_day_observation(start.date(), present=True, usable=True)
+        reducer.set_dns_day_observation(start.date(), present=True, usable=True)
+
+    for day_index, start in enumerate(starts):
+        starts_per_day = 10 if day_index < 6 * 7 else 20
+        for _ in range(starts_per_day):
+            reducer.add_conn_start(start + timedelta(hours=12))
+
+    reducer.add_conn(starts[0] + timedelta(hours=1), "198.51.100.20")
+    reducer.add_connection_duration(starts[0] + timedelta(hours=2), 90_000)
+    reducer.add_outbound_connection(
+        starts[0] + timedelta(hours=3),
+        origin="192.0.2.10",
+        destination="198.51.100.20",
+        orig_bytes=50,
+        resp_bytes=10,
+    )
+
+    for week in range(12):
+        day = starts[week * 7]
+        for _ in range(100):
+            reducer.add_conn_transport(day, 443, "udp" if week != 6 else "tcp")
+        reducer.add_dns_query(day, "early.example.com")
+        if week >= 2:
+            reducer.add_dns_query(day, "regular.example.net")
+        if week == 2:
+            reducer.add_dns_query(day, "single.example.org")
+
+    observations = {
+        family: FamilyDayObservation(
+            Availability.PRESENT,
+            ParseUsability.USABLE,
+            Completeness.UNKNOWN,
+            84,
+        )
+        for family in ("conn", "dns")
+    }
+    footprint = (
+        FootprintFact("conn", 8, 1, 1, "present"),
+        FootprintFact("dns", 4, 1, 1, "present"),
+    )
+    card3 = busiest_minute_card(reducer)
+    card4 = longest_connection_card(reducer)
+    card6 = weekday_shape_card(reducer)
+    card8, _transport_evidence = transport_share_card(reducer)
+    card9, _shift_evidence = sustained_shift_card(reducer)
+    card10, _domain_evidence = domain_arrival_card(reducer)
+    assert all(card is not None for card in (card3, card4, card6, card8, card9, card10))
+
+    cards = (
+        calendar_card(observations),
+        activity_card(reducer),
+        card3,
+        card4,
+        largest_outbound_card(reducer),
+        card6,
+        footprint_card(footprint),
+        card8,
+        card9,
+        card10,
+    )
+    inputs = (
+        "192.0.2.0/24",
+        "192.0.2.10",
+        "198.51.100.20",
+        "early.example.com",
+        "regular.example.net",
+        "single.example.org",
+        "conn",
+        "dns",
+        "present",
+        "udp",
+        "tcp",
+    )
+    return cards, inputs, frozenset()
+
+
 def test_card_eight_uses_the_port_floor_and_reports_named_largest_move() -> None:
     reducer, starts = _weekly_reducer()
     for week in range(12):

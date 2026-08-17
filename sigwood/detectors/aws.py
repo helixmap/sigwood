@@ -95,7 +95,7 @@ DEFAULT_CONFIG = {
     # Absolute composite-z bands for ranked-principal severity. NOT rank
     # position - a clean corpus should not have a HIGH purely for being
     # top-of-list. Valid: float, low <= medium.
-    "composite_medium_threshold": 2.0,  # absolute calibrated constant → MEDIUM
+    "composite_medium_threshold": 2.0,  # absolute band, not rank position → MEDIUM
     "composite_low_threshold":    1.0,  # mild standout → LOW; below → INFO band
 }
 

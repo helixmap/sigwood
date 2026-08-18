@@ -4,14 +4,263 @@ import json
 import os
 import subprocess
 import sys
+import time
+from datetime import datetime
 from pathlib import Path
 
 import pytest
 
+from tests.dnsblock_repeat_fixture import (
+    BACKGROUND_NAME,
+    FAMILY_KEY,
+    Q_A_NAMES,
+    Q_B_NAMES,
+    QUALIFIED_NAMES,
+    anchor_for,
+    write_repeat_fixture,
+)
+from sigwood.detectors import dnsblock
+from sigwood.parsers.syslog import parse_timestamp
 from tools import dnsblock_c1_harness as harness
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def _utc_interval(window):
+    return [value.replace("Z", "+00:00") for value in window]
+
+
+def _repeat_preflight_counts(result):
+    preflight = result["aggregate"]["preflight"]
+    events = dict(preflight["raw_event_counts"])
+    return preflight["a1_rows"], preflight["a2_rows"], events
+
+
+def _route_counts(rows):
+    return dict(rows)
+
+
+def _assert_r12_route_preconditions(result):
+    aggregate = result["aggregate"]
+    preflight = aggregate["preflight"]
+    observed = {
+        "name_routes": _route_counts(preflight["name_routes"]),
+        "construction_grid": preflight["grids"][4],
+        "history_21_grid": preflight["grids"][5],
+        "ratified_grid": preflight["grids"][11],
+        "final_shape_routes": _route_counts(aggregate["final_shape_routes"]),
+    }
+    assert preflight["coverage_lane"] == "weak", observed
+    assert observed["name_routes"] == {
+        "prior_address_query": 1,
+        "qualifying": 5,
+    }, observed
+    assert observed["construction_grid"]["days_required"] == 3, observed
+    assert observed["construction_grid"]["history_required"] == 14, observed
+    assert observed["construction_grid"]["qualifying_pairs"] == 1, observed
+    assert _route_counts(observed["construction_grid"]["route_counts"]) == {
+        "qualifying": 1
+    }, observed
+    # The serialized preflight does not expose the routing result's private
+    # max_history_periods field.  A qualifying days=3/history=21 cell proves
+    # the required >=21 history floor through the public grid instead.
+    assert observed["history_21_grid"]["days_required"] == 3, observed
+    assert observed["history_21_grid"]["history_required"] == 21, observed
+    assert observed["history_21_grid"]["qualifying_pairs"] == 1, observed
+    assert observed["ratified_grid"]["days_required"] == 5, observed
+    assert observed["ratified_grid"]["history_required"] == 21, observed
+    assert observed["ratified_grid"]["qualifying_pairs"] == 0, observed
+    assert _route_counts(observed["ratified_grid"]["route_counts"]) == {
+        "insufficient_active_periods": 1
+    }, observed
+    assert observed["final_shape_routes"] == {
+        "neither": 0,
+        "arrival_only": 1,
+        "burst_only": 0,
+        "overlap_burst_wins": 0,
+    }, observed
+    return observed
+
+
+def test_dnsblock_repeat_generated_fixture_uses_real_series_harness(tmp_path):
+    previous_tz = os.environ.get("TZ")
+    os.environ["TZ"] = "UTC"
+    if hasattr(time, "tzset"):
+        time.tzset()
+    try:
+        now = datetime.now()
+        fixture = write_repeat_fixture(tmp_path, anchor_for(now))
+        first_year = parse_timestamp(fixture.first_stamp).year
+        last_year = parse_timestamp(fixture.last_stamp).year
+        assert first_year == last_year, (first_year, last_year)
+        assert fixture.log.parent == tmp_path
+        assert len(Q_A_NAMES) == len(Q_B_NAMES) == 5
+        assert QUALIFIED_NAMES == Q_A_NAMES + Q_B_NAMES
+        for name in (BACKGROUND_NAME, *QUALIFIED_NAMES):
+            assert dnsblock._family(name) == (FAMILY_KEY, False)
+
+        observed_repeat = {}
+        observed_final_routes = {}
+        for shape, batch_size in (("stepped", 4), ("single", 2), ("disjoint", 2)):
+            artifact = tmp_path / f"{shape}-artifact.json"
+            run = subprocess.run(
+                [
+                    sys.executable,
+                    str(ROOT / "tools" / "dnsblock_c1_harness.py"),
+                    "--pihole-dir",
+                    str(fixture.log),
+                    "--artifact",
+                    str(artifact),
+                    "--series-request",
+                    str(fixture.requests[shape]),
+                    "--series-batch-size",
+                    str(batch_size),
+                    # The sealed C1 W-SHIFT campaign used the harness default
+                    # vector (3,14), not the separately ratified (5,21) grid
+                    # candidate.  State it explicitly here; see artifact
+                    # 208de1daa4ebdfe4c4fd96b5ed79085706c292bca94088a2a91044b1587c99a4
+                    # in the unit diagnosis.
+                    "--arrival-days",
+                    "3",
+                    "--arrival-history",
+                    "14",
+                    "--output-format",
+                    "json",
+                ],
+                cwd=ROOT,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            assert run.returncode == 0, run.stderr
+            payload = json.loads(artifact.read_text(encoding="utf-8"))
+            assert payload["series"]["allowlist_lanes"] == [
+                "default",
+                "unsuppressed",
+            ]
+            expected_windows = fixture.windows[shape]
+            assert len(payload["results"]) == len(expected_windows) * 2
+            by_window = {}
+            for result in payload["results"]:
+                ordinal = result["window_ordinal"]
+                expected = expected_windows[ordinal]
+                assert result["report_interval"] == _utc_interval(
+                    (expected["start"], expected["end"])
+                )
+                assert result["context_interval"] == _utc_interval(
+                    (expected["context_start"], expected["context_end"])
+                )
+                a1_rows, a2_rows, events = _repeat_preflight_counts(result)
+                assert events["query"] - a1_rows == events["gravity_blocked"] - a2_rows
+                routes = _assert_r12_route_preconditions(result)
+                assert result["aggregate"]["channels"] == {
+                    "burst": {
+                        "status": "ABSTAINED",
+                        "cause": "weak_coverage",
+                        "periods_required": 3,
+                        "eligible_periods": 7,
+                    },
+                    "recurring": {
+                        "status": "ABSTAINED",
+                        "cause": "weak_coverage",
+                    },
+                }
+                by_window.setdefault(ordinal, []).append(
+                    (
+                        result["allowlist_lane"],
+                        a1_rows,
+                        a2_rows,
+                        events,
+                        routes,
+                    )
+                )
+            for ordinal, lane_facts in by_window.items():
+                assert {lane for lane, *_facts in lane_facts} == {
+                    "default",
+                    "unsuppressed",
+                }
+                assert len(
+                    {
+                        (
+                            a1,
+                            a2,
+                            tuple(sorted(events.items())),
+                            json.dumps(routes, sort_keys=True),
+                        )
+                        for _, a1, a2, events, routes in lane_facts
+                    }
+                ) == 1
+            observed_repeat[shape] = payload["repeat_burden"]
+            observed_final_routes[shape] = [
+                lane_facts[0][4]["final_shape_routes"]
+                for lane_facts in by_window.values()
+            ]
+
+        # The r12 calendar reproduces the C1 campaign's explicit (3,14)
+        # final-shape vector.  The separate (5,21) ratified grid candidate is
+        # retained above as a public observable, not substituted here.
+        assert {
+            shape: result["maximum_observed"]
+            for shape, result in observed_repeat.items()
+        } == {"stepped": 4, "single": 1, "disjoint": 2}
+        assert all(
+            routes == {"neither": 0, "arrival_only": 1, "burst_only": 0,
+                       "overlap_burst_wins": 0}
+            for by_shape in observed_final_routes.values()
+            for routes in by_shape
+        )
+        assert {
+            shape: (
+                result["violating_identities"],
+                result["violation"],
+            )
+            for shape, result in observed_repeat.items()
+        } == {
+            "stepped": (1, "arrival_or_mixed"),
+            "single": (0, None),
+            "disjoint": (0, None),
+        }
+
+        batch_two_artifact = tmp_path / "stepped-batch-two-artifact.json"
+        batch_two = subprocess.run(
+            [
+                sys.executable,
+                str(ROOT / "tools" / "dnsblock_c1_harness.py"),
+                "--pihole-dir",
+                str(fixture.log),
+                "--artifact",
+                str(batch_two_artifact),
+                "--series-request",
+                str(fixture.requests["stepped"]),
+                "--series-batch-size",
+                "2",
+                "--arrival-days",
+                "3",
+                "--arrival-history",
+                "14",
+                "--output-format",
+                "json",
+            ],
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        assert batch_two.returncode == 0, batch_two.stderr
+        batch_two_payload = json.loads(
+            batch_two_artifact.read_text(encoding="utf-8")
+        )
+        assert json.dumps(
+            batch_two_payload["repeat_burden"], sort_keys=True
+        ) == json.dumps(observed_repeat["stepped"], sort_keys=True)
+    finally:
+        if previous_tz is None:
+            os.environ.pop("TZ", None)
+        else:
+            os.environ["TZ"] = previous_tz
+        if hasattr(time, "tzset"):
+            time.tzset()
 
 
 def test_series_partition_is_contiguous_at_most_with_remainder_last():

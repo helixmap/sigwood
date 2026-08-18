@@ -48,9 +48,15 @@ from sigwood.era.report import (
     largest_outbound_card,
     longest_connection_card,
     render_text_report,
+    render_masthead_lines,
+    SelectionEvidence,
+    SpanHonesty,
+    compose_text_presentation,
+    era_identity_cli_options,
     transport_share_card,
     utc_shard_label,
 )
+from sigwood.era.html import render_html_report
 
 __all__ = [
     "ArchivePlan",
@@ -71,6 +77,8 @@ __all__ = [
     "EraReducer",
     "EraShard",
     "EraSlot",
+    "SelectionEvidence",
+    "SpanHonesty",
     "ExternalAddressFact",
     "InspectHandoff",
     "FamilyDayObservation",
@@ -91,6 +99,10 @@ __all__ = [
     "largest_outbound_card",
     "longest_connection_card",
     "render_text_report",
+    "render_masthead_lines",
+    "render_html_report",
+    "compose_text_presentation",
+    "era_identity_cli_options",
     "registrable_domain",
     "transport_share_card",
     "normalized_maxrss_bytes",

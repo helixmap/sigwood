@@ -182,6 +182,17 @@ def test_u7_oracle_receipt_hashes_rendered_deck_without_retaining_paths(monkeypa
     assert not hasattr(receipt, "rendered_cards")
     assert "/private/operator-path" not in repr(receipt)
 
+    presentation_variant = _run_era_u7_oracle(
+        {"sigwood": {}},
+        archive_root_candidates=[],
+        cli_options={"format": "pdf", "unknown_presentation_switch": "ignored"},
+        display_timezone="UTC",
+        partition_zone="UTC",
+        tldextract_version="fixture",
+        effective_psl_snapshot=b"fixture",
+    )
+    assert presentation_variant.closure_payload_sha256 == receipt.closure_payload_sha256
+
 
 def test_u7_warning_census_uses_path_free_cause_classes() -> None:
     assert runner._era_warning_class("/private/archive: unexpected end of file") == "read-corruption"

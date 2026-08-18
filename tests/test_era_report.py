@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+from html import escape
 import json
 import shlex
 from datetime import datetime, timedelta, timezone
@@ -34,12 +35,14 @@ from sigwood.era import (
     largest_outbound_card,
     longest_connection_card,
     render_text_report,
+    render_html_report,
     registrable_domain,
 )
 from sigwood.era.domains import effective_psl_snapshot_bytes
 from sigwood.era.report import (
     FootprintFact,
     SpanHonesty,
+    SelectionEvidence,
     _presence_class,
     domain_arrival_card,
     footprint_card,
@@ -50,6 +53,40 @@ from sigwood.era.report import (
 
 
 UTC = timezone.utc
+
+
+def test_era_html_is_self_contained_and_escapes_every_card_surface() -> None:
+    document = render_html_report(
+        (EraCard("<card>", (("<label>", "<value>"),), (EraSlot("<when>", "<command>"),)),),
+        family="<family>",
+        selection_evidence=SelectionEvidence(1, 2, False, 3, 4, True, "<reason>"),
+    )
+
+    for raw in ("<card>", "<label>", "<value>", "<when>", "<command>", "<family>", "<reason>"):
+        assert raw not in document
+    assert "&lt;card&gt;" in document
+    for needle in ("<link", "<script", "@import", "url(http", " src=", " href="):
+        assert needle not in document
+    assert document.count("--wordmark: #8a5320;") == 1
+    assert document.count("--wordmark: #e38e30;") == 1
+
+
+@pytest.mark.parametrize(
+    "span_honesty",
+    (
+        SpanHonesty(11, 11),
+        SpanHonesty(11, 10, (9, 10)),
+    ),
+)
+def test_era_html_masthead_matches_text_horizon_disclosure(
+    span_honesty: SpanHonesty,
+) -> None:
+    """The page carries every shared masthead line, including the no-cards arm."""
+    text = render_text_report((), family="zeek", span_honesty=span_honesty)
+    document = render_html_report((), family="zeek", span_honesty=span_honesty)
+
+    for line in text.splitlines():
+        assert escape(line, quote=True) in document
 
 
 def _instant(day: int, hour: int = 0) -> datetime:

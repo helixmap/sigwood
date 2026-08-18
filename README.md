@@ -382,7 +382,9 @@ generated config (you rarely need to mess around in there). And `sigwood
 `sigwood era [DIR]` is a separate whole-archive measurement for dated Zeek archives.
 It reads the planner's complete calendar rather than the hunt default window, and is
 deliberately allowlist-blind: its counts include traffic a normal hunt suppresses.
-Use `--dry-run` to inspect its calendar and work estimate before it loads data.
+Use `--dry-run` to inspect its calendar and work estimate before it loads data. It
+prints plain text by default; `--format=html` and `--format=pdf` render the same
+measured cards as a page you can read in a browser or hand to someone.
 
 Everything sigwood writes is private by default: directories it creates are mode
 `0700` and files `0600`, whatever your umask, because reports and exports can carry

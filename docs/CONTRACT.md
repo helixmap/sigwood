@@ -27,9 +27,12 @@ Fourteen, all of which stay recognized:
 
 `era` measures a complete dated Zeek archive. It accepts `[DIR]` as an archive-root
 override (otherwise `[sigwood].zeek_dir`), and only `--help`, `--config`, `--out`,
-`--format=text`, `--utc`, `--quiet`, `--yes`, `--verbose`, and `--dry-run`. Era does
-not accept timeframe, detector, allowlist, or source-directory flags. It is text-only,
-writes to stdout unless `--out` is explicit, and never uses `report_dir`.
+`--format`, `--utc`, `--quiet`, `--yes`, `--verbose`, and `--dry-run`. Era does
+not accept timeframe, detector, allowlist, or source-directory flags. `--format`
+accepts `text` (the default), `html`, and `pdf`; all three present the same measured
+cards, and an unaccepted value is refused before the archive is read. Era writes to
+stdout unless `--out` is explicit, and never uses `report_dir`. A PDF to a terminal is
+refused rather than written as binary.
 
 ## Flags
 

@@ -105,6 +105,16 @@ def _render_pdf_bytes(html_str: str) -> bytes:
     return weasyprint.HTML(string=html_str).write_pdf()
 
 
+def stack_error(exc: ImportError | OSError) -> str:
+    """Public translation seam for callers that render Era presentation PDF."""
+    return _stack_error(exc)
+
+
+def render_pdf_bytes(html_str: str) -> bytes:
+    """Public byte-render seam; preserves the injectable internal test seam."""
+    return _render_pdf_bytes(html_str)
+
+
 class PdfHandler(OutputHandler):
     """Write findings as a PDF report file (HTML rendered through WeasyPrint)."""
 
@@ -141,9 +151,9 @@ class PdfHandler(OutputHandler):
         Both translate to the one actionable stack error - same translation as
         ``end()``."""
         try:
-            _render_pdf_bytes("<html><body>preflight</body></html>")
+            render_pdf_bytes("<html><body>preflight</body></html>")
         except (ImportError, OSError) as exc:
-            raise ValueError(_stack_error(exc)) from exc
+            raise ValueError(stack_error(exc)) from exc
 
     def begin(self, run_summary: RunSummary) -> None:
         """Store run summary for the report header."""
@@ -166,9 +176,9 @@ class PdfHandler(OutputHandler):
             max_findings_per_detector=self._max_findings_per_detector,
         )
         try:
-            pdf_bytes = _render_pdf_bytes(html_str)
+            pdf_bytes = render_pdf_bytes(html_str)
         except (ImportError, OSError) as exc:
-            raise ValueError(_stack_error(exc)) from exc
+            raise ValueError(stack_error(exc)) from exc
         if self._stream is not None:
             # Pipe target (sys.stdout.buffer) - the caller owns the stream; we
             # never close it. Flush so piped bytes are not lost on a buffered exit.

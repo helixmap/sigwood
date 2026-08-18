@@ -26,11 +26,14 @@ from contextlib import ExitStack
 from dataclasses import asdict, dataclass, field, replace
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Collection, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, Collection, Mapping, Sequence
 
 import pandas as pd
 
 import sigwood.detectors as _detectors_pkg
+
+if TYPE_CHECKING:
+    from sigwood.era.report import EraCard, SelectionEvidence, SpanHonesty
 from sigwood.common.config import (
     DEFAULT_DETECT_SPEC,
     detector_disclosure_lines,
@@ -372,6 +375,10 @@ class EraHarnessReceipt:
     warning_census: tuple[tuple[str, int], ...] = ()
     missing_precondition: str | None = None
     frozen_input_identity: str | None = None
+    family: str = "zeek"
+    cards: tuple[EraCard, ...] = ()
+    span_honesty: SpanHonesty | None = None
+    selection_evidence: SelectionEvidence | None = None
 
 
 @dataclass(frozen=True)
@@ -439,7 +446,7 @@ def _run_era_u7_oracle(
     is aggregate/provenance-only, so it stores a rendered-deck digest rather
     than the deck bytes that belong in a private detached-run artifact.
     """
-    from sigwood.era.report import canonical_identity_payload
+    from sigwood.era.report import canonical_identity_payload, era_identity_cli_options
 
     harness = _run_era_harness(
         config,
@@ -467,7 +474,7 @@ def _run_era_u7_oracle(
     payload = canonical_identity_payload(
         archive_content_identity={"sha256": harness.frozen_input_identity},
         resolved_config=_era_closure_config(config),
-        cli_options=dict(cli_options),
+        cli_options=era_identity_cli_options(cli_options),
         display_timezone=display_timezone,
         partition_zone=partition_zone,
         tldextract_version=tldextract_version,
@@ -535,6 +542,7 @@ def _run_era_harness(
         ReportInterval,
         SpanHonesty,
         activity_card,
+        build_selection_evidence,
         busiest_minute_card,
         calendar_card,
         domain_arrival_card,
@@ -741,6 +749,16 @@ def _run_era_harness(
         if duration_winner is not None and duration_start is not None
         else None
     )
+    family = "zeek"
+    selection_evidence = build_selection_evidence(
+        card_eight_speaking_weeks=transport_evidence.admissible_candidates,
+        card_eight_subfloor_weeks=transport_evidence.refused_candidates,
+        card_eight_tie=transport_evidence.tie,
+        card_nine_admissible_candidates=temporal_evidence.admissible_candidates,
+        card_nine_refused_candidates=temporal_evidence.refused_candidates,
+        card_nine_tie=temporal_evidence.tie,
+        card_ten_reason=domain_evidence.reason,
+    )
     return EraHarnessReceipt(
         outcome="MEASURED",
         population_basis="raw_pre_allowlist",
@@ -750,7 +768,7 @@ def _run_era_harness(
         post_baseline_dates=reconciliation.post_baseline_dates,
         collapsed_alias_dates=reconciliation.collapsed_tsvpre_dates,
         cards_present=tuple(int(card.title.split(".", 1)[0]) for card in cards),
-        rendered_cards=render_text_report(cards, family="zeek", span_honesty=span_honesty),
+        rendered_cards=render_text_report(cards, family=family, span_honesty=span_honesty),
         peak_minute=peak_minute,
         peak_minute_neighborhood=peak_neighborhood,
         peak_minute_date_relation=peak_relation,
@@ -761,17 +779,17 @@ def _run_era_harness(
         card_six_selection="none" if card_six is not None else None,
         card_nine_winner_score=temporal_evidence.winner_score,
         card_nine_runner_up_score=temporal_evidence.runner_up_score,
-        card_nine_admissible_candidates=temporal_evidence.admissible_candidates,
-        card_nine_refused_candidates=temporal_evidence.refused_candidates,
-        card_nine_tie=temporal_evidence.tie,
+        card_nine_admissible_candidates=selection_evidence.card_nine_admissible_candidates,
+        card_nine_refused_candidates=selection_evidence.card_nine_refused_candidates,
+        card_nine_tie=selection_evidence.card_nine_tie,
         card_eight_winner_score=transport_evidence.winner_score,
         card_eight_runner_up_score=transport_evidence.runner_up_score,
-        card_eight_speaking_weeks=transport_evidence.admissible_candidates,
-        card_eight_subfloor_weeks=transport_evidence.refused_candidates,
-        card_eight_tie=transport_evidence.tie,
+        card_eight_speaking_weeks=selection_evidence.card_eight_speaking_weeks,
+        card_eight_subfloor_weeks=selection_evidence.card_eight_subfloor_weeks,
+        card_eight_tie=selection_evidence.card_eight_tie,
         card_ten_span_weeks=domain_evidence.span_weeks,
         card_ten_maturity=domain_evidence.maturity,
-        card_ten_reason=domain_evidence.reason,
+        card_ten_reason=selection_evidence.card_ten_reason,
         card_ten_ledger_cap=domain_evidence.ledger.cap,
         card_ten_ledger_cap_exceeded=domain_evidence.ledger.cap_exceeded,
         card_ten_psl_available=domain_evidence.ledger.psl_available,
@@ -782,6 +800,10 @@ def _run_era_harness(
         ),
         warning_census=tuple(sorted(warning_census.items())),
         frozen_input_identity=frozen_input_identity,
+        family=family,
+        cards=cards,
+        span_honesty=span_honesty,
+        selection_evidence=selection_evidence,
     )
 
 
@@ -805,7 +827,7 @@ def run_era(
     config: Mapping[str, Any],
     *,
     archive_root: Path,
-    stream: Any,
+    stream: Any | None = None,
     dry_run: bool = False,
     skip_confirm: bool = False,
     quiet: bool = False,
@@ -818,6 +840,10 @@ def run_era(
     is suppressed: Era intentionally measures raw pre-allowlist traffic.
     """
     from sigwood.era.planner import ArchivePlanner, RATIFIED_BASELINE_DATES
+    from sigwood.era.report import compose_text_presentation
+
+    if dry_run and stream is None:
+        raise ValueError("era dry run needs an output stream")
 
     archive_plan = ArchivePlanner(
         archive_root, baseline_dates=RATIFIED_BASELINE_DATES
@@ -853,19 +879,11 @@ def run_era(
     )
     if receipt.outcome != "MEASURED" or receipt.rendered_cards is None:
         raise ValueError(receipt.missing_precondition or "measurement unavailable")
-    stream.write(receipt.rendered_cards)
-    if verbose_level:
-        stream.write("\nselection evidence:\n")
-        stream.write(
-            f"  card 8: speaking weeks {receipt.card_eight_speaking_weeks}; "
-            f"below floor {receipt.card_eight_subfloor_weeks}; tie {receipt.card_eight_tie}\n"
-        )
-        stream.write(
-            f"  card 9: admissible {receipt.card_nine_admissible_candidates}; "
-            f"refused {receipt.card_nine_refused_candidates}; tie {receipt.card_nine_tie}\n"
-        )
-        if receipt.card_ten_reason:
-            stream.write(f"  card 10: {receipt.card_ten_reason}\n")
+    if stream is not None:
+        stream.write(compose_text_presentation(
+            receipt.rendered_cards,
+            receipt.selection_evidence if verbose_level else None,
+        ))
     return receipt
 
 

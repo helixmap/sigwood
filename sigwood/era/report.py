@@ -204,6 +204,41 @@ class SpanHonesty:
 
 
 @dataclass(frozen=True)
+class SelectionEvidence:
+    """Typed, presentation-only selection evidence for verbose Era output."""
+
+    card_eight_speaking_weeks: int
+    card_eight_subfloor_weeks: int
+    card_eight_tie: bool
+    card_nine_admissible_candidates: int
+    card_nine_refused_candidates: int
+    card_nine_tie: bool
+    card_ten_reason: str | None = None
+
+
+def build_selection_evidence(
+    *,
+    card_eight_speaking_weeks: int,
+    card_eight_subfloor_weeks: int,
+    card_eight_tie: bool,
+    card_nine_admissible_candidates: int,
+    card_nine_refused_candidates: int,
+    card_nine_tie: bool,
+    card_ten_reason: str | None,
+) -> SelectionEvidence:
+    """Build the one carrier shared by text and HTML presentations."""
+    return SelectionEvidence(
+        card_eight_speaking_weeks=card_eight_speaking_weeks,
+        card_eight_subfloor_weeks=card_eight_subfloor_weeks,
+        card_eight_tie=card_eight_tie,
+        card_nine_admissible_candidates=card_nine_admissible_candidates,
+        card_nine_refused_candidates=card_nine_refused_candidates,
+        card_nine_tie=card_nine_tie,
+        card_ten_reason=card_ten_reason,
+    )
+
+
+@dataclass(frozen=True)
 class TemporalSelectionEvidence:
     """Private, aggregate-only evidence for a score-ranked temporal selection."""
 
@@ -1124,6 +1159,21 @@ def render_text_report(
     cards: tuple[EraCard, ...], *, family: str, span_honesty: SpanHonesty | None = None
 ) -> str:
     """Render already-measured cards in fixed card and slot order."""
+    lines = render_masthead_lines(family, span_honesty)
+    for card in cards:
+        lines.append(strip_control(card.title))
+        lines.extend(
+            f"  {strip_control(label)}: {strip_control(value)}" for label, value in card.facts
+        )
+        lines.extend(
+            f"  {strip_control(slot.when)}: {strip_control(slot.inspect_command)}"
+            for slot in card.slots
+        )
+    return "\n".join(lines)
+
+
+def render_masthead_lines(family: str, span_honesty: SpanHonesty | None = None) -> list[str]:
+    """Return the complete shared text masthead for every Era presentation."""
     lines = [f"era / {strip_control(family)}"]
     if span_honesty is not None:
         lines.append(
@@ -1141,16 +1191,43 @@ def render_text_report(
                 "horizon-limited "
                 f"(reasoned default: {MASTHEAD_MIN_ELIGIBLE_WEEKS} eligible weeks): {cards_text} abstain due to span"
             )
-    for card in cards:
-        lines.append(strip_control(card.title))
-        lines.extend(
-            f"  {strip_control(label)}: {strip_control(value)}" for label, value in card.facts
-        )
-        lines.extend(
-            f"  {strip_control(slot.when)}: {strip_control(slot.inspect_command)}"
-            for slot in card.slots
-        )
-    return "\n".join(lines)
+    return lines
+
+
+def render_text_selection_evidence(evidence: SelectionEvidence) -> str:
+    """Render the legacy verbose suffix from its typed carrier."""
+    lines = [
+        "selection evidence:",
+        (
+            f"  card 8: speaking weeks {evidence.card_eight_speaking_weeks}; "
+            f"below floor {evidence.card_eight_subfloor_weeks}; tie {evidence.card_eight_tie}"
+        ),
+        (
+            f"  card 9: admissible {evidence.card_nine_admissible_candidates}; "
+            f"refused {evidence.card_nine_refused_candidates}; tie {evidence.card_nine_tie}"
+        ),
+    ]
+    if evidence.card_ten_reason:
+        lines.append(f"  card 10: {strip_control(evidence.card_ten_reason)}")
+    return "\n".join(lines) + "\n"
+
+
+def compose_text_presentation(
+    rendered_cards: str, evidence: SelectionEvidence | None,
+) -> str:
+    """Combine the invariant deck and optional verbose suffix exactly once."""
+    return rendered_cards if evidence is None else rendered_cards + "\n" + render_text_selection_evidence(evidence)
+
+
+_ERA_IDENTITY_OPTION_KEYS: frozenset[str] = frozenset()
+
+
+def era_identity_cli_options(options: Mapping[str, Any]) -> Mapping[str, Any]:
+    """Project only explicitly identity-bearing Era options into D19."""
+    # Era presently has no CLI option whose value belongs in the closure.  The
+    # named allow-list makes a future identity-bearing option an explicit,
+    # reviewable addition rather than an accidental parsed-dict pass-through.
+    return {key: options[key] for key in _ERA_IDENTITY_OPTION_KEYS if key in options}
 
 
 def utc_shard_label(shard: EraShard) -> str:

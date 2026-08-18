@@ -10,9 +10,12 @@ All notable changes to sigwood are recorded here. The format follows
 
 - **`sigwood era` measures a whole dated Zeek archive as an allowlist-blind
   retrospective.** It reads traffic before hunt suppression so the report includes traffic
-  that an allowlist would hide. The text-only ten-card report writes to stdout unless
-  `--out=PATH` is given and does not use the configured report directory; it has no
-  timeframe flags because it covers the archive as a whole. Short or gappy archives still
+  that an allowlist would hide. The ten-card report writes to stdout unless `--out=PATH` is
+  given and does not use the configured report directory; it has no timeframe flags because
+  it covers the archive as a whole. It prints plain text by default, and `--format=html` or
+  `--format=pdf` presents the same measured cards as a self-contained page for reading in a
+  browser or handing to someone - the page fetches nothing from the network and carries no
+  scripts, and a PDF aimed at a terminal is refused rather than written as binary. Short or gappy archives still
   produce an honest short report: cards that lack enough usable history abstain and explain
   why, while an archive with no usable dated data is refused. Large archives ask for
   confirmation before a long run.

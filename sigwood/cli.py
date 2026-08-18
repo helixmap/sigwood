@@ -21,7 +21,6 @@ the spec.
 from __future__ import annotations
 
 import os
-import io
 import re
 import shlex
 import stat
@@ -52,6 +51,7 @@ from sigwood.common.paths import (
     effective_root,
     private_mkdir,
     private_open,
+    private_write_bytes,
     resolve_path,
     unique_path,
 )
@@ -480,7 +480,7 @@ def _render_verb_help(verb: str) -> str:
         elif verb == "era" and spec.key == "dry_run":
             help_text = "show Era's plan without loading or writing output"
         elif verb == "era" and spec.key == "format":
-            help_text = "output format (text; the only Era format)"
+            help_text = "output format (text, html, pdf)"
         elif verb == "era" and spec.key == "utc":
             help_text = "display Era timestamps and output dates in UTC"
         lines.append(f"{head:<32} {help_text}".rstrip())
@@ -691,19 +691,20 @@ def _resolve_digest_output_target(
     return unique_path(resolved.path, _digest_basename(token)), None
 
 
-def _era_basename() -> str:
-    """Return Era's display-timezone dated text artifact name."""
+def _era_basename(output_format: str = "text") -> str:
+    """Return Era's display-timezone dated artifact name."""
     date = to_display_timezone(datetime.now(timezone.utc)).strftime("%Y%m%d")
-    return f"sigwood-era_{date}.txt"
+    extension = "txt" if output_format == "text" else output_format
+    return f"sigwood-era_{date}.{extension}"
 
 
-def _resolve_era_output_target(parsed: dict[str, Any]) -> Path | None:
+def _resolve_era_output_target(parsed: dict[str, Any], output_format: str = "text") -> Path | None:
     """Resolve Era's explicit-output-only policy; it never uses report_dir."""
     cli_out = parsed.get("out") if "out" in parsed else None
     if not cli_out or cli_out == "-":
         return None
     resolved = be_like_water(resolve_path(cli_out, ""))
-    return resolved.path if resolved.is_file else unique_path(resolved.path, _era_basename())
+    return resolved.path if resolved.is_file else unique_path(resolved.path, _era_basename(output_format))
 
 
 def _graph_basename(kind: str) -> str:
@@ -1809,7 +1810,7 @@ def _digest_runner_kwargs(
 
 
 def _run_era(args: list[str]) -> int:
-    """Run Era's text-only, whole-archive raw measurement."""
+    """Run Era's whole-archive measurement and selected presentation."""
     import sigwood.runner as runner
 
     parsed = _parse_args(args, "era")
@@ -1817,8 +1818,8 @@ def _run_era(args: list[str]) -> int:
     if len(paths) > 1:
         raise UsageError("era takes at most one archive DIR")
     out_fmt = parsed.get("format", "text")
-    if out_fmt != "text":
-        raise UsageError(f"era currently supports only --format=text (got {out_fmt!r})")
+    if out_fmt not in {"text", "html", "pdf"}:
+        raise UsageError(f"era supports only --format=text, --format=html, or --format=pdf (got {out_fmt!r})")
     config = _load_config(parsed)
     use_utc = bool(parsed.get("utc")) or bool(config.get("sigwood", {}).get("use_utc", False))
     set_display_utc(use_utc)
@@ -1830,23 +1831,61 @@ def _run_era(args: list[str]) -> int:
         if not configured:
             raise UsageError("era needs [sigwood].zeek_dir or one archive DIR")
         archive_root = Path(resolve_path(str(configured), effective_root(config)) or str(configured))
-    output_file = None if parsed.get("dry_run") else _resolve_era_output_target(parsed)
-    stream = sys.stdout
-    if output_file is not None:
-        stream = io.StringIO()
-    runner.run_era(
-        config, archive_root=archive_root, stream=stream,
+    if parsed.get("dry_run"):
+        runner.run_era(
+            config, archive_root=archive_root, stream=sys.stdout,
+            dry_run=True, skip_confirm=bool(parsed.get("yes")), quiet=quiet,
+            verbose_level=_resolve_verbose_level(parsed),
+        )
+        return 0
+    output_file = _resolve_era_output_target(parsed, out_fmt)
+    if out_fmt == "pdf" and output_file is None and sys.stdout.isatty():
+        from sigwood.outputs.pdf import PDF_TTY_ERROR
+        raise ValueError(PDF_TTY_ERROR)
+    receipt = runner.run_era(
+        config, archive_root=archive_root, stream=None,
         dry_run=bool(parsed.get("dry_run")), skip_confirm=bool(parsed.get("yes")),
         quiet=quiet, verbose_level=_resolve_verbose_level(parsed),
     )
+    if receipt is None or receipt.rendered_cards is None:
+        raise ValueError("era measurement unavailable")
+    evidence = receipt.selection_evidence if _resolve_verbose_level(parsed) else None
+    if out_fmt == "text":
+        from sigwood.era.report import compose_text_presentation
+        rendered: str | bytes = compose_text_presentation(receipt.rendered_cards, evidence)
+    elif out_fmt == "html":
+        from sigwood.era.html import render_html_report
+        rendered = render_html_report(
+            receipt.cards, family=receipt.family, span_honesty=receipt.span_honesty,
+            selection_evidence=evidence,
+        )
+    else:
+        from sigwood.era.html import render_html_report
+        from sigwood.outputs.pdf import render_pdf_bytes, stack_error
+        try:
+            rendered = render_pdf_bytes(render_html_report(
+                receipt.cards, family=receipt.family, span_honesty=receipt.span_honesty,
+                selection_evidence=evidence,
+            ))
+        except (ImportError, OSError) as exc:
+            raise ValueError(stack_error(exc)) from exc
     if output_file is not None:
         private_mkdir(output_file.parent)
-        with private_open(output_file, encoding="utf-8", newline="") as opened:
-            opened.write(stream.getvalue())
+        if isinstance(rendered, bytes):
+            private_write_bytes(output_file, rendered)
+        else:
+            with private_open(output_file, encoding="utf-8", newline="") as opened:
+                opened.write(rendered)
+    elif isinstance(rendered, bytes):
+        sys.stdout.buffer.write(rendered)
+        sys.stdout.buffer.flush()
+    else:
+        sys.stdout.write(rendered)
+        sys.stdout.flush()
     # A completed explicit artifact is an operator-visible fact even when the
     # run itself was quiet.  ``-q`` suppresses progress/status, not the sole
     # durable destination receipt.
-    if output_file is not None and not parsed.get("dry_run"):
+    if output_file is not None:
         print(f"wrote era to {strip_control(compact_home(output_file))}", file=sys.stderr)
     return 0
 

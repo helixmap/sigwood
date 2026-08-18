@@ -17,6 +17,7 @@ import sigwood
 from sigwood.common.finding import Finding, MethodTag, RunSummary, Severity
 from sigwood.outputs import _evidence
 from sigwood.outputs.html import HtmlHandler, render_report_html
+from sigwood.era import render_html_report
 
 
 def test_html_handler_requires_a_target() -> None:
@@ -846,7 +847,7 @@ def test_html_syslog_highlight_palettes_keep_timestamp_brightest() -> None:
     assert ".hl-prog { color: var(--hl-prog); font-weight: 600; }" in out
 
 
-def test_html_wordmark_keeps_graph_brand_token_parity() -> None:
+def test_html_wordmark_keeps_graph_and_era_brand_token_parity() -> None:
     document = _render([_finding()])
     style = document[
         document.index("<style>") + len("<style>"):document.index("</style>")
@@ -856,6 +857,8 @@ def test_html_wordmark_keeps_graph_brand_token_parity() -> None:
         .joinpath("graph_player.html")
         .read_text(encoding="utf-8")
     )
+    era = render_html_report((), family="zeek")
+    era_style = era[era.index("<style>") + len("<style>"):era.index("</style>")]
     stack = (
         'font-family: Georgia, "Bookman Old Style", "Times New Roman", serif;'
     )
@@ -863,11 +866,13 @@ def test_html_wordmark_keeps_graph_brand_token_parity() -> None:
 
     assert stack in style
     assert stack in player
+    assert stack in era_style
     assert re.findall(wordmark_pattern, style) == ["#8a5320", "#e38e30"]
     assert re.findall(wordmark_pattern, player) == [
         "#8a5320",
         "#e38e30",
     ] * 2
+    assert re.findall(wordmark_pattern, era_style) == ["#8a5320", "#e38e30"]
     assert (
         '<div class="wordmark"><span class="brand">sigwood</span>'
         " · threat hunt</div>"

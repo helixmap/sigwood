@@ -9,13 +9,21 @@ sigwood publishes through **Trusted Publishing**. A tag-triggered GitHub Actions
 (`.github/workflows/release.yml`) builds the distributions and authenticates to PyPI with
 OpenID Connect, so no long-lived API token is stored. Each upload also carries a **PEP 740
 PyPI Publish Attestation**, a Sigstore-backed record of which Trusted Publisher uploaded the
-distribution. That is publication provenance, not a claim that the code is safe.
+distribution. That is publication provenance, not a claim that the code is safe. After a
+successful upload the same workflow **drafts** the matching GitHub Release from the tag's
+`CHANGELOG.md` section; it never publishes one.
 
 Two human gates remain deliberate:
 
 - Build and validate locally before creating a tag.
 - Approve the `pypi` GitHub environment only after the tagged commit passes the complete CI
   matrix.
+
+And one human step remains deliberate: the GitHub Release is published by hand, after the
+rendered notes have been read (step 7). The public record of a release is never written
+without a maintainer looking at it - and because the draft is created by the workflow, a
+release that reached PyPI can no longer be missing from GitHub merely because the checklist
+was set down after the approval.
 
 ## One-time setup
 
@@ -297,7 +305,9 @@ unchanged.
 
 The manual dispatch builds and tests `main`, changes the artifact version to the
 throwaway `X.Y.Z.dev<run-number>` form, and publishes through the ungated
-`testpypi` environment. The commands derive that version from the run itself;
+`testpypi` environment. It does not exercise the `draft GitHub Release` job, which runs on
+tag pushes only (a rehearsal has no tag and must create no Release); that job's failure
+mode is covered by the by-hand fallback in step 7, not by this rehearsal. The commands derive that version from the run itself;
 there is no placeholder to replace. Progress can be monitored on the 
 [Actions tab](https://github.com/helixmap/sigwood/actions) of the GitHub Repository.
 
@@ -387,7 +397,8 @@ fi
 ```
 
 The workflow reruns the complete Python 3.11-3.14 matrix, validates a fresh sdist and wheel,
-and waits at the `pypi` environment before upload. The browser command opens the exact run;
+waits at the `pypi` environment before upload, and after a successful upload drafts the
+GitHub Release. The browser command opens the exact run;
 monitor that page until it reaches the approval trigger below.
 
 ### 6 - Approve the PyPI publish (irreversible)
@@ -406,6 +417,10 @@ Then confirm that the upload completes successfully:
   gh run watch "$RUN_ID" --repo "$REPO" --compact --exit-status
 ```
 
+The watch returns when the whole run finishes, including the `draft GitHub Release` job
+that follows the upload. If that job fails, the upload is still complete and valid - the
+draft is created by hand in step 7 instead.
+
 If the matrix is red, the approval gate never opens. If the tag is wrong, do not approve;
 follow the pre-publish recovery steps below.
 
@@ -414,58 +429,67 @@ Once the GitHub workflow completes, validate the new release appears in the
 permanently reserves a published version. A bad `X.Y.Z` can be yanked, but it
 cannot be deleted and uploaded again under the same version.
 
-### 7 - Create, inspect, and publish the GitHub Release
+### 7 - Inspect and publish the GitHub Release
 
-Extract the matching changelog section into a temporary notes file. The section heading is
-omitted because the release title already carries the version.
+A successful `publish PyPI` job is followed by the workflow's `draft GitHub Release` job. It
+creates a **draft** Release for the tag, titled `sigwood vX.Y.Z`, whose body is the tag's own
+`## [X.Y.Z] - ...` section of `CHANGELOG.md` with the heading omitted (the title already
+carries the version). Nothing is public yet: a draft is visible only to maintainers, and the
+Releases page keeps advertising the previous version as latest until this step publishes it.
+
+Confirm the draft exists and open it for rendered inspection:
 
 ```bash
-if NOTES_FILE=$(mktemp "${TMPDIR:-/tmp}/sigwood-${VERSION}-notes.XXXXXX") &&
-  awk -v version="$VERSION" '
-    index($0, "## [" version "] - ") == 1 { copying = 1; next }
-    copying && /^## \[/ { exit }
-    copying { print }
-    END { if (!copying) exit 1 }
-  ' CHANGELOG.md > "$NOTES_FILE" &&
-  test -s "$NOTES_FILE"; then
-  cat "$NOTES_FILE"
-else
-  printf 'could not extract release notes for %s\n' "$VERSION" >&2
-  false
-fi
+case "$(gh release view "$TAG" --repo "$REPO" --json isDraft --jq .isDraft 2>/dev/null)" in
+  true)  gh release view "$TAG" --repo "$REPO" --web ;;
+  false) printf 'GitHub Release %s is already published - skip to step 8\n' "$TAG" ;;
+  *)     printf 'no Release for %s - create the draft by hand (see the end of this step)\n' "$TAG" >&2
+         false ;;
+esac
 
 ### §7a
 ```
 
-Create a draft from the existing remote tag, then open it for rendered inspection:
+Confirm the title, tag, and rendered notes. Publishing is a separate explicit action:
 
 ```bash
-if gh release create "$TAG" --repo "$REPO" --title "sigwood $TAG" \
-  --verify-tag --fail-on-no-commits --draft --notes-file "$NOTES_FILE"; then
-  gh release view "$TAG" --repo "$REPO" --web
-else
-  printf 'GitHub Release draft creation failed; notes remain at %s\n' "$NOTES_FILE" >&2
-  false
-fi
+gh release edit "$TAG" --repo "$REPO" --draft=false &&
+  test "$(gh release view "$TAG" --repo "$REPO" --json isDraft --jq .isDraft)" = "false" &&
+  printf 'published GitHub Release %s\n' "$TAG"
 
 ### §7b
 ```
 
-The draft appears on the repository's **Releases** page and remains editable. Confirm the
-title, tag, and rendered notes. Publishing is a separate explicit action:
+Attaching built artifacts is optional; PyPI remains the distribution source of truth.
+
+#### If the draft was not created
+
+The draft job fails closed: a missing or misnamed changelog section, or a GitHub API failure,
+leaves the tag with no Release rather than one with wrong notes, and the PyPI upload is
+unaffected either way. Create the draft by hand with the same notes extraction the workflow
+uses - reading `CHANGELOG.md` from the *tagged commit*, so the working tree cannot matter -
+then return to §7a:
 
 ```bash
-if gh release edit "$TAG" --repo "$REPO" --draft=false; then
-  [[ -z "${NOTES_FILE:-}" ]] || rm -f "$NOTES_FILE"
+if NOTES_FILE=$(mktemp "${TMPDIR:-/tmp}/sigwood-${VERSION}-notes.XXXXXX") &&
+  git show "$TAG:CHANGELOG.md" | awk -v version="$VERSION" '
+    index($0, "## [" version "] - ") == 1 { copying = 1; next }
+    copying && /^## \[/ { exit }
+    copying { print }
+    END { if (!copying) exit 1 }
+  ' > "$NOTES_FILE" &&
+  test -s "$NOTES_FILE" &&
+  gh release create "$TAG" --repo "$REPO" --title "sigwood $TAG" \
+    --verify-tag --draft --notes-file "$NOTES_FILE"; then
+  rm -f "$NOTES_FILE"
 else
-  printf 'GitHub Release publication failed; notes remain at %s\n' "${NOTES_FILE:-unknown}" >&2
+  printf 'could not draft the GitHub Release for %s; notes remain at %s\n' \
+    "$TAG" "${NOTES_FILE:-unknown}" >&2
   false
 fi
 
 ### §7c
 ```
-
-Attaching built artifacts is optional; PyPI remains the distribution source of truth.
 
 ### 8 - Verify the public release
 
@@ -487,11 +511,24 @@ else
   false
 fi
 
-### §8
+### §8a
 ```
 
 This exact-version install is the authoritative signal that the release is live. PyPI's JSON
 endpoint is CDN-cached and can briefly lag the file index used by pip.
+
+Then confirm the GitHub side from the terminal. Without a tag argument, `gh release view`
+resolves the repository's **latest published** Release, so the second test catches the one
+failure the Releases page shows silently - a release that was drafted but never published,
+leaving the previous version advertised as latest:
+
+```bash
+test "$(gh release view "$TAG" --repo "$REPO" --json isDraft --jq .isDraft)" = "false" &&
+  test "$(gh release view --repo "$REPO" --json tagName --jq .tagName)" = "$TAG" &&
+  printf 'GitHub Release %s is published and latest\n' "$TAG"
+
+### §8b
+```
 
 Then confirm:
 
@@ -506,7 +543,8 @@ Then confirm:
 
 ### Before PyPI approval
 
-No package has been published. If the run is active or waiting for approval, cancel it first:
+No package has been published, and no GitHub Release has been drafted - the draft job runs
+only after a successful upload. If the run is active or waiting for approval, cancel it first:
 
 ```bash
 [[ "$RUN_ID" =~ ^[0-9]+$ ]] && gh run cancel "$RUN_ID" --repo "$REPO"
@@ -528,7 +566,10 @@ the shell restarted, rerun the exact-run lookup in step 5 before cancelling an a
 
 Do not move or reuse the tag. Bump the patch version, fix the problem, and publish a new
 release. Yank the bad version from **PyPI project -> Manage -> Release -> Yank** so normal
-resolution avoids it while exact pins remain available.
+resolution avoids it while exact pins remain available. The bad version's GitHub Release is
+still a draft at this point: either delete it (`gh release delete "$TAG" --repo "$REPO"
+--yes`) or publish it with a note pointing at the replacement - do not leave an unexplained
+draft beside the tag.
 
 ### Trusted Publishing is unavailable
 

@@ -108,3 +108,41 @@ def test_publish_job_keeps_the_privileged_boundary() -> None:
         "actions/download-artifact",
         "pypa/gh-action-pypi-publish",
     ]
+
+
+def test_github_release_job_drafts_only_after_the_pypi_publish() -> None:
+    """The draft-release job is downstream of the upload and can only ever draft.
+
+    A Release that appears before (or without) a successful PyPI upload would let the
+    Releases page advertise a version the index does not carry, and a job that could
+    publish would remove the maintainer's read-the-rendered-notes step. Both are
+    pinned structurally: the job needs ``publish``, runs on tag pushes only, holds
+    ``contents: write`` and nothing privileged beyond it, and never passes
+    ``--draft=false``.
+    """
+    workflow = _WORKFLOW.read_text(encoding="utf-8")
+    preamble, _, _ = workflow.partition("\njobs:\n")
+    build = _job_block(workflow, "build")
+    publish = _job_block(workflow, "publish")
+    release = _job_block(workflow, "github-release")
+
+    assert re.search(r"^    needs:\s*publish\s*$", release, re.MULTILINE)
+    assert re.search(r"^    if:\s*success\(\) && github\.event_name == 'push'\s*$", release, re.MULTILINE)
+    assert re.search(r"^    permissions:\s*\n      contents:\s*write\s*$", release, re.MULTILINE)
+    # The write grant is scoped to this one job; the workflow default stays read-only.
+    assert re.search(r"^permissions:\s*\n  contents:\s*read\s*$", preamble, re.MULTILINE)
+    assert "contents: write" not in build
+    assert "contents: write" not in publish
+    assert "id-token" not in release
+    assert "environment:" not in release
+
+    # gh, not a third-party release action: the only action is the pinned checkout.
+    identities = [target.split("@", 1)[0] for target in _action_targets(release)]
+    assert identities == ["actions/checkout"]
+
+    # Draft only: creation carries --draft and nothing here can flip it to published.
+    assert re.search(r"gh release create .*--draft\b", release, re.DOTALL)
+    assert "--draft=false" not in release
+    assert "gh release edit" not in release
+    # Idempotent: an existing release is detected before creation is attempted.
+    assert release.index("gh release view") < release.index("gh release create")

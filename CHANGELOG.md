@@ -44,6 +44,15 @@ All notable changes to sigwood are recorded here. The format follows
 
 ### Changed
 
+- **The release workflow now drafts the GitHub Release itself** after a successful PyPI
+  upload, with the tag's own changelog section as the notes. It creates a *draft* only;
+  publishing it remains a maintainer's step after reading the rendered notes. Previously
+  the Release was created entirely by hand as the step after the irreversible PyPI
+  approval, and a release could reach PyPI while the repository's Releases page kept
+  advertising the prior version - which is what happened with 0.3.0 for ten days. The
+  maintainer checklist (`docs/RELEASING.md`) now verifies that the published Release is
+  the repository's latest.
+
 - **A single log record larger than 1 MiB of decoded text is now skipped and disclosed**
   with a per-file warning naming the file and the skipped count, instead of being passed
   whole into parsing and analysis. Real log lines are thousands of times smaller; the

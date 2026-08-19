@@ -118,3 +118,50 @@ jobs:
         with:
           attestations: true
           repository-url: ${{ github.event_name == 'workflow_dispatch' && 'https://test.pypi.org/legacy/' || 'https://upload.pypi.org/legacy/' }}
+
+  # The GitHub Release is drafted only after the PyPI upload has succeeded, so the
+  # Releases page can never advertise a version PyPI does not carry. It stays a DRAFT:
+  # publishing it is the maintainer's step in docs/RELEASING.md, after reading the
+  # rendered notes. Tag pushes only; the TestPyPI rehearsal has no tag and no release.
+  github-release:
+    name: draft GitHub Release
+    needs: publish
+    if: success() && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # The body is the tag's own "## [X.Y.Z] - date" changelog section, heading omitted
+      # because the release title carries the version. A missing section fails the job
+      # rather than drafting a release with no notes; the upload is unaffected either way.
+      - name: Extract release notes from CHANGELOG.md
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          awk -v version="$version" '
+            index($0, "## [" version "] - ") == 1 { copying = 1; next }
+            copying && /^## \[/ { exit }
+            copying { print }
+            END { if (!copying) exit 1 }
+          ' CHANGELOG.md > "$RUNNER_TEMP/notes.md" &&
+            test -s "$RUNNER_TEMP/notes.md" ||
+            { echo "::error::CHANGELOG.md has no '## [$version] - ' section"; exit 1; }
+          echo "release notes: $(wc -l < "$RUNNER_TEMP/notes.md") lines"
+
+      # Idempotent: a re-run, or a release a maintainer already created by hand, is left
+      # exactly as it is. Never publishes - the --draft flag is the whole point.
+      - name: Create the draft release
+        run: |
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json isDraft,url \
+               --jq '"release \(.url) already exists (draft=\(.isDraft)) - leaving it untouched"'; then
+            exit 0
+          fi
+          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+            --title "sigwood $GITHUB_REF_NAME" --verify-tag --draft \
+            --notes-file "$RUNNER_TEMP/notes.md"
+          gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json isDraft,url \
+            --jq '"drafted \(.url) (draft=\(.isDraft))"'

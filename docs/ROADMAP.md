@@ -13,12 +13,13 @@ answer "what does this actually catch?" - including the parts of the answer that
 
 What sigwood does today:
 
-- **Seven detectors** - beacon (FFT periodicity), dns (density clustering over Zeek
+- **Eight detectors** - beacon (FFT periodicity), dns (density clustering over Zeek
   dns.log or Pi-hole/dnsmasq), syslog (drain3 templating with per-host burst collapse,
   over the live systemd journal, flat rsyslog, or Zeek syslog.log), auth (five
   authentication-structure heuristics over that same system-log lane), scan, exfil
-  (bulk outbound transfers over connection logs), and aws (per-principal behavior over
-  CloudTrail).
+  (bulk outbound transfers over connection logs), aws (per-principal behavior over
+  CloudTrail), and dnsblock (first activity, bursts, and recurrence in Pi-hole
+  blocked-name events).
 - **A curated default hunt** that narrows the routine review surface while every
   detector remains runnable by name; `--detect=all` still runs everything available.
   The run discloses which available detectors were held out of the default hunt, so an
@@ -123,9 +124,6 @@ the gap each one could narrow:
   by the flow that followed it; per-client union across Zeek and Pi-hole so adding a
   sensor never shrinks coverage; and richer per-transaction fidelity from dnsmasq's
   `--log-queries=extra` format.
-- **Known-bad access patterns** - **dnsblock**, over the domains your own Pi-hole
-  already blocks: who reaches for them, how persistently, across how many clients. It
-  uses your blocklist's verdicts, not a feed sigwood ships.
 - **Cloud identity and privilege** - a future CloudTrail identity and
   privilege-escalation detector, separate from the behavioral `aws` detector and named
   for its question.

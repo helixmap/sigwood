@@ -28,7 +28,8 @@ from __future__ import annotations
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from math import gcd
+from math import gcd, isfinite
+from numbers import Real
 
 from sigwood.common.display import (
     fmt_compact_span,
@@ -758,6 +759,15 @@ def _closed_multiplier(peak: object, baseline_twice: object) -> str:
     return f"{numerator // common}/{denominator // common}×"
 
 
+def _dnsblock_history(value: object) -> str:
+    if isinstance(value, bool) or not isinstance(value, Real):
+        return ""
+    numeric = float(value)
+    if not isfinite(numeric) or numeric < 0:
+        return ""
+    return f"over {fmt_compact_span(timedelta(seconds=numeric))}"
+
+
 def _project_dnsblock(f: Finding) -> list[Cell]:
     ev = f.evidence
     kind = ev.get("kind")
@@ -776,6 +786,7 @@ def _project_dnsblock(f: Finding) -> list[Cell]:
             Cell(None, str(ev.get("address", f.title))),
             Cell("members", f"{int(ev.get('member_count', 0))} members", align="right"),
             Cell("first", _dnsblock_time(ev.get("earliest_first_associated_period"))),
+            Cell("history", _dnsblock_history(ev.get("history_seconds")), align="right", optional=True),
         ]
     if kind == "burst":
         peak = int(ev.get("peak_count", 0))
@@ -799,6 +810,7 @@ def _project_dnsblock(f: Finding) -> list[Cell]:
         Cell("queries", f"{int(ev.get('attributed_query_count', 0)):,} queries", align="right"),
         Cell("periods", f"{int(ev.get('active_periods', 0))}/{int(ev.get('eligible_periods', 0))} periods", align="right"),
         Cell("first", _dnsblock_time(ev.get("first_associated_period"))),
+        Cell("history", _dnsblock_history(ev.get("history_seconds")), align="right", optional=True),
         Cell("prior", f"prior={prior}", align="right"),
     ]
 
@@ -892,6 +904,12 @@ def text_columns(section: Section) -> list[ColumnSpec]:
     (optional AND all_empty), i.e. dns ``blocked`` when no row was blocked."""
     cols = section_columns(section)
     return [cols[i] for i in _keep_indices(cols, html=False)]
+
+
+def text_column_indices(section: Section) -> list[tuple[int, ColumnSpec]]:
+    """Surviving positional indices and specs for the TEXT surface."""
+    cols = section_columns(section)
+    return [(i, cols[i]) for i in _keep_indices(cols, html=False)]
 
 
 def html_columns(section: Section) -> list[tuple[int, ColumnSpec]]:

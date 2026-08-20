@@ -137,7 +137,7 @@ class RunPlan:
 
 @dataclass(frozen=True)
 class DnsblockCalibrationBatch:
-    """Private aggregate carrier returned by the planned C1 preparation path."""
+    """Private aggregate carrier returned by the calibration preparation path."""
 
     prepared: Mapping[tuple[int, str], Any]
     snapshot_identity_sha256: str
@@ -1462,7 +1462,7 @@ def _run_analyze(
     # in-window rows, append a note (SPAN / BARE / silent per the parse-gap
     # vs window-gap tri-state in CoverageTracker). Reads the merged coverage
     # written by the runner-side flat-default block above (when fired).
-    notes.extend(_zero_window_coverage_notes(load_result, plan))
+    notes.extend(_zero_window_coverage_notes(load_result, plan, load_all=load_all))
     # A source directory omitted before file discovery is a plan fact rather
     # than LoadResult metadata. Partial runs remain successful, but every
     # report format with notes must disclose that the directory was absent.
@@ -1805,6 +1805,22 @@ def _plan_and_load(
         }
         or None
     )
+    dnsblock_mod = (
+        plan.detectors.get("dnsblock") if "dnsblock" in plan.will_run else None
+    )
+    if dnsblock_mod is not None and file_select_windows is not None:
+        pihole_file_window = file_select_windows.get("pihole_dir")
+        if pihole_file_window is not None:
+            floor, upper = pihole_file_window
+            if floor is not None:
+                file_select_windows = {
+                    **file_select_windows,
+                    "pihole_dir": (
+                        floor
+                        - timedelta(days=dnsblock_mod.ARRIVAL_HISTORY),
+                        upper,
+                    ),
+                }
     if load_windows and not quiet:
         _estderr(default_window_advisory(default_spec))
     dnsblock_prepared: Any | None = None
@@ -1824,7 +1840,8 @@ def _plan_and_load(
             _directory_skips=plan.directory_skips,
         )
     else:
-        dnsblock_mod = plan.detectors["dnsblock"]
+        if dnsblock_mod is None:
+            raise RuntimeError("dnsblock was selected but its detector module is unavailable")
         pattern = "pihole*.log*"
         pihole_source = plan.needed_logs.get(pattern)
         if pihole_source != "pihole_dir":
@@ -2165,8 +2182,11 @@ def _prepare_dnsblock_calibration_batch(
     """
     from sigwood.common import loader
 
-    if getattr(dnsblock_mod, "STATUS", None) != "planned":
-        raise ValueError("dnsblock calibration requires planned detector status")
+    # STATUS=="planned" used to stand in for "this is the dnsblock harness".
+    # Activation retires that proxy; identity is the property this machinery
+    # actually requires, and unlike a planned/available union it can fail.
+    if getattr(dnsblock_mod, "DETECTOR_NAME", None) != "dnsblock":
+        raise ValueError("dnsblock calibration requires the dnsblock detector")
     if not 1 <= len(windows) <= 8:
         raise ValueError("dnsblock calibration window batch must contain 1 through 8 windows")
     if set(lane_masks) != {"default", "unsuppressed"}:
@@ -3626,6 +3646,8 @@ def _pattern_human_label(source_key: str, pattern: str) -> str:
 def _zero_window_coverage_notes(
     load_result: "loader.LoadResult",
     plan: RunPlan,
+    *,
+    load_all: bool = False,
 ) -> list[str]:
     """Return disclosure notes for planned sources that contributed 0 in-window rows.
 
@@ -3643,6 +3665,7 @@ def _zero_window_coverage_notes(
         loader already warns ``"{source} not configured - {pattern} not loaded"``).
     """
     out: list[str] = []
+    widen = "" if load_all else " - widen with --since/--days, or --all"
     for pattern, source_key in plan.needed_logs.items():
         if load_result.record_counts.get(pattern, 0) != 0:
             continue
@@ -3659,21 +3682,19 @@ def _zero_window_coverage_notes(
             if source_key != "zeek_dir":
                 continue
             out.append(
-                f"{label}: files found, 0 records in the selected window - "
-                "widen with --since/--days, or --all"
+                f"{label}: files found, 0 records in the selected window{widen}"
             )
             continue
         if cov.full_span is not None:
             start, end = cov.full_span
             out.append(
                 f"{label}: {cov.full_rows:,} rows loaded, 0 in the selected "
-                f"window; data spans {fmt_window((start, end))} - "
-                "widen with --since/--days, or --all"
+                f"window; data spans {fmt_window((start, end))}{widen}"
             )
         else:
             out.append(
                 f"{label}: {cov.full_rows:,} rows loaded, 0 in the selected "
-                "window - widen with --since/--days, or --all"
+                f"window{widen}"
             )
     return out
 

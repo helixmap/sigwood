@@ -261,6 +261,11 @@ Pointed at a directory, an unqualified run looks back over the last `default_win
 out of the box), so a live log directory isn't read end-to-end every time; widen with
 `--since` / `--days` or read it all with `--all`. For rotated flat logs it peeks each
 rotation file's first timestamp and stops early instead of decompressing the whole archive.
+The opt-in `dnsblock` detector needs earlier context: on a peekable Pi-hole directory it may
+select 21 additional days of rotated files while keeping reported rows inside the configured
+window. Under the stock `7d` setting, that is a 28-day selection aperture - four times the
+report span by duration, with an actual file count that depends on rotation. An unpeekable
+source already loads in full; explicit time bounds and `--all` retain their ordinary meanings.
 And it prompts before chewing through more than `warn_above` records (default 10,000,000;
 `warn_above = 0` turns the prompt off).
 Very large single pulls (tens of millions of CloudTrail events) are the current scaling
@@ -598,6 +603,25 @@ magnitude here is what the logs contain rather than a count of human attempts.
 `auth` is opt-in rather than part of the curated default hunt: run `sigwood auth PATH`, name it in
 `--detect`, or use `--detect=all`.
 
+### What does the dnsblock detector look for?
+
+`dnsblock` reads the blocked outcomes already present in Pi-hole/dnsmasq logs. It does not
+ship a reputation feed or decide that a blocked name is malicious. It asks three bounded
+behavioral questions: whether a client is reaching for a qualifying blocked-name family for
+the first time in the available history, whether its blocked queries form a large burst
+against its other active periods, and whether otherwise-unsurfaced blocked activity recurs
+across at least four fully covered report periods. Run it directly with
+`sigwood dnsblock /var/log/pihole`, name it in `--detect`, or include it with
+`--detect=all`.
+
+The detector is opt-in rather than part of the curated default hunt. First-activity findings
+are LOW, while prior-handling and recurring rows are INFO context. Cadence is supporting
+evidence only; it never changes routing or severity. The run says how much history it actually
+consulted and distinguishes strong historical coverage from the weaker claim "first observed
+in the available rows." It is stateless between runs, so a persistently blocked name can be
+reported again while its onset remains in the lookback; suppress only the exact patterns you
+have triaged as expected.
+
 ### `aws` - why a plain z-score instead of a fancy model?
 
 Because you have to be able to read *why* a principal was surfaced. The CloudTrail detector is
@@ -672,8 +696,8 @@ this section applies: read the code, run the tests.
 
 ### What state is sigwood in?
 
-Early, pre-1.0. The seven detectors above work and are covered by tests. Four more -
-`dnsblock`, `ssl`, `protocol`, and `weird` - are planned but not built. Interfaces may still move before
+Early, pre-1.0. The eight detectors above work and are covered by tests. Three more -
+`ssl`, `protocol`, and `weird` - are planned but not built. Interfaces may still move before
 1.0. The current roadmap and the running list of known rough edges are public, in
 [ROADMAP.md](ROADMAP.md) and [KNOWN-ISSUES.md](KNOWN-ISSUES.md).
 

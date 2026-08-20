@@ -12,16 +12,16 @@ def _read(path: str) -> str:
     return (_ROOT / path).read_text(encoding="utf-8")
 
 
-def test_readme_lists_seven_detectors_and_auth() -> None:
+def test_readme_lists_eight_detectors_and_auth() -> None:
     readme = _read("README.md")
-    assert "The seven detectors work and are covered by tests" in readme
+    assert "The eight detectors work and are covered by tests" in readme
     assert "| `auth`" in readme
     assert "auth uses authentication structure" in readme
 
 
 def test_faq_moves_auth_out_of_the_planned_roster_and_explains_severity() -> None:
     faq = _read("docs/FAQ.md")
-    assert "The seven detectors above work and are covered by tests" in faq
+    assert "The eight detectors above work and are covered by tests" in faq
     state = faq[faq.index("### What state is sigwood in?"):]
     assert "`auth`" not in state.split("### How would I add", 1)[0]
     auth_answer = faq[faq.index("### What does the auth detector look for?"):]
@@ -47,7 +47,7 @@ def test_schema_names_auth_as_a_shipped_consumer() -> None:
 def test_roadmap_no_longer_places_auth_in_the_future() -> None:
     roadmap = _read("docs/ROADMAP.md")
     shipped = roadmap.split("## MITRE ATT&CK coverage", 1)[0]
-    assert "**Seven detectors**" in shipped
+    assert "**Eight detectors**" in shipped
     assert "auth (five" in shipped
     assert "once `auth` lands" not in roadmap
     later = roadmap.split("## Later", 1)[1]

@@ -635,6 +635,36 @@ def test_usage_lists_exfil_subcommand(capsys) -> None:
     assert "sigwood exfil " in out
 
 
+def test_dnsblock_is_a_single_detector_command(capsys) -> None:
+    assert "dnsblock" in cli._SINGLE_DETECTOR_COMMANDS
+    cli._print_usage()
+    assert "sigwood dnsblock " in capsys.readouterr().out
+
+
+def test_dnsblock_positional_path_routes_to_pihole_dir(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(cfg, "SEARCH_PATHS", [])
+    captured: dict[str, object] = {}
+
+    def fake_run(**kwargs: object) -> None:
+        captured.update(kwargs)
+
+    monkeypatch.setattr("sigwood.runner.run", fake_run)
+    pihole_dir = tmp_path / "pihole"
+    pihole_dir.mkdir()
+
+    cli._main(["dnsblock", str(pihole_dir)])
+
+    assert captured["detect"] == "dnsblock"
+    assert captured["pihole_dir"] == str(pihole_dir)
+    assert captured["zeek_dir"] is None
+    assert captured["syslog_dir"] is None
+    assert captured["cloudtrail_dir"] is None
+    assert captured["scope"] == frozenset({"pihole_dir"})
+
+
 # positional PATH → cloudtrail_dir in single-detector mode
 
 def test_aws_positional_path_routes_to_cloudtrail_dir(
@@ -1232,7 +1262,7 @@ def test_parse_args_utc_wrong_verb_for_init_and_allowlist() -> None:
 # Real cli.main → runner.run, never a mocked seam. Every run passes an isolated
 # --config (empty tmp source dirs) so nothing on the developer's box is read.
 
-_DETECT_AVAILABLE = "available: auth, aws, beacon, dns, exfil, scan, syslog"
+_DETECT_AVAILABLE = "available: auth, aws, beacon, dns, dnsblock, exfil, scan, syslog"
 
 
 def _write_probe_config(tmp_path: Path, *, detect: str | None = None) -> Path:
@@ -1305,7 +1335,7 @@ def test_exclude_everything_live_selected_none_exit_0(
     probe = _write_probe_config(tmp_path)
     cli.main([
         "hunt",
-        "--detect=all,!auth,!aws,!beacon,!dns,!exfil,!scan,!syslog",
+        "--detect=all,!auth,!aws,!beacon,!dns,!dnsblock,!exfil,!scan,!syslog",
         f"--config={probe}",
     ])
 
@@ -1320,7 +1350,7 @@ def test_exclude_everything_dry_run_banner_selected_none(
     probe = _write_probe_config(tmp_path)
     cli.main([
         "hunt",
-        "--detect=all,!auth,!aws,!beacon,!dns,!exfil,!scan,!syslog",
+        "--detect=all,!auth,!aws,!beacon,!dns,!dnsblock,!exfil,!scan,!syslog",
         "--dry-run",
         f"--config={probe}",
     ])

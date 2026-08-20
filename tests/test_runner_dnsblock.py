@@ -9,6 +9,7 @@ from types import SimpleNamespace
 import pytest
 
 from sigwood import runner
+from sigwood.common.finding import MethodTag
 from sigwood.common.loader import (
     AvailabilityReason,
     AvailabilityState,
@@ -111,6 +112,25 @@ def test_private_calibration_batch_shares_physical_passes_and_isolates_windows_l
     assert 0 <= batch.max_inflight_cadence_gaps <= dnsblock.LIMITS.cadence_gaps
 
 
+def test_private_calibration_batch_rejects_the_wrong_detector_identity(tmp_path):
+    with pytest.raises(
+        ValueError, match="calibration requires the dnsblock detector"
+    ):
+        runner._prepare_dnsblock_calibration_batch(
+            source_paths=(tmp_path / "pihole.log",),
+            windows=(
+                DualWindow(
+                    (
+                        datetime(2026, 1, 19, tzinfo=UTC),
+                        datetime(2026, 1, 21, tzinfo=UTC),
+                    )
+                ),
+            ),
+            lane_masks={"default": object(), "unsuppressed": object()},
+            dnsblock_mod=SimpleNamespace(DETECTOR_NAME="dns"),
+        )
+
+
 def test_cross_carrier_cadence_packing_enforces_one_total_bound():
     work = (
         ((0, "default"), ("a", "one"), 4),
@@ -151,7 +171,14 @@ def _write_arrival_log(path, name="a.example.com") -> None:
             f"Jan {day:2d} 12:00:00 resolver.example.test dnsmasq[1]: "
             "query[A] background.example.net from 192.0.2.7"
         )
-    for month, day in (("Jan", 28), ("Jan", 30), ("Feb", 1)):
+    # Five distinct report periods exercise the shipped ratified arrival gate.
+    for month, day in (
+        ("Jan", 28),
+        ("Jan", 29),
+        ("Jan", 30),
+        ("Jan", 31),
+        ("Feb", 1),
+    ):
         lines.extend(
             [
                 f"{month} {day:2d} 12:00:00 resolver.example.test dnsmasq[1]: "
@@ -420,8 +447,11 @@ def test_first_pass_timing_survives_population_failure(tmp_path, monkeypatch):
     assert payload["preflight"]["pass_wall_seconds"][0][0] == "anchor_block"
 
 
-def test_public_discovery_does_not_expose_planned_dnsblock():
-    assert "dnsblock" not in runner.discover_detectors()
+def test_public_discovery_exposes_opt_in_dnsblock():
+    assert "dnsblock" in runner.discover_detectors()
+    assert "dnsblock" in runner.select_detectors("all").selected
+    assert "dnsblock" not in runner.select_detectors(None).selected
+    assert dnsblock.DETECTOR_METHOD == MethodTag("pattern", named=False)
 
 
 def test_arrival_traverses_real_discovery_loader_runner_and_cadence(tmp_path):
@@ -454,7 +484,6 @@ def test_arrival_traverses_real_discovery_loader_runner_and_cadence(tmp_path):
             no_allowlist=True,
             quiet=True,
             use_utc=True,
-            _detector_selection=_selection(),
         )
     finally:
         dnsblock.run = original
@@ -467,6 +496,9 @@ def test_arrival_traverses_real_discovery_loader_runner_and_cadence(tmp_path):
         "cadence",
     }
     payload = json.loads(output.read_text(encoding="utf-8"))
+    assert payload["run_summary"]["detector_methods"] == {
+        "dnsblock": {"label": "pattern", "named": False}
+    }
     arrivals = [
         finding
         for finding in payload["findings"]
@@ -493,7 +525,9 @@ def test_u4_strong_burst_and_recurring_use_real_manifest_loader_runner_route(
         "Jan 10 12:00:00 resolver.example.test dnsmasq[1]: "
         "query[A] recurring.example.org from 192.0.2.9"
     )
-    for day, burst_count in ((28, 5), (29, 100), (30, 5), (31, 5)):
+    # Four active periods with a 400-event peak exercise the shipped ratified
+    # burst vector (400, 12, 4); this is a product-route default test.
+    for day, burst_count in ((28, 5), (29, 400), (30, 5), (31, 5)):
         for second in range(burst_count):
             lines.append(
                 f"Jan {day:2d} 12:{second // 60:02d}:{second % 60:02d} "

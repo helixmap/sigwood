@@ -1273,7 +1273,7 @@ def route_positional_source(
         # against a third-party / new detector whose REQUIRED_LOGS[0] omits
         # the source key. The error-boundary rail says lower layers raise
         # actionable exceptions, not bare KeyErrors. None of the six shipped
-        # detectors trip this, but the default keeps the router callable
+        # shipped detectors trip this, but the default keeps the router callable
         # against malformed metadata.
         return required[0].get("source", "zeek_dir")
     optional = [

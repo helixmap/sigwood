@@ -46,7 +46,7 @@ def _assert_r12_route_preconditions(result):
     preflight = aggregate["preflight"]
     observed = {
         "name_routes": _route_counts(preflight["name_routes"]),
-        "construction_grid": preflight["grids"][4],
+        "historical_grid": preflight["grids"][4],
         "history_21_grid": preflight["grids"][5],
         "ratified_grid": preflight["grids"][11],
         "final_shape_routes": _route_counts(aggregate["final_shape_routes"]),
@@ -56,10 +56,10 @@ def _assert_r12_route_preconditions(result):
         "prior_address_query": 1,
         "qualifying": 5,
     }, observed
-    assert observed["construction_grid"]["days_required"] == 3, observed
-    assert observed["construction_grid"]["history_required"] == 14, observed
-    assert observed["construction_grid"]["qualifying_pairs"] == 1, observed
-    assert _route_counts(observed["construction_grid"]["route_counts"]) == {
+    assert observed["historical_grid"]["days_required"] == 3, observed
+    assert observed["historical_grid"]["history_required"] == 14, observed
+    assert observed["historical_grid"]["qualifying_pairs"] == 1, observed
+    assert _route_counts(observed["historical_grid"]["route_counts"]) == {
         "qualifying": 1
     }, observed
     # The serialized preflight does not expose the routing result's private
@@ -116,9 +116,9 @@ def test_dnsblock_repeat_generated_fixture_uses_real_series_harness(tmp_path):
                     str(fixture.requests[shape]),
                     "--series-batch-size",
                     str(batch_size),
-                    # The sealed C1 W-SHIFT campaign used the harness default
-                    # vector (3,14), not the separately ratified (5,21) grid
-                    # candidate.  State it explicitly here; see artifact
+                    # The sealed C1 W-SHIFT campaign measured vector (3,14),
+                    # while the shipped default is now (5,21). State the
+                    # historical instrument explicitly here; see artifact
                     # 208de1daa4ebdfe4c4fd96b5ed79085706c292bca94088a2a91044b1587c99a4
                     # in the unit diagnosis.
                     "--arrival-days",
@@ -158,7 +158,9 @@ def test_dnsblock_repeat_generated_fixture_uses_real_series_harness(tmp_path):
                     "burst": {
                         "status": "ABSTAINED",
                         "cause": "weak_coverage",
-                        "periods_required": 3,
+                        # Arrival stays on historical (3,14); burst follows the
+                        # newly shipped active-period requirement.
+                        "periods_required": 4,
                         "eligible_periods": 7,
                     },
                     "recurring": {
@@ -198,8 +200,8 @@ def test_dnsblock_repeat_generated_fixture_uses_real_series_harness(tmp_path):
             ]
 
         # The r12 calendar reproduces the C1 campaign's explicit (3,14)
-        # final-shape vector.  The separate (5,21) ratified grid candidate is
-        # retained above as a public observable, not substituted here.
+        # final-shape vector. The shipped (5,21) grid is retained above as a
+        # public observable, not substituted into the historical measurement.
         assert {
             shape: result["maximum_observed"]
             for shape, result in observed_repeat.items()
@@ -261,6 +263,35 @@ def test_dnsblock_repeat_generated_fixture_uses_real_series_harness(tmp_path):
             os.environ["TZ"] = previous_tz
         if hasattr(time, "tzset"):
             time.tzset()
+
+
+def test_legacy_harness_route_rejects_the_historical_private_vector(
+    tmp_path, capsys
+):
+    """After ratification, (3,14) is an override reserved for private requests."""
+    source = tmp_path / "pihole.log"
+    source.write_text("", encoding="utf-8")
+    artifact = tmp_path / "artifact.json"
+
+    with pytest.raises(SystemExit) as exc_info:
+        harness.main(
+            [
+                "--pihole-dir",
+                str(source),
+                "--artifact",
+                str(artifact),
+                "--arrival-days",
+                "3",
+                "--arrival-history",
+                "14",
+            ]
+        )
+
+    assert exc_info.value.code == 2
+    assert "private calibration vectors require a batch or series request" in (
+        capsys.readouterr().err
+    )
+    assert not artifact.exists()
 
 
 def test_series_partition_is_contiguous_at_most_with_remainder_last():
@@ -358,7 +389,8 @@ def test_harness_uses_real_runner_and_writes_aggregate_preflight(tmp_path):
     assert payload["channels"]["burst"] == {
         "cause": "weak_coverage",
         "eligible_periods": 1,
-        "periods_required": 3,
+        # The ordinary route consumes the shipped burst vector.
+        "periods_required": 4,
         "status": "ABSTAINED",
     }
     assert payload["channels"]["recurring"]["status"] == "ABSTAINED"
@@ -524,7 +556,8 @@ def test_harness_batch_request_uses_real_shared_runner_and_json_serializer(tmp_p
             "semantic_digest"
         ]
     assert any(
-        "first-activity analysis needs 3 eligible periods" in note
+        # The batch request uses the shipped arrival vector, now five periods.
+        "first-activity analysis needs 5 eligible periods" in note
         for item in payload["results"]
         for note in item["aggregate"]["summary_notes"]
     )

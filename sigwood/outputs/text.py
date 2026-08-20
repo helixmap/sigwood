@@ -50,6 +50,7 @@ from sigwood.outputs._render_model import (
     _build_renderable,
     fold_mix_names,
     project_row,
+    text_column_indices,
     text_columns,
 )
 from sigwood.outputs._sanitize import strip_control
@@ -710,8 +711,11 @@ class TextHandler(OutputHandler):
             if si:
                 out.append("")
             out.append(f"{section.label} ({section.pre_cap_count})")
+            keep_indices = [index for index, _column in text_column_indices(section)]
             for finding in section.findings:
                 cells = project_row(finding)
+                if cells and not cells[0].full_width:
+                    cells = [cells[index] for index in keep_indices if index < len(cells)]
                 tag = f"{str(finding.severity):<4}"
                 line = f"  {tag}  " + "  ".join(
                     _sanitize(cell.value) for cell in cells

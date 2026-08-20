@@ -10,8 +10,8 @@
 sigwood is a local-first, command-line threat-hunting tool for self-hosters. Point it at
 logs you already have - Zeek, Pi-hole/dnsmasq, syslog, or CloudTrail - and it profiles
 what's in them, then runs a handful of detectors over them: beaconing, suspicious DNS, port
-scans, authentication structure, rare syslog events, over-long connections, and unusual
-CloudTrail activity.
+scans, authentication structure, rare syslog events, over-long connections, unusual
+CloudTrail activity, and behavioral patterns in names your Pi-hole already blocked.
 
 **Not a SIEM. Not an agent. Not magic.** Nothing to deploy - no database, no daemon, no network, 
 no account. Install it, point it at a directory of logs, read the output. It runs on your own
@@ -20,7 +20,7 @@ box, over logs at rest, and your logs never have to leave your machine.
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](#license)
 ![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)
 
-> **Status: early / pre-1.0 (`0.3.0`).** The seven detectors work and are covered by tests,
+> **Status: early / pre-1.0 (`0.3.0`).** The eight detectors work and are covered by tests,
 > but things may change before 1.0. Feedback is welcome.
 
 <p align="center">
@@ -109,7 +109,8 @@ full run against that corpus, and the same findings as an HTML report:
   over per-query behavior; syslog uses drain3 log-templating plus rarity scoring, and folds
   recognized admin sessions and update runs into single labeled review units; aws uses a
   per-principal z-score composite; auth uses authentication structure across failures,
-  services, sources, accounts, and hosts. Every run names the technique each detector used,
+  services, sources, accounts, and hosts; dnsblock measures first activity, bursts, and
+  recurrence in Pi-hole blocked-name events. Every run names the technique each detector used,
   and `-v` shows the evidence behind a finding.
 - **Big-tent ingestion.** One tool reads Zeek (NDJSON *and* TSV, flat *or* date-partitioned
   directories), Pi-hole/dnsmasq, the live **systemd journal** (`journalctl`, no sudo), flat
@@ -132,6 +133,7 @@ full run against that corpus, and the same findings as an HTML report:
 |-----------|-----------------------------------------------------|------------------------------|--------------------------------|
 | `beacon`  | periodic C2-style callbacks                         | FFT over connection timing   | Zeek `conn.log`                |
 | `dns`     | DGA / tunneling / anomalous lookups                 | HDBSCAN clustering           | Zeek `dns.log` **or** Pi-hole  |
+| `dnsblock`| first activity, bursts & recurrence in blocked names | pattern (bounded behavioral) | Pi-hole                        |
 | `syslog`  | rare events & reboots                               | drain3 templating + rarity   | systemd journal, flat syslog, **or** Zeek `syslog.log` |
 | `auth`    | failure concentration, volume, spread & landings    | heuristics                   | systemd journal, flat syslog, **or** Zeek `syslog.log` |
 | `scan`    | vertical / horizontal / block / slow port scans     | pattern (heuristic)          | Zeek `conn.log`                |
@@ -142,8 +144,9 @@ full run against that corpus, and the same findings as an HTML report:
 Pi-hole for DNS; the live systemd journal, flat rsyslog, and Zeek's own `syslog.log` for syslog -
 and adapt to whichever fidelity they're handed. On a systemd host `syslog` prefers the live
 journal by default (`--syslog-source=auto`); `--syslog-source=files` keeps the flat-file behavior.
-`auth` reads that same system-log lane but stays opt-in: run `sigwood auth PATH`, select it by
-name, or use `--detect=all`. It does not join the curated default hunt automatically.
+`auth` and `dnsblock` stay opt-in: run `sigwood auth PATH` or
+`sigwood dnsblock /var/log/pihole`, select either by name, or use `--detect=all`.
+Neither joins the curated default hunt automatically.
 
 Run the curated default hunt (`sigwood hunt`), run everything available
 (`sigwood hunt --detect=all`), select some (`sigwood hunt --detect=beacon,dns`), or exclude
@@ -243,6 +246,12 @@ an importable Python function, handy in a notebook.
 Pointed at a **directory**, an unqualified run looks back over the last `default_window` (`7d`
 out of the box) of *that source's own* data - a sensible default for a live log dir you don't
 want to read in full every time. Pointed at a **single file**, it reads the whole file.
+When `dnsblock` is selected on a peekable Pi-hole directory, sigwood may select 21 additional
+days of rotated files to establish history while the reported rows stay inside that same
+`default_window`. With the stock `7d` setting, that is a 28-day file-selection aperture - four
+times the report span by duration, though the number of files depends on the rotation layout.
+An unpeekable directory already loads in full. Explicit time bounds and `--all` keep their
+ordinary meanings.
 Override either way:
 
 ```bash

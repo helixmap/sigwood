@@ -8,6 +8,13 @@ All notable changes to sigwood are recorded here. The format follows
 
 ### Added
 
+- **`dnsblock` is now available as an opt-in detector for Pi-hole blocked-name
+  activity.** `sigwood dnsblock PATH` and `--detect=all` run it through normal public
+  discovery; the curated default hunt remains unchanged. It reports bounded first-activity
+  and query-burst findings plus recurring-activity context, states how much history the run
+  actually consulted, and treats the operator's own blocklist outcomes as input rather than
+  shipping a reputation verdict or feed.
+
 - **`sigwood era` measures a whole dated Zeek archive as an allowlist-blind
   retrospective.** It reads traffic before hunt suppression so the report includes traffic
   that an allowlist would hide. The ten-card report writes to stdout unless `--out=PATH` is

@@ -136,6 +136,15 @@ def _prepared(*, weak: bool = False, days: int = 5):
         population_status=PreparedStatus(PreparedState.READY),
         blocks=dnsblock.BlockInventory(),
         population=_population(window),
+        # U4's route fixtures exercise the original grid cell explicitly;
+        # shipped defaults are pinned separately against the sealed decision.
+        calibration_vector=dnsblock.DnsblockCalibrationVector(
+            arrival_days=3,
+            arrival_history=14,
+            burst_absolute=100,
+            burst_multiple=8,
+            burst_active=3,
+        ),
     )
     results = {
         pair: dnsblock.CadenceState(included_gaps=[60.0] * 20)
@@ -360,6 +369,13 @@ def test_arrival_only_shape_and_burst_overlap_do_not_inflate_arrival_fold():
         population_status=PreparedStatus(PreparedState.READY),
         blocks=dnsblock.BlockInventory(),
         population=state,
+        calibration_vector=dnsblock.DnsblockCalibrationVector(
+            arrival_days=3,
+            arrival_history=14,
+            burst_absolute=100,
+            burst_multiple=8,
+            burst_active=3,
+        ),
     )
     prepared = dnsblock.finalize_cadence(
         prepared,

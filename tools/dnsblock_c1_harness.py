@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Internal pre-public product-path harness for planned dnsblock units."""
+"""Internal product-path harness for dnsblock calibration work."""
 
 from __future__ import annotations
 
@@ -548,21 +548,6 @@ def _render_prepared_json(prepared, *, lane: str, matcher) -> tuple[dict, dict, 
     notes = runner._format_dnsblock_summary_notes(prepared)
     rows_kept = int(prepared.preflight.rows_kept)
     rows_suppressed = int(prepared.preflight.rows_suppressed)
-    raw_rows = rows_kept + rows_suppressed
-    observed_window = prepared.preflight.observed_data_window
-    if raw_rows and observed_window is not None:
-        observed_start, observed_end = (
-            value.astimezone(timezone.utc) for value in observed_window
-        )
-        rendered_window = (
-            f"{observed_start:%Y-%m-%d %H:%M} → "
-            f"{observed_end:%Y-%m-%d %H:%M} UTC"
-        )
-        notes.append(
-            f"Pi-hole: {raw_rows:,} rows loaded, 0 in the selected window; "
-            f"data spans {rendered_window} - widen with "
-            "--since/--days, or --all"
-        )
     summary = RunSummary(
         data_window=None,
         record_counts={},
@@ -572,7 +557,7 @@ def _render_prepared_json(prepared, *, lane: str, matcher) -> tuple[dict, dict, 
         detectors_skipped={},
         notes=notes,
         data_sources=[],
-        detector_methods={"dnsblock": None},
+        detector_methods={"dnsblock": dnsblock.DETECTOR_METHOD},
         requested_span=None,
         invocation="dnsblock-c1-harness --batch-request",
         generated_at=datetime.now(timezone.utc),

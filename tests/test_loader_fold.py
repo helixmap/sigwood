@@ -749,6 +749,51 @@ def test_folded_empty_report_preserves_pre_window_coverage(tmp_path, monkeypatch
     assert result.coverage["*.log"].full_span is not None
 
 
+def test_folded_discarded_frame_does_not_claim_window_exclusion(
+    tmp_path, monkeypatch
+):
+    """A deliberately discarded frame is not evidence of window exclusion."""
+    path = tmp_path / "events.log"
+    ts = datetime(2026, 1, 1, 12, tzinfo=UTC).timestamp()
+    path.write_text(json.dumps({"ts": ts, "value": "kept"}) + "\n")
+
+    def parse(lines, *, path, warnings):
+        for line in lines:
+            yield json.loads(line)
+
+    strategy = pipeline.SourceLoader(
+        discover=lambda *args, **kwargs: [path],
+        mode="stream",
+        parse=parse,
+        ts_policy="drop",
+        columns=["ts", "value"],
+        should_skip=None,
+        normalize=None,
+    )
+    monkeypatch.setitem(pipeline._SOURCE_LOADERS, "test_source", strategy)
+    result = loader.load_required_logs(
+        {"*.log": "test_source"},
+        {"test_source": [path]},
+        show_progress=False,
+        sink_plans={
+            "*.log": loader.SinkPlan(
+                (_count_sink("lane"),), preserve_frame=False
+            )
+        },
+        dual_windows={
+            "*.log": loader.DualWindow(
+                (
+                    datetime(2026, 1, 1, tzinfo=UTC),
+                    datetime(2026, 1, 2, tzinfo=UTC),
+                )
+            )
+        },
+    )
+    assert result.logs["*.log"].empty
+    assert result.fold_results["*.log"]["lane"] == 1
+    assert "*.log" not in result.coverage
+
+
 @pytest.mark.parametrize("explicit", [False, True], ids=["rotation-directory", "explicit-file"])
 def test_real_pihole_route_preserves_frame_population_for_fold_plan(tmp_path, explicit):
     active = tmp_path / "pihole.log"

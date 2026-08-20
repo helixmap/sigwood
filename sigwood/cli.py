@@ -187,6 +187,8 @@ _VERBS: dict[str, VerbSpec] = {
                          "[PATH]", _SINGLE_DET_ALLOWED),
     "dns":      VerbSpec("dns",      "DNS clustering (Zeek or Pi-hole)",
                          "[PATH]", _SINGLE_DET_ALLOWED),
+    "dnsblock": VerbSpec("dnsblock", "blocked-name activity (Pi-hole)",
+                         "[PATH]", _SINGLE_DET_ALLOWED),
     "syslog":   VerbSpec("syslog",   "syslog anomaly detection",
                          "[PATH]", _SYSLOG_ALLOWED),
     "scan":     VerbSpec("scan",     "port scan detection (conn.log)",
@@ -211,7 +213,7 @@ _VERBS: dict[str, VerbSpec] = {
 
 
 _SINGLE_DETECTOR_COMMANDS: frozenset[str] = frozenset({
-    "auth", "beacon", "dns", "syslog", "scan", "exfil", "aws",
+    "auth", "beacon", "dns", "dnsblock", "syslog", "scan", "exfil", "aws",
 })
 
 # User-initiated stop (Ctrl-C during compute). Named so the future error-voice
@@ -415,6 +417,7 @@ def _global_usage_text(no_config: bool = False) -> str:
         "  sigwood auth [options] PATH      authentication anomaly detection (system logs)",
         "  sigwood beacon [options] PATH    beacon detection (conn.log)",
         "  sigwood dns [options] PATH       DNS clustering (Zeek or Pi-hole)",
+        "  sigwood dnsblock [options] PATH  blocked-name activity (Pi-hole)",
         "  sigwood syslog [options] PATH    syslog anomaly detection",
         "  sigwood scan [options] PATH      port scan detection (conn.log)",
         "  sigwood exfil [options] PATH     bulk outbound-transfer detection (conn.log)",

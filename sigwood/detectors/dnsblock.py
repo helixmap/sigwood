@@ -1,4 +1,4 @@
-"""Bounded analysis for the planned Pi-hole dnsblock detector.
+"""Bounded analysis for Pi-hole blocked-name activity.
 
 The runner owns files, windows, suppression, coverage selection, and ordered
 snapshot passes. This module owns pure reducers, typed analytical facts,
@@ -20,7 +20,8 @@ from typing import Any, Callable, Iterable, Mapping
 import numpy as np
 import pandas as pd
 
-from sigwood.common.finding import DetectorContext, Finding, Severity
+from sigwood.common.display import fmt_compact_span
+from sigwood.common.finding import DetectorContext, Finding, MethodTag, Severity
 from sigwood.common.loader import (
     CoverageDecision,
     CoverageLane,
@@ -36,7 +37,9 @@ from sigwood.common.loader import (
 from sigwood.common.tld import roll_domain
 
 DETECTOR_NAME = "dnsblock"
-STATUS = "planned"
+STATUS = "available"
+IN_DEFAULT_HUNT = False
+DETECTOR_METHOD = MethodTag("pattern", named=False)
 
 REQUIRED_LOGS = [{"source": "pihole_dir", "pattern": "pihole*.log*"}]
 OPTIONAL_LOGS: list[dict] = []
@@ -55,17 +58,16 @@ _BURST_GRID_ACTIVE = (2, 3, 4)
 _DAY_SECONDS = 86_400.0
 _CADENCE_MAX_GAP_SECONDS = 6 * 60 * 60
 
-# Arrival construction constants. These are deliberately non-ratified: C1 owns
-# the only transition from a construction vector to shipped calibration.
-ARRIVAL_DAYS = 3
-ARRIVAL_HISTORY = 14
-ARRIVAL_VECTOR_RATIFIED = False
+# Shipped calibration selected by the sealed C1 re-decision.
+ARRIVAL_DAYS = 5
+ARRIVAL_HISTORY = 21
+ARRIVAL_VECTOR_RATIFIED = True
 SYNC_ADDRESSES = 3
 FOLD_MIN_MEMBERS = 4
-BURST_ABS = 100
-BURST_MULT = 8
-BURST_ACTIVE = 3
-BURST_VECTOR_RATIFIED = False
+BURST_ABS = 400
+BURST_MULT = 12
+BURST_ACTIVE = 4
+BURST_VECTOR_RATIFIED = True
 RECURRING_PERIODS = 4
 
 
@@ -2730,6 +2732,16 @@ def run(
     distinct_report_addresses = sum(1 for count in report_counts.values() if count > 0)
     now = datetime.now(timezone.utc)
     window = _prepared.preflight.report_interval
+    history_start = (
+        _prepared.preflight.context_interval[0]
+        if _prepared.preflight.context_interval is not None
+        else _prepared.preflight.report_interval[0]
+    )
+    history_seconds = (window[1] - history_start).total_seconds()
+    history_span = fmt_compact_span(timedelta(seconds=history_seconds))
+    history_qualifier = (
+        f"First is measured against the {history_span} of history this run consulted."
+    )
 
     def iso(ts: float) -> str:
         return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
@@ -2858,6 +2870,7 @@ def run(
                 "address": address,
                 "member_count": len(candidates),
                 "earliest_first_associated_period": first_iso,
+                "history_seconds": history_seconds,
                 "members": members,
                 "members_omitted": len(candidates) - len(kept),
                 "attributed_share_num": a1_counts.get(address) if shares_available else None,
@@ -2879,7 +2892,8 @@ def run(
                 title=address,
                 description=(
                     f"{len(candidates)} family-keyed qualifying-name arrivals for "
-                    "this address were folded to one row."
+                    "this address were folded to one row. "
+                    f"{history_qualifier}"
                 ),
                 evidence=evidence,
                 next_steps=[
@@ -2924,6 +2938,7 @@ def run(
                 "active_periods": candidate.active_periods,
                 "eligible_periods": candidate.eligible_periods,
                 "first_associated_period": first_iso,
+                "history_seconds": history_seconds,
                 "prior_other_address_count": candidate.prior_other_address_count,
                 "prior_other_address_count_at_cap": (
                     candidate.prior_other_address_count_at_cap
@@ -2942,7 +2957,7 @@ def run(
                 detector=DETECTOR_NAME,
                 severity=Severity.LOW,
                 title=f"{candidate.address} → {candidate.family_key}",
-                description=description,
+                description=f"{description} {history_qualifier}",
                 evidence=evidence,
                 next_steps=next_steps(
                     candidate.address, candidate.family_key, first_iso

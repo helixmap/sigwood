@@ -20,9 +20,9 @@ Breaking any of the above means 2.0.
 
 ## Verbs
 
-Fourteen, all of which stay recognized:
+Fifteen, all of which stay recognized:
 
-`hunt` · `auth` · `beacon` · `dns` · `syslog` · `scan` · `exfil` · `aws` ·
+`hunt` · `auth` · `beacon` · `dns` · `dnsblock` · `syslog` · `scan` · `exfil` · `aws` ·
 `digest` · `graph` · `export` · `init` · `allowlist` · `era`
 
 `era` measures a complete dated Zeek archive. It accepts `[DIR]` as an archive-root
@@ -110,8 +110,8 @@ home_net=())` builds a context with **suppression off**. Your allowlist is not
 applied, so results can be noisier than the same detector run through the CLI — the
 name says so on purpose.
 
-The seven callable detectors are `auth`, `aws`, `beacon`, `dns`, `exfil`, `scan`,
-`syslog`; each exposes `run(context) -> list[Finding]`.
+The eight callable detectors are `auth`, `aws`, `beacon`, `dns`, `dnsblock`, `exfil`,
+`scan`, `syslog`; each exposes `run(context) -> list[Finding]`.
 
 A `Finding` has eight public attributes: `detector`, `severity`, `title`,
 `description`, `evidence`, `next_steps`, `ts_generated`, `data_window`.
@@ -276,7 +276,7 @@ listed here do not disappear.
   `pihole_dir`, `cloudtrail_dir`, `home_net`, `export_dir`, `report_dir`,
   `output_format`, `warn_above`, `default_window`, `quiet`, `use_utc`,
   `max_findings_per_detector`
-- **`[detectors.<name>]`** for each of the seven detectors. The documented tuning keys
+- **`[detectors.<name>]`** for each of the eight detectors. The documented tuning keys
   stay recognized; their default values may change.
   - `aws` — `min_events`, `min_scorable_principals`, `burst_gap_seconds`,
     `burst_window_edge_margin_seconds`, `burst_min_firsts`, `burst_high_error_rate`,
@@ -289,6 +289,7 @@ listed here do not disappear.
     `scan_max_members_per_cluster`, `promote_below_gate`, `promote_min_subdomains`,
     `promote_min_nxdomain_fraction`, and the nested
     **`[detectors.dns.pihole]`** (`min_cluster_size`, `min_samples`)
+  - `dnsblock` — no public tuning keys
   - `exfil` — `min_outbound_bytes`, `min_orig_share`
   - `scan` — `window_secs`, `horizontal_threshold`, `vertical_threshold`,
     `block_host_threshold`, `block_port_threshold`, `block_state_min`,

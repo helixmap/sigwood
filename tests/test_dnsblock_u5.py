@@ -4,14 +4,25 @@ from __future__ import annotations
 
 import copy
 import csv
+import hashlib
 import io
 import json
+import math
 from datetime import datetime, timezone
+
+import numpy as np
 
 import sigwood.outputs.pdf as pdf_output
 from sigwood.common.finding import Finding, RunSummary, Severity
 from sigwood.outputs._evidence import curated_evidence
-from sigwood.outputs._render_model import _build_renderable, project_row
+from sigwood.outputs._render_model import (
+    Section,
+    _build_renderable,
+    _dnsblock_history,
+    html_columns,
+    project_row,
+    text_columns,
+)
 from sigwood.outputs.csv import CsvHandler
 from sigwood.outputs.html import HtmlHandler
 from sigwood.outputs.json import JsonHandler
@@ -151,6 +162,108 @@ def test_dnsblock_headline_projection_formats_exact_sufficient_statistics() -> N
     assert "multiplier unavailable" in [cell.value for cell in project_row(unavailable)]
 
 
+def _render_reading(handler_type, findings: list[Finding]) -> str:
+    stream = io.StringIO()
+    handler = handler_type(stream=stream)
+    handler.begin(_summary())
+    handler.write(findings)
+    handler.end()
+    return stream.getvalue()
+
+
+def _arrival_with_history(value: object = 86_400.0) -> Finding:
+    return _finding(
+        "arrival",
+        address="192.0.2.7",
+        family_key="example.test",
+        qualifying_name_count=2,
+        attributed_query_count=6,
+        active_periods=2,
+        eligible_periods=5,
+        first_associated_period="2026-01-02T00:00:00+00:00",
+        history_seconds=value,
+        prior_other_address_count=0,
+        prior_other_address_count_at_cap=False,
+    )
+
+
+def test_dnsblock_history_has_a_closed_never_raising_domain() -> None:
+    rejected = [True, "21", None, math.nan, math.inf, -1]
+    assert [_dnsblock_history(value) for value in rejected] == [""] * len(rejected)
+    assert _dnsblock_history(np.int64(86_400)) == "over 1d"
+    assert _dnsblock_history(3_600.0) == "over 1h"
+    assert _dnsblock_history(0.0) == "over 0s"
+
+
+def test_dnsblock_history_column_is_fixed_and_section_pruning_stays_aligned() -> None:
+    current = _arrival_with_history()
+    legacy = copy.deepcopy(current)
+    legacy.evidence.pop("history_seconds")
+    fold = _finding(
+        "arrival_fold",
+        address="192.0.2.8",
+        member_count=4,
+        earliest_first_associated_period="2026-01-02T00:00:00+00:00",
+        history_seconds=86_400.0,
+    )
+
+    assert [cell.key for cell in project_row(current)][-3:] == [
+        "first", "history", "prior"
+    ]
+    assert [cell.key for cell in project_row(legacy)][-3:] == [
+        "first", "history", "prior"
+    ]
+    assert project_row(legacy)[-2].value == ""
+    assert [cell.key for cell in project_row(fold)][-2:] == ["first", "history"]
+
+    legacy_section = Section("first activity", [legacy], 1)
+    mixed_section = Section("first activity", [legacy, current], 2)
+    current_section = Section("first activity", [current], 1)
+    assert [column.key for column in text_columns(legacy_section)] == [
+        None, "names", "queries", "periods", "first", "prior"
+    ]
+    assert [column.key for column in text_columns(mixed_section)][-3:] == [
+        "first", "history", "prior"
+    ]
+    assert [column.key for column in text_columns(current_section)][-3:] == [
+        "first", "history", "prior"
+    ]
+    assert [column.key for _, column in html_columns(legacy_section)] == [
+        None, "names", "queries", "periods", "first", "prior"
+    ]
+    assert [column.key for _, column in html_columns(mixed_section)][-3:] == [
+        "first", "history", "prior"
+    ]
+
+    for handler_type in (TextHandler, HtmlHandler):
+        all_current = _render_reading(handler_type, [current])
+        mixed = _render_reading(handler_type, [legacy, current])
+        assert "over 1d" in all_current
+        assert mixed.count("over 1d") == 1
+
+
+def test_all_legacy_dnsblock_reading_bytes_are_unchanged(pin_tz) -> None:
+    legacy = _arrival_with_history()
+    legacy.title = "192.0.2.7"
+    legacy.evidence.pop("history_seconds")
+    expected = {
+        TextHandler: "9745005329470e88d17ad0e04e8dcec1774f48a6420018a0fb5355edf629c803",
+        HtmlHandler: "5867511022523a28c2c4f86e10428df27fc6f91138ded6f36bba425af18a5dbe",
+    }
+    pin_tz("America/Chicago")
+    for handler_type, digest in expected.items():
+        rendered = _render_reading(handler_type, [legacy]).encode()
+        assert hashlib.sha256(rendered).hexdigest() == digest
+
+
+def test_hostile_dnsblock_history_is_empty_on_real_reading_paths() -> None:
+    finding = _arrival_with_history('<script>\x1b"')
+    for handler_type in (TextHandler, HtmlHandler):
+        rendered = _render_reading(handler_type, [finding])
+        assert "history_seconds" not in rendered
+        assert "<script>" not in rendered
+
+
 def test_fold_curated_evidence_has_exact_shares_and_omits_unavailable_ratios() -> None:
     fold = _finding(
         "arrival_fold",
@@ -212,6 +325,7 @@ def test_all_five_handlers_receive_dnsblock_and_keep_machine_surfaces_uncapped(
         active_periods=2,
         eligible_periods=5,
         first_associated_period="2026-01-02T00:00:00+00:00",
+        history_seconds=86_400.0,
         prior_other_address_count=0,
         prior_other_address_count_at_cap=False,
     )
@@ -227,6 +341,7 @@ def test_all_five_handlers_receive_dnsblock_and_keep_machine_surfaces_uncapped(
     text_handler.end()
     assert "first activity (1)" in text.getvalue()
     assert "recurring blocked-name activity" in text.getvalue()
+    assert "over 1d" in text.getvalue()
     assert "\x1b" not in text.getvalue() and "\x7f" not in text.getvalue()
 
     csv_stream = io.StringIO()
@@ -237,6 +352,7 @@ def test_all_five_handlers_receive_dnsblock_and_keep_machine_surfaces_uncapped(
     csv_rows = list(csv.DictReader(io.StringIO(csv_stream.getvalue())))
     assert len(csv_rows) == 2
     assert csv_rows[0]["finding"].startswith("'=SUM")
+    assert "history_seconds=86400.0" in csv_rows[0]["signals"]
     assert "\x1b" not in csv_stream.getvalue() and "\x7f" not in csv_stream.getvalue()
 
     json_stream = io.StringIO()
@@ -244,7 +360,9 @@ def test_all_five_handlers_receive_dnsblock_and_keep_machine_surfaces_uncapped(
     json_handler.begin(_summary())
     json_handler.write(findings)
     json_handler.end()
-    assert len(json.loads(json_stream.getvalue())["findings"]) == 2
+    json_findings = json.loads(json_stream.getvalue())["findings"]
+    assert len(json_findings) == 2
+    assert json_findings[0]["evidence"]["history_seconds"] == 86_400.0
     assert "\x1b" not in json_stream.getvalue() and "\x7f" not in json_stream.getvalue()
 
     html_stream = io.StringIO()
@@ -254,6 +372,7 @@ def test_all_five_handlers_receive_dnsblock_and_keep_machine_surfaces_uncapped(
     html_handler.end()
     assert "first activity" in html_stream.getvalue()
     assert "recurring blocked-name activity" in html_stream.getvalue()
+    assert "over 1d" in html_stream.getvalue()
     assert "&lt;script&gt;" in html_stream.getvalue()
     assert "\x1b" not in html_stream.getvalue() and "\x7f" not in html_stream.getvalue()
 
@@ -271,6 +390,7 @@ def test_all_five_handlers_receive_dnsblock_and_keep_machine_surfaces_uncapped(
     pdf_handler.end()
     assert pdf_stream.getvalue() == b"%PDF-u5"
     assert "recurring blocked-name activity" in captured["html"]
+    assert "over 1d" in captured["html"]
     assert "&lt;script&gt;" in captured["html"]
     assert "href" not in captured["html"]
 

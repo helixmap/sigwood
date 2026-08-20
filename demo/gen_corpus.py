@@ -657,18 +657,26 @@ def _gen_pihole(
             )
 
     # dnsblock trip-direction seed.  The older, different-name queries prove
-    # address and candidate-prefix readiness; exactly three report-period
+    # address and candidate-prefix readiness; exactly five report-period
     # same-day query/block associations make one first-activity row.  This is a
     # plumbing/demoability control only, never calibration or a detection-power
     # claim.  All identities are reserved examples/RFC 5737.
-    for day in range(20, 2, -1):
+    # Enough earlier rows expose the full twenty-one-period consulted history;
+    # five active report periods follow the shipped ratified arrival vector.
+    for day in range(27, 2, -1):
         _pihole_emit(
             lines,
             anchor,
             -day * 86_400 + 3600,
             "query[A] history.example.net from " + DNSBLOCK_DEMO_ADDRESS,
         )
-    for offset in (-2 * 86_400 + 7200, -86_400 + 7200, 12 * 3600):
+    for offset in (
+        -4 * 86_400 + 7200,
+        -3 * 86_400 + 7200,
+        -2 * 86_400 + 7200,
+        -86_400 + 7200,
+        12 * 3600,
+    ):
         _pihole_emit(
             lines,
             anchor,

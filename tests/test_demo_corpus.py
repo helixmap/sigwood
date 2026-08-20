@@ -252,12 +252,6 @@ def test_dnsblock_seed_trips_u3_through_real_product_route(
     _run_generator(monkeypatch, out_dir)
     capsys.readouterr()
     output = tmp_path / "dnsblock.json"
-    selection = runner.DetectorSelection(
-        {"dnsblock": dnsblock},
-        ["dnsblock"],
-        {},
-        vocab={"dnsblock": {}},
-    )
     assert runner.run(
         {
             "sigwood": {
@@ -273,7 +267,6 @@ def test_dnsblock_seed_trips_u3_through_real_product_route(
         no_allowlist=True,
         quiet=True,
         use_utc=True,
-        _detector_selection=selection,
     ) == 0
     payload = json.loads(output.read_text(encoding="utf-8"))
     arrivals = [

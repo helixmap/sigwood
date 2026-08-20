@@ -1758,7 +1758,7 @@ def load_required_logs(
                     cov_dict["coverage"] = SourceCoverage(None, None)
                 elif execution.observed_valid_rows == 0:
                     cov_dict["coverage"] = SourceCoverage(0, None)
-                elif execution.observed_span is not None:
+                elif sink_plan.preserve_frame and execution.observed_span is not None:
                     cov_dict["coverage"] = SourceCoverage(
                         execution.observed_valid_rows,
                         (

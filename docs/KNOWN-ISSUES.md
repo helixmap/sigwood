@@ -276,6 +276,11 @@ for this run, not proof that the activity began then. A finding can touch the be
 of the window, and its evidence says so, but sigwood cannot infer what happened before the
 observation cut. Widen the window before treating first-seen timing as history.
 
+**`dnsblock` can report a persistently blocked name again while its onset remains inside the
+lookback.** Each run states how much history it consulted, but it does not retain cross-run
+memory of an earlier report. After triage confirms the activity is expected, add only the exact
+name patterns you intend to suppress to the allowlist.
+
 **Remote source addresses in auth logs are not individually allowlist-suppressible.** The
 canonical system-log frame exposes the host that wrote each record, so the host allowlist can
 suppress that machine before analysis. A remote source address extracted from the message is
@@ -329,6 +334,14 @@ genuine automated activity would start being reported as ordinary user activity.
 not worth making without more evidence.
 
 ## Ingestion and windows
+
+**An implicit `dnsblock` run can read more Pi-hole rotations than its report window.** The
+detector needs earlier history to decide whether blocked activity is new, so a peekable
+directory may select 21 additional days of files while reporting only rows inside the configured
+window. With the stock seven-day default, file selection spans up to 28 days - four times the
+report span by duration, not necessarily four times the file count. Rotation layout controls the
+number of files. Unpeekable sources already load in full, and explicit time bounds or `--all`
+retain their ordinary meanings.
 
 **A folder *inside* a CloudTrail tree that you lack permission to read is skipped without saying
 so.** If permissions stop sigwood listing the CloudTrail directory you configured, it now

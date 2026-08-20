@@ -25,6 +25,28 @@ from sigwood.detectors import dnsblock
 UTC = timezone.utc
 
 
+def test_shipped_calibration_matches_the_sealed_ratified_vector():
+    """Literal pins keep default drift visible to the vector-flip test."""
+    vector = dnsblock.DnsblockCalibrationVector()
+
+    assert (dnsblock.ARRIVAL_DAYS, dnsblock.ARRIVAL_HISTORY) == (5, 21)
+    assert (dnsblock.BURST_ABS, dnsblock.BURST_MULT, dnsblock.BURST_ACTIVE) == (
+        400,
+        12,
+        4,
+    )
+    assert dnsblock.ARRIVAL_VECTOR_RATIFIED is True
+    assert dnsblock.BURST_VECTOR_RATIFIED is True
+    assert (
+        vector.arrival_days,
+        vector.arrival_history,
+        vector.burst_absolute,
+        vector.burst_multiple,
+        vector.burst_active,
+        vector.burst_enabled,
+    ) == (5, 21, 400, 12, 4, True)
+
+
 def _run_sink(sink, frame, report, context=None):
     context = context or [False] * len(frame)
     chunk = DecodedChunk(
@@ -61,6 +83,156 @@ def _execute_sink_once(tmp_path, sink, frame, report, context=None):
         loader.SinkPlan((sink,), preserve_frame=False),
         lambda _item: [chunk],
     )
+
+
+def _history_prepared(
+    *, context_interval: tuple[datetime, datetime] | None
+) -> dnsblock.DnsblockPrepared:
+    end = datetime(2026, 1, 10, tzinfo=UTC)
+    report_interval = (end - timedelta(days=2), end)
+    disposition = dnsblock.DispositionFacts(0, 0, 0, 0, (), 0)
+    cadence = dnsblock.CadenceFacts(True, 0, 0.0, 3600.0)
+
+    def arrival(address: str, family: str, hours: int) -> dnsblock.ArrivalCandidate:
+        return dnsblock.ArrivalCandidate(
+            address=address,
+            family_key=family,
+            unknown_suffix=False,
+            qualifying_names=(f"x.{family}",),
+            attributed_query_count=3,
+            qualifying_name_count=1,
+            active_periods=2,
+            eligible_periods=5,
+            first_associated_ts=(end - timedelta(hours=hours)).timestamp(),
+            prior_other_address_count=0,
+            prior_other_address_count_at_cap=False,
+            disposition=disposition,
+        )
+
+    arrivals = (
+        arrival("192.0.2.7", "single.test", 3),
+        arrival("192.0.2.8", "a.test", 7),
+        arrival("192.0.2.8", "b.test", 6),
+        arrival("192.0.2.8", "c.test", 5),
+        arrival("192.0.2.8", "d.test", 4),
+    )
+    preflight = dnsblock.DnsblockPreflight(
+        state=PreparedState.READY,
+        cause="",
+        snapshot_identity="a" * 64,
+        report_interval=report_interval,
+        context_interval=context_interval,
+        coverage_lane=CoverageLane.STRONG,
+        coverage_reason="fixture",
+        coverage_union=tuple(
+            interval
+            for interval in (context_interval, report_interval)
+            if interval is not None
+        ),
+        raw_event_counts=(),
+        drop_counts=(),
+        rows_kept=5,
+        rows_suppressed=0,
+        a1_rows=5,
+        a2_rows=0,
+        association_cells=5,
+        address_name_pairs=5,
+        name_routes=(),
+        grids=(),
+        resident_bytes=0,
+    )
+    analysis = dnsblock.AnalysisFacts(
+        arrivals=arrivals,
+        bursts=(),
+        burst_grids=(),
+        burst_channel=dnsblock.ChannelFacts(
+            dnsblock.ChannelStatus.READY, "", 4, 5
+        ),
+        recurring=dnsblock.RecurringFacts(
+            dnsblock.ChannelStatus.READY, "", 4, 5, 5, 0, 0, 0, 0
+        ),
+        final_shape_routes=(),
+        withheld_arrival_burst_pairs=0,
+        cadence_worklist=tuple(
+            (item.address, item.family_key) for item in arrivals
+        ),
+        cadence_query_event_upper_bounds=(),
+        pair_routes=(),
+        prior_handling_names=0,
+        prior_handling_memberships=0,
+        report_query_rows=15,
+        report_query_rows_by_address=(("192.0.2.7", 3), ("192.0.2.8", 12)),
+        a1_rows=15,
+        a1_rows_by_address=(("192.0.2.7", 3), ("192.0.2.8", 12)),
+        notes=dnsblock.DnsblockNoteFacts(CoverageLane.STRONG, 3, 14),
+    )
+    return dnsblock.DnsblockPrepared(
+        preflight=preflight,
+        analysis=analysis,
+        cadence=tuple(
+            (item.address, item.family_key, cadence) for item in arrivals
+        ),
+        cadence_complete=True,
+    )
+
+
+@pytest.mark.parametrize("with_context", [False, True])
+def test_arrival_history_is_the_single_consulted_span_and_exactly_additive(
+    with_context,
+):
+    end = datetime(2026, 1, 10, tzinfo=UTC)
+    context_interval = (
+        (end - timedelta(days=21), end - timedelta(days=2, microseconds=1))
+        if with_context
+        else None
+    )
+    prepared = _history_prepared(context_interval=context_interval)
+    findings = dnsblock.run(
+        DetectorContext.unsuppressed(
+            {}, data_window=prepared.preflight.report_interval
+        ),
+        _prepared=prepared,
+    )
+    arrivals = [
+        finding
+        for finding in findings
+        if finding.evidence["kind"] in {"arrival", "arrival_fold"}
+    ]
+    expected_seconds = float((21 if with_context else 2) * 24 * 60 * 60)
+    assert [finding.evidence["kind"] for finding in arrivals] == [
+        "arrival_fold",
+        "arrival",
+    ]
+    assert {finding.evidence["history_seconds"] for finding in arrivals} == {
+        expected_seconds
+    }
+
+    qualifier = (
+        f"First is measured against the {21 if with_context else 2}d of history "
+        "this run consulted."
+    )
+    assert all(finding.description.endswith(qualifier) for finding in arrivals)
+
+    ordinary_old = {
+        "kind", "coverage_lane", "address", "family_key", "novelty_noun",
+        "attributed_query_count", "qualifying_name_count", "active_periods",
+        "eligible_periods", "first_associated_period",
+        "prior_other_address_count", "prior_other_address_count_at_cap",
+        "gravity_blocked", "regex_blocked", "forwarded", "cached",
+        "disposition_grain", "disposition_by_day", "disposition_by_day_omitted",
+        "cadence_available", "gap_count", "gap_cv", "gap_median_s",
+    }
+    fold_old = {
+        "kind", "coverage_lane", "address", "member_count",
+        "earliest_first_associated_period", "members", "members_omitted",
+        "attributed_share_num", "attributed_share_den", "query_share_num",
+        "query_share_den", "distinct_report_addresses", "shares_available",
+        "gravity_blocked", "regex_blocked", "forwarded", "cached",
+        "disposition_grain", "disposition_by_day", "disposition_by_day_omitted",
+    }
+    by_kind = {finding.evidence["kind"]: finding for finding in arrivals}
+    assert set(by_kind["arrival"].evidence) == ordinary_old | {"history_seconds"}
+    assert set(by_kind["arrival_fold"].evidence) == fold_old | {"history_seconds"}
 
 
 def test_normalization_is_bounded_and_ipv4_mapped_is_canonical():

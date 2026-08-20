@@ -150,6 +150,12 @@ def _prepared(
         population_status=PreparedStatus(PreparedState.READY),
         blocks=dnsblock.BlockInventory(),
         population=population,
+        # These U3 mechanics fixtures were authored against the historical
+        # construction cell; keep that instrument explicit after ratification.
+        calibration_vector=dnsblock.DnsblockCalibrationVector(
+            arrival_days=3,
+            arrival_history=14,
+        ),
     )
     results = {
         pair: dnsblock.CadenceState(included_gaps=[60.0] * 19)
@@ -240,9 +246,9 @@ def test_u3_arrival_uses_frozen_voice_evidence_and_cadence_floor():
     assert "a.example.com" not in repr(finding.evidence)
 
 
-def test_private_arrival_vector_materializes_one_frozen_grid_cell_only():
+def test_private_arrival_vectors_materialize_one_frozen_grid_cell_only():
     window, population = _arrival_population()
-    default = dnsblock.build_prepared(
+    historical = dnsblock.build_prepared(
         snapshot_identity="a" * 64,
         window=window,
         coverage=_weak(window),
@@ -250,6 +256,10 @@ def test_private_arrival_vector_materializes_one_frozen_grid_cell_only():
         population_status=PreparedStatus(PreparedState.READY),
         blocks=dnsblock.BlockInventory(),
         population=population,
+        calibration_vector=dnsblock.DnsblockCalibrationVector(
+            arrival_days=3,
+            arrival_history=14,
+        ),
     )
     selected = dnsblock.build_prepared(
         snapshot_identity="a" * 64,
@@ -264,9 +274,9 @@ def test_private_arrival_vector_materializes_one_frozen_grid_cell_only():
             arrival_history=14,
         ),
     )
-    assert len(default.preflight.grids) == len(selected.preflight.grids) == 12
-    assert default.preflight.grids == selected.preflight.grids
-    assert len(default.analysis.arrivals) == 1
+    assert len(historical.preflight.grids) == len(selected.preflight.grids) == 12
+    assert historical.preflight.grids == selected.preflight.grids
+    assert len(historical.analysis.arrivals) == 1
     assert selected.analysis.arrivals == ()
     assert selected.analysis.notes.arrival_days_required == 4
     assert selected.analysis.notes.arrival_history_required == 14
@@ -283,7 +293,8 @@ def test_u3_strong_arrival_uses_available_history_voice():
     assert finding.description == (
         "This was the first available-history activity for this address and "
         "qualifying names grouped under this family key. Those queries appeared "
-        "in 3 of 4 covered export periods."
+        "in 3 of 4 covered export periods. First is measured against the 29d of "
+        "history this run consulted."
     )
     assert finding.evidence["coverage_lane"] == "strong"
     assert finding.evidence["novelty_noun"] == "first_available_history"
@@ -700,8 +711,10 @@ def test_actual_pair_routes_conserve_the_complete_frozen_vocabulary():
             window,
             _weak(window),
             dnsblock.LIMITS,
-            days_required=dnsblock.ARRIVAL_DAYS,
-            history_required=dnsblock.ARRIVAL_HISTORY,
+            # This vocabulary fixture exercises the historical qualifying
+            # route, not the shipped default pinned in test_dnsblock_detector.
+            days_required=3,
+            history_required=14,
             materialize=False,
         ).pair_routes
 

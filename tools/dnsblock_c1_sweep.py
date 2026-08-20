@@ -1602,19 +1602,20 @@ def classify_terminal(
     repeat_violation: str | None,
 ) -> TerminalOutcome:
     """Apply James amendment A1's split arrival/burst terminal lattice."""
+    if repeat_violation not in {None, "burst_only", "arrival_or_mixed"}:
+        raise ValueError("C1 repeat violation attribution is not recognized")
+    # DECISION-C1-REPEAT-AMENDMENT-2026-08-19.md keeps repeat measured and
+    # disclosed rather than using it as a terminal-outcome input.
     if not wall_promoted:
         return TerminalOutcome.RETURN_WALL
     if (
         not arrival_valid
         or not arrival_budget_passed
         or not global_budget_passed
-        or repeat_violation == "arrival_or_mixed"
     ):
         return TerminalOutcome.RETURN_INVALID_OR_BURDEN
-    if not burst_valid or not burst_budget_passed or repeat_violation == "burst_only":
+    if not burst_valid or not burst_budget_passed:
         return TerminalOutcome.SEALED_RATIFIED_ARRIVAL_ONLY
-    if repeat_violation not in (None, ""):
-        raise ValueError("C1 repeat violation attribution is not recognized")
     return TerminalOutcome.SEALED_RATIFIED
 
 

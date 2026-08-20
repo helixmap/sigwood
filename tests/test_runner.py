@@ -1114,11 +1114,46 @@ def test_runner_stale_pihole_emits_pihole_span_note(
     assert "15,400,000 rows loaded" in note
     assert "data spans" in note
     assert "widen with --since/--days" in note
+    assert "or --all" in note
     # Pi-hole NOT in data_sources (record_counts==0) → nudge does not fire,
     # and data_sources is unchanged (only the Zeek dns label).
     assert "zeek_dns" in s.data_sources
     assert "dnsmasq_dns" not in s.data_sources
     assert not any("Pi-hole/dnsmasq logs" in n for n in s.notes)
+
+
+def test_runner_load_all_coverage_fact_has_no_widening_advice(
+    tmp_path, capture_summary, mock_load_required_logs,
+):
+    """A defensive coverage fact under --all must not recommend narrowing."""
+    from sigwood.common.loader import LoadResult, SourceCoverage
+
+    pihole_dir = tmp_path / "pihole"
+    pihole_dir.mkdir()
+    (pihole_dir / "pihole.log").write_text(
+        "Jun  1 12:00:00 dnsmasq[1]: query[A] x.test from 192.0.2.10\n",
+        encoding="utf-8",
+    )
+    fake_lr = LoadResult(
+        logs={"pihole*.log*": pd.DataFrame(columns=_PIHOLE_COLUMNS)},
+        record_counts={},
+        coverage={
+            "pihole*.log*": SourceCoverage(4, _ts_window_span()),
+        },
+    )
+    mock_load_required_logs(fake_lr)
+
+    runner.run(
+        config={"sigwood": {"detect": "dns", "default_window": "7d"}},
+        pihole_dir=pihole_dir,
+        load_all=True,
+    )
+    note = _has_coverage_note(capture_summary["summary"].notes, starts_with="Pi-hole")
+    assert "4 rows loaded" in note
+    assert "data spans" in note
+    assert "widen with" not in note
+    assert "--since" not in note
+    assert "--all" not in note
 
 
 def test_runner_parse_gap_cloudtrail_emits_no_note(
@@ -4985,6 +5020,280 @@ def test_runner_flat_default_routes_floor_via_file_select_windows(
     fsw = captured["file_select_windows"]
     assert fsw is not None and "pihole_dir" in fsw
     assert fsw["pihole_dir"][1] is None  # conservative floor, open-ended upper bound
+
+
+def test_runner_dnsblock_extends_only_implicit_pihole_file_floor(
+    tmp_path, monkeypatch
+):
+    """DNSBlock adds history to file selection without changing report trim."""
+    from sigwood.common import loader as loader_pkg
+    from sigwood.detectors import dnsblock
+
+    now = datetime.now(timezone.utc)
+    pihole_dir = tmp_path / "pihole"
+    pihole_dir.mkdir()
+    (pihole_dir / "pihole.log").write_text(
+        "".join(
+            _pihole_query_line(now - timedelta(hours=h)) + "\n"
+            for h in (5, 4, 3, 2, 1, 0)
+        ),
+        encoding="utf-8",
+    )
+    resolved = loader_pkg.resolve_load_windows(
+        {"pihole*.log*": "pihole_dir"},
+        {"pihole_dir": [pihole_dir]},
+        "1d",
+        load_all=False,
+        since=None,
+        until=None,
+    )
+    base_floor, base_upper = resolved[0].select_window
+    assert base_floor is not None and base_upper is None
+
+    calls: list[dict] = []
+    trims: list[timedelta] = []
+    real_load = loader_pkg.load_required_logs
+    real_trim = loader_pkg.apply_default_window
+
+    def spy_load(*args, **kwargs):
+        calls.append(kwargs)
+        return real_load(*args, **kwargs)
+
+    def spy_trim(result, patterns, span, **kwargs):
+        trims.append(span)
+        return real_trim(result, patterns, span, **kwargs)
+
+    monkeypatch.setattr(loader_pkg, "load_required_logs", spy_load)
+    monkeypatch.setattr(loader_pkg, "apply_default_window", spy_trim)
+    runner.run(
+        config={"sigwood": {"detect": "dnsblock", "default_window": "1d"}},
+        pihole_dir=pihole_dir,
+    )
+
+    assert calls
+    for call in calls:
+        assert call.get("source_windows") is None
+        floor, upper = call["file_select_windows"]["pihole_dir"]
+        assert floor == base_floor - timedelta(days=dnsblock.ARRIVAL_HISTORY)
+        assert upper is None
+    assert trims == [timedelta(days=1)]
+
+
+def test_runner_dns_without_dnsblock_keeps_the_implicit_pihole_floor(
+    tmp_path, monkeypatch
+):
+    """Discoverability alone must not activate DNSBlock's history aperture."""
+    from sigwood.common import loader as loader_pkg
+
+    now = datetime.now(timezone.utc)
+    pihole_dir = tmp_path / "pihole"
+    pihole_dir.mkdir()
+    (pihole_dir / "pihole.log").write_text(
+        "".join(
+            _pihole_query_line(now - timedelta(hours=h)) + "\n"
+            for h in (5, 4, 3, 2, 1, 0)
+        ),
+        encoding="utf-8",
+    )
+    resolved = loader_pkg.resolve_load_windows(
+        {"pihole*.log*": "pihole_dir"},
+        {"pihole_dir": [pihole_dir]},
+        "1d",
+        load_all=False,
+        since=None,
+        until=None,
+    )
+    base_window = resolved[0].select_window
+    assert base_window is not None
+
+    calls: list[dict] = []
+    real_load = loader_pkg.load_required_logs
+
+    def spy_load(*args, **kwargs):
+        calls.append(kwargs)
+        return real_load(*args, **kwargs)
+
+    monkeypatch.setattr(loader_pkg, "load_required_logs", spy_load)
+    runner.run(
+        config={"sigwood": {"detect": "dns", "default_window": "1d"}},
+        pihole_dir=pihole_dir,
+    )
+
+    assert len(calls) == 1
+    assert calls[0]["file_select_windows"]["pihole_dir"] == base_window
+
+
+def test_runner_dnsblock_explicit_bounds_do_not_extend_file_selection(
+    tmp_path, monkeypatch
+):
+    """Explicit operator bounds bypass the implicit DNSBlock history floor."""
+    from sigwood.common import loader as loader_pkg
+
+    now = datetime.now(timezone.utc)
+    pihole_dir = tmp_path / "pihole"
+    pihole_dir.mkdir()
+    (pihole_dir / "pihole.log").write_text(
+        _pihole_query_line(now - timedelta(hours=1)) + "\n",
+        encoding="utf-8",
+    )
+    calls: list[dict] = []
+    real_load = loader_pkg.load_required_logs
+
+    def spy_load(*args, **kwargs):
+        calls.append(kwargs)
+        return real_load(*args, **kwargs)
+
+    monkeypatch.setattr(loader_pkg, "load_required_logs", spy_load)
+    runner.run(
+        config={"sigwood": {"detect": "dnsblock", "default_window": "1d"}},
+        pihole_dir=pihole_dir,
+        since=now - timedelta(days=1),
+        until=now,
+    )
+
+    assert calls
+    assert all(call.get("file_select_windows") is None for call in calls)
+
+
+@pytest.mark.parametrize("mode", ["all", "explicit-file", "unpeekable"])
+def test_runner_dnsblock_does_not_create_a_missing_file_selection_entry(
+    tmp_path, monkeypatch, mode
+):
+    """Full-read routes stay full reads when DNSBlock is selected."""
+    from sigwood.common import loader as loader_pkg
+
+    now = datetime.now(timezone.utc)
+    pihole_dir = tmp_path / "pihole"
+    pihole_dir.mkdir()
+    pihole_file = pihole_dir / "pihole.log"
+    if mode == "unpeekable":
+        pihole_file.write_text(
+            "Xxx  1 12:00:00 dnsmasq[1]: query[A] x.test from 192.0.2.10\n",
+            encoding="utf-8",
+        )
+    else:
+        pihole_file.write_text(
+            _pihole_query_line(now - timedelta(hours=1)) + "\n",
+            encoding="utf-8",
+        )
+
+    calls: list[dict] = []
+    real_load = loader_pkg.load_required_logs
+
+    def spy_load(*args, **kwargs):
+        calls.append(kwargs)
+        return real_load(*args, **kwargs)
+
+    monkeypatch.setattr(loader_pkg, "load_required_logs", spy_load)
+    runner.run(
+        config={"sigwood": {"detect": "dnsblock", "default_window": "1d"}},
+        pihole_dir=pihole_file if mode == "explicit-file" else pihole_dir,
+        load_all=mode == "all",
+    )
+
+    assert calls
+    assert all(call.get("file_select_windows") is None for call in calls)
+
+
+def test_runner_combined_dns_findings_ignore_dnsblock_history_rows(
+    tmp_path, capture_summary, monkeypatch
+):
+    """The DNSBlock aperture does not expand ordinary DNS's row population."""
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    recent_names = (
+        "a3f7bc19.example.com",
+        "m8x2q9n.example.net",
+        "k8x2m5q7n1p.example.org",
+    )
+    recent_rows = "".join(
+        _pihole_query_line(now - timedelta(minutes=i)).replace(
+            "example.test", recent_names[i % len(recent_names)]
+        ) + "\n"
+        for i in range(30)
+    )
+    history_rows = "".join(
+        _pihole_query_line(now - timedelta(days=10, minutes=i)).replace(
+            "example.test", f"history{i}.invalid.test"
+        ) + "\n"
+        for i in range(30)
+    )
+
+    def make_source(name: str, *, with_history: bool) -> Path:
+        source = tmp_path / name
+        source.mkdir()
+        (source / "pihole.log").write_text(recent_rows, encoding="utf-8")
+        if with_history:
+            (source / "pihole.log.1").write_text(history_rows, encoding="utf-8")
+        return source
+
+    config = {
+        "sigwood": {"detect": "dns,dnsblock", "default_window": "1d"},
+        "detectors": {
+            "dns": {"pihole": {"min_cluster_size": 2, "min_samples": 1}}
+        },
+    }
+    recent_source = make_source("recent", with_history=False)
+    history_source = make_source("history", with_history=True)
+    from sigwood.common import loader as loader_pkg
+
+    selected_history_seen = False
+    real_load = loader_pkg.load_required_logs
+
+    def spy_load(*args, **kwargs):
+        nonlocal selected_history_seen
+        result = real_load(*args, **kwargs)
+        selected_history_seen |= any(
+            item.path.name == "pihole.log.1"
+            for snapshot in result.snapshots.values()
+            for item in snapshot.files
+        )
+        return result
+
+    monkeypatch.setattr(loader_pkg, "load_required_logs", spy_load)
+    from sigwood.common import clustering
+    import numpy as np
+
+    class _AllNoise:
+        def __init__(self, **kwargs):
+            pass
+
+        def fit_predict(self, values):
+            return np.full(len(values), -1, dtype=int)
+
+    monkeypatch.setattr(clustering, "_CLUSTERING_ISOLATE_ENABLED", False)
+    monkeypatch.setattr(clustering, "HDBSCAN", _AllNoise)
+
+    assert runner.run(config=config, pihole_dir=recent_source) == 0
+    recent_count = capture_summary["summary"].record_counts["pihole*.log*"]
+    recent_dns = [
+        finding for finding in capture_summary["findings"]
+        if finding.detector == "dns"
+    ]
+
+    assert runner.run(config=config, pihole_dir=history_source) == 0
+    history_count = capture_summary["summary"].record_counts["pihole*.log*"]
+    history_dns = [
+        finding for finding in capture_summary["findings"]
+        if finding.detector == "dns"
+    ]
+
+    def semantic_finding(finding):
+        return (
+            finding.detector,
+            finding.severity,
+            finding.title,
+            finding.description,
+            finding.evidence,
+            finding.next_steps,
+            finding.data_window,
+        )
+
+    assert history_count == recent_count == 30
+    assert selected_history_seen is True
+    assert recent_dns
+    assert [semantic_finding(finding) for finding in history_dns] == [
+        semantic_finding(finding) for finding in recent_dns
+    ]
 
 
 # ── display timezone switch: report auto-name date routes through the seam ───

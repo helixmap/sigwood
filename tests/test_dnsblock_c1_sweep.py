@@ -964,7 +964,7 @@ def test_campaign_decision_stops_at_failed_wall_without_sweep_evidence():
     }
 
 
-def test_campaign_decision_rejects_global_or_arrival_repeat_burden():
+def test_campaign_decision_rejects_failed_global_budget():
     axes = ((2, 3), (7, 14))
     cells = {
         (2, 7): {"passes": True, "p95": 1, "max": 1, "identity_digest": "a" * 64},
@@ -985,7 +985,7 @@ def test_campaign_decision_rejects_global_or_arrival_repeat_burden():
     assert result["terminal_outcome"] == "RETURN_INVALID_OR_BURDEN"
 
 
-def test_terminal_lattice_preserves_arrival_on_burst_only_failure():
+def test_terminal_lattice_preserves_arrival_on_burst_failure():
     common = dict(
         wall_promoted=True,
         arrival_valid=True,
@@ -998,18 +998,78 @@ def test_terminal_lattice_preserves_arrival_on_burst_only_failure():
         burst_budget_passed=True,
         repeat_violation=None,
     ) is sweep.TerminalOutcome.SEALED_RATIFIED_ARRIVAL_ONLY
+
+
+@pytest.mark.parametrize(
+    "repeat_violation", [None, "burst_only", "arrival_or_mixed"]
+)
+def test_terminal_lattice_treats_repeat_attribution_as_disclosure(
+    repeat_violation,
+):
+    common = dict(
+        wall_promoted=True,
+        arrival_budget_passed=True,
+        burst_valid=True,
+        burst_budget_passed=True,
+        global_budget_passed=True,
+        repeat_violation=repeat_violation,
+    )
     assert sweep.classify_terminal(
         **common,
-        burst_valid=True,
-        burst_budget_passed=True,
-        repeat_violation="burst_only",
-    ) is sweep.TerminalOutcome.SEALED_RATIFIED_ARRIVAL_ONLY
+        arrival_valid=True,
+    ) is sweep.TerminalOutcome.SEALED_RATIFIED
     assert sweep.classify_terminal(
-        **{**common, "arrival_valid": False},
-        burst_valid=True,
-        burst_budget_passed=True,
-        repeat_violation=None,
+        **common,
+        arrival_valid=False,
     ) is sweep.TerminalOutcome.RETURN_INVALID_OR_BURDEN
+
+
+@pytest.mark.parametrize("repeat_violation", ["unknown", ""])
+def test_terminal_lattice_rejects_unknown_repeat_attribution(repeat_violation):
+    with pytest.raises(
+        ValueError, match="C1 repeat violation attribution is not recognized"
+    ):
+        sweep.classify_terminal(
+            wall_promoted=True,
+            arrival_valid=True,
+            arrival_budget_passed=True,
+            burst_valid=True,
+            burst_budget_passed=True,
+            global_budget_passed=True,
+            repeat_violation=repeat_violation,
+        )
+
+
+@pytest.mark.parametrize(
+    "repeat_violation", [None, "burst_only", "arrival_or_mixed"]
+)
+def test_campaign_decision_preserves_repeat_burden_payload(repeat_violation):
+    axes = ((2, 3), (7, 14))
+    cells = {
+        (2, 7): {"passes": True, "p95": 1, "max": 1, "identity_digest": "a" * 64},
+        (2, 14): {"passes": True, "p95": 2, "max": 2, "identity_digest": "b" * 64},
+        (3, 7): {"passes": True, "p95": 2, "max": 2, "identity_digest": "c" * 64},
+        (3, 14): {"passes": True, "p95": 3, "max": 3, "identity_digest": "d" * 64},
+    }
+    repeat_burden = {
+        "rolling_periods": 14,
+        "maximum_allowed": 2,
+        "maximum_observed": 12,
+        "violating_identities": 22,
+        "violation": repeat_violation,
+    }
+    result = sweep.decide_campaign(
+        wall_promoted=True,
+        arrival_cells=cells,
+        arrival_axes=axes,
+        burst_cells=cells,
+        burst_axes=axes,
+        final_global_budget={"passes": True},
+        repeat_burden=repeat_burden,
+        triage_summary={"state": "PASS"},
+    )
+    assert result["repeat_burden"] == repeat_burden
+    assert result["terminal_outcome"] == "SEALED_RATIFIED"
 
 
 def test_control_matrix_is_closed_and_validates_exact_command_receipts():

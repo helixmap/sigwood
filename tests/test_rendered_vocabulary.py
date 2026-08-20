@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import copy
 import io
+import json
 import re
 from datetime import datetime, timezone
 from html import escape
@@ -17,9 +18,10 @@ from typing import Iterable, Iterator, Mapping, Pattern
 import pytest
 
 import sigwood.outputs.html as html_output
-from sigwood.common.finding import Finding, RunSummary
+from sigwood.common.finding import Finding, RunSummary, Severity
 from sigwood.era import EraCard, render_text_report
 from sigwood.outputs.html import render_report_html
+from sigwood.outputs.json import JsonHandler
 from sigwood.outputs.text import TextHandler
 from tests.test_digest_blob import _text_blob_card
 from tests.test_era_report import _full_deck
@@ -39,6 +41,13 @@ _CLASS_B_PREDICATES = tuple(
 )
 _TEXT_PREDICATES = _CLASS_B_PREDICATES
 _ERA_PREDICATES = (("D-code", D_PATTERN),) + _CLASS_B_PREDICATES
+_DNSBLOCK_PREDICATES = _TEXT_PREDICATES + (
+    ("history_seconds", re.compile(r"\bhistory_seconds\b", re.IGNORECASE)),
+    ("arrival_fold", re.compile(r"\barrival_fold\b", re.IGNORECASE)),
+    ("campaign", re.compile(r"\bcampaign\b", re.IGNORECASE)),
+    ("calibration", re.compile(r"\bcalibrat(?:e|ed|ion)\b", re.IGNORECASE)),
+    ("ratified", re.compile(r"\bratified\b", re.IGNORECASE)),
+)
 _SEPARATOR_PATTERN = re.compile(r"^\[([HMLI])\] · (.+?) · (\d+) rare lines?$")
 
 
@@ -301,6 +310,67 @@ def test_real_syslog_transaction_html_visible_text_and_separators_are_clean() ->
     assert parsed.visible
     assert scan("\n".join(parsed.visible), _TEXT_PREDICATES) == []
     _assert_transaction_separators(document)
+
+
+def test_dnsblock_history_reading_surfaces_keep_internal_vocabulary_private() -> None:
+    now = datetime(2026, 6, 1, tzinfo=timezone.utc)
+    finding = Finding(
+        detector="dnsblock",
+        severity=Severity.LOW,
+        title="192.0.2.7 → example.test",
+        description=(
+            "These qualifying names were first observed for this address in the "
+            "available rows. First is measured against the 21d of history this run "
+            "consulted."
+        ),
+        evidence={
+            "kind": "arrival",
+            "address": "192.0.2.7",
+            "family_key": "example.test",
+            "qualifying_name_count": 2,
+            "attributed_query_count": 6,
+            "active_periods": 2,
+            "eligible_periods": 5,
+            "first_associated_period": "2026-05-12T00:00:00+00:00",
+            "history_seconds": 21 * 24 * 60 * 60.0,
+            "prior_other_address_count": 0,
+            "prior_other_address_count_at_cap": False,
+        },
+        next_steps=[],
+        ts_generated=now,
+        data_window=(now, now),
+    )
+    log_derived_inputs = ("192.0.2.7", "example.test")
+    assert premise_holds(log_derived_inputs, _DNSBLOCK_PREDICATES) == []
+
+    rendered_text = _render_findings_text([finding], 0)
+    document = render_report_html([finding], _summary(), verbose_level=0)
+    visible_html = "\n".join(_parse_html(document).visible)
+    assert "over 21d" in rendered_text
+    assert "over 21d" in visible_html
+    assert scan(rendered_text, _DNSBLOCK_PREDICATES) == []
+    assert scan(visible_html, _DNSBLOCK_PREDICATES) == []
+
+    json_stream = io.StringIO()
+    json_handler = JsonHandler(stream=json_stream)
+    json_handler.begin(_summary())
+    json_handler.write([finding])
+    json_handler.end()
+    payload = json.loads(json_stream.getvalue())
+    public_prose = "\n".join(
+        [
+            payload["findings"][0]["title"],
+            payload["findings"][0]["description"],
+            *payload["findings"][0]["next_steps"],
+            *payload["run_summary"]["notes"],
+        ]
+    )
+    assert scan(
+        public_prose,
+        tuple(
+            pair for pair in _DNSBLOCK_PREDICATES if pair[0] != "history_seconds"
+        ),
+    ) == []
 
 
 def test_transaction_separator_seed_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:

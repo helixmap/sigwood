@@ -133,6 +133,7 @@ def curated_evidence(finding: Finding) -> dict[str, Any]:
             keys = (
                 "coverage_lane", "qualifying_name_count", "attributed_query_count",
                 "active_periods", "eligible_periods", "first_associated_period",
+                "history_seconds",
                 "prior_other_address_count", "prior_other_address_count_at_cap",
             )
         elif kind == "burst":
@@ -144,6 +145,7 @@ def curated_evidence(finding: Finding) -> dict[str, Any]:
         elif kind == "arrival_fold":
             keys = (
                 "coverage_lane", "member_count", "earliest_first_associated_period",
+                "history_seconds",
                 "members_omitted", "distinct_report_addresses", "shares_available",
             )
         elif kind == "prior_handling_exclusions":

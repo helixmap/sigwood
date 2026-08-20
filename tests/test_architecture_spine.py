@@ -60,7 +60,8 @@ class ArchitectureSpineTests(unittest.TestCase):
         self.assertIn("auth", detectors)
         self.assertIn("dns", detectors)
         self.assertIn("exfil", detectors)
-        for planned in ("ssl", "protocol", "weird", "dnsblock"):
+        self.assertIn("dnsblock", detectors)
+        for planned in ("ssl", "protocol", "weird"):
             self.assertNotIn(planned, detectors)
 
     def test_discovery_vocabulary_includes_available_and_planned_modules(self) -> None:
@@ -69,7 +70,7 @@ class ArchitectureSpineTests(unittest.TestCase):
         detectors = discover_detectors(_vocab=vocab)
 
         self.assertEqual(set(detectors), {
-            "auth", "aws", "beacon", "dns", "exfil", "scan", "syslog",
+            "auth", "aws", "beacon", "dns", "dnsblock", "exfil", "scan", "syslog",
         })
         self.assertEqual(set(vocab), {
             "auth", "aws", "beacon", "dns", "dnsblock", "exfil",
@@ -130,6 +131,7 @@ class ArchitectureSpineTests(unittest.TestCase):
 
         self.assertEqual(resolve_detect("all", available), available)
         self.assertIn("exfil", resolve_detect("all", available))
+        self.assertIn("dnsblock", resolve_detect("all", available))
 
     def test_default_selection_uses_explicit_curated_membership(self) -> None:
         selection = select_detectors(None)
@@ -140,6 +142,7 @@ class ArchitectureSpineTests(unittest.TestCase):
         )
         self.assertTrue(selection.used_default)
         self.assertIn("exfil", selection.selected)
+        self.assertNotIn("dnsblock", selection.selected)
 
     def test_default_keyword_is_additive_and_exclusions_apply_last(self) -> None:
         available = ["aws", "beacon", "dns", "exfil", "scan", "syslog"]

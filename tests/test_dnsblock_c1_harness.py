@@ -27,6 +27,33 @@ from tools import dnsblock_c1_harness as harness
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def _in_git_work_tree() -> bool:
+    """Whether the harness can resolve its own source commit from ROOT.
+
+    The harness records `source_head` as measurement provenance and fails closed
+    when it cannot, so an artifact never claims a measurement without naming the
+    commit that produced it. A tracked-file export (the release runbook builds
+    one with `git archive`) carries no repository, and `tools/` is not part of
+    the distribution, so the harness is out of scope there rather than broken.
+    """
+    try:
+        return subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+        ).returncode == 0
+    except OSError:
+        return False
+
+
+requires_git_work_tree = pytest.mark.skipif(
+    not _in_git_work_tree(),
+    reason="harness source_head provenance needs a git work tree",
+)
+
+
 def _utc_interval(window):
     return [value.replace("Z", "+00:00") for value in window]
 
@@ -83,6 +110,7 @@ def _assert_r12_route_preconditions(result):
     return observed
 
 
+@requires_git_work_tree
 def test_dnsblock_repeat_generated_fixture_uses_real_series_harness(tmp_path):
     previous_tz = os.environ.get("TZ")
     os.environ["TZ"] = "UTC"
@@ -348,6 +376,7 @@ def test_series_request_rejects_duplicate_report_intervals(tmp_path):
         harness._series_windows(request)
 
 
+@requires_git_work_tree
 def test_harness_uses_real_runner_and_writes_aggregate_preflight(tmp_path):
     log = tmp_path / "pihole.log"
     log.write_text(
@@ -444,6 +473,7 @@ def test_harness_uses_real_runner_and_writes_aggregate_preflight(tmp_path):
     assert "x.example" not in serialized
 
 
+@requires_git_work_tree
 def test_harness_batch_request_uses_real_shared_runner_and_json_serializer(tmp_path):
     log = tmp_path / "pihole.log"
     log.write_text(
@@ -625,6 +655,7 @@ def test_prepare_render_batch_captures_exact_loader_snapshot(
     assert len(results) == 2
 
 
+@requires_git_work_tree
 def test_harness_series_request_partitions_tail_and_emits_only_aggregate_unions(tmp_path):
     log = tmp_path / "pihole.log"
     log.write_text(
@@ -878,6 +909,7 @@ def _run_mocked_content_series(
     return result, artifact
 
 
+@requires_git_work_tree
 def test_series_content_identity_allows_different_batch_file_sets(
     tmp_path, monkeypatch
 ):
@@ -913,6 +945,7 @@ def test_series_content_identity_rejects_changed_shared_file(tmp_path, monkeypat
     assert "resolved" not in json.dumps(sidecar)
 
 
+@requires_git_work_tree
 def test_series_single_file_content_identity_is_byte_compatible(
     tmp_path, monkeypatch
 ):

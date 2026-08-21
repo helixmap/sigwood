@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 import numpy as np
 
 import sigwood.outputs.pdf as pdf_output
+from sigwood.common.display import version_string
 from sigwood.common.finding import Finding, RunSummary, Severity
 from sigwood.outputs._evidence import curated_evidence
 from sigwood.outputs._render_model import (
@@ -247,13 +248,18 @@ def test_all_legacy_dnsblock_reading_bytes_are_unchanged(pin_tz) -> None:
     legacy.title = "192.0.2.7"
     legacy.evidence.pop("history_seconds")
     expected = {
-        TextHandler: "9745005329470e88d17ad0e04e8dcec1774f48a6420018a0fb5355edf629c803",
-        HtmlHandler: "5867511022523a28c2c4f86e10428df27fc6f91138ded6f36bba425af18a5dbe",
+        TextHandler: "9573537233194ee5f5f515d844526cdc495c59544f63419dd53a8be22643e834",
+        HtmlHandler: "4dc764a69d4eccd13608efba8befa6e3210ad6fc1f3b5a9bcb385dec166cf04d",
     }
     pin_tz("America/Chicago")
     for handler_type, digest in expected.items():
-        rendered = _render_reading(handler_type, [legacy]).encode()
-        assert hashlib.sha256(rendered).hexdigest() == digest
+        # The run-summary banner carries `generated: ... - sigwood <version>`, so the
+        # raw bytes move on every release. Normalizing that one token keeps the pin
+        # over the rendered surface rather than over the release number.
+        rendered = _render_reading(handler_type, [legacy]).replace(
+            version_string(), "sigwood <version>"
+        )
+        assert hashlib.sha256(rendered.encode()).hexdigest() == digest
 
 
 def test_hostile_dnsblock_history_is_empty_on_real_reading_paths() -> None:

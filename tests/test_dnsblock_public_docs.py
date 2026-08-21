@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 
 _ROOT = Path(__file__).resolve().parents[1]
 
@@ -55,8 +57,12 @@ def test_contract_roadmap_changelog_and_known_issue_agree() -> None:
 
 
 def test_binding_rails_have_no_activation_stubs_left() -> None:
-    detectors = _read(str(Path("private") / "rails" / "detectors.md"))
-    runner = _read(str(Path("private") / "rails" / "runner.md"))
+    rails = Path("private") / "rails"
+    if not (_ROOT / rails).is_dir():
+        pytest.skip("binding rails not present - dev-box enforced, public CI skips")
+
+    detectors = _read(str(rails / "detectors.md"))
+    runner = _read(str(rails / "runner.md"))
 
     assert "| dnsblock   | pihole_dir                           | exists    |" in detectors
     assert "STATUS available \u2014 opt-in" in detectors

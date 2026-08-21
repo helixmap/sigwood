@@ -6,6 +6,8 @@ All notable changes to sigwood are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-08-21
+
 ### Added
 
 - **`dnsblock` is now available as an opt-in detector for Pi-hole blocked-name
@@ -1112,7 +1114,8 @@ agent, no account.
 - Analysis-window controls (`--since`/`--until`/`--days`/`--all`), a per-source default
   lookback window, and local-or-UTC time rendering.
 
-[Unreleased]: https://github.com/helixmap/sigwood/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/helixmap/sigwood/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/helixmap/sigwood/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/helixmap/sigwood/compare/v0.2.9...v0.3.0
 [0.2.9]: https://github.com/helixmap/sigwood/compare/v0.2.8...v0.2.9
 [0.2.8]: https://github.com/helixmap/sigwood/compare/v0.2.7...v0.2.8

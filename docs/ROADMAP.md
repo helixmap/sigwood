@@ -13,11 +13,12 @@ answer "what does this actually catch?" - including the parts of the answer that
 
 What sigwood does today:
 
-- **Eight detectors** - beacon (FFT periodicity), dns (density clustering over Zeek
+- **Nine detectors** - beacon (FFT periodicity), dns (density clustering over Zeek
   dns.log or Pi-hole/dnsmasq), syslog (drain3 templating with per-host burst collapse,
   over the live systemd journal, flat rsyslog, or Zeek syslog.log), auth (five
   authentication-structure heuristics over that same system-log lane), scan, exfil
-  (bulk outbound transfers over connection logs), aws (per-principal behavior over
+  (bulk outbound transfers over connection logs), ssl (outbound TLS setup measured
+  against your own estate, over Zeek ssl.log), aws (per-principal behavior over
   CloudTrail), and dnsblock (first activity, bursts, and recurrence in Pi-hole
   blocked-name events).
 - **A curated default hunt** that narrows the routine review surface while every
@@ -105,10 +106,10 @@ prototyped in the open, as scripts and notebooks under `notebooks/` run against
 real logs, before they ship (see [CONTRIBUTING.md](../CONTRIBUTING.md)). Grouped by
 the gap each one could narrow:
 
-- **Command and control** - TLS and certificate anomalies from Zeek `ssl.log`, judged
-  against your own estate's norms rather than a fingerprint database; Zeek's
-  `weird.log`/`notice.log`; and a protocol classifier that notices a service running
-  somewhere it normally does not.
+- **Command and control** - Zeek's `weird.log`/`notice.log`, and a protocol classifier
+  that notices a service running somewhere it normally does not. (TLS and certificate
+  anomalies now ship as the opt-in `ssl` detector, judged against your own estate's
+  norms rather than a fingerprint database.)
 - **Exfiltration, beyond bulk volume** - `exfil` now answers "who is uploading, and to
   whom" for transfers large enough to clear its floor, complementing the tunnelling
   shapes `dns` already covers. The open ground is what volume alone cannot see: a

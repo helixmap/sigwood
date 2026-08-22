@@ -61,7 +61,8 @@ class ArchitectureSpineTests(unittest.TestCase):
         self.assertIn("dns", detectors)
         self.assertIn("exfil", detectors)
         self.assertIn("dnsblock", detectors)
-        for planned in ("ssl", "protocol", "weird"):
+        self.assertIn("ssl", detectors)
+        for planned in ("protocol", "weird"):
             self.assertNotIn(planned, detectors)
 
     def test_discovery_vocabulary_includes_available_and_planned_modules(self) -> None:
@@ -70,7 +71,8 @@ class ArchitectureSpineTests(unittest.TestCase):
         detectors = discover_detectors(_vocab=vocab)
 
         self.assertEqual(set(detectors), {
-            "auth", "aws", "beacon", "dns", "dnsblock", "exfil", "scan", "syslog",
+            "auth", "aws", "beacon", "dns", "dnsblock", "exfil", "scan", "ssl",
+            "syslog",
         })
         self.assertEqual(set(vocab), {
             "auth", "aws", "beacon", "dns", "dnsblock", "exfil",

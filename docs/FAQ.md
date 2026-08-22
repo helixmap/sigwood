@@ -138,6 +138,28 @@ infrastructure that a hunt suppresses. Long-horizon cards need at least twelve e
 a short archive still runs, but those cards may honestly abstain. `sigwood era --dry-run` shows
 the planner calendar and work estimate without loading the archive.
 
+### What does the `ssl` detector actually claim?
+
+It asks one question of every outbound TLS session: does the setup look unlike your own
+estate's norm? Two measured legs answer it. **No server name** - the session completed,
+was not a resumption, and carried no SNI. **A certificate that did not validate** - a
+certificate was presented and its validation status was something other than `ok`.
+One leg is LOW; both on the same host-and-destination pair is MEDIUM, because client
+behavior and server infrastructure are independent kinds of evidence.
+
+It does **not** claim the destination is malicious, look anything up in a reputation
+feed, or compute a JA3 fingerprint. A hash fingerprint is a feed you would have to keep
+current; sigwood measures your estate against itself instead, which is the whole point.
+
+The certificate legs have a real limit and the finding says so: **TLS 1.3 encrypts the
+certificate**, so a session that presented a visible certificate negotiated something
+older. On the estate the detector was calibrated against, that was about a quarter of
+outbound sessions - your mix will differ, and the run's own summary tells you what
+yours was rather than assuming.
+
+`ssl` is **opt-in**: run `sigwood ssl`, or include it with `--detect=all`. It stays out
+of the default hunt until its calibration rests on more than one estate.
+
 ### What log sources can it read?
 
 Zeek (`conn.log`, `dns.log`, `syslog.log`, in NDJSON or TSV, flat or date-partitioned
@@ -696,8 +718,10 @@ this section applies: read the code, run the tests.
 
 ### What state is sigwood in?
 
-Early, pre-1.0. The eight detectors above work and are covered by tests. Three more -
-`ssl`, `protocol`, and `weird` - are planned but not built. Interfaces may still move before
+Early, pre-1.0. The nine detectors above work and are covered by tests. Two more
+DETECTORS - `protocol` and `weird` - are planned but not built. Zeek's `weird.log`
+does have a `digest` card, which reports the shape of that log and reaches no
+verdict; the weird DETECTOR is the part that is still planned. Interfaces may still move before
 1.0. The current roadmap and the running list of known rough edges are public, in
 [ROADMAP.md](ROADMAP.md) and [KNOWN-ISSUES.md](KNOWN-ISSUES.md).
 

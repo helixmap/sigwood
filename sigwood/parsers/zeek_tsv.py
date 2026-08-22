@@ -53,9 +53,9 @@ SNIFF_PEEK_LINES: int = 16
 def sniff(sample: list[str]) -> str | None:
     """Recognize a Zeek TSV header and return its digester target.
 
-    Returns "conn", "dns", or "syslog" when the sample carries a well-formed
-    Zeek TSV header block declaring #separator, #fields, and #path with a
-    value of "conn", "dns", or "syslog". Returns None for any other shape -
+    Returns "conn", "dns", "syslog", "ssl", "x509", or "weird" when the sample
+    carries a well-formed Zeek TSV header block declaring #separator, #fields,
+    and #path with one of those values. Returns None for any other shape -
     including text that happens to contain a "#path" substring without a
     real header block, and Zeek TSV logs whose #path is something else
     (notice/analyzer/etc. - no digester yet, fall to the blob floor).
@@ -99,6 +99,12 @@ def sniff(sample: list[str]) -> str | None:
         return "dns"
     if path == "syslog":
         return "syslog"
+    if path == "ssl":
+        return "ssl"
+    if path == "x509":
+        return "x509"
+    if path == "weird":
+        return "weird"
     return None
 
 

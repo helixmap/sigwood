@@ -1,0 +1,1 @@
+{"_path": "x509", "ts": 1784999000.0, "fingerprint": "aa11", "certificate.subject": "CN=service.example.com", "certificate.issuer": "CN=service.example.com", "certificate.not_valid_before": 1780000000.0, "certificate.not_valid_after": 1790000000.0, "certificate.key_alg": "rsaEncryption", "certificate.key_length": 2048}

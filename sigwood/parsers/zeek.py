@@ -30,10 +30,117 @@ _DNS_COLUMN_MAP: dict[str, str] = {
     "TC":        "tc",
 }
 
+# ssl.log carries no `local_orig`; direction is decided by the consumer against
+# home_net. `cert_chain_fps` is a vector whose LEAF (first element) is the
+# server certificate - it is derived into `cert_fp` and the vector is dropped.
+_SSL_COLUMN_MAP: dict[str, str] = {
+    "id.orig_h":     "src",
+    "id.resp_h":     "dst",
+    "id.resp_p":     "port",
+    "server_name":   "sni",
+    "next_protocol": "alpn",
+}
+
+# The canonical ssl aperture, in render order. Every column has a named reader
+# (see docs/SCHEMA.md); a Zeek field with no reader is dropped rather than
+# carried, and a future consumer promotes what it needs through the normalizer.
+_SSL_COLUMNS: tuple[str, ...] = (
+    "ts",
+    "src",
+    "dst",
+    "port",
+    "version",
+    "cipher",
+    "curve",
+    "alpn",
+    "sni",
+    "resumed",
+    "established",
+    "validation_status",
+    "cert_fp",
+)
+
+_WEIRD_COLUMN_MAP: dict[str, str] = {
+    "id.orig_h": "src",
+}
+
+# The canonical weird aperture, in render order. `notice` is carried by no
+# consumer: Zeek sets it per policy and a card slot reading a value that never
+# varies would be a constant cell.
+_WEIRD_COLUMNS: tuple[str, ...] = (
+    "ts",
+    "name",
+    "src",
+    "source",
+)
+
+_X509_COLUMN_MAP: dict[str, str] = {
+    "certificate.not_valid_before": "not_valid_before",
+    "certificate.not_valid_after":  "not_valid_after",
+    "certificate.key_alg":          "key_alg",
+    "certificate.key_length":       "key_length",
+}
+
+# The canonical x509 aperture, in render order. `self_signed` is DERIVED from
+# subject/issuer, which are then dropped: they are identity strings with no
+# reader, and the only fact a consumer needs from them is their equality.
+_X509_COLUMNS: tuple[str, ...] = (
+    "ts",
+    "fingerprint",
+    "not_valid_before",
+    "not_valid_after",
+    "self_signed",
+    "key_alg",
+    "key_length",
+)
+
+# Log types whose normalizer is guarded against a source/canonical rename
+# collision. conn/dns/syslog are deliberately absent: their shipped behavior
+# is unchanged, and widening the guard to them is a separate decision.
+_COLLISION_MAPS: dict[str, dict[str, str]] = {
+    "ssl":   _SSL_COLUMN_MAP,
+    "x509":  _X509_COLUMN_MAP,
+    "weird": _WEIRD_COLUMN_MAP,
+}
+
+_CANONICAL_COLUMNS: dict[str, tuple[str, ...]] = {
+    "ssl":   _SSL_COLUMNS,
+    "x509":  _X509_COLUMNS,
+    "weird": _WEIRD_COLUMNS,
+}
+
+
+def empty_canonical_frame(log_type: str) -> pd.DataFrame:
+    """A column-stable empty frame for a log type with a declared aperture.
+
+    Used where a normalizer must yield no rows without collapsing the frame's
+    shape - a bare empty frame would make downstream column reads fail on a
+    condition the data never caused.
+    """
+    return pd.DataFrame(columns=list(_CANONICAL_COLUMNS[log_type]))
+
+
+def _chain_leaf(value: object) -> str | None:
+    """The server certificate fingerprint from a Zeek certificate chain.
+
+    The leaf is the first element. A non-sequence, an empty chain, or a
+    non-string leaf yields None: the chain is then unusable for the x509 join
+    and the row simply carries no certificate.
+    """
+    if isinstance(value, (list, tuple)) and value:
+        leaf = value[0]
+        if isinstance(leaf, str) and leaf:
+            return leaf
+    return None
+
+
 _REQUIRED_COLUMNS: dict[str, set[str]] = {
     "conn": {"src", "dst", "port", "proto", "ts", "duration"},
     "dns": {"src", "query", "ts"},
     "syslog": {"ts", "host", "program", "raw", "message"},
+    "ssl": set(_SSL_COLUMNS),
+    "x509": set(_X509_COLUMNS),
+    "weird": set(_WEIRD_COLUMNS),
 }
 
 # Canonical but nullable fields: present in _REQUIRED_COLUMNS for documentation,
@@ -55,6 +162,15 @@ _OPTIONAL_COLUMNS: dict[str, set[str]] = {
     # (uppercase enum strings, e.g. "DAEMON" / "INFO"). The digest consumes
     # severity; the detector is source-blind.
     "syslog": {"facility", "severity"},
+    # Everything past the flow identity is nullable: TLS 1.3 encrypts the
+    # certificate (so validation_status and cert_fp are routinely absent), and
+    # a handshake that never completed carries no negotiated parameters.
+    "ssl": set(_SSL_COLUMNS) - {"ts", "src", "dst", "port"},
+    "x509": set(_X509_COLUMNS) - {"ts", "fingerprint"},
+    # A weird raised outside a protocol analyzer carries no `source`, and one
+    # raised below the connection layer carries no origin host. Both absences
+    # are ordinary and the card renders each as its own category.
+    "weird": {"src", "source"},
 }
 
 
@@ -147,6 +263,65 @@ def _normalize_zeek_syslog_df(df: pd.DataFrame) -> pd.DataFrame:
         out["severity"] = df["severity"].values
 
     return out
+
+
+def _normalize_ssl_df(df: pd.DataFrame) -> pd.DataFrame:
+    """Normalize Zeek ssl.log to the canonical TLS-session schema.
+
+    Renames the flow identity plus server_name/next_protocol, derives `cert_fp`
+    from the certificate chain's leaf, and returns only the declared aperture in
+    its declared order. A column the source does not carry is ABSENT from the
+    result - never fabricated - so a consumer can tell "unset" from "not
+    recorded by this sensor".
+    """
+    rename = {k: v for k, v in _SSL_COLUMN_MAP.items() if k in df.columns}
+    out = df.rename(columns=rename) if rename else df
+
+    if "cert_chain_fps" in out.columns:
+        out = out.assign(cert_fp=[_chain_leaf(v) for v in out["cert_chain_fps"]])
+
+    return out[[c for c in _SSL_COLUMNS if c in out.columns]]
+
+
+def _normalize_x509_df(df: pd.DataFrame) -> pd.DataFrame:
+    """Normalize Zeek x509.log to the canonical certificate-fact schema.
+
+    Derives `self_signed` from subject/issuer equality and drops both identity
+    strings - they have no reader, and equality is the only fact consumers need.
+    The derivation requires BOTH values to be measured strings; anything else
+    yields NA rather than False, because False would assert "not self-signed"
+    about a certificate whose identities were never read.
+    """
+    rename = {k: v for k, v in _X509_COLUMN_MAP.items() if k in df.columns}
+    out = df.rename(columns=rename) if rename else df
+
+    if "certificate.subject" in out.columns and "certificate.issuer" in out.columns:
+        # Row-wise: Zeek deduplicates certificates, so x509 frames are small
+        # next to the session logs that reference them.
+        self_signed = [
+            (subject == issuer)
+            if isinstance(subject, str) and isinstance(issuer, str)
+            else pd.NA
+            for subject, issuer in zip(
+                out["certificate.subject"], out["certificate.issuer"], strict=False
+            )
+        ]
+        out = out.assign(self_signed=pd.array(self_signed, dtype="boolean"))
+
+    return out[[c for c in _X509_COLUMNS if c in out.columns]]
+
+
+def _normalize_weird_df(df: pd.DataFrame) -> pd.DataFrame:
+    """Normalize Zeek weird.log to the canonical card schema.
+
+    Renames the origin host and returns only the declared aperture in its
+    declared order. A column the source does not carry is ABSENT from the
+    result rather than fabricated, so a consumer can tell an unrecorded field
+    from an empty one.
+    """
+    rename = {k: v for k, v in _WEIRD_COLUMN_MAP.items() if k in df.columns}
+    out = df.rename(columns=rename) if rename else df
+    return out[[c for c in _WEIRD_COLUMNS if c in out.columns]]
 
 
 def _normalize_dns_df(df: pd.DataFrame) -> pd.DataFrame:
@@ -254,6 +429,13 @@ def sniff(sample: list[str]) -> str | None:
                 return "dns"
             if path == "syslog":
                 return "syslog"
+            if path in _COLLISION_MAPS:
+                # A record carrying both halves of a rename pair normalizes to
+                # an empty frame, so claiming it would advertise a recognized
+                # log that yields no rows. Fall to the blob floor instead.
+                if _has_rename_collision(keys, _COLLISION_MAPS[path]):
+                    return None
+                return path
             return None
 
         # Layer 2: field-set fallback for Zeek NDJSON emitted without _path

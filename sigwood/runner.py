@@ -46,6 +46,7 @@ from sigwood.common.display import (
     TEXT_RULE_DOUBLE,
     TEXT_RULE_WIDTH,
     _stream_isatty,
+    _suppression_pct,
     compact_home,
     cursor_visible,
     default_window_advisory,
@@ -1427,6 +1428,21 @@ def _run_analyze(
             exfil_note_logs["conn*.log*"] = filtered_exfil_df
     if exfil_note_logs is not None:
         notes.extend(_exfil_eligibility_notes(plan, exfil_note_logs, home_net, config))
+    ssl_note_logs: dict[str, pd.DataFrame] | None = logs
+    ssl_df = logs.get("ssl*.log*")
+    if "ssl" in plan.will_run and ssl_df is not None and not ssl_df.empty:
+        try:
+            filtered_ssl_df = allowlist.filter_df(ssl_df, "ssl")
+        except Exception:
+            # Never infer a fidelity cause from the raw frame when the
+            # detector's actual post-allowlist view is unavailable; the
+            # contained loop reports the preparation error independently.
+            ssl_note_logs = None
+        else:
+            ssl_note_logs = dict(logs)
+            ssl_note_logs["ssl*.log*"] = filtered_ssl_df
+    if ssl_note_logs is not None:
+        notes.extend(_ssl_eligibility_notes(plan, ssl_note_logs, home_net))
     beacon_floor_note = _beacon_min_connections_note(plan, config)
     if beacon_floor_note:
         notes.append(beacon_floor_note)
@@ -3688,13 +3704,14 @@ def _zero_window_coverage_notes(
         if cov.full_span is not None:
             start, end = cov.full_span
             out.append(
-                f"{label}: {cov.full_rows:,} rows loaded, 0 in the selected "
-                f"window; data spans {fmt_window((start, end))}{widen}"
+                f"{label}: {cov.full_rows:,} {plural(cov.full_rows, 'row')} "
+                f"loaded, 0 in the selected window; data spans "
+                f"{fmt_window((start, end))}{widen}"
             )
         else:
             out.append(
-                f"{label}: {cov.full_rows:,} rows loaded, 0 in the selected "
-                f"window{widen}"
+                f"{label}: {cov.full_rows:,} {plural(cov.full_rows, 'row')} "
+                f"loaded, 0 in the selected window{widen}"
             )
     return out
 
@@ -4330,6 +4347,119 @@ def _aws_no_interactive_note(
     return note
 
 
+def _ssl_facts(
+    plan: RunPlan,
+    logs: dict[str, pd.DataFrame],
+    home_net: list[str],
+) -> dict[str, Any] | None:
+    """The ssl detector's own eligibility facts, or None when unavailable.
+
+    One accessor for both notes, so the two can never describe different
+    populations. Defensive by contract: this runs pre-loop, OUTSIDE per-detector
+    containment, and the contained loop reports a real preparation failure
+    independently.
+    """
+    if "ssl" not in plan.will_run:
+        return None
+    mod = plan.detectors.get("ssl")
+    if mod is None or not hasattr(mod, "eligibility"):
+        return None
+    df = logs.get("ssl*.log*")
+    if df is None or df.empty:
+        return None
+    try:
+        return mod.eligibility(df, home_net)
+    except Exception:
+        return None
+
+
+def _ssl_visibility_line(facts: dict[str, Any]) -> str | None:
+    """Disclose how much of the outbound population presented a certificate.
+
+    The denominator is the SAME eligible-outbound population the detector
+    scores, so this percentage and a finding's ``cert_visible_share`` are one
+    measurement rather than two that can disagree on screen. Counts only - no
+    address, name, or fingerprint reaches a note.
+    """
+    eligible = int(facts.get("rows_eligible", 0))
+    if eligible < 1:
+        return None
+    visible = int(facts.get("cert_visible_rows", 0))
+    # The two honesty guards ride the shared owner: a nonzero count that rounds
+    # to zero reads "<1%", never a misleading "(0%)".
+    pct = _suppression_pct(visible, eligible)
+    share = f" ({pct})" if pct is not None else ""
+    return (
+        f"ssl: a server certificate was visible on {visible:,} of {eligible:,} "
+        f"outbound {plural(eligible, 'session')}{share} - the validation leg "
+        "covers only those"
+    )
+
+
+def _ssl_zero_findings_line(facts: dict[str, Any]) -> str | None:
+    """Name the cause when ssl loaded rows but can score none of them.
+
+    Three distinguishable causes, each a fact the detector measured. A run that
+    scores rows says nothing here - the report's own emptiness is then the
+    honest answer, and inventing an explanation for it would be worse.
+    """
+    if int(facts.get("rows_eligible", 0)) > 0:
+        return None
+
+    missing = tuple(facts.get("missing_columns", ()))
+    if missing:
+        return (
+            "ssl: no sessions analyzed - the loaded rows carry no "
+            f"{', '.join(missing)} {plural(len(missing), 'column')}"
+        )
+
+    total = int(facts.get("rows_total", 0))
+    after_local = int(facts.get("rows_after_local", 0))
+    outside_home = int(facts.get("rows_dst_outside_home", 0))
+    after_external = int(facts.get("rows_after_external", 0))
+
+    # Two mutually exclusive destination causes. An operator acts differently on
+    # each - one says the traffic never left home_net, the other says it left
+    # and went nowhere routable - so one sentence covering both is no help.
+    if outside_home > 0 and after_external == 0:
+        return (
+            f"ssl: no sessions analyzed - all {outside_home:,} "
+            f"{plural(outside_home, 'row')} leaving home_net reached a "
+            "non-routable destination"
+        )
+    if after_local > 0 and outside_home == 0:
+        return (
+            f"ssl: no sessions analyzed - all {after_local:,} outbound-candidate "
+            f"{plural(after_local, 'row')} reached a destination inside home_net"
+        )
+    return (
+        f"ssl: no sessions analyzed - none of the {total:,} loaded "
+        f"{plural(total, 'row')} is an outbound session from home_net"
+    )
+
+
+def _ssl_eligibility_notes(
+    plan: RunPlan,
+    logs: dict[str, pd.DataFrame],
+    home_net: list[str],
+) -> list[str]:
+    """Render ssl's disclosures from ONE eligibility measurement.
+
+    Both lines describe the same population by construction: the facts are
+    computed once here and handed to two pure renderers, so a second call can
+    never return a different funnel and put two numbers about one run on one
+    screen.
+    """
+    facts = _ssl_facts(plan, logs, home_net)
+    if facts is None:
+        return []
+    return [
+        line
+        for line in (_ssl_visibility_line(facts), _ssl_zero_findings_line(facts))
+        if line
+    ]
+
+
 def _exfil_eligibility_notes(
     plan: RunPlan,
     logs: dict[str, pd.DataFrame],
@@ -4798,6 +4928,7 @@ _CONN_EMPTY_COLUMNS = [
     "src", "dst", "port", "proto", "ts", "bytes", "conn_state", "local_orig",
 ]
 _SYSLOG_EMPTY_COLUMNS = ["ts", "host", "program", "raw", "message"]
+_WEIRD_EMPTY_COLUMNS = ["ts", "name", "src", "source"]
 _CLOUDTRAIL_EMPTY_COLUMNS = [
     "ts", "principal", "lane", "read_write",
     "event_source", "event_name", "identity_type",
@@ -4816,6 +4947,7 @@ _DIGEST_PATTERN_AND_EMPTY: dict[tuple[str, str], tuple[str, list[str]]] = {
     ("dns",        "pihole_dir"):     ("pihole*.log*", _DNS_PIHOLE_EMPTY_COLUMNS),
     ("syslog",    "syslog_dir"):      ("*.log*",       _SYSLOG_EMPTY_COLUMNS),
     ("syslog",    "zeek_dir"):        ("syslog*.log*", _SYSLOG_EMPTY_COLUMNS),
+    ("weird",      "zeek_dir"):       ("weird*.log*",  _WEIRD_EMPTY_COLUMNS),
     ("cloudtrail", "cloudtrail_dir"): ("*.json*",      _CLOUDTRAIL_EMPTY_COLUMNS),
 }
 
@@ -5385,7 +5517,7 @@ def _run_digest(
         raise ValueError(
             f"digest currently supports only --format=text (got {output_format!r})"
         )
-    if schema not in ("conn", "dns", "syslog", "cloudtrail", "blob"):
+    if schema not in ("conn", "dns", "syslog", "weird", "cloudtrail", "blob"):
         raise ValueError(f"digest: unsupported schema {schema!r}")
 
     # -q folds into the loader-bar gate: the fan-out already passes

@@ -772,3 +772,40 @@ def test_zeek_syslog_normalizer_strips_trailing_crlf_from_raw() -> None:
     assert df.iloc[0]["raw"].endswith("line ending in LF")
     assert df.iloc[1]["raw"].endswith("line ending in CRLF")
     assert df.iloc[2]["raw"].endswith("line ending in bare CR")
+
+
+def test_ssl_tsv_coerces_the_certificate_chain_booleans_and_time() -> None:
+    """The ssl aperture's three non-scalar shapes parse through the shipped
+    coercions: vector[string] for the chain, bool, and time."""
+    lines = [
+        "#separator \\x09\n",
+        "#set_separator\t,\n",
+        "#empty_field\t(empty)\n",
+        "#unset_field\t-\n",
+        "#path\tssl\n",
+        "#fields\tts\tid.orig_h\tid.resp_h\tid.resp_p\tresumed\testablished\tcert_chain_fps\n",
+        "#types\ttime\taddr\taddr\tport\tbool\tbool\tvector[string]\n",
+        "1787201941.100000\t192.0.2.10\t198.51.100.20\t443\tF\tT\taa11,bb22\n",
+    ]
+    df = parse_tsv_log(lines)
+    assert len(df) == 1
+    assert df.loc[0, "ts"] == 1787201941.1
+    assert bool(df.loc[0, "resumed"]) is False
+    assert bool(df.loc[0, "established"]) is True
+    assert df.loc[0, "cert_chain_fps"] == ["aa11", "bb22"]
+
+
+def test_x509_tsv_coerces_certificate_validity_times() -> None:
+    lines = [
+        "#separator \\x09\n",
+        "#set_separator\t,\n",
+        "#empty_field\t(empty)\n",
+        "#unset_field\t-\n",
+        "#path\tx509\n",
+        "#fields\tts\tfingerprint\tcertificate.not_valid_before\tcertificate.not_valid_after\n",
+        "#types\ttime\tstring\ttime\ttime\n",
+        "1787201900.000000\taa11\t1780000000.000000\t1790000000.000000\n",
+    ]
+    df = parse_tsv_log(lines)
+    assert df.loc[0, "certificate.not_valid_before"] == 1780000000.0
+    assert df.loc[0, "certificate.not_valid_after"] == 1790000000.0

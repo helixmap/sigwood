@@ -122,6 +122,20 @@ _VARIANTS: dict[str, Finding] = {
              "title": "host-sentinel-txn-9", "program": "kernsentinel"},
         ],
     }),
+    "ssl_two_leg": _f("ssl", Severity.MEDIUM, "x", {
+        "src": "192.0.2.243", "dst": "198.51.100.253",
+        "severity_basis": ["sni_absent", "validation"], "conn_count": 4127,
+        "leg_a_count": 17, "leg_b_count": 4110,
+        "validation_status": "self signed certificate",
+        "tls_versions": {"TLSv12": 4127}, "port_mix": "9973 (4127)",
+        "first_seen": "2026-08-01T00:00:00+00:00",
+        "last_seen": "2026-08-01T04:17:00+00:00", "span_seconds": 15_420.0}),
+    "ssl_one_leg": _f("ssl", Severity.LOW, "x", {
+        "src": "192.0.2.244", "dst": "198.51.100.254",
+        "severity_basis": ["sni_absent"], "conn_count": 61,
+        "leg_a_count": 61, "leg_b_count": 0,
+        "tls_versions": {"TLSv13": 61}, "port_mix": "9974 (61)",
+        "first_seen": "2026-08-01T00:00:00+00:00"}),
     "exfil": _f("exfil", Severity.MEDIUM, "x", {
         "src": "192.0.2.241", "dst": "198.51.100.251",
         "orig_bytes_total": 1_700_000_000.0, "resp_bytes_total": 100_000.0,

@@ -13,6 +13,15 @@ build/
 exports/
 scratch/
 *.log
+# Two synthetic Zeek fixtures, named path by path. They must keep the .log suffix
+# the loader's glob matches, so the rule above would otherwise hide them. Named
+# individually rather than by a tests/fixtures wildcard BECAUSE the privacy scan
+# reads domains only and never IP literals: a wildcard would silently admit a
+# future .log fixture carrying real addresses with nothing to catch it. A new
+# fixture is a new line here, and a reviewed one.
+!tests/fixtures/ssl/ssl.log
+!tests/fixtures/ssl/x509.log
+!tests/fixtures/weird/weird.log
 *.parquet
 *.zip
 *.gz

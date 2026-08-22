@@ -696,6 +696,8 @@ class TextHandler(OutputHandler):
             return self._render_auth_group(live)
         if detector == "dnsblock":
             return self._render_dnsblock_group(live)
+        if detector == "ssl":
+            return self._render_ssl_group(live)
         # Generic fallback - flat detector, one Section with label=None.
         out: list[str] = []
         for s in live:
@@ -1036,6 +1038,55 @@ class TextHandler(OutputHandler):
                 out.append(line + "\n" + "\n".join(tail))
             else:
                 out.append(line)
+        return out
+
+    def _render_ssl_group(self, sections: list[Section]) -> list[str]:
+        """Render ssl findings with aligned flow and evidence columns.
+
+        Widths come from the whole group before any row is emitted, and the two
+        optional columns are dropped for the WHOLE group when no finding
+        carries them - a column present for one row and blank for the next
+        invites a reader to compare rows on a fact one of them never had.
+        """
+        indent = "     "
+        out: list[str] = []
+        findings = [f for section in sections for f in section.findings]
+
+        rows = []
+        for f in findings:
+            keyed, bare = _cells(f)
+            rows.append((
+                str(f.severity), bare[0], bare[2], keyed.get("basis", ""),
+                keyed.get("conns", ""), keyed.get("status", ""),
+                keyed.get("tls", ""), keyed.get("first", ""), f,
+            ))
+
+        src_w = max(len(r[1]) for r in rows)
+        dst_w = max(len(r[2]) for r in rows)
+        basis_w = max(len(r[3]) for r in rows)
+        conns_w = max(len(r[4]) for r in rows)
+        status_w = max(len(r[5]) for r in rows)
+        tls_w = max(len(r[6]) for r in rows)
+        first_w = max(len(r[7]) for r in rows)
+        show_status = status_w > 0
+        show_tls = tls_w > 0
+        show_first = first_w > 0
+
+        for tag, src, dst, basis, conns, status, tls, first, f in rows:
+            parts = [
+                f"{tag}  {src:<{src_w}}  →  {dst:<{dst_w}}",
+                f"{basis:<{basis_w}}",
+                f"{conns:>{conns_w}}",
+            ]
+            if show_status:
+                parts.append(f"{status:<{status_w}}")
+            if show_tls:
+                parts.append(f"{tls:<{tls_w}}")
+            if show_first:
+                parts.append(f"{first:<{first_w}}")
+            line = "  ".join(parts).rstrip()
+            tail = _level_tail(f, indent, self._verbose_level)
+            out.append(line + "\n" + "\n".join(tail) if tail else line)
         return out
 
     def _render_aws_group(self, sections: list[Section]) -> list[str]:

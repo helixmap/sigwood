@@ -178,7 +178,20 @@ Read the prepared diff:
 git status --short && git diff
 ```
 
-then commit exactly those files and push `main`:
+then commit **everything section 1 landed** and push `main`. That is usually the three
+version-bearing files, but step 5 of that section lands any other file the release needs - a
+test the release state required, new documentation - so the commit is defined by the diff you
+just read, never by a fixed list. A fixed list silently drops the rest: the commit looks
+right, and the omission surfaces as a red matrix minutes later, or not at all when no test
+covers the missing file.
+
+`git add -u` stages every tracked file section 1 modified or deleted. A genuinely new file is
+untracked, so `git add` it by path as well - and when you forget, the clean-tree test below
+catches it.
+
+The push is gated on that test rather than following it. The commit itself is still local at
+that point, so a leftover file is fixed with `git add <path> && git commit --amend` while
+nothing public has happened:
 
 ```bash
 VERSION=$(
@@ -193,9 +206,16 @@ print(versions[0])
 PY
 )
 
-git add CHANGELOG.md README.md sigwood/__init__.py
-git commit -m "sigwood $VERSION final"
-git push origin main
+git add -u
+# plus any new file section 1 added:  git add <path>
+
+if git commit -m "sigwood $VERSION final" &&
+  test -z "$(git status --short)"; then
+  git push origin main
+else
+  printf 'release state is not fully committed - nothing pushed\n' >&2
+  false
+fi
 
 ### §2a
 ```

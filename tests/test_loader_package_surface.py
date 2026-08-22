@@ -40,6 +40,7 @@ _SURFACE = [
     "_log_type", "_schema_warning", "_zeek_file_read_warning",
     "_cloudtrail_parse_warning", "_zeek_file_parse_warning",
     "_zeek_bad_lines_warning", "_zeek_no_records_warning",
+    "_zeek_rename_collision_warning",
     # sniff
     "sniff_format", "sniff_format_detailed", "SniffResult", "_is_ndjson",
     "_looks_binary", "_looks_like_syslog", "_SNIFF_MAX_PEEK", "_SNIFF_ORIGIN",

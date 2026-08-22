@@ -20,10 +20,10 @@ Breaking any of the above means 2.0.
 
 ## Verbs
 
-Fifteen, all of which stay recognized:
+Sixteen, all of which stay recognized:
 
-`hunt` · `auth` · `beacon` · `dns` · `dnsblock` · `syslog` · `scan` · `exfil` · `aws` ·
-`digest` · `graph` · `export` · `init` · `allowlist` · `era`
+`hunt` · `auth` · `beacon` · `dns` · `dnsblock` · `syslog` · `scan` · `exfil` · `ssl` ·
+`aws` · `digest` · `graph` · `export` · `init` · `allowlist` · `era`
 
 `era` measures a complete dated Zeek archive. It accepts `[DIR]` as an archive-root
 override (otherwise `[sigwood].zeek_dir`), and only `--help`, `--config`, `--out`,
@@ -110,8 +110,8 @@ home_net=())` builds a context with **suppression off**. Your allowlist is not
 applied, so results can be noisier than the same detector run through the CLI — the
 name says so on purpose.
 
-The eight callable detectors are `auth`, `aws`, `beacon`, `dns`, `dnsblock`, `exfil`,
-`scan`, `syslog`; each exposes `run(context) -> list[Finding]`.
+The nine callable detectors are `auth`, `aws`, `beacon`, `dns`, `dnsblock`, `exfil`,
+`scan`, `ssl`, `syslog`; each exposes `run(context) -> list[Finding]`.
 
 A `Finding` has eight public attributes: `detector`, `severity`, `title`,
 `description`, `evidence`, `next_steps`, `ts_generated`, `data_window`.
@@ -276,8 +276,9 @@ listed here do not disappear.
   `pihole_dir`, `cloudtrail_dir`, `home_net`, `export_dir`, `report_dir`,
   `output_format`, `warn_above`, `default_window`, `quiet`, `use_utc`,
   `max_findings_per_detector`
-- **`[detectors.<name>]`** for each of the eight detectors. The documented tuning keys
-  stay recognized; their default values may change.
+- **`[detectors.<name>]`** for each of the nine detectors. The documented tuning keys
+  stay recognized; their default values may change. Seven of the nine expose keys;
+  `auth` and `dnsblock` expose none, and a section for either is read and ignored.
   - `aws` — `min_events`, `min_scorable_principals`, `burst_gap_seconds`,
     `burst_window_edge_margin_seconds`, `burst_min_firsts`, `burst_high_error_rate`,
     `burst_high_service_count`, `composite_medium_threshold`,
@@ -289,8 +290,10 @@ listed here do not disappear.
     `scan_max_members_per_cluster`, `promote_below_gate`, `promote_min_subdomains`,
     `promote_min_nxdomain_fraction`, and the nested
     **`[detectors.dns.pihole]`** (`min_cluster_size`, `min_samples`)
+  - `auth` — no public tuning keys
   - `dnsblock` — no public tuning keys
   - `exfil` — `min_outbound_bytes`, `min_orig_share`
+  - `ssl` — `min_connections`
   - `scan` — `window_secs`, `horizontal_threshold`, `vertical_threshold`,
     `block_host_threshold`, `block_port_threshold`, `block_state_min`,
     `slow_min_ports`, `slow_min_buckets`, `slow_state_min`
@@ -342,6 +345,7 @@ which to read:
 | beacon | `first_seen` | also `last_seen`, `span_seconds`, `cycles` |
 | dns groups and singletons | `first_seen` | also `last_seen`, `span_seconds` |
 | exfil | `first_seen` | also `last_seen`, `span_seconds` |
+| ssl | `first_seen` | also `last_seen`, `span_seconds` |
 | syslog families, bursts, single rare lines, transactions | `first_seen` | |
 | syslog reboots | `reboot_ts` | the reboot instant — a different meaning, kept deliberately |
 | aws bursts | `start_time` | ISO-8601 with offset |

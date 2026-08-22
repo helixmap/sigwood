@@ -1127,12 +1127,17 @@ def test_load_logs_timeframe_filter_applies_across_encodings(tmp_path: Path) -> 
 
 
 def test_load_logs_tsv_vector_addr_and_set_enum(tmp_path: Path) -> None:
-    """vector[addr] and set[enum] fields survive the load path as Python lists."""
+    """vector[addr] and set[enum] fields survive the load path as Python lists.
+
+    The carrier is a log type with NO canonical aperture, deliberately: a type
+    that has one is narrowed to it at normalization, which would drop the very
+    columns this coercion test is checking.
+    """
     zeek_dir = tmp_path / "zeek"
     zeek_dir.mkdir()
 
     _write_tsv(
-        zeek_dir / "weird.log",
+        zeek_dir / "notice.log",
         "#separator \\x09\n"
         "#set_separator ,\n"
         "#empty_field (empty)\n"
@@ -1142,7 +1147,7 @@ def test_load_logs_tsv_vector_addr_and_set_enum(tmp_path: Path) -> None:
         "1000.0\t192.0.2.1,192.0.2.2\tWeird::ACTIVITY,Weird::NOTICE\n",
     )
 
-    df = load_logs(zeek_dir, "weird*.log*")
+    df = load_logs(zeek_dir, "notice*.log*")
 
     assert len(df) == 1
     addrs = df.iloc[0]["addrs"]

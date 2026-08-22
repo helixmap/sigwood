@@ -429,9 +429,12 @@ def test_zeek_sniff_path_gate_trusted_over_field_set() -> None:
     """When _path is present, it is the only signal consulted - the field set
     (even a valid conn or dns set) does not get a second say. This is the
     contract that prevents notice/syslog/analyzer false claims."""
-    # _path says "weird"; field set looks like conn. _path wins → None.
+    # _path says "notice"; field set looks like conn. _path wins → None.
+    # The exemplar must be a path sigwood does NOT claim - notice.log carries
+    # the connection 5-tuple as context and is exactly the false-claim this
+    # contract prevents.
     line = (
-        '{"_path": "weird", "ts": 1779750000.0, "id.orig_h": "192.0.2.10",'
+        '{"_path": "notice", "ts": 1779750000.0, "id.orig_h": "192.0.2.10",'
         ' "id.resp_h": "198.51.100.20", "id.resp_p": 443, "proto": "tcp"}\n'
     )
     assert zeek.sniff([line]) is None
@@ -571,3 +574,95 @@ def test_cross_format_negative_matrix(origin_name, target_mod) -> None:
             f"{target_mod.__name__}.sniff falsely claimed {result!r} for "
             f"a {origin_name} sample"
         )
+
+
+# ── ssl / x509 recognizers ────────────────────────────────────────────────────
+
+ZEEK_NDJSON_SSL_SAMPLE: list[str] = [
+    '{"_path":"ssl","ts":1787201941.1,"id.orig_h":"192.0.2.10",'
+    '"id.orig_p":51234,"id.resp_h":"198.51.100.20","id.resp_p":443,'
+    '"version":"TLSv12","cipher":"TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256",'
+    '"server_name":"service.example.com","established":true,"resumed":false,'
+    '"validation_status":"ok","cert_chain_fps":["aa11"]}\n',
+]
+
+ZEEK_NDJSON_X509_SAMPLE: list[str] = [
+    '{"_path":"x509","ts":1787201900.0,"fingerprint":"aa11",'
+    '"certificate.subject":"CN=service.example.com",'
+    '"certificate.issuer":"CN=Example Issuing CA",'
+    '"certificate.not_valid_before":1780000000.0,'
+    '"certificate.not_valid_after":1790000000.0}\n',
+]
+
+ZEEK_TSV_SSL_SAMPLE: list[str] = [
+    "#separator \\x09\n",
+    "#set_separator\t,\n",
+    "#empty_field\t(empty)\n",
+    "#unset_field\t-\n",
+    "#path\tssl\n",
+    "#fields\tts\tid.orig_h\tid.resp_h\tid.resp_p\tversion\tcert_chain_fps\n",
+    "#types\ttime\taddr\taddr\tport\tstring\tvector[string]\n",
+]
+
+ZEEK_TSV_X509_SAMPLE: list[str] = [
+    "#separator \\x09\n",
+    "#set_separator\t,\n",
+    "#empty_field\t(empty)\n",
+    "#unset_field\t-\n",
+    "#path\tx509\n",
+    "#fields\tts\tfingerprint\tcertificate.subject\tcertificate.issuer\n",
+    "#types\ttime\tstring\tstring\tstring\n",
+]
+
+
+def test_zeek_sniff_ssl_with_path_directive() -> None:
+    assert zeek.sniff(ZEEK_NDJSON_SSL_SAMPLE) == "ssl"
+
+
+def test_zeek_sniff_x509_with_path_directive() -> None:
+    assert zeek.sniff(ZEEK_NDJSON_X509_SAMPLE) == "x509"
+
+
+def test_zeek_tsv_sniff_ssl() -> None:
+    assert zeek_tsv.sniff(ZEEK_TSV_SSL_SAMPLE) == "ssl"
+
+
+def test_zeek_tsv_sniff_x509() -> None:
+    assert zeek_tsv.sniff(ZEEK_TSV_X509_SAMPLE) == "x509"
+
+
+def test_zeek_sniff_ssl_path_with_rename_collision_is_not_claimed() -> None:
+    """A record carrying both halves of a rename pair would normalize to an
+    empty frame; claiming it would advertise a recognized log that yields no
+    rows, so it falls to the blob floor instead."""
+    line = (
+        '{"_path":"ssl","ts":1787201941.1,"id.orig_h":"192.0.2.10",'
+        '"src":"192.0.2.10","id.resp_h":"198.51.100.20","id.resp_p":443}\n'
+    )
+    assert zeek.sniff([line]) is None
+
+
+def test_zeek_sniff_x509_path_with_rename_collision_is_not_claimed() -> None:
+    line = (
+        '{"_path":"x509","ts":1787201900.0,"fingerprint":"aa11",'
+        '"certificate.key_length":2048,"key_length":2048}\n'
+    )
+    assert zeek.sniff([line]) is None
+
+
+def test_zeek_sniff_ssl_fields_without_path_directive_are_not_claimed() -> None:
+    """The field-set fallback is NOT widened to ssl: a directive-less record
+    carrying TLS fields falls through the fixed dns → syslog → conn order."""
+    line = (
+        '{"ts":1787201941.1,"id.orig_h":"192.0.2.10","id.resp_h":"198.51.100.20",'
+        '"id.resp_p":443,"version":"TLSv12","server_name":"service.example.com",'
+        '"validation_status":"ok"}\n'
+    )
+    assert zeek.sniff([line]) is None
+
+
+def test_zeek_sniff_directiveless_fallback_order_is_unchanged() -> None:
+    """Pin the fallback order the ssl claim must not disturb: dns wins over
+    conn on a query-bearing record, syslog wins over conn on its triple."""
+    assert zeek.sniff(ZEEK_NDJSON_DNS_SAMPLE) == "dns"
+    assert zeek.sniff(ZEEK_NDJSON_CONN_SAMPLE) == "conn"

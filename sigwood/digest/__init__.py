@@ -27,7 +27,7 @@ def get_summarizer(schema: str) -> Callable[..., dict]:
     """Return the summarize() function for a given digest schema.
 
     The dispatcher returns the bare callable; per-schema signatures may
-    differ. Today: ``conn`` and ``cloudtrail`` take ``(frame)``;
+    differ. Today: ``conn``, ``weird``, and ``cloudtrail`` take ``(frame)``;
     ``dns`` takes ``(frame, feed)`` where feed is ``"zeek"`` or
     ``"pihole"``; ``syslog`` takes ``(frame, feed)`` where feed is
     ``"zeek"`` or ``"syslog"`` (flat rsyslog). Callers (currently only

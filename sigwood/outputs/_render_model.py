@@ -237,6 +237,15 @@ def _partition_dnsblock(findings: list[Finding]) -> list[Section]:
     return out
 
 
+def _partition_ssl(findings: list[Finding]) -> list[Section]:
+    """One named section: ssl asks one question, so its findings are one kind."""
+    return (
+        [Section("outbound tls setup", list(findings), len(findings))]
+        if findings
+        else []
+    )
+
+
 def _partition_flat(findings: list[Finding]) -> list[Section]:
     """Flat detector - one section with no label."""
     return [Section(None, findings, len(findings))]
@@ -248,6 +257,7 @@ _PARTITIONERS = {
     "syslog": _partition_syslog,
     "auth": _partition_auth,
     "dnsblock": _partition_dnsblock,
+    "ssl": _partition_ssl,
 }
 
 # Per-detector severity-sort opt-out. Severity sort is the
@@ -634,6 +644,35 @@ def _project_exfil(f: Finding) -> list[Cell]:
     ]
 
 
+def _project_ssl(f: Finding) -> list[Cell]:
+    """The ssl row: the flow, why it surfaced, and the facts behind that.
+
+    ``status`` and ``tls`` VANISH rather than render a placeholder when the
+    session negotiated nothing or presented no certificate - an absent
+    negotiation is not an empty one, and a dash would invite the reader to
+    compare rows on a fact one of them never had.
+    """
+    ev = f.evidence
+    basis = ev.get("severity_basis") or []
+    basis_col = "+".join(str(b) for b in basis)
+    status = ev.get("validation_status")
+    versions = ev.get("tls_versions") or {}
+    version_col = ""
+    if isinstance(versions, dict) and versions:
+        version_col = max(versions.items(), key=lambda i: (i[1], str(i[0])))[0]
+    first = ev.get("first_seen")
+    return [
+        Cell(None, str(ev.get("src", ""))),
+        Cell(None, "→"),
+        Cell(None, str(ev.get("dst", ""))),
+        Cell("basis", basis_col),
+        Cell("conns", f"conns={int(ev.get('conn_count', 0)):,}", align="right"),
+        Cell("status", "" if status is None else str(status), optional=True),
+        Cell("tls", str(version_col), optional=True),
+        Cell("first", "" if first is None else str(first), optional=True),
+    ]
+
+
 def _project_aws(f: Finding) -> list[Cell]:
     ev = f.evidence
     tier = ev.get("tier")
@@ -824,6 +863,7 @@ _PROJECTORS = {
     "aws": _project_aws,
     "auth": _project_auth,
     "dnsblock": _project_dnsblock,
+    "ssl": _project_ssl,
 }
 
 

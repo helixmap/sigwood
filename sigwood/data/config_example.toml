@@ -163,6 +163,10 @@ allowlist_dir    = "allowlist.d/"
 # min_outbound_bytes = 1073741824  # provisional 1 GiB measured outbound floor
 # min_orig_share     = 0.6         # measured originator-byte share (0, 1]
 
+# ssl - outbound TLS setup anomalies; opt-in, so run it by name or with detect = "all".
+# [detectors.ssl]
+# min_connections = 1  # flagged sessions a (src, dst) pair needs to surface
+
 # dns - DNS clustering (HDBSCAN over per-query behavior).
 # [detectors.dns]
 # min_cluster_size               = 2000

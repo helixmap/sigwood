@@ -34,6 +34,7 @@ from sigwood.common.loader.diagnostics import (
     _zeek_file_parse_warning,
     _zeek_file_read_warning,
     _zeek_message_value_warning,
+    _zeek_rename_collision_warning,
     _zeek_no_records_warning,
 )
 from sigwood.common.loader.discovery import (
@@ -106,9 +107,15 @@ from sigwood.parsers.cloudtrail import parse_event as _parse_cloudtrail_event
 from sigwood.parsers.dnsmasq import parse_line as _parse_dnsmasq_line
 from sigwood.parsers.syslog import parse_line as _parse_syslog_line
 from sigwood.parsers.zeek import (
+    _COLLISION_MAPS,
+    _has_rename_collision,
     _normalize_conn_df,
     _normalize_dns_df,
+    _normalize_ssl_df,
+    _normalize_weird_df,
+    _normalize_x509_df,
     _normalize_zeek_syslog_df,
+    empty_canonical_frame,
 )
 from sigwood.parsers.zeek_tsv import parse_tsv_log as _parse_tsv_log
 
@@ -427,6 +434,9 @@ _NORMALIZER_MAP: dict[str, Callable[[pd.DataFrame], pd.DataFrame]] = {
     "conn":   _normalize_conn_df,
     "dns":    _normalize_dns_df,
     "syslog": _normalize_zeek_syslog_df,
+    "ssl":    _normalize_ssl_df,
+    "x509":   _normalize_x509_df,
+    "weird":  _normalize_weird_df,
 }
 
 
@@ -469,6 +479,15 @@ def _zeek_normalize(
     log_type = _log_type(pattern)
     if log_type in _NORMALIZER_MAP:
         before = len(df)
+        collision_map = _COLLISION_MAPS.get(log_type)
+        if collision_map is not None and _has_rename_collision(df.columns, collision_map):
+            # normalize runs post-concat, OUTSIDE run_load's per-file parse
+            # containment, so raising here would abort the whole run - every
+            # sibling detector included - on one malformed file. Empty the
+            # frame and disclose instead.
+            if warnings is not None:
+                warnings.append(_zeek_rename_collision_warning(pattern, before))
+            return empty_canonical_frame(log_type)
         normalized = _NORMALIZER_MAP[log_type](df)
         dropped = before - len(normalized)
         if log_type == "syslog" and dropped > 0 and warnings is not None:

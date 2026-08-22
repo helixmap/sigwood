@@ -314,6 +314,109 @@ a line states. It does not decide which record types own a gate, does not collap
 duplicate records of one attempt, and does not read command vocabulary - a sudo
 record contributes its decision, never the command it ran.
 
+### Canonical TLS-session schema (Zeek ssl.log)
+
+Source: `parsers/zeek.py` (`_normalize_ssl_df`), `parsers/zeek_tsv.py`.
+Consumer: the `ssl` detector. Every column has a named reader; a Zeek field
+with no reader is dropped at normalization rather than carried, and a future
+consumer promotes what it needs through the normalizer instead of reading Zeek
+names downstream.
+
+```
+ts                - unix epoch timestamp (float)          - flow identity, event time
+src               - originating IP (str)                  - flow identity, direction
+dst               - responding IP (str)                   - flow identity, direction
+port              - responder port (int, nullable)        - flow identity, evidence
+version           - negotiated TLS version (str, nullable)      - tuple evidence
+cipher            - negotiated cipher suite (str, nullable)     - tuple evidence
+curve             - negotiated key-exchange curve (str, nullable) - tuple evidence
+alpn              - negotiated next protocol (str, nullable)    - tuple evidence
+sni               - server name indication (str, nullable)      - the sni_absent leg
+resumed           - session resumption (bool, nullable)         - the sni_absent leg
+established       - handshake completed (bool, nullable)        - the sni_absent leg
+validation_status - chain validation outcome (str, nullable)    - the validation leg
+cert_fp           - server certificate fingerprint (str, nullable) - the x509 join
+```
+
+`ts/src/dst/port` are the required flow identity; everything after them is
+nullable. That is a fidelity fact, not a defect: TLS 1.3 encrypts the
+certificate message, so `validation_status` and `cert_fp` are routinely absent,
+and a handshake that never completed carries no negotiated parameters.
+
+`cert_fp` is DERIVED from Zeek's `cert_chain_fps` vector - the leaf (first
+element) is the server certificate. An empty chain, a non-sequence, or a
+non-string leaf yields null; an absent chain column yields no `cert_fp` column
+at all.
+
+Dropped at normalization, having no reader: `uid`, `id.orig_p`, `ssl_history`,
+`sni_matches_cert`, `chain_len`, `last_alert`, `client_cert_chain_fps`, and the
+`cert_chain_fps` vector itself once its leaf is taken.
+
+ssl.log carries no `local_orig`; direction is decided by the consumer against
+`home_net`.
+
+### Canonical certificate-fact schema (Zeek x509.log)
+
+Source: `parsers/zeek.py` (`_normalize_x509_df`), `parsers/zeek_tsv.py`.
+Consumer: the `ssl` detector's evidence join, keyed `ssl.cert_fp` →
+`x509.fingerprint`.
+
+```
+ts               - unix epoch timestamp (float)             - representative-row order
+fingerprint      - certificate fingerprint (str)            - the join key
+not_valid_before - validity start (float epoch, nullable)   - validity/age evidence
+not_valid_after  - validity end (float epoch, nullable)     - validity evidence
+self_signed      - subject equals issuer (bool, nullable)   - evidence
+key_alg          - public key algorithm (str, nullable)     - evidence
+key_length       - public key length (int, nullable)        - evidence
+```
+
+`self_signed` is DERIVED from subject/issuer equality, and both identity
+strings are then dropped: they have no reader, and their equality is the only
+fact a consumer needs. The derivation requires BOTH values to be measured
+strings - anything else yields null rather than `false`, because `false` would
+assert "not self-signed" about a certificate whose identities were never read.
+
+Dropped at normalization, having no reader: `certificate.subject`,
+`certificate.issuer`, `certificate.sig_alg`, `certificate.serial`,
+`certificate.version`, `certificate.exponent`, `certificate.curve`, the `san.*`
+family, `basic_constraints.*`, `host_cert`, and `client_cert`.
+
+### Rename-collision containment (ssl / x509)
+
+A source carrying BOTH a Zeek field and the canonical name it renames to (for
+example `id.orig_h` alongside a native `src`) cannot be renamed without
+producing a duplicate column. The normalizer does not raise - normalization runs
+after the per-file concatenation, outside the loader's per-file parse
+containment, so raising would abort the whole run on one malformed file.
+Instead the frame is emptied to its declared columns and one warning names the
+pattern and the row count. The NDJSON recognizer declines to claim such a
+record for the same reason.
+
+### Canonical weird schema (Zeek weird.log)
+
+Source: `parsers/zeek.py` (`_normalize_weird_df`), `parsers/zeek_tsv.py`.
+Consumer: the `weird` digest card. As with the TLS schemas, every column has a
+named reader and a Zeek field with no reader is dropped at normalization.
+
+```
+ts     - unix epoch timestamp (float)        - the histogram and the card window
+name   - the weird name (str)                - name-volume cliff, name-mix
+src    - originating host (str, nullable)    - host-volume cliff
+source - the analyzer raising it (str, nullable) - analyzer-mix
+```
+
+Renames `id.orig_h` to `src`. `ts` and `name` are the required identity; `src`
+and `source` are nullable, and both absences are ORDINARY rather than
+defective: a weird raised below the connection layer names no host, and one
+raised outside a protocol analyzer names no analyzer. The card renders a
+missing analyzer as `(no analyzer)` in the analyzer mix and discloses missing
+origin hosts as an ambient row count rather than inventing a host category.
+
+Dropped at normalization, having no reader: `uid`, `id.orig_p`, `id.resp_h`,
+`id.resp_p`, `peer`, `addl`, and `notice` - the last because Zeek sets it per
+policy and a slot reading a value that never varies would be a constant cell.
+
 ### Canonical CloudTrail event schema (v1)
 
 Source: `parsers/cloudtrail.py` (shipped). Consumers: `aws` detector (shipped),

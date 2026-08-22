@@ -840,7 +840,8 @@ def test_runner_flat_zeek_per_pattern_trim_emits_span_note(
     assert s.record_counts.get("conn*.log*", 0) == 1
     note = _has_coverage_note(s.notes, starts_with="Zeek dns",
                               forbidden_token="zeek_dns")
-    assert "rows loaded" in note
+    # One row loaded takes the singular: the note's count and its noun agree.
+    assert "1 row loaded" in note
     assert "data spans" in note
     assert "widen with --since/--days" in note
 

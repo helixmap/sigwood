@@ -45,6 +45,8 @@ def _log_type(pattern: str) -> str | None:
         return "dns"
     if pattern.startswith("ssl"):
         return "ssl"
+    if pattern.startswith("x509"):
+        return "x509"
     if pattern.startswith("weird"):
         return "weird"
     if pattern.startswith("notice"):
@@ -89,6 +91,21 @@ def _schema_warning(pattern: str, df: pd.DataFrame) -> str | None:
             f"syslog.log fields not found: {', '.join(missing)} - "
             "is this a Zeek syslog.log?"
         )
+    if log_type == "ssl":
+        return (
+            f"ssl.log fields not found: {', '.join(missing)} - "
+            "is this a Zeek ssl.log?"
+        )
+    if log_type == "x509":
+        return (
+            f"x509.log fields not found: {', '.join(missing)} - "
+            "is this a Zeek x509.log?"
+        )
+    if log_type == "weird":
+        return (
+            f"weird.log fields not found: {', '.join(missing)} - "
+            "is this a Zeek weird.log?"
+        )
     return None
 
 
@@ -99,6 +116,21 @@ def _zeek_message_value_warning(pattern: str, count: int) -> str:
     return (
         f"{label}: skipped {count} {plural(count, 'row')} "
         "with a missing or non-text message"
+    )
+
+
+def _zeek_rename_collision_warning(pattern: str, count: int) -> str:
+    """Return the pattern-level warning for a source/canonical name collision.
+
+    The source carries both a Zeek field and the canonical name it renames to,
+    so the rename cannot proceed without producing a duplicate column. The
+    frame is emptied rather than renamed; this states what was lost.
+    """
+    log_type = _log_type(pattern)
+    label = f"{log_type}.log" if log_type is not None else pattern
+    return (
+        f"{label}: skipped {count} {plural(count, 'row')} - a source column "
+        f"collides with a canonical name; is this a Zeek {label}?"
     )
 
 

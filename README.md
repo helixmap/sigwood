@@ -20,7 +20,7 @@ box, over logs at rest, and your logs never have to leave your machine.
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](#license)
 ![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)
 
-> **Status: early / pre-1.0 (`0.4.0`).** The eight detectors work and are covered by tests,
+> **Status: early / pre-1.0 (`0.4.0`).** The nine detectors work and are covered by tests,
 > but things may change before 1.0. Feedback is welcome.
 
 <p align="center">
@@ -138,6 +138,7 @@ full run against that corpus, and the same findings as an HTML report:
 | `auth`    | failure concentration, volume, spread & landings    | heuristics                   | systemd journal, flat syslog, **or** Zeek `syslog.log` |
 | `scan`    | vertical / horizontal / block / slow port scans     | pattern (heuristic)          | Zeek `conn.log`                |
 | `exfil`   | bulk outbound byte transfer                        | heuristics                   | Zeek `conn.log`                |
+| `ssl`     | outbound TLS setup unlike your estate's norm         | heuristics                   | Zeek `ssl.log` (+ `x509.log`)  |
 | `aws`     | per-principal anomalous CloudTrail behavior         | statistical (z-score composite) | CloudTrail `*.json*` (incl. `.gz`) |
 
 `dns` and `syslog` each answer **one** question across several source families - Zeek and
@@ -172,7 +173,7 @@ sigwood digest conn.log dns.log             # several files → several cards
 ```
 
 `digest` content-sniffs each file, routes it to the right summarizer (conn, dns, syslog,
-cloudtrail), and falls back to a fast byte-profiler - **blob** - for anything it doesn't
+weird, cloudtrail), and falls back to a fast byte-profiler - **blob** - for anything it doesn't
 recognize. A card is flush-left and factual: the file's time window, line count and size, a
 scale-anchored histogram, and a handful of plain-language insights ("one client accounts for
 71% of queries") - facts and superlatives, never verdicts. It reads *before* the allowlist,

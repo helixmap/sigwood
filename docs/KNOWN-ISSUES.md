@@ -20,6 +20,23 @@ writable and run the isolated command as that user rather than with `sudo`.
 
 ## Detectors
 
+**`ssl` certificate legs see only sessions that presented a certificate.** TLS 1.3
+encrypts the certificate message, so Zeek records no certificate for those sessions and
+the validation leg cannot evaluate them. On the estate the detector was calibrated
+against - 7,390,218 sessions over 130 days - 5,510,543 negotiated TLS 1.3 (74.6% of all
+sessions; 77.0% of the sessions that recorded a version) and **not one of them carried a
+visible certificate**. Of the 4,243,218 outbound sessions in that archive, 26.9%
+presented a certificate, so the validation leg saw about a quarter of them. Your own
+share is measured and disclosed in every run's summary rather than assumed. The no-server-name leg is unaffected: it reads only
+facts the handshake exposes in the clear.
+
+**`ssl` is calibrated against one estate.** Both legs and the fold below them were
+measured on a single archive. That is why the detector is opt-in rather than part of the
+default hunt, and why a different estate's numbers are a new measurement rather than a
+reason to retune. A benign recurring pair - a backup target, an appliance with a
+self-signed certificate - surfaces on every run until you allowlist it; there is no
+learned normal, because sigwood keeps no state between runs.
+
 **Cross-feed syslog arbitration keeps the local rows - two narrow edges remain.** The
 syslog detector reads up to two feeds in one run: local system logs (files or the
 journal) and Zeek's own `syslog.log`. A host present in the local feed keeps its

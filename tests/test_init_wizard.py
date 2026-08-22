@@ -2995,7 +2995,13 @@ def test_init_detect_reset_ignores_old_custom_value_and_runs_fresh_step(
     assert "aws (needs CloudTrail)" in out
     text = (home / "config.toml").read_text(encoding="utf-8")
     assert 'detect = "default"' in text
-    assert 'detect = "all"' not in text
+    # The claim is that no ACTIVE assignment selects every detector. A bare
+    # substring test also matches the value quoted inside an explanatory
+    # comment, which says nothing about what the wizard set.
+    active = [
+        line for line in text.splitlines() if not line.lstrip().startswith("#")
+    ]
+    assert not any('detect = "all"' in line for line in active)
 
 
 def test_init_detect_default_hunt_slots_mirror_available_detectors() -> None:

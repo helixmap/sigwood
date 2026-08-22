@@ -25,7 +25,7 @@ import pytest
 
 from sigwood.common import allowlist as al
 from sigwood.common import config as cfg
-from sigwood.detectors import aws, beacon, dns, exfil, scan, syslog
+from sigwood.detectors import aws, beacon, dns, exfil, scan, ssl, syslog
 
 
 pytestmark = pytest.mark.real_defaults
@@ -147,6 +147,7 @@ _DETECTOR_DEFAULTS = {
     "dns": dns.DEFAULT_CONFIG,
     "syslog": syslog.DEFAULT_CONFIG,
     "aws": aws.DEFAULT_CONFIG,
+    "ssl": ssl.DEFAULT_CONFIG,
 }
 
 

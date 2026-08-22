@@ -1117,6 +1117,7 @@ _DIGEST_CANDIDATES: dict[str, tuple[str, ...]] = {
     "conn":       ("zeek_dir",),
     "dns":        ("zeek_dir", "pihole_dir"),
     "syslog":     ("syslog_dir", "zeek_dir"),
+    "weird":      ("zeek_dir",),
     "cloudtrail": ("cloudtrail_dir",),
 }
 
@@ -1126,6 +1127,7 @@ _DIGEST_FEED: dict[tuple[str, str], str | None] = {
     ("dns",        "pihole_dir"):     "pihole",
     ("syslog",    "syslog_dir"):      "syslog",
     ("syslog",    "zeek_dir"):        "zeek",
+    ("weird",      "zeek_dir"):       None,
     ("cloudtrail", "cloudtrail_dir"): None,
 }
 

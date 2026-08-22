@@ -198,6 +198,15 @@ def curated_evidence(finding: Finding) -> dict[str, Any]:
             "connection_count", "span_seconds", "max_duration_seconds",
             "port_mix", "first_seen", "last_seen",
         )
+    elif det == "ssl":
+        # severity_basis is ALWAYS carried: it is never empty on an ssl finding
+        # (a finding exists because a leg fired), and it is what a machine
+        # consumer keys on instead of sniffing severity.
+        keys = (
+            "severity_basis", "conn_count", "validation_status", "tuple",
+            "port_mix", "first_seen",
+        )
+        always_keys = ("severity_basis",)
     elif det == "aws":
         tier = ev.get("tier")
         if tier == "burst":

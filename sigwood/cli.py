@@ -195,6 +195,8 @@ _VERBS: dict[str, VerbSpec] = {
                          "[PATH]", _SINGLE_DET_ALLOWED),
     "exfil": VerbSpec("exfil", "bulk outbound-transfer detection (conn.log)",
                          "[PATH]", _SINGLE_DET_ALLOWED),
+    "ssl":      VerbSpec("ssl",      "outbound TLS setup anomalies (ssl.log)",
+                         "[PATH]", _SINGLE_DET_ALLOWED),
     "aws":      VerbSpec("aws",      "CloudTrail behavioral surfacing (per-principal)",
                          "[PATH]", _SINGLE_DET_ALLOWED),
     "digest":   VerbSpec("digest",   "orient-before-the-hunt card (schema sniffed)",
@@ -213,7 +215,8 @@ _VERBS: dict[str, VerbSpec] = {
 
 
 _SINGLE_DETECTOR_COMMANDS: frozenset[str] = frozenset({
-    "auth", "beacon", "dns", "dnsblock", "syslog", "scan", "exfil", "aws",
+    "auth", "beacon", "dns", "dnsblock", "syslog", "scan", "exfil", "ssl",
+    "aws",
 })
 
 # User-initiated stop (Ctrl-C during compute). Named so the future error-voice
@@ -421,6 +424,7 @@ def _global_usage_text(no_config: bool = False) -> str:
         "  sigwood syslog [options] PATH    syslog anomaly detection",
         "  sigwood scan [options] PATH      port scan detection (conn.log)",
         "  sigwood exfil [options] PATH     bulk outbound-transfer detection (conn.log)",
+        "  sigwood ssl [options] PATH       outbound TLS setup anomalies (ssl.log)",
         "  sigwood aws [options] PATH       CloudTrail behavioral surfacing (per-principal)",
         "",
         "  sigwood digest [options] PATH    orient-before-the-hunt card; schema is",
@@ -1312,12 +1316,22 @@ def _route_sniffed_path(
             parsed_for_path["zeek_dir"] = path_str
         else:
             parsed_for_path["syslog_dir"] = path_str
+    elif schema == "weird":
+        parsed_for_path["zeek_dir"] = path_str
     elif schema == "cloudtrail":
         parsed_for_path["cloudtrail_dir"] = path_str
-    else:  # schema == "blob"
+    else:
+        # The byte-profile floor, reached by an unrecognized source AND by any
+        # recognized log type digest has no card for. Recognizing a log type is
+        # not a promise of a card, and refusing the file would be worse than
+        # profiling it. The RETURNED schema is the one digest actually uses;
+        # the caller compares it against the recognizer's own answer to tell
+        # the two doors apart, so no roster of cardless schemas is kept and
+        # none can go stale.
         # blob_path is INTERNAL - synthesized post-sniff. It is NOT a flag
         # and must NEVER appear in _FLAGS / _VERBS / help.
         parsed_for_path["blob_path"] = path_str
+        schema = "blob"
     return parsed_for_path, schema
 
 
@@ -1647,6 +1661,15 @@ def _run_digest(args: list[str]) -> int:
                 parsed_for_path, schema = _route_sniffed_path(
                     parsed, path, result,
                 )
+                if result.schema != "blob" and schema == "blob":
+                    # The recognizer named a schema and the router still sent
+                    # it to the byte profile: say so, or the card silently
+                    # calls a recognized log unrecognized.
+                    print(
+                        f"no digest card for {strip_control(str(result.schema))} yet - "
+                        f"profiling {strip_control(path.name)} instead",
+                        file=sys.stderr,
+                    )
                 kwargs = _digest_runner_kwargs(
                     parsed_for_path, config, schema=schema,
                     resolve_output=False, use_utc=use_utc,

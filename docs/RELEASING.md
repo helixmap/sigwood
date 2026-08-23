@@ -88,7 +88,7 @@ Anything pushed to the public repository may be cached permanently. Confirm that
 or secret-bearing path is tracked:
 
 ```bash
-if git ls-files | grep -iE 'private/|scratch|memory/|secret|token|\.env'; then
+if git ls-files | grep -iE 'private/|scratch|memory/|secret|token|(\.env$|\.env\.)'; then
   printf 'review the tracked paths above before continuing\n' >&2
   false
 else
@@ -403,7 +403,7 @@ if TAG_SHA=$(git rev-list -n 1 "$TAG") && [[ -n "$TAG_SHA" ]]; then
   done
 
   if [[ "$RUN_ID" =~ ^[0-9]+$ ]]; then
-    gh run view "$RUN_ID" --repo "$REPO" --web
+    ### gh run view "$RUN_ID" --repo "$REPO" --web
   else
     printf 'release workflow did not appear for %s\n' "$TAG" >&2
     false

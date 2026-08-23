@@ -13,6 +13,8 @@ from pathlib import Path
 import pytest
 import pandas as pd
 
+from sigwood.parsers import syslog as syslog_mod
+
 from sigwood.common.loader import (
     _stem_hostname,
     load_required_logs,
@@ -86,6 +88,54 @@ def test_parse_timestamp_unparseable_returns_none() -> None:
 def test_parse_timestamp_iso_aware(raw: str, expected: datetime) -> None:
     """Aware ISO-8601 stamps bypass host-local year inference and return UTC."""
     assert parse_timestamp(raw) == expected
+
+
+def test_iso_utc_overflow_does_not_abort_directory_discovery(
+    tmp_path: Path,
+) -> None:
+    """A merely present hostile file cannot hide a healthy syslog sibling."""
+    (tmp_path / "a-hostile.log").write_text(
+        "9999-12-31T23:59:59-01:00 hostile sshd[1]: edge\n",
+        encoding="utf-8",
+    )
+    healthy = tmp_path / "z-messages"
+    healthy.write_text(
+        "<134>May 31 12:00:00 healthy kernel: link up\n",
+        encoding="utf-8",
+    )
+
+    frame = load_syslog(tmp_path, show_progress=False)
+
+    assert frame["host"].tolist() == ["healthy"]
+
+
+def test_feb29_rollback_keeps_current_year_through_directory_route(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Pin before Feb 22 so the rollback fires, then retain the literal leap day."""
+    class _PinnedDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            pinned = cls(2028, 1, 15, 12, 0, 0)
+            return pinned if tz is None else pinned.replace(tzinfo=tz)
+
+    monkeypatch.setattr(syslog_mod, "datetime", _PinnedDateTime)
+    (tmp_path / "a-leap.log").write_text(
+        "<134>Feb 29 12:00:00 leap-host sshd[1]: leap day\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "z-messages").write_text(
+        "<134>Jan 14 12:00:00 healthy kernel: link up\n",
+        encoding="utf-8",
+    )
+
+    frame = load_syslog(tmp_path, show_progress=False)
+
+    assert set(frame["host"]) == {"leap-host", "healthy"}
+    leap_ts = frame.loc[frame["host"] == "leap-host", "ts"].iloc[0]
+    leap_dt = datetime.fromtimestamp(float(leap_ts), tz=timezone.utc)
+    assert (leap_dt.year, leap_dt.month, leap_dt.day) == (2028, 2, 29)
 
 
 def test_iso_header_parsing() -> None:

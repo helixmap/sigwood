@@ -65,10 +65,13 @@ _MIN_SCORABLE_SAMPLES = 10
 # factors takes an efficient transform; one carrying a large prime factor
 # falls back to a Bluestein transform whose workspace is several times larger.
 # The bin count is derived from the data span, so nothing chooses it and a
-# prime one is ordinary. Measured at this ceiling: roughly 60 bytes per bin
-# (~290 MB) for a smooth bin count, and roughly 185 (~930 MB) for a prime one.
-# At the default 30-second bin size it permits about 4.75 years.
-_MAX_SCORABLE_BINS = 5_000_000
+# prime one is ordinary. Measured: roughly 60 bytes per bin for a smooth bin
+# count and roughly 185 for a prime one, so this ceiling holds dense working
+# memory near 60 MB and 190 MB respectively. At the default 30-second bin size
+# it permits about 347 days - far past any hunt window, and the multi-year
+# spans it now declines are the runaway shape this guard exists to refuse
+# rather than a capability it exists to support.
+_MAX_SCORABLE_BINS = 1_000_000
 
 # Beacon-required scoring columns, in the stable order used by runner disclosure.
 # Several are canonically optional/nullable Zeek fields; absence is a fidelity

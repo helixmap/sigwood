@@ -196,7 +196,7 @@ def _load_demo_generator():
     return mod
 
 
-_SPEC_MAX_SCORABLE_BINS = 5_000_000
+_SPEC_MAX_SCORABLE_BINS = 1_000_000
 
 
 class _DenseAllocationReached(Exception):

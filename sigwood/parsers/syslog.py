@@ -212,11 +212,10 @@ def parse_timestamp(raw: str) -> datetime | None:
         token = stripped.split(maxsplit=1)[0]
         try:
             iso_dt = datetime.fromisoformat(token)
-        except ValueError:
-            pass
-        else:
             if iso_dt.tzinfo is not None:
                 return iso_dt.astimezone(timezone.utc)
+        except (ValueError, OverflowError):
+            pass
 
     m = SYSLOG_TS_RE.match(stripped)
     if not m:
@@ -231,7 +230,12 @@ def parse_timestamp(raw: str) -> datetime | None:
     except ValueError:
         return None
     if dt > datetime.now() + timedelta(days=7):
-        dt = dt.replace(year=dt.year - 1)
+        try:
+            dt = dt.replace(year=dt.year - 1)
+        except ValueError:
+            # The previous year cannot represent Feb 29. Keep the literal
+            # current-year date rather than dropping a real row to a heuristic.
+            pass
     return dt.astimezone(timezone.utc)
 
 

@@ -12,6 +12,7 @@ import pytest
 
 from sigwood import cli, runner
 from sigwood.common import config as cfg
+from sigwood.common.loader import sniff_format
 from sigwood.common.loader.pipeline import _zeek_normalize
 from sigwood.parsers import zeek
 from sigwood.outputs._sanitize import strip_control_keep_newlines
@@ -64,6 +65,19 @@ def _write_ndjson(path: Path, records: list[dict[str, object]]) -> None:
         "\n".join(json.dumps(record) for record in records) + "\n",
         encoding="utf-8",
     )
+
+
+def test_non_string_path_falls_to_blob_without_losing_healthy_sibling(
+    tmp_path: Path,
+) -> None:
+    """The shipped recognizer contains a malformed file and still reads its sibling."""
+    hostile = tmp_path / "a-hostile.log"
+    healthy = tmp_path / "z-conn.log"
+    _write_ndjson(hostile, [{"_path": ["conn"]}])
+    _write_ndjson(healthy, [_conn_record(collision=False)])
+
+    assert sniff_format(hostile) == "blob"
+    assert sniff_format(healthy) == "conn"
 
 
 @pytest.mark.parametrize(

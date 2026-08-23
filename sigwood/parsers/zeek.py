@@ -462,6 +462,8 @@ def sniff(sample: list[str]) -> str | None:
                 return "dns"
             if path == "syslog":
                 return "syslog"
+            if not isinstance(path, str):
+                return None
             if path in _COLLISION_MAPS:
                 # A record carrying both halves of a rename pair normalizes to
                 # an empty frame, so claiming it would advertise a recognized

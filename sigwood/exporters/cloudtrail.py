@@ -447,8 +447,13 @@ def fetch(
         with _translate_boto_errors():
             body = client.get_object(Bucket=bkt, Key=key)["Body"].read()
         try:
-            with gzip.GzipFile(fileobj=io.BytesIO(body)) as gz:
-                envelope = json.load(gz)
+            try:
+                with gzip.GzipFile(fileobj=io.BytesIO(body)) as gz:
+                    envelope = json.load(gz)
+            except (EOFError, ValueError, OverflowError, RecursionError):
+                raise _MalformedCloudTrailObject(
+                    "malformed gzip or JSON content"
+                ) from None
             events.extend(_validated_records(envelope))
         except (
             gzip.BadGzipFile,

@@ -403,6 +403,20 @@ def _fetch_with_malformed_object(monkeypatch, payload: object):
     return ct.fetch({}, cfg, since, until, verbose=False)
 
 
+def _fetch_with_malformed_body(monkeypatch, body: bytes):
+    client = FakeS3Client()
+    base = "AWSLogs/000000000000/CloudTrail/us-east-1/2026/06/01/"
+    good = [{"eventTime": "2026-06-01T12:00:00Z", "eventName": "Good"}]
+    client.add_object(base + "good.json.gz", _gz_envelope(good))
+    client.add_object(base + "malformed.json.gz", body)
+    monkeypatch.setattr(ct.boto3, "client", lambda _svc: client)
+
+    cfg = {"path": "s3://example-trail-bucket/AWSLogs/", "egress_warn_gb": 100}
+    since = datetime(2026, 6, 1, tzinfo=timezone.utc)
+    until = datetime(2026, 6, 2, tzinfo=timezone.utc)
+    return ct.fetch({}, cfg, since, until, verbose=False)
+
+
 def _assert_malformed_object_skipped(
     events, meta, err: str, expected_reason: str,
 ) -> None:
@@ -532,6 +546,62 @@ def test_unrelated_value_error_remains_fatal_at_object_parse_boundary(
     monkeypatch.setattr(ct, "_validated_records", _raise_unrelated_value_error)
     with pytest.raises(ValueError, match="unrelated value error sentinel"):
         _fetch_with_malformed_object(monkeypatch, {"Records": []})
+
+
+@pytest.mark.parametrize(
+    "body",
+    (
+        gzip.compress(b'{"Records": []}')[:10],
+        gzip.compress(
+            b'{"Records": [{"n": ' + b"1" * 5000 + b"}]}"
+        ),
+    ),
+    ids=("truncated-gzip-eof", "over-limit-integer"),
+)
+def test_decode_failures_skip_only_malformed_object(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    body: bytes,
+) -> None:
+    events, meta = _fetch_with_malformed_body(monkeypatch, body)
+
+    _assert_malformed_object_skipped(
+        events,
+        meta,
+        capsys.readouterr().err,
+        "malformed gzip or JSON content",
+    )
+
+
+def test_decode_recursion_failure_skips_only_malformed_object(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    real_load = ct.json.load
+
+    def _matrix_load(stream):
+        payload = stream.read()
+        if payload.startswith(b"["):
+            raise RecursionError("depth sentinel must not reach stderr")
+        return json.loads(payload)
+
+    monkeypatch.setattr(ct.json, "load", _matrix_load)
+    try:
+        events, meta = _fetch_with_malformed_body(
+            monkeypatch,
+            gzip.compress(b"[" * 2000 + b"0" + b"]" * 2000),
+        )
+    finally:
+        monkeypatch.setattr(ct.json, "load", real_load)
+
+    err = capsys.readouterr().err
+    _assert_malformed_object_skipped(
+        events,
+        meta,
+        err,
+        "malformed gzip or JSON content",
+    )
+    assert "depth sentinel" not in err
 
 
 def test_bad_object_skipped_with_warning(monkeypatch, capsys) -> None:

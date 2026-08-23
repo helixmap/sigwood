@@ -6,6 +6,29 @@ All notable changes to sigwood are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-08-23
+
+### Added
+
+- **An opt-in `ssl` detector for outbound TLS sessions.** It asks one question — does a session's
+  setup look unlike this estate's own norm — over two measured legs: a completed, non-resumed
+  handshake that sent no server name, and a certificate that did not validate. One leg is LOW, both
+  on the same source-and-destination pair is MEDIUM. It is **not** part of the default hunt: run it
+  with `sigwood ssl` or `--detect=all`, because its calibration rests on a single estate and
+  default-hunt membership asks for more than that. Because TLS 1.3 encrypts the certificate
+  exchange, the certificate facts cover only the sessions that presented one, and the finding says
+  so rather than implying whole coverage.
+
+- **A `weird` digest card** over Zeek's own protocol-anomaly log, reporting the shape of what the
+  sensor flagged without reaching a verdict — a weird name is a fact about parsing, and the same
+  name that matters on one network is ordinary noise on another. The `weird` DETECTOR remains
+  planned; this is orientation only.
+
+- **Zeek `ssl.log`, `x509.log` and `weird.log` are ingested** through bounded canonical schemas.
+  Recognition is by Zeek's own `_path`/`#path` directive rather than by guessing from field names,
+  and a log carrying both a Zeek field and its canonical rename target is contained rather than
+  loaded into a malformed frame.
+
 ### Security
 
 - **The bundled DNS allowlist no longer hides names an attacker can register.** Its cloud entries
@@ -1220,7 +1243,8 @@ agent, no account.
 - Analysis-window controls (`--since`/`--until`/`--days`/`--all`), a per-source default
   lookback window, and local-or-UTC time rendering.
 
-[Unreleased]: https://github.com/helixmap/sigwood/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/helixmap/sigwood/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/helixmap/sigwood/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/helixmap/sigwood/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/helixmap/sigwood/compare/v0.2.9...v0.3.0
 [0.2.9]: https://github.com/helixmap/sigwood/compare/v0.2.8...v0.2.9

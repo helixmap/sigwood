@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import re
 from fnmatch import fnmatch
+from pathlib import Path
 
 import pandas as pd
 
@@ -332,3 +333,90 @@ def test_load_pattern_file_lines_original_linenos(tmp_path) -> None:
     lines = al.load_pattern_file_lines(p)
     assert lines == [("first.example.com", 3), ("second.example.com", 5)]
     assert al.load_pattern_file(p) == ["first.example.com", "second.example.com"]
+
+
+def test_shipped_common_dns_allowlist_sec6_narrowing() -> None:
+    """SEC-6 keeps vendor control-plane noise while surfacing tenant names."""
+    common = (
+        Path(__file__).resolve().parents[1]
+        / "sigwood/data/allowlist/domains_common"
+    )
+    patterns = al.load_pattern_file(common)
+    matcher = al.AllowlistMatcher(domain_patterns=patterns)
+
+    expected_zero_capture_rules = [
+        r"re:(?:^|\.)_(?=[a-z0-9-]{1,15}\._(?:tcp|udp)\.)(?=[a-z0-9-]*[a-z])[a-z0-9](?:-?[a-z0-9])*\._(?:tcp|udp)\.",
+        r"re:^[a-z0-9-]+(?:\.[a-z]{2}-[a-z]+-\d+)?\.amazonaws\.com$",
+        r"re:^[a-z0-9-]+\.googleapis\.com$",
+        r"re:^(?:login|sts|graph)\.windows\.net$",
+        r"re:\.cloud\.microsoft$|\.microsoftonline\.com$|\.office365\.com$",
+        r"re:(?:^|\.)awsdns-\d+\.(?:com|net|org|co\.uk)$",
+        r"re:\.cloudns\.(?:net|com|org|eu|asia|biz|cc|club|in|info|pw|us)$",
+        r"re:\.constellix\.(?:com|net)$",
+        r"re:\.domaincontrol\.com$",
+    ]
+    for rule in expected_zero_capture_rules:
+        assert rule in patterns
+        assert re.compile(rule[3:]).groups == 0
+        assert all(compiled.pattern != rule[3:] for compiled in matcher._domain_fallback)
+
+    analyzed = [
+        # DNS-SD requires a bounded service label immediately before transport.
+        "_123._tcp.evil",
+        "_a--b._tcp.evil",
+        "_beacon.evil.example.com",
+        "beacon._tcp.evil.example",
+        "_averyverylongservicename._tcp.evil",
+        "_dmarc.example.com",
+        "_domainkey.example.com",
+        # Nameserver rules bind to vendor-controlled suffixes.
+        "x.ultradns.attacker.example",
+        "evil.awsdns-1.attacker.example",
+        "a.cloudns.attacker.example",
+        "a.constellix.attacker.example",
+        "a.digicertdns.attacker.example",
+        "a.domaincontrol.attacker.example",
+        "ns.evil.example",
+        # Customer-obtainable cloud endpoints are no longer pre-filtered.
+        "evil-bucket.s3.amazonaws.com",
+        "BUCKET_NAME.storage.googleapis.com",
+        "a1234567890.awsglobalaccelerator.com",
+        "d111111abcdef8.cloudfront.net",
+        "evilapp.azurewebsites.net",
+        "evilcdn.azureedge.net",
+        "evilprofile.azurefd.net",
+        "evilprofile.tm-azurefd.net",
+        "evil.trafficmanager.net",
+        "evil.cloudapp.azure.com",
+        "evil.blob.core.windows.net",
+        "evil.storage.googleusercontent.com",
+    ]
+    suppressed = [
+        "_ipp._tcp.local",
+        "_companion-link._tcp.local",
+        "Brother-MFC._ipp._tcp.local",
+        # RFC 6762 reserves .local for mDNS; that parent suppression is
+        # intentional even when a label is not valid DNS-SD service grammar.
+        "evil_ipp._tcp.local",
+        "_-bad._tcp.local",
+        "_bad-._tcp.local",
+        "pdns1.ultradns.net",
+        "ns-1234.awsdns-56.org",
+        "dns1.digicertdns.net",
+        "ns1.ovh.net",
+        "dns200.ovh.net",
+        "ns1-05.azure-dns.com",
+        "ns1.cloudns.net",
+        "ns1.constellix.com",
+        "ns1.domaincontrol.com",
+        "s3.us-east-1.amazonaws.com",
+        "storage.googleapis.com",
+        "login.windows.net",
+    ]
+
+    assert not [name for name in analyzed if matcher.is_domain_allowed(name)]
+    assert not [name for name in suppressed if not matcher.is_domain_allowed(name)]
+
+    frame = pd.DataFrame({"query": analyzed + suppressed})
+    filtered = matcher.filter_df(frame, "dns")
+    assert filtered["query"].tolist() == analyzed

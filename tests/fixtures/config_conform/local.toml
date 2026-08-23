@@ -1,0 +1,11 @@
+[sigwood]
+detect = "all, !aws"
+
+# Output
+output_format = "text"
+
+[allowlist]
+enabled = true
+
+[site]
+name = "fixture-lab"

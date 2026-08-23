@@ -386,9 +386,9 @@ def test_digest_notice_no_path_routes_to_blob_with_no_breadcrumb(
 #
 # Defence-in-depth for a recognised-schema summariser raising on a pathological
 # frame (e.g. duplicate `src` column → pandas Grouper failure). The narrow
-# try/except in run_digest catches Exception (NOT BaseException), is silent on
-# stderr by default and emits a one-line breadcrumb under --verbose, and
-# always falls back to a blob card for THE SAME file on THE SAME stream.
+# try/except in run_digest catches Exception (NOT BaseException), emits a fixed
+# one-line breadcrumb by default plus bounded exception detail under --verbose,
+# and always falls back to a blob card for THE SAME file on THE SAME stream.
 # Sibling fan-out iterations continue to render.
 
 
@@ -396,9 +396,9 @@ def test_digest_summariser_failure_falls_back_to_blob(
     tmp_path: Path, monkeypatch, capsys,
 ) -> None:
     """A summariser that raises on a recognised conn file produces a blob
-    card on the supplied stream. Default mode is SILENT on stderr - the
-    breadcrumb is verbose-gated so raw exception text never leaks to the
-    operator. No traceback, no abort.
+    card on the supplied stream. Default mode explains the fallback with fixed
+    tool-authored text while keeping exception text private. No traceback, no
+    abort.
 
     Coverage strategy: monkeypatch ``sigwood.digest.get_summarizer`` to
     return a callable that raises a synthetic exception. This exercises
@@ -425,8 +425,11 @@ def test_digest_summariser_failure_falls_back_to_blob(
 
     captured = capsys.readouterr()
     assert rc == 0  # blob card counted as a render
-    # Default mode: NO breadcrumb, no raw exception text on stderr.
-    assert "summariser failed" not in captured.err
+    # Default mode: fixed fallback breadcrumb, no raw exception text.
+    assert (
+        "digest: conn.log: recognized as conn; summary could not be built; "
+        "profiling bytes instead"
+    ) in captured.err
     assert "RuntimeError: induced summariser failure" not in captured.err
     # No traceback in either mode - the rail forbids raw exceptions
     # reaching the user.
@@ -460,8 +463,8 @@ def test_digest_summariser_failure_breadcrumb_shown_under_verbose(
 
     captured = capsys.readouterr()
     assert rc == 0
-    # Verbose: the existing defence-in-depth breadcrumb is visible.
-    assert "summariser failed" in captured.err
+    # Verbose: the fixed breadcrumb plus exception detail is visible.
+    assert "summary could not be built; profiling bytes instead" in captured.err
     assert "RuntimeError: induced summariser failure" in captured.err
     assert "conn.log" in captured.err
     # Still no traceback - verbose adds the breadcrumb, not a stack.

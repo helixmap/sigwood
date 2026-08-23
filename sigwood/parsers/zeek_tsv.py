@@ -47,6 +47,18 @@ def _unescape_separator(raw: str) -> str:
     return re.sub(r"\\x([0-9a-fA-F]{2})", lambda m: chr(int(m.group(1), 16)), raw)
 
 
+def _read_separator_value(line: str) -> str | None:
+    """Return a recognized #separator value, or None when it is empty.
+
+    Callers own the policy for an empty value: sniffing declines the format,
+    while committed TSV parsing raises a reader-facing header error.
+    """
+    delimiter = " " if line.startswith("#separator ") else "\t"
+    _, _, value = line.partition(delimiter)
+    value = value.strip()
+    return value or None
+
+
 SNIFF_PEEK_LINES: int = 16
 
 
@@ -76,7 +88,9 @@ def sniff(sample: list[str]) -> str | None:
             break
         saw_directive = True
         if line.startswith("#separator ") or line.startswith("#separator\t"):
-            raw_val = line.split(None, 1)[1].strip()
+            raw_val = _read_separator_value(line)
+            if raw_val is None:
+                return None
             separator = _unescape_separator(raw_val)
             continue
         if separator is None:
@@ -121,7 +135,7 @@ def _parse_header(lines: Iterator[str]) -> tuple[_TSVHeader, list[tuple[int, str
     carry them.
 
     Raises ValueError if #fields or #types is missing, their lengths differ,
-    or #separator was never declared before data rows appear.
+    or #separator is empty or was never declared before data rows appear.
     """
     hdr = _TSVHeader()
     data_lines: list[tuple[int, str]] = []
@@ -136,7 +150,9 @@ def _parse_header(lines: Iterator[str]) -> tuple[_TSVHeader, list[tuple[int, str
 
         if line.startswith("#separator ") or line.startswith("#separator\t"):
             # #separator uses plain space as its own delimiter.
-            raw_val = line.split(None, 1)[1].strip()
+            raw_val = _read_separator_value(line)
+            if raw_val is None:
+                raise ValueError("Zeek TSV header has an empty #separator value")
             hdr.separator = _unescape_separator(raw_val)
             hdr._separator_seen = True
             continue

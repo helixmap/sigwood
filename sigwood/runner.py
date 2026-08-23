@@ -5813,16 +5813,19 @@ def _run_digest(
     except Exception as exc:
         if fallback_blob_path is None:
             raise
-        # One-line stderr breadcrumb - verbose-gated so the raw exception
-        # text does not leak to default-mode users (the "actionable
-        # messages, never raw exceptions" rail). Default runs see the
-        # blob card as the whole story; --verbose retains the breadcrumb
-        # for debugging.
+        # One-line stderr breadcrumb. Default mode uses fixed tool-authored
+        # text; verbose mode appends the existing exception class/message,
+        # bounded before the normal stderr sanitizer sees it.
+        breadcrumb = (
+            f"digest: {fallback_blob_path.name}: recognized as {schema}; "
+            "summary could not be built; profiling bytes instead"
+        )
         if verbose_level >= 1:
-            _estderr(
-                f"digest: {fallback_blob_path.name}: summariser failed "
-                f"({type(exc).__name__}: {exc}); falling back to blob"
-            )
+            exc_text = str(exc)
+            if len(exc_text) > 200:
+                exc_text = f"{exc_text[:199]}…"
+            breadcrumb += f" ({type(exc).__name__}: {exc_text})"
+        _estderr(breadcrumb)
         # Separator single-owner: _render_blob_for_path owns blob-card
         # emission. We thread the flag and do NOT emit here, or the run
         # would print two rules around the same fallback card.

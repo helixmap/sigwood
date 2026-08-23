@@ -957,12 +957,11 @@ def run_load(
         result = strategy.normalize(result, pattern, warnings=_warnings)
         normalized_to_empty = result.empty
     if _coverage is not None:
-        if normalized_to_empty and _log_type(pattern) == "syslog":
-            # Parsed rows whose message values all fail canonicalization are a
-            # parse gap, not "no files read"; the runner must not suggest a
-            # wider window for content it correctly rejected.
-            # Syslog alone publishes this explicit parse-gap fact. Extending it
-            # to conn/dns changes their record-honesty contract, not behavior.
+        if normalized_to_empty and _log_type(pattern) in {"conn", "dns", "syslog"}:
+            # Parsed rows that normalization rejects are a parse gap, not "no
+            # files read"; the runner must not suggest a wider window for
+            # content it correctly rejected. This covers syslog message-value
+            # drops and conn/dns source-to-canonical rename collisions.
             _coverage["coverage"] = SourceCoverage(0, None)
         else:
             sc = tracker.coverage(result.empty)

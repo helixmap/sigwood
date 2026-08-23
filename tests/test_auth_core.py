@@ -111,6 +111,49 @@ def _canonical_decisions(
     )
 
 
+class _OutcomeReads:
+    def __init__(self) -> None:
+        self.count = 0
+
+
+class _CountedOutcomeDecision:
+    """DecisionRow proxy that makes the landing scan cost deterministic."""
+
+    def __init__(self, decision: core.DecisionRow, reads: _OutcomeReads) -> None:
+        self._decision = decision
+        self._reads = reads
+
+    @property
+    def outcome(self) -> str:
+        self._reads.count += 1
+        return self._decision.outcome
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._decision, name)
+
+
+def _landing_complexity_reads(row_count: int) -> int:
+    assert row_count % 7 == 0
+    decisions: list[core.DecisionRow] = []
+    for number in range(1, row_count + 1):
+        decisions.append(
+            _decision(
+                number,
+                producer=core.Producer.SSHD_TEXT,
+                outcome="granted" if number % 7 == 0 else "denied",
+            )
+        )
+    frozen = tuple(decisions)
+    reads = _OutcomeReads()
+    counted = tuple(_CountedOutcomeDecision(item, reads) for item in frozen)
+    core.landing(  # type: ignore[arg-type]
+        counted,
+        _canonical_decisions(frozen),
+        core.Window(0.0, float(row_count + 1)),
+    )
+    return reads.count
+
+
 def _entity(
     result: core.LensResult,
     lens: core.EntityLens,
@@ -150,6 +193,58 @@ def test_eight_paired_denials_then_grant_establish_exact_run_length() -> None:
     ]
     assert [entry["run_length"] for entry in result.landing_transitions] == [8]
     assert result.eligible_count == 17
+
+
+def test_landing_outcome_reads_grow_near_linearly_across_a_doubling() -> None:
+    smaller = _landing_complexity_reads(1_750)
+    larger = _landing_complexity_reads(3_500)
+
+    assert larger / smaller < 2.25
+
+
+def test_landing_cessation_extrema_preserve_strict_greater_semantics() -> None:
+    base = tuple(
+        _decision(number, producer=core.Producer.SSHD_TEXT)
+        for number in range(1, 7)
+    ) + (
+        _decision(
+            7,
+            producer=core.Producer.SSHD_TEXT,
+            outcome="granted",
+        ),
+    )
+    same_timestamp_only = core.landing(
+        tuple(reversed(base)),
+        tuple(reversed(_canonical_decisions(base))),
+        core.Window(0.0, 20.0),
+    )
+
+    later_host_row = core.CanonicalRow(
+        record_id=("synthetic", "host-activity.log", 1),
+        ts=8.0,
+        host="host.example.test",
+        program="cron",
+        raw="synthetic",
+        message="synthetic",
+    )
+    host_later = core.landing(
+        tuple(reversed(base)),
+        (*_canonical_decisions(base), later_host_row),
+        core.Window(0.0, 20.0),
+    )
+
+    later_denial = _decision(8, producer=core.Producer.SSHD_TEXT)
+    denial_later = core.landing(
+        tuple(reversed((*base, later_denial))),
+        tuple(reversed((*_canonical_decisions(base), later_host_row))),
+        core.Window(0.0, 20.0),
+    )
+
+    assert [item["cessation"] for item in same_timestamp_only[1]] == [False]
+    assert [item["cessation"] for item in host_later[1]] == [True]
+    assert [item["cessation"] for item in denial_later[1]] == [False]
+    assert same_timestamp_only[0] == host_later[0] == denial_later[0]
+    assert same_timestamp_only[2] == host_later[2] == denial_later[2] == 0
 
 
 def test_concentration_facts_exclude_colocated_grant_records() -> None:

@@ -1256,6 +1256,36 @@ def test_cli_fanout_recognized_empty_narrates_and_exits_zero(
     assert rc == 0
 
 
+def test_cli_fanout_empty_zeek_separator_reaches_blob_floor(
+    tmp_path, monkeypatch, capsys,
+) -> None:
+    """A malformed Zeek claim is not a digest failure.
+
+    ``sniff()`` declines the shape, the generic sniffer reaches its blob floor,
+    and the real digest fan-out renders that card at exit 0 without a traceback.
+    """
+    monkeypatch.setattr(cli.cfg, "load", lambda _path: {"sigwood": {}})
+
+    malformed = tmp_path / "empty-separator.log"
+    malformed.write_text(
+        "#separator \n"
+        "#set_separator\t,\n"
+        "#empty_field\t(empty)\n"
+        "#path\tconn\n"
+        "1700000000.0\t192.0.2.10\n",
+        encoding="utf-8",
+    )
+
+    rc = cli._main(["digest", str(malformed)])
+
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert captured.out.splitlines()[0] == malformed.name
+    assert "Unrecognized source" in captured.out
+    assert "bytes:" in captured.out
+    assert "Traceback" not in captured.err
+
+
 def test_cli_bare_config_recognized_empty_narrates_and_exits_zero(
     tmp_path, monkeypatch, capsys,
 ) -> None:

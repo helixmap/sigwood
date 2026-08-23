@@ -30,6 +30,35 @@ _DNS_COLUMN_MAP: dict[str, str] = {
     "TC":        "tc",
 }
 
+# Canonical conn/dns apertures in render order. Keep these ordered tuples
+# independently pinned as well as set-equal to their required/optional schema
+# declarations: collision containment returns these empty frames directly.
+_CONN_COLUMNS: tuple[str, ...] = (
+    "src",
+    "dst",
+    "port",
+    "proto",
+    "ts",
+    "bytes",
+    "resp_bytes",
+    "duration",
+    "conn_state",
+    "local_orig",
+)
+
+_DNS_COLUMNS: tuple[str, ...] = (
+    "ts",
+    "src",
+    "query",
+    "resolver",
+    "qtype",
+    "rtt",
+    "ttl",
+    "rcode",
+    "answer",
+    "tc",
+)
+
 # ssl.log carries no `local_orig`; direction is decided by the consumer against
 # home_net. `cert_chain_fps` is a vector whose LEAF (first element) is the
 # server certificate - it is derived into `cert_fp` and the vector is dropped.
@@ -95,15 +124,19 @@ _X509_COLUMNS: tuple[str, ...] = (
 )
 
 # Log types whose normalizer is guarded against a source/canonical rename
-# collision. conn/dns/syslog are deliberately absent: their shipped behavior
-# is unchanged, and widening the guard to them is a separate decision.
+# collision. syslog is deliberately absent: its normalizer builds a fresh
+# canonical frame and does not perform a source-to-canonical rename.
 _COLLISION_MAPS: dict[str, dict[str, str]] = {
+    "conn":  _CONN_COLUMN_MAP,
+    "dns":   _DNS_COLUMN_MAP,
     "ssl":   _SSL_COLUMN_MAP,
     "x509":  _X509_COLUMN_MAP,
     "weird": _WEIRD_COLUMN_MAP,
 }
 
 _CANONICAL_COLUMNS: dict[str, tuple[str, ...]] = {
+    "conn":  _CONN_COLUMNS,
+    "dns":   _DNS_COLUMNS,
     "ssl":   _SSL_COLUMNS,
     "x509":  _X509_COLUMNS,
     "weird": _WEIRD_COLUMNS,

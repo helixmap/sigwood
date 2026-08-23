@@ -70,6 +70,38 @@ _PART_SPLIT_BYTES = 2_000_000_000  # 2 GB
 OUTPUT_EXTENSION = ".json.log"
 
 
+class _MalformedCloudTrailObject(ValueError):
+    """Decoded S3 object is not a structurally valid CloudTrail envelope."""
+
+
+def _validated_records(envelope: Any) -> list[dict[str, Any]]:
+    """Return one object's complete record list or reject it without accumulation."""
+    if not isinstance(envelope, dict):
+        raise _MalformedCloudTrailObject(
+            "CloudTrail object root is not a JSON object"
+        )
+
+    records = envelope.get("Records", [])
+    if records is None:
+        return []
+    if not isinstance(records, list):
+        raise _MalformedCloudTrailObject(
+            "CloudTrail object Records value is not a list"
+        )
+
+    for record in records:
+        if not isinstance(record, dict):
+            raise _MalformedCloudTrailObject(
+                "CloudTrail object Records contains a non-object event"
+            )
+        event_time = record.get("eventTime")
+        if event_time and not isinstance(event_time, str):
+            raise _MalformedCloudTrailObject(
+                "CloudTrail object eventTime value is not text"
+            )
+    return records
+
+
 def is_configured(backend_cfg: dict[str, Any]) -> bool:
     """True when [export.cloudtrail].path is set - analogue of Splunk's host check."""
     return bool(backend_cfg.get("path", "").strip())
@@ -417,8 +449,14 @@ def fetch(
         try:
             with gzip.GzipFile(fileobj=io.BytesIO(body)) as gz:
                 envelope = json.load(gz)
-            events.extend(envelope.get("Records", []) or [])
-        except (gzip.BadGzipFile, json.JSONDecodeError, OSError, UnicodeDecodeError) as exc:
+            events.extend(_validated_records(envelope))
+        except (
+            gzip.BadGzipFile,
+            json.JSONDecodeError,
+            OSError,
+            UnicodeDecodeError,
+            _MalformedCloudTrailObject,
+        ) as exc:
             print(f"skipped unreadable object: {strip_control(key)} ({strip_control(exc)})", file=sys.stderr)
             continue
 

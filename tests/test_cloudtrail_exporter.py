@@ -12,6 +12,7 @@ module when the real one is absent, so the FakeS3Client patches land regardless.
 
 from __future__ import annotations
 
+import gzip
 import io
 import json
 import sys
@@ -383,6 +384,154 @@ def test_empty_result_raises(monkeypatch) -> None:
 
 
 # ── bad-object handling ──────────────────────────────────────────────────────
+
+
+def _fetch_with_malformed_object(monkeypatch, payload: object):
+    client = FakeS3Client()
+    base = "AWSLogs/000000000000/CloudTrail/us-east-1/2026/06/01/"
+    good = [{"eventTime": "2026-06-01T12:00:00Z", "eventName": "Good"}]
+    client.add_object(base + "good.json.gz", _gz_envelope(good))
+    client.add_object(
+        base + "malformed.json.gz",
+        gzip.compress(json.dumps(payload).encode("utf-8")),
+    )
+    monkeypatch.setattr(ct.boto3, "client", lambda _svc: client)
+
+    cfg = {"path": "s3://example-trail-bucket/AWSLogs/", "egress_warn_gb": 100}
+    since = datetime(2026, 6, 1, tzinfo=timezone.utc)
+    until = datetime(2026, 6, 2, tzinfo=timezone.utc)
+    return ct.fetch({}, cfg, since, until, verbose=False)
+
+
+def _assert_malformed_object_skipped(
+    events, meta, err: str, expected_reason: str,
+) -> None:
+    assert meta == {"units": 2, "unit_label": "objects"}
+    assert [event["eventName"] for event in events] == ["Good"]
+    assert "skipped unreadable object:" in err
+    assert "malformed.json.gz" in err
+    assert expected_reason in err
+
+
+def test_bare_json_list_object_skips_without_mapping_attribute_escape(
+    monkeypatch, capsys,
+) -> None:
+    events, meta = _fetch_with_malformed_object(monkeypatch, [])
+    _assert_malformed_object_skipped(
+        events,
+        meta,
+        capsys.readouterr().err,
+        "CloudTrail object root is not a JSON object",
+    )
+
+
+def test_bare_json_scalar_object_skips_without_mapping_attribute_escape(
+    monkeypatch, capsys,
+) -> None:
+    events, meta = _fetch_with_malformed_object(monkeypatch, 7)
+    _assert_malformed_object_skipped(
+        events,
+        meta,
+        capsys.readouterr().err,
+        "CloudTrail object root is not a JSON object",
+    )
+
+
+def test_mapping_records_skips_without_injecting_keys_into_event_sort(
+    monkeypatch, capsys,
+) -> None:
+    events, meta = _fetch_with_malformed_object(
+        monkeypatch,
+        {"Records": {"eventTime": "2026-06-01T11:00:00Z"}},
+    )
+    err = capsys.readouterr().err
+    _assert_malformed_object_skipped(
+        events,
+        meta,
+        err,
+        "CloudTrail object Records value is not a list",
+    )
+    assert "2026-06-01T11:00:00Z" not in err
+
+
+def test_non_string_event_time_skips_without_timestamp_attribute_escape(
+    monkeypatch, capsys,
+) -> None:
+    events, meta = _fetch_with_malformed_object(
+        monkeypatch,
+        {"Records": [{"eventTime": 7, "eventName": "Bad"}]},
+    )
+    err = capsys.readouterr().err
+    _assert_malformed_object_skipped(
+        events,
+        meta,
+        err,
+        "CloudTrail object eventTime value is not text",
+    )
+    assert "Bad" not in err
+
+
+@pytest.mark.parametrize(
+    "falsy_event_time",
+    (None, 0, False, [], {}),
+    ids=("null", "zero", "false", "empty-list", "empty-object"),
+)
+def test_falsy_non_string_event_time_drops_only_that_record_not_object_siblings(
+    monkeypatch, capsys, falsy_event_time,
+) -> None:
+    events, meta = _fetch_with_malformed_object(
+        monkeypatch,
+        {
+            "Records": [
+                {"eventTime": falsy_event_time, "eventName": "Dropped"},
+                {
+                    "eventTime": "2026-06-01T11:00:00Z",
+                    "eventName": "GoodSameObject",
+                },
+            ],
+        },
+    )
+    assert meta == {"units": 2, "unit_label": "objects"}
+    assert [event["eventName"] for event in events] == [
+        "GoodSameObject",
+        "Good",
+    ]
+    err = capsys.readouterr().err
+    assert "skipped unreadable object:" not in err
+    assert "Dropped" not in err
+
+
+def test_non_object_record_skips_whole_object_before_partial_accumulation(
+    monkeypatch, capsys,
+) -> None:
+    events, meta = _fetch_with_malformed_object(
+        monkeypatch,
+        {
+            "Records": [
+                {"eventTime": "2026-06-01T11:00:00Z", "eventName": "MustNotLeak"},
+                7,
+            ],
+        },
+    )
+    err = capsys.readouterr().err
+    _assert_malformed_object_skipped(
+        events,
+        meta,
+        err,
+        "CloudTrail object Records contains a non-object event",
+    )
+    assert "MustNotLeak" not in err
+
+
+def test_unrelated_value_error_remains_fatal_at_object_parse_boundary(
+    monkeypatch,
+) -> None:
+    def _raise_unrelated_value_error(_envelope):
+        raise ValueError("unrelated value error sentinel")
+
+    monkeypatch.setattr(ct, "_validated_records", _raise_unrelated_value_error)
+    with pytest.raises(ValueError, match="unrelated value error sentinel"):
+        _fetch_with_malformed_object(monkeypatch, {"Records": []})
 
 
 def test_bad_object_skipped_with_warning(monkeypatch, capsys) -> None:

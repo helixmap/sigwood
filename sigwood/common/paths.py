@@ -17,6 +17,7 @@ leaving every pre-existing directory untouched.
 from __future__ import annotations
 
 import errno
+import fcntl
 import itertools
 import os
 import stat
@@ -210,15 +211,23 @@ def _open_through_walked_parent(
 
 
 def _write_fd(path: str | os.PathLike[str], *, private: bool) -> int:
-    """Open one write-truncate fd, refuse a symlink leaf, and apply its mode."""
+    """Open one regular write-truncate fd without blocking and apply its mode."""
     requested_mode = 0o600 if private else 0o666
     try:
         fd = _open_through_walked_parent(
             path,
-            os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW,
+            (
+                os.O_WRONLY
+                | os.O_CREAT
+                | os.O_TRUNC
+                | os.O_NOFOLLOW
+                | os.O_NONBLOCK
+            ),
             requested_mode,
         )
     except OSError as exc:
+        if exc.errno == errno.ENXIO:
+            raise _safe_open_leaf_refusal(path) from exc
         if exc.errno != errno.ELOOP:
             raise
         try:
@@ -232,6 +241,9 @@ def _write_fd(path: str | os.PathLike[str], *, private: bool) -> int:
             "remove it or choose another target"
         ) from exc
     try:
+        _require_regular_fd(path, fd)
+        descriptor_flags = fcntl.fcntl(fd, fcntl.F_GETFL)
+        fcntl.fcntl(fd, fcntl.F_SETFL, descriptor_flags & ~os.O_NONBLOCK)
         if private:
             os.fchmod(fd, 0o600)
     except BaseException:
@@ -241,6 +253,47 @@ def _write_fd(path: str | os.PathLike[str], *, private: bool) -> int:
             pass
         raise
     return fd
+
+
+def _safe_open_leaf_refusal(path: str | os.PathLike[str]) -> ValueError:
+    return ValueError(
+        f"{path} could not be opened safely - refusing to write to it; "
+        "choose a regular file or directory"
+    )
+
+
+def _nonregular_leaf_refusal(path: str | os.PathLike[str]) -> ValueError:
+    return ValueError(
+        f"{path} is not a regular file - refusing to write to it; "
+        "choose a regular file or directory"
+    )
+
+
+def _require_regular_fd(path: str | os.PathLike[str], fd: int) -> None:
+    """Make the leaf-type decision from an opened descriptor."""
+    if not stat.S_ISREG(os.fstat(fd).st_mode):
+        raise _nonregular_leaf_refusal(path)
+
+
+def _validate_existing_regular_leaf(
+    path: Path, leaf: str, dir_fd: int | None,
+) -> None:
+    """Classify an atomic-replace destination without accessing its inode."""
+    try:
+        existing = (
+            os.lstat(leaf, dir_fd=dir_fd) if dir_fd is not None else os.lstat(leaf)
+        )
+    except OSError as exc:
+        if exc.errno == errno.ENOENT:
+            return
+        raise
+    if stat.S_ISLNK(existing.st_mode):
+        raise ValueError(
+            f"{path} is a symbolic link - refusing to write through it; "
+            "remove it or choose another target"
+        )
+    if not stat.S_ISREG(existing.st_mode):
+        raise _nonregular_leaf_refusal(path)
 
 
 def private_open(
@@ -295,20 +348,7 @@ def _atomic_replace_once(
     """One attempt at the fresh-name write and rename."""
     dir_fd, leaf = _open_parent_dirfd(target)
     try:
-        # Preserve the operator-facing refusal: a symlink destination is reported
-        # rather than silently replaced. Renaming could not follow the link in any
-        # case, so this is a message, never the safety property.
-        try:
-            existing = (
-                os.lstat(leaf, dir_fd=dir_fd) if dir_fd is not None else os.lstat(leaf)
-            )
-        except OSError:
-            existing = None
-        if existing is not None and stat.S_ISLNK(existing.st_mode):
-            raise ValueError(
-                f"{path} is a symbolic link - refusing to write through it; "
-                "remove it or choose another target"
-            )
+        _validate_existing_regular_leaf(target, leaf, dir_fd)
 
         requested_mode = 0o600 if private else 0o666
         temporary = f".{Path(leaf).name}.sigwood-{os.getpid()}-{next(_TEMP_COUNTER)}"
@@ -331,6 +371,7 @@ def _atomic_replace_once(
             _unlink_quietly(temporary, dir_fd)
             raise
         try:
+            _validate_existing_regular_leaf(target, leaf, dir_fd)
             os.rename(temporary, leaf, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
         except BaseException:
             _unlink_quietly(temporary, dir_fd)

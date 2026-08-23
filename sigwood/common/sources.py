@@ -27,11 +27,13 @@ as a parameter; the CLI does the ``importlib`` work.
 from __future__ import annotations
 
 import fnmatch
+import heapq
+import os
 import stat
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Mapping, NamedTuple, Sequence
 
 from sigwood.common.journal_probe import (
     MAX_JOURNAL_DIAGNOSTIC_CHARS,
@@ -108,6 +110,22 @@ class GraphProbeResult:
     issues: tuple[GraphProbeIssue, ...]
     multi_kinds: dict[str, tuple[str, ...]]
     mixed_votes: dict[str, dict[str, int]]
+
+
+class DirectoryVote(NamedTuple):
+    """Recognized origins in the bounded sample and whether files remain."""
+
+    votes: dict[str, int]
+    truncated: bool
+
+
+class _ReverseName(str):
+    """Reverse raw-string ordering so ``heapq`` keeps the largest name first."""
+
+    def __lt__(self, other: object) -> bool:
+        if not isinstance(other, str):
+            return NotImplemented
+        return str.__gt__(self, other)
 
 
 # Ordered public graph-kind declaration. The order is the supported-kind
@@ -210,28 +228,41 @@ def _permission_hint_origin(path: Path) -> str | None:
     return None
 
 
-def _directory_vote_tally(path: Path) -> dict[str, int]:
+def _directory_vote_tally(path: Path) -> DirectoryVote:
     """Tally source origins over a bounded directory sample.
 
-    One tally feeds both the winner pick and the mixed-sample disclosure so the
-    two can never disagree. Empty dict = nothing recognizable sampled.
+    One tally feeds the winner pick and disclosure so they cannot disagree.
+    A bounded max-heap retains the first raw-string names without materializing
+    the directory. Empty votes = nothing recognizable sampled.
     """
     try:
-        children = sorted(path.iterdir(), key=lambda p: p.name)
+        entries = os.scandir(path)
     except OSError:
-        return {}
+        return DirectoryVote({}, False)
+
+    sample: list[tuple[_ReverseName, Path]] = []
+    truncated = False
+    try:
+        with entries:
+            for entry in entries:
+                try:
+                    if not entry.is_file():
+                        continue
+                except OSError:
+                    continue
+                item = (_ReverseName(entry.name), Path(entry.path))
+                if len(sample) < _DIR_SNIFF_SAMPLE_LIMIT:
+                    heapq.heappush(sample, item)
+                    continue
+                truncated = True
+                if entry.name < str(sample[0][0]):
+                    heapq.heapreplace(sample, item)
+    except OSError:
+        # Directory iteration is all-or-empty: discard partial sample state.
+        return DirectoryVote({}, False)
 
     votes: dict[str, int] = {}
-    sampled = 0
-    for child in children:
-        try:
-            if not child.is_file():
-                continue
-        except OSError:
-            continue
-        sampled += 1
-        if sampled > _DIR_SNIFF_SAMPLE_LIMIT:
-            break
+    for _, child in sorted(sample, key=lambda item: str(item[0])):
         try:
             result = sniff_format_detailed(child)
         except PermissionError:
@@ -242,26 +273,27 @@ def _directory_vote_tally(path: Path) -> dict[str, int]:
             origin = result.origin
         if origin in _DIR_ORIGIN_PRIORITY:
             votes[origin] = votes.get(origin, 0) + 1
-    return votes
+    return DirectoryVote(votes, truncated)
 
 
 def _directory_vote_origin(
-    path: Path, *, _vote_sink: dict[str, dict[str, int]] | None = None,
+    path: Path, *, _vote_sink: dict[str, DirectoryVote] | None = None,
 ) -> str | None:
     """Return the dominant source origin from a bounded directory sample.
 
-    ``_vote_sink`` is an optional caller-owned sink (the ``discover_detectors``
-    ``_failures`` shape): when the sample holds MORE THAN ONE recognizable
-    family, the full tally is recorded under the directory's string path so the
-    caller can disclose that the losing families will not load as their own
-    kind. A single-family or empty sample records nothing.
+    ``_vote_sink`` is an optional caller-owned sink. A mixed or truncated
+    recognizable sample is recorded under the directory's string path so the
+    caller can disclose losing families and unexamined files. An empty sample,
+    including a truncated but wholly unrecognizable sample, records nothing.
     """
-    votes = _directory_vote_tally(path)
+    result = _directory_vote_tally(path)
+    votes = result.votes
     if not votes:
         return None
-    if _vote_sink is not None and len(votes) > 1:
-        _vote_sink[str(path)] = dict(
-            sorted(votes.items(), key=lambda kv: (-kv[1], kv[0]))
+    if _vote_sink is not None and (len(votes) > 1 or result.truncated):
+        _vote_sink[str(path)] = DirectoryVote(
+            dict(sorted(votes.items(), key=lambda kv: (-kv[1], kv[0]))),
+            result.truncated,
         )
     return max(
         votes,
@@ -898,7 +930,7 @@ def _probe_graph_directory(path: Path) -> tuple[dict[str, list[Path]], dict[str,
         raise
     except OSError as exc:
         raise ValueError("could not inspect graph input") from exc
-    return discover_graph_kinds(path), _directory_vote_tally(path)
+    return discover_graph_kinds(path), _directory_vote_tally(path).votes
 
 
 def _append_bucket(
@@ -1227,14 +1259,14 @@ def route_positional_source(
     path: str | Path,
     *,
     detector_module: Any | None,
-    _vote_sink: dict[str, dict[str, int]] | None = None,
+    _vote_sink: dict[str, DirectoryVote] | None = None,
 ) -> str:
     """Decide which source-dir key a positional PATH routes to.
 
     Generic - no detector-name special cases. ``_vote_sink`` (caller-owned,
-    optional) receives the per-directory family tally whenever a DIRECTORY
-    vote sampled more than one recognizable family - the caller discloses
-    that the losing families are not loaded as their own kind.
+    optional) receives the per-directory record whenever a DIRECTORY vote is
+    mixed or truncated and recognizable - the caller discloses losing families
+    and files beyond the sample.
 
     **Named-module mode** (``detector_module`` is an imported detector module):
     ``REQUIRED_LOGS`` carriers (beacon, scan, exfil, aws, …) route to

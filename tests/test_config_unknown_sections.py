@@ -19,7 +19,9 @@ EXAMPLE_PATH = Path("sigwood/data/config_example.toml")
 
 
 def _dry_run(conf: Path) -> None:
-    cli.main(["hunt", f"--config={conf}", "--dry-run"])
+    cli.main([
+        "hunt", f"--config={conf}", "--zeek-dir=/nonexistent", "--dry-run",
+    ])
 
 
 def test_known_sections_and_provenance_sidecar_are_not_unknown() -> None:
@@ -295,7 +297,9 @@ def test_real_cli_discloses_every_non_detector_scope_in_contract_order(
         encoding="utf-8",
     )
 
-    cli.main(["hunt", f"--config={conf}", "--dry-run", "-q"])
+    cli.main([
+        "hunt", f"--config={conf}", "--zeek-dir=/nonexistent", "--dry-run", "-q",
+    ])
 
     assert capsys.readouterr().err.splitlines() == [
         "config: ignoring unknown section [export.splnk] (did you mean splunk?)",
@@ -325,7 +329,9 @@ def test_cli_disclosure_is_not_quiet_gated_and_keeps_success_exit(
         encoding="utf-8",
     )
 
-    cli.main(["hunt", f"--config={conf}", "--dry-run", "-q"])
+    cli.main([
+        "hunt", f"--config={conf}", "--zeek-dir=/nonexistent", "--dry-run", "-q",
+    ])
 
     captured = capsys.readouterr()
     assert captured.err.splitlines() == [
@@ -352,6 +358,7 @@ def test_cli_precomputed_selection_carries_detector_vocabulary(
     cli.main([
         "hunt",
         f"--config={conf}",
+        "--zeek-dir=/nonexistent",
         "--syslog-source=off",
         "--dry-run",
         "-q",

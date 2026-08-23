@@ -59,9 +59,15 @@ _MIN_SCORABLE_SAMPLES = 10
 
 # Scoring holds several bin-proportional arrays at once: full-width counts and
 # normalized counts, plus half-width magnitudes, frequencies, periods, masks,
-# and masked magnitudes, with additional NumPy transients. That is on the order
-# of 30-40 bytes per bin, so this ceiling keeps dense working memory around
-# 150-200 MB. At the default 30-second bin size it permits about 4.75 years.
+# and masked magnitudes. Those are the visible cost and they are NOT the
+# dominant one - the real-FFT call's own workspace is, and how large it gets
+# depends on how the bin count FACTORS. A bin count built only from small
+# factors takes an efficient transform; one carrying a large prime factor
+# falls back to a Bluestein transform whose workspace is several times larger.
+# The bin count is derived from the data span, so nothing chooses it and a
+# prime one is ordinary. Measured at this ceiling: roughly 60 bytes per bin
+# (~290 MB) for a smooth bin count, and roughly 185 (~930 MB) for a prime one.
+# At the default 30-second bin size it permits about 4.75 years.
 _MAX_SCORABLE_BINS = 5_000_000
 
 # Beacon-required scoring columns, in the stable order used by runner disclosure.

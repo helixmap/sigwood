@@ -2580,8 +2580,18 @@ def test_init_closed_stdin_subprocess_exit_0_no_traceback(tmp_path: Path) -> Non
     """`sigwood init < /dev/null` end-to-end: clean abort, no traceback on
     either stream, exit 0, nothing written under the isolated HOME."""
     env = dict(os.environ, HOME=str(tmp_path))
+    code = (
+        "from sigwood import cli_init as c; "
+        "c._ZEEK_CANDIDATES = (); "
+        "c._PIHOLE_CANDIDATES = (); "
+        "c._SYSLOG_CANDIDATE = '/nonexistent-syslog-dir'; "
+        "c.journal_probe.probe_journal = lambda: "
+        "c.journal_probe.JournalProbeResult("
+        "c.journal_probe.JournalProbeCode.EXECUTABLE_MISSING); "
+        "from sigwood.cli import main; main(['init'])"
+    )
     proc = subprocess.run(
-        [sys.executable, "-c", "from sigwood.cli import main; main(['init'])"],
+        [sys.executable, "-c", code],
         stdin=subprocess.DEVNULL,
         capture_output=True,
         text=True,

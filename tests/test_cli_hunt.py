@@ -432,6 +432,66 @@ def test_zeek_tsv_deep_container_exits_cleanly_with_one_warning(
     assert "Traceback" not in captured.err
 
 
+def test_empty_zeek_separator_is_contained_and_syslog_sibling_reports(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The real hunt route skips one malformed Zeek file but keeps its sibling.
+
+    The scoped config is deliberate: no source outside ``tmp_path`` can enter
+    this regression. The warning text is the four-surface reader-facing seam,
+    so it contains only tool-authored words plus the loader-owned basename.
+    """
+    monkeypatch.setattr(cfg, "SEARCH_PATHS", [])
+    monkeypatch.delenv("SIGWOOD_ROOT", raising=False)
+
+    zeek_dir = tmp_path / "zeek"
+    zeek_dir.mkdir()
+    (zeek_dir / "conn.log").write_text(
+        "#separator \n"
+        "#set_separator\t,\n"
+        "#empty_field\t(empty)\n"
+        "#path\tconn\n"
+        "1700000000.0\t192.0.2.10\n",
+        encoding="utf-8",
+    )
+
+    syslog_dir = tmp_path / "syslog"
+    syslog_dir.mkdir()
+    (syslog_dir / "host.log").write_text(
+        "<134>Aug 22 12:00:00 examplehost sshd[1]: Accepted publickey for placeholder\n"
+        "<134>Aug 22 12:01:00 examplehost sudo[2]: placeholder command\n"
+        "<134>Aug 22 12:02:00 examplehost cron[3]: placeholder job\n",
+        encoding="utf-8",
+    )
+
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        "[sigwood]\n"
+        "root = \"\"\n"
+        "detect = \"beacon,syslog\"\n"
+        "default_window = \"all\"\n"
+        "syslog_source = \"files\"\n"
+        f"zeek_dir = \"{zeek_dir}\"\n"
+        f"syslog_dir = \"{syslog_dir}\"\n",
+        encoding="utf-8",
+    )
+
+    rc = cli._main(["hunt", f"--config={config_path}"])
+
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert captured.err.splitlines().count(
+        "conn.log could not be parsed - "
+        "Zeek TSV header has an empty #separator value; skipping"
+    ) == 1
+    assert "Traceback" not in captured.err
+    assert "syslog" in captured.out
+    assert "sudo[2]: placeholder command" in captured.out
+    assert "rare events (1)" in captured.out
+
+
 def test_garbage_conn_log_json_null_window(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

@@ -906,29 +906,44 @@ def _build_positional_buckets(
     ``detector_module=None`` triggers the router's content-sniff mode
     (detect=all / unknown selector). Empty input → empty dict.
 
-    A DIRECTORY positional whose bounded sample holds more than one log family
-    is routed to the winning family only - the losing families' files are not
-    loaded as their own kind, so that outcome is disclosed on stderr per
-    directory (a status line, not an error; the run proceeds).
+    A DIRECTORY positional whose bounded sample is mixed or truncated is
+    routed to the winning family only. Losing families and unexamined files are
+    disclosed on stderr per directory (status lines, not errors; the run
+    proceeds).
     """
-    from sigwood.common.sources import route_positional_source
+    from sigwood.common.sources import (
+        _DIR_SNIFF_SAMPLE_LIMIT,
+        DirectoryVote,
+        route_positional_source,
+    )
 
     buckets: dict[str, list[str]] = {}
-    mixed_votes: dict[str, dict[str, int]] = {}
+    mixed_votes: dict[str, DirectoryVote] = {}
     for p in paths:
         routed = route_positional_source(
             p, detector_module=detector_module, _vote_sink=mixed_votes,
         )
         buckets.setdefault(routed, []).append(p)
-        if p_tally := mixed_votes.pop(str(Path(p).expanduser()), None):
-            tally = ", ".join(f"{origin} {n}" for origin, n in p_tally.items())
-            family = routed.removesuffix("_dir")
-            print(
-                f"{strip_control(str(p))}: mixed log types sampled ({tally}) - "
-                f"hunting it as {family}; pass the other files directly to "
-                f"include them",
-                file=sys.stderr,
+        if vote := mixed_votes.pop(str(Path(p).expanduser()), None):
+            tally = ", ".join(
+                f"{origin} {n}" for origin, n in vote.votes.items()
             )
+            family = routed.removesuffix("_dir")
+            if len(vote.votes) > 1:
+                print(
+                    f"{strip_control(str(p))}: mixed log types sampled "
+                    f"({tally}) - hunting it as {family}; pass the other files "
+                    f"directly to include them",
+                    file=sys.stderr,
+                )
+            if vote.truncated:
+                print(
+                    f"{strip_control(str(p))}: routing sampled the first "
+                    f"{_DIR_SNIFF_SAMPLE_LIMIT} files ({tally}) - hunting it "
+                    f"as {family}; files beyond the sample were not examined, "
+                    f"so pass other log types directly to include them",
+                    file=sys.stderr,
+                )
     return buckets
 
 

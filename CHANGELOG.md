@@ -6,6 +6,112 @@ All notable changes to sigwood are recorded here. The format follows
 
 ## [Unreleased]
 
+### Security
+
+- **The bundled DNS allowlist no longer hides names an attacker can register.** Its cloud entries
+  matched whole namespaces — `*.amazonaws.com`, `*.cloudfront.net`, `*.azurewebsites.net`,
+  `*.googleusercontent.com` and others — and anyone can create a name inside those. Because
+  allowlisting happens before detection, a DNS query to an attacker's own S3 bucket, CloudFront
+  distribution or Azure web app was removed from the data before any detector saw it. Those entries
+  now cover only the vendors' own control-plane endpoints, so customer-nameable addresses reach the
+  detectors. A `nameservers` entry that matched any name beginning `ns` followed by digits — which
+  covered `ns1.<any-domain>` — is likewise replaced with per-vendor entries, and the mDNS
+  service-discovery entry, previously any name starting with an underscore, now requires the actual
+  `_service._tcp.` structure. **Expect more DNS findings than before**, particularly for cloud
+  storage, CDN and app-hosting names: that traffic was always there and was being filtered out.
+  Some LEGITIMATE vendor control-plane traffic surfaces too — `management.azure.com` is no longer
+  suppressed, because the entry covering it also covered every customer-nameable address under
+  `azure.com`; allowlist it locally if it is noise on your network.
+  The scoping rule behind the change is written at the top of the list file — an entry may cover
+  names a vendor operates, never a namespace in which anyone can register one.
+
+### Changed
+
+- **`auth` no longer slows down disproportionately as an account's history grows.** The landing
+  analysis re-read an identity's whole decision history once for every established
+  failure-then-success transition it found, so work grew with the square of that history: the
+  measured cost roughly quadrupled each time the input doubled. It now reads the two facts it
+  actually needs — the latest denial per identity and the latest activity per host — and grows in
+  step with the input instead. This matters most on exactly the data `auth` exists to read, since a
+  brute-force campaign is repeated failure-then-success cycles against one identity. **Findings are
+  unchanged**: the same runs produce byte-identical results, which was the gate this change had to
+  pass before speed counted for anything.
+
+### Fixed
+
+- **A directory whose first 32 files are all one log family no longer hides the rest in
+  silence.** When you pass a directory to `sigwood hunt` (or to `dns`/`syslog`), sigwood
+  samples up to 32 files and hunts the whole directory as whichever family wins that vote.
+  It said so when the sample itself held more than one family, but a directory whose first
+  32 files were all Zeek — with syslog files further down — routed as Zeek and reported
+  nothing, so logs of the other family were quietly never hunted as their own kind. sigwood
+  now also says when the vote was taken on a sample rather than the whole directory:
+  `<dir>: routing sampled the first 32 files (zeek 32) - hunting it as zeek; files beyond
+  the sample were not examined, so pass other log types directly to include them`. A
+  directory that is both mixed and truncated reports both facts. The existing mixed-sample
+  message is unchanged, and which 32 files are sampled is unchanged — the first 32 by name,
+  the same on every run and every host. Reading the directory no longer loads the whole
+  listing into memory first, which matters on a directory holding very many files.
+
+- **A Zeek TSV file whose `#separator` line carries no value no longer stops sigwood.**
+  Such a header previously raised an unhandled error: `sigwood digest` failed instead of
+  profiling the file, and on a hunt it ended the whole run — including every other log
+  source in that run — before any findings were reported. `digest` now describes the file
+  as an unrecognized source and exits normally, and a hunt skips just that file with
+  `<name> could not be parsed - Zeek TSV header has an empty #separator value; skipping`
+  and carries on with the remaining sources. Zeek headers that declare a separator
+  normally are read exactly as before.
+
+- **One malformed CloudTrail object no longer ends an export and discards every other
+  object in the window.** An object whose JSON was not a CloudTrail envelope — a bare
+  list or number at the root, a `Records` value that was not a list, an entry inside
+  `Records` that was not an event, or an event carrying an `eventTime` that was not text
+  but still held a value, such as a number — previously raised an unhandled error partway
+  through the export, so a single small object cost every valid object already fetched.
+  `sigwood export` now skips just that object with the existing
+  `skipped unreadable object: <key>` warning naming its reason, and continues with the
+  rest of the window. The object still counts toward the export's object total, so a
+  skipped object stays visible rather than quietly reducing the count. Events with no
+  usable `eventTime` — absent, empty, or a value such as `null` or `0` — are dropped
+  individually exactly as they always have been, and their sibling events in the same
+  object are exported unchanged.
+
+- **An `--out` target that is not an ordinary file is now refused, instead of hanging,
+  silently destroying it, or failing with an unreadable error.** Pointing a report at a
+  named pipe used to hang the run indefinitely with no error, no timeout and no
+  diagnostic on `text`, `json` and `csv`; on `html` and `pdf` it did something worse,
+  replacing the pipe with a regular file and reporting success. A device such as
+  `/dev/null` failed with a bare `[Errno 1] Operation not permitted` that named no path
+  and suggested nothing, and a symbolic link under `html` or `pdf` ended the run with a
+  raw Python traceback. Every one of these now stops with a message naming the target
+  and what to do, and the target is left exactly as it was. Where sigwood could examine
+  the destination it says `<path> is not a regular file - refusing to write to it; choose
+  a regular file or directory`; where the destination could not be opened at all — a named
+  pipe with nothing reading it — it says `<path> could not be opened safely - …` instead,
+  because in that case sigwood has not established what the target is. Writing to an ordinary
+  file, creating a new one, and writing into a directory are unchanged, including a
+  destination the tool cannot itself read, which stays replaceable as before.
+
+- **A Zeek `conn.log` or `dns.log` that carries both a Zeek field and its canonical name no
+  longer loses rows silently.** Such a file — a `notice`-style export, or a log rewritten to
+  add a `src` column beside Zeek's own `id.orig_h` — used to be renamed into duplicate
+  columns, after which every row was quietly dropped from analysis while the run summary
+  still reported them as loaded, and four Python `FutureWarning`s appeared in the output. On
+  a hunt, sigwood now skips that file with a single message — `conn.log: skipped 1 row - a
+  source column collides with a canonical name; is this a Zeek conn.log?` — and carries on
+  with the other sources. `sigwood digest` reports the collision and then states that the
+  recognized log had no parseable records. Ordinary Zeek logs are read exactly as before,
+  which was confirmed by re-running the full detector suite over a frozen seven-source
+  archive and comparing every finding against the previous result.
+
+- **`sigwood digest` now explains when a recognized log falls back to a byte profile because
+  its summary could not be built.** That fallback was previously silent at the default level
+  and explained only under `--verbose`, so the output looked like an ordinary profile of an
+  unrecognized file. The explanation is now always shown, while the underlying error detail
+  remains reserved for `--verbose`. A related fix stops sigwood suggesting you widen the
+  time window when a file was read but produced no usable rows — widening cannot help there,
+  and the advice sent people looking in the wrong place.
+
 ## [0.4.0] - 2026-08-21
 
 ### Added

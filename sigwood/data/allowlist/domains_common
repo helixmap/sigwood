@@ -5,11 +5,28 @@
 # WHAT THIS COVERS
 #   Curated suppression patterns for DNS names that are known-harmless internet
 #   *infrastructure* - the high-volume "phone-home" plumbing that shows up in
-#   virtually every network and drowns out real signal: big-three cloud + CDN
-#   edges (AWS, Azure/Microsoft 365, Google, Apple, Cloudflare, Akamai, Fastly),
-#   reverse-DNS and other .arpa infrastructure, mDNS/link-local, NTP, public
-#   nameserver infrastructure, certificate-validation (OCSP/CRL) endpoints, OS /
-#   Linux-distro update channels, and a handful of ubiquitous SaaS endpoints.
+#   virtually every network and drowns out real signal: cloud CONTROL-PLANE
+#   endpoints (AWS, Azure/Microsoft 365, Google, Apple, Cloudflare, Akamai,
+#   Fastly), reverse-DNS and other .arpa infrastructure, mDNS/link-local, NTP,
+#   public nameserver infrastructure, certificate-validation (OCSP/CRL)
+#   endpoints, OS / Linux-distro update channels, and a handful of ubiquitous
+#   SaaS endpoints.
+#
+#   THE SCOPING RULE THAT KEEPS THIS SAFE: an entry may cover names the VENDOR
+#   operates, never a namespace in which anyone can register a name. A whole-
+#   namespace suffix like *.amazonaws.com reads as "cloud infrastructure" and
+#   is not: it also covers <anyone>.s3.amazonaws.com, so an attacker's own
+#   bucket - or CloudFront distribution, or Azure web app - would be removed
+#   from the data before any detector saw it. Customer-nameable namespaces
+#   (object storage, CDN distributions, app-hosting, tenant endpoints) are
+#   therefore NOT suppressed here, even though they are noisy.
+#
+#   ENTRIES ARE A UNION - a name is suppressed if ANY entry matches it. So
+#   narrowing one entry achieves nothing while a broader sibling still matches
+#   the same names: removing cloudapp.azure.com from a cloud entry does not
+#   surface it if another entry still ends \.azure\.com$. Before assuming a
+#   narrowing took effect, check every OTHER entry that could match the same
+#   name - and confirm it against the matcher rather than by reading.
 #
 #   These were curated conservatively against a multi-million-query real-world
 #   survey: included only where the name is unambiguous infrastructure that no
@@ -59,7 +76,7 @@ re:\.arpa$                                                                  # ar
 
 # --- mDNS / link-local ----------------------------------------------------
 re:\.local$                                                                 # mdns_local
-re:^_                                                                       # mdns_service
+re:(?:^|\.)_(?=[a-z0-9-]{1,15}\._(?:tcp|udp)\.)(?=[a-z0-9-]*[a-z])[a-z0-9](?:-?[a-z0-9])*\._(?:tcp|udp)\.  # mdns_service
 
 # --- UUID labels (ships OFF - commented deliberately) ---------------------
 # A generic UUID-label rule is DISABLED by default. Unlike the apex /
@@ -84,18 +101,19 @@ re:\.apple\.com$|\.icloud\.com$|\.aaplimg\.com$|\.apple-dns\.net$         # appl
 re:\.cdn-apple\.com$|\.mzstatic\.com$|\.icloud-content\.com$|\.apple-cloudkit\.com$|\.me\.com$  # apple_infra
 
 # --- Amazon Web Services --------------------------------------------------
-re:\.amazonaws\.com$|\.awsglobalaccelerator\.com$|\.cloudfront\.net$      # aws
+re:^[a-z0-9-]+(?:\.[a-z]{2}-[a-z]+-\d+)?\.amazonaws\.com$                 # aws_control_plane
 
 # --- Google ---------------------------------------------------------------
-re:\.googlevideo\.com$|\.googleapis\.com$|\.gstatic\.com$|\.googleusercontent\.com$|\.googledomains\.com$|\.google\.com$  # google
+re:\.googlevideo\.com$|\.gstatic\.com$|\.googledomains\.com$|\.google\.com$  # google
+re:^[a-z0-9-]+\.googleapis\.com$                                           # googleapis_control_plane
 re:\.gvt1\.com$|\.gvt2\.com$|\.ytimg\.com$|\.ggpht\.com$|\.1e100\.net$    # google_infra
 
 # --- Microsoft / Azure / Microsoft 365 ------------------------------------
-re:\.azurefd\.net$|\.azureedge\.net$|\.cloudapp\.azure\.com$|\.azurewebsites\.net$|\.trafficmanager\.net$|\.windows\.net$  # azure
+re:^(?:login|sts|graph)\.windows\.net$                                     # windows_control_plane
 re:\.azure-dns\.com$                                                       # azure_dns
 re:\.microsoft\.com$|\.office\.com$|\.live\.com$|\.skype\.com$|\.msidentity\.com$  # microsoft
 re:\.windowsupdate\.com$                                                   # windows_update
-re:\.cloud\.microsoft$|\.microsoftonline\.com$|\.office365\.com$|\.tm-azurefd\.net$|\.azure\.com$  # ms365_azure
+re:\.cloud\.microsoft$|\.microsoftonline\.com$|\.office365\.com$               # ms365
 re:\.vscode-cdn\.net$                                                       # vscode_cdn
 re:\.msftconnecttest\.com$|\.msftncsi\.com$                               # win_connectivity
 re:\.t-msedge\.net$|\.fb-t-msedge\.net$                                   # msedge
@@ -135,14 +153,15 @@ re:\.atlassian\.com$|\.atlassian-dev\.net$|\.atl-paas\.net$               # atla
 re:pod-\d+-\d+-\d+\.backblaze\.com$|pod-\d{3}-\d{4}-\d{2}\.backblaze\.com$|ca\d+\.backblaze\.com$  # backblaze
 
 # --- Public nameserver infrastructure -------------------------------------
-re:(^|\.)awsdns-\d+\.\w+(\.\w+)?$                                         # awsdns
-re:ns-\d+\.awsdns                                                           # aws_ns
+re:(?:^|\.)awsdns-\d+\.(?:com|net|org|co\.uk)$                            # awsdns
 re:(^|\.)awswaf\.com$                                                       # awswaf
 re:ns\d+\.ovh\.net$|dns\d+\.ovh\.net$                                     # ovh_ns
 re:\.ultradns\.(net|com|org|info|co\.uk)$                                  # ultradns
 re:\.nsone\.net$                                                            # nsone
 re:ns\d+-\d+\.azure-dns\.(com|net|org|info)$                              # azure_ns
-re:^ns\d*[-\.]|\.awsdns-|\.ultradns\.|\.cloudns\.|\.constellix\.|\.digicertdns\.|\.domaincontrol\.  # nameservers
+re:\.cloudns\.(?:net|com|org|eu|asia|biz|cc|club|in|info|pw|us)$           # cloudns
+re:\.constellix\.(?:com|net)$                                              # constellix
+re:\.domaincontrol\.com$                                                   # domaincontrol
 re:\.root-servers\.net$|\.gtld-servers\.net$|\.nstld\.com$|\.iana-servers\.net$|\.dnsmadeeasy\.com$|\.charlestonroadregistry\.com$  # dns_root
 
 # --- Certificate authorities (OCSP / CRL validation infra) ----------------

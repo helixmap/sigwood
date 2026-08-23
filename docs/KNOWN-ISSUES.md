@@ -464,8 +464,9 @@ still could not prove which copy is more complete. A very large `journalctl` que
 `sigwood hunt` (or to `dns`/`syslog`, the two-source detectors), sigwood samples up to
 32 files, takes a majority vote on what family the directory is (Zeek, syslog, Pi-hole,
 CloudTrail), and hunts it as that family - files of a losing family in the same
-directory aren't hunted as their own kind on that run (sigwood says so at run time when
-the sample is mixed). The other single-detector verbs (`beacon`, `scan`, `exfil`,
+directory aren't hunted as their own kind on that run (sigwood says so at run time, both
+when the sample is mixed and when the vote was taken on a sample rather than the whole
+directory). The other single-detector verbs (`beacon`, `scan`, `exfil`,
 `aws`) don't sample at all: the verb itself decides the family, with no mixed-content
 notice. A parent directory whose log families live in subdirectories (`case/zeek/`,
 `case/pihole/`) isn't recursively inventoried either. Pass the files themselves, one

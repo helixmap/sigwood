@@ -510,18 +510,39 @@ def landing(
         if key is not None:
             grouped[key].append(decision)
 
-    host_times: dict[str, list[float]] = defaultdict(list)
+    # Both projections here reduce "is there a later X" to "is the greatest X
+    # later". That is equivalent only for FINITE timestamps: max over a sequence
+    # containing NaN can return NaN, and a NaN running maximum never updates
+    # again, so the predicate would read False forever instead of skipping the
+    # NaN as any() does. Non-finite stamps are dropped before a CanonicalRow
+    # exists, and window.contains rejects them here as well. The system-log lane
+    # deliberately KEEPS unparseable stamps as NaN, so those two guards are what
+    # make this reduction correct rather than incidental hygiene - relaxing
+    # either one silently flips cessation on some episodes, and a test using
+    # finite stamps cannot show it.
+    host_latest_ts: dict[str, float] = {}
     for row in canonical_rows:
         if window.contains(row.ts):
-            host_times[row.host.casefold()].append(row.ts)
-    for values in host_times.values():
-        values.sort()
+            host = row.host.casefold()
+            latest = host_latest_ts.get(host)
+            if latest is None or row.ts > latest:
+                host_latest_ts[host] = row.ts
 
     finding_keys: set[EpisodeKey] = set()
     transitions: list[dict[str, Any]] = []
     tie_count = 0
     for key in sorted(grouped):
         ordered = sorted(grouped[key], key=lambda decision: decision.ts)
+        # Finite-timestamp precondition as above: max is the equivalence
+        # only while no decision carries NaN.
+        last_key_denial_ts = max(
+            (
+                decision.ts
+                for decision in ordered
+                if decision.outcome == AuthOutcome.DENIED.value
+            ),
+            default=None,
+        )
         denial_run: list[DecisionRow] = []
         for timestamp, batch_iter in itertools.groupby(
             ordered, key=lambda decision: decision.ts
@@ -570,13 +591,12 @@ def landing(
                 denial_run = []
                 continue
             finding_keys.add(key)
-            later_key_denial = any(
-                later.outcome == AuthOutcome.DENIED.value and later.ts > timestamp
-                for later in ordered
+            later_key_denial = bool(
+                last_key_denial_ts is not None and last_key_denial_ts > timestamp
             )
-            later_host_row = any(
-                ts > timestamp
-                for ts in host_times.get(grants[0].host.casefold(), ())
+            last_host_ts = host_latest_ts.get(grants[0].host.casefold())
+            later_host_row = bool(
+                last_host_ts is not None and last_host_ts > timestamp
             )
             transitions.append(
                 {

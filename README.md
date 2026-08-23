@@ -1,8 +1,3 @@
-<!--
-<p align="center">
-  <img src="https://raw.githubusercontent.com/helixmap/sigwood/main/docs/img/sigwood-logo.png" width="300" alt="sigwood">
-</p>
--->
 *between grep and a SIEM*
 
 [![CI](https://github.com/helixmap/sigwood/actions/workflows/ci.yml/badge.svg)](https://github.com/helixmap/sigwood/actions/workflows/ci.yml)

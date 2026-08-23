@@ -58,9 +58,47 @@ _ALLOWED_REGISTRABLE = frozenset(
         # CloudTrail's own event grammar: eventSource values are
         # <service>.amazonaws.com, so CloudTrail fixtures require the name.
         "amazonaws.com",
+        # Shipped common allowlist: Route 53 nameserver regression.
+        "awsdns-56.org",
+        # Shipped common allowlist: Azure DNS nameserver regression.
+        "azure-dns.com",
+        # Shipped common allowlist: Azure cloudapp tenant regression.
+        "azure.com",
+        # Shipped common allowlist: Azure Edge tenant regression.
+        "azureedge.net",
+        # Shipped common allowlist: Azure Front Door tenant regression.
+        "azurefd.net",
+        # Shipped common allowlist: Azure Websites tenant regression.
+        "azurewebsites.net",
+        # Shipped common allowlist: CloudFront tenant regression.
+        "cloudfront.net",
+        # Shipped common allowlist: CloudNS nameserver regression.
+        "cloudns.net",
+        # Shipped common allowlist: Constellix nameserver regression.
+        "constellix.com",
+        # Shipped common allowlist: DigiCert DNS nameserver regression.
+        "digicertdns.net",
+        # Shipped common allowlist: DomainControl nameserver regression.
+        "domaincontrol.com",
         # The canonical repository URL in shipped copy and doc-link checks.
         "github.com",
         "githubusercontent.com",
+        # Shipped common allowlist: Google API control/tenant regressions.
+        "googleapis.com",
+        # Shipped common allowlist: Google user-content tenant regression.
+        "googleusercontent.com",
+        # Shipped common allowlist: Global Accelerator tenant regression.
+        "awsglobalaccelerator.com",
+        # Shipped common allowlist: OVH nameserver regression.
+        "ovh.net",
+        # Shipped common allowlist: Azure Traffic Manager tenant regression.
+        "trafficmanager.net",
+        # Shipped common allowlist: Azure Front Door traffic-manager regression.
+        "tm-azurefd.net",
+        # Shipped common allowlist: UltraDNS nameserver regression.
+        "ultradns.net",
+        # Shipped common allowlist: Windows control/tenant regressions.
+        "windows.net",
         # The init wizard's shipped Zeek pointer.
         "zeek.org",
     }

@@ -1,0 +1,8 @@
+[sigwood]
+detect = "default"
+
+# Output defaults for new users.
+output_format = "html"
+
+[allowlist]
+enabled = true

@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import ast
 import errno
+import fcntl
 import io
 import json
 import os
 import shutil
 import stat
+import subprocess
+import sys
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -52,6 +55,24 @@ def _symlink_refusal(path: Path) -> str:
     return (
         f"{path} is a symbolic link - refusing to write through it; "
         "remove it or choose another target"
+    )
+
+
+def _run_cli_process(
+    *args: str, timeout: float = 3.0,
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import sys; from sigwood.cli import main; main(sys.argv[1:])",
+            *args,
+        ],
+        cwd=Path.cwd(),
+        text=True,
+        capture_output=True,
+        timeout=timeout,
+        check=False,
     )
 
 
@@ -109,6 +130,26 @@ def test_private_write_retightens_existing_file(
         else:
             private_write_bytes(target, b"private\x00")
             expected = b"private\x00"
+
+    assert target.read_bytes() == expected
+    assert _mode(target) == 0o600
+
+
+@_POSIX_ONLY
+@pytest.mark.parametrize("writer", ["text", "bytes"])
+def test_whole_value_writer_replaces_inaccessible_regular_destination(
+    tmp_path: Path, writer: str,
+) -> None:
+    target = tmp_path / "artifact"
+    target.write_bytes(b"old")
+    target.chmod(0o000)
+
+    if writer == "text":
+        private_write_text(target, "replacement")
+        expected = b"replacement"
+    else:
+        private_write_bytes(target, b"replacement")
+        expected = b"replacement"
 
     assert target.read_bytes() == expected
     assert _mode(target) == 0o600
@@ -175,6 +216,125 @@ def test_cli_refuses_final_component_symlink_without_touching_victim(
     assert captured.err == f"sigwood: {_symlink_refusal(target)}\n"
     assert captured.err.count("sigwood:") == 1
     assert "run 'sigwood --help' for usage" not in captured.err
+
+
+@_POSIX_ONLY
+@pytest.mark.parametrize("output_format", ["text", "json", "csv", "html"])
+def test_cli_refuses_fifo_leaf_without_hanging_or_guessing_its_type(
+    tmp_path: Path, output_format: str,
+) -> None:
+    source = tmp_path / "conn.log"
+    source.write_text(_CONN_LINE, encoding="utf-8")
+    config = tmp_path / "config.toml"
+    config.write_text(f'[sigwood]\nroot = "{tmp_path}"\n', encoding="utf-8")
+    target = tmp_path / "report-\x1b[31m\x07.fifo"
+    os.mkfifo(target)
+
+    result = _run_cli_process(
+        "beacon",
+        str(source),
+        "--all",
+        "-q",
+        f"--format={output_format}",
+        f"--config={config}",
+        f"--out={target}",
+    )
+
+    assert result.returncode == 1
+    assert result.stdout == ""
+    if output_format == "html":
+        reason = "is not a regular file"
+    else:
+        reason = "could not be opened safely"
+    assert result.stderr == (
+        f"sigwood: {tmp_path}/report-[31m.fifo {reason} - refusing to write "
+        "to it; choose a regular file or directory\n"
+    )
+    assert "FIFO" not in result.stderr
+    assert "\x1b" not in result.stderr
+    assert "\x07" not in result.stderr
+    assert "Traceback" not in result.stderr
+    assert stat.S_ISFIFO(target.stat().st_mode)
+
+
+@_POSIX_ONLY
+@pytest.mark.parametrize("output_format", ["text", "json", "csv", "html"])
+def test_cli_refuses_device_leaf_with_actionable_error(
+    tmp_path: Path, output_format: str,
+) -> None:
+    device = Path(os.devnull)
+    if not device.exists():
+        pytest.skip("platform has no null device")
+
+    source = tmp_path / "conn.log"
+    source.write_text(_CONN_LINE, encoding="utf-8")
+    config = tmp_path / "config.toml"
+    config.write_text(f'[sigwood]\nroot = "{tmp_path}"\n', encoding="utf-8")
+
+    result = _run_cli_process(
+        "beacon",
+        str(source),
+        "--all",
+        "-q",
+        f"--format={output_format}",
+        f"--config={config}",
+        f"--out={device}",
+    )
+
+    assert result.returncode == 1
+    assert result.stdout == ""
+    assert result.stderr == (
+        f"sigwood: {device} is not a regular file - refusing to write to it; "
+        "choose a regular file or directory\n"
+    )
+    assert "Operation not permitted" not in result.stderr
+    assert "Traceback" not in result.stderr
+
+
+@_POSIX_ONLY
+@pytest.mark.parametrize("writer", ["text", "bytes"])
+def test_whole_value_writer_refuses_symlink_without_raw_exception(
+    tmp_path: Path, writer: str,
+) -> None:
+    victim = tmp_path / "victim"
+    victim.write_bytes(b"preserve")
+    target = tmp_path / "artifact"
+    target.symlink_to(victim)
+
+    with pytest.raises(ValueError) as exc_info:
+        if writer == "text":
+            private_write_text(target, "replacement")
+        else:
+            private_write_bytes(target, b"replacement")
+
+    assert str(exc_info.value) == _symlink_refusal(target)
+    assert victim.read_bytes() == b"preserve"
+
+
+@_POSIX_ONLY
+@pytest.mark.parametrize("leaf", ["fifo", "device"])
+def test_pdf_helper_refuses_nonregular_leaf(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, leaf: str,
+) -> None:
+    monkeypatch.setattr(pdf_mod, "_render_pdf_bytes", lambda _html: b"%PDF-private")
+    target = tmp_path / "report.fifo" if leaf == "fifo" else Path(os.devnull)
+    if leaf == "fifo":
+        os.mkfifo(target)
+    elif not target.exists():
+        pytest.skip("platform has no null device")
+    handler = PdfHandler(output_path=target, verbose_level=0)
+    handler.begin(_summary())
+    handler.write([])
+
+    with pytest.raises(ValueError) as exc_info:
+        handler.end()
+
+    assert str(exc_info.value) == (
+        f"{target} is not a regular file - refusing to write to it; "
+        "choose a regular file or directory"
+    )
+    if leaf == "fifo":
+        assert stat.S_ISFIFO(target.stat().st_mode)
 
 
 @_POSIX_ONLY
@@ -285,7 +445,46 @@ def test_write_through_symlinked_parent_directory_remains_supported(
 
 
 @_POSIX_ONLY
-@pytest.mark.parametrize("failure", ["fchmod", "fdopen"])
+@pytest.mark.parametrize("private", [True, False])
+def test_private_open_keeps_regular_route_bytes_and_clears_nonblocking(
+    tmp_path: Path, private: bool,
+) -> None:
+    target = tmp_path / "artifact"
+
+    with _temporary_umask(0o022):
+        with private_open(target, private=private, newline="") as stream:
+            assert fcntl.fcntl(stream.fileno(), fcntl.F_GETFL) & os.O_NONBLOCK == 0
+            stream.write("first\r\nsecond\n")
+
+    assert target.read_bytes() == b"first\r\nsecond\n"
+    assert _mode(target) == (0o600 if private else 0o644)
+
+
+@_POSIX_ONLY
+def test_write_fd_preserves_write_only_open_contract(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import sigwood.common.paths as paths_mod
+
+    real_open = paths_mod._open_through_walked_parent
+    observed_flags: list[int] = []
+
+    def _record_flags(
+        path: str | os.PathLike[str], flags: int, mode: int,
+    ) -> int:
+        observed_flags.append(flags)
+        return real_open(path, flags, mode)
+
+    monkeypatch.setattr(paths_mod, "_open_through_walked_parent", _record_flags)
+    with private_open(tmp_path / "artifact") as stream:
+        stream.write("ok")
+
+    assert len(observed_flags) == 1
+    assert observed_flags[0] & os.O_ACCMODE == os.O_WRONLY
+
+
+@_POSIX_ONLY
+@pytest.mark.parametrize("failure", ["fstat", "fcntl", "fchmod", "fdopen"])
 def test_private_open_closes_fd_when_setup_fails(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str,
 ) -> None:
@@ -299,6 +498,12 @@ def test_private_open_closes_fd_when_setup_fails(
     def _fail_fchmod(_fd: int, _mode: int) -> None:
         raise OSError("fchmod failed")
 
+    def _fail_fstat(_fd: int) -> os.stat_result:
+        raise OSError("fstat failed")
+
+    def _fail_fcntl(*_args: object) -> int:
+        raise OSError("fcntl failed")
+
     def _fail_fdopen(*_args: object, **_kwargs: object) -> None:
         raise OSError("fdopen failed")
 
@@ -306,7 +511,11 @@ def test_private_open_closes_fd_when_setup_fails(
         closed.append(fd)
         real_close(fd)
 
-    if failure == "fchmod":
+    if failure == "fstat":
+        monkeypatch.setattr(paths_mod.os, "fstat", _fail_fstat)
+    elif failure == "fcntl":
+        monkeypatch.setattr(paths_mod.fcntl, "fcntl", _fail_fcntl)
+    elif failure == "fchmod":
         monkeypatch.setattr(paths_mod.os, "fchmod", _fail_fchmod)
     else:
         monkeypatch.setattr(paths_mod.os, "fdopen", _fail_fdopen)

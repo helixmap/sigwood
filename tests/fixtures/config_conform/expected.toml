@@ -1,0 +1,11 @@
+[sigwood]
+detect = "all, !aws"
+
+# Output defaults for new users.
+output_format = "html"
+
+[allowlist]
+enabled = true
+
+[site]
+name = "fixture-lab"

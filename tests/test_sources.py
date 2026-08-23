@@ -1068,13 +1068,18 @@ def test_router_mixed_directory_records_vote_tally(tmp_path: Path) -> None:
         encoding="utf-8",
     )
 
-    sink: dict[str, dict[str, int]] = {}
+    sink: dict[str, sources.DirectoryVote] = {}
     routed = route_positional_source(
         log_dir, detector_module=None, _vote_sink=sink,
     )
 
     assert routed == "zeek_dir"
-    assert sink == {str(log_dir): {"zeek": 2, "syslog": 1}}
+    assert sink == {
+        str(log_dir): sources.DirectoryVote(
+            votes={"zeek": 2, "syslog": 1},
+            truncated=False,
+        )
+    }
 
 
 def test_router_single_family_directory_records_no_tally(tmp_path: Path) -> None:

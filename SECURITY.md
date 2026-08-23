@@ -56,9 +56,12 @@ code or escape the tool:
   crafted archive - for example, a decompression bomb - can exhaust memory.
   When you are scoping out logs of unknown origin, format, or size, start with
   `sigwood digest <file>`: unrecognized input is profiled from a bounded
-  sample before you commit to a full analysis run. Recognized formats may still
-  be loaded fully, so keep first-pass inputs narrow when you do not yet trust
-  the archive.
+  sample before you commit to a full analysis run. That bound covers the sample
+  digest profiles - it is not a sandbox, and specific hostile shapes can still
+  defeat it, including a single line of unbounded length and a timestamp span
+  crafted to inflate the histogram (see `docs/KNOWN-ISSUES.md`). Recognized
+  formats may still be loaded fully, so keep first-pass inputs narrow when you
+  do not yet trust the archive.
 
 ## Design guarantees
 

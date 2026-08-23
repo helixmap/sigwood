@@ -488,6 +488,181 @@ def test_mixed_directory_positional_prints_vote_advisory(
     assert "sigwood:" not in err
 
 
+def test_truncated_directory_positional_discloses_unexamined_files(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A second family beyond the bounded sample cannot remain silent."""
+    log_dir = tmp_path / "padded\nname"
+    log_dir.mkdir()
+    for i in range(sources._DIR_SNIFF_SAMPLE_LIMIT):
+        (log_dir / f"{i:02d}-conn.log").write_text(
+            _ZEEK_NDJSON_CONN_LINE,
+            encoding="utf-8",
+        )
+    (log_dir / "zz-messages").write_text(_FLAT_SYSLOG_LINE, encoding="utf-8")
+
+    buckets = cli._build_positional_buckets([str(log_dir)], detector_module=None)
+
+    assert buckets == {"zeek_dir": [str(log_dir)]}
+    err = capsys.readouterr().err
+    assert err == (
+        f"{cli.strip_control(str(log_dir))}: routing sampled the first "
+        f"{sources._DIR_SNIFF_SAMPLE_LIMIT} files (zeek 32) - hunting it as "
+        "zeek; files beyond the sample were not examined, so pass other log "
+        "types directly to include them\n"
+    )
+    assert err.count("\n") == 1
+
+
+def test_mixed_and_truncated_directory_prints_both_facts_in_order(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The byte-stable mixed line precedes the additive truncation line."""
+    log_dir = tmp_path / "mixed-padded"
+    log_dir.mkdir()
+    for i in range(sources._DIR_SNIFF_SAMPLE_LIMIT - 1):
+        (log_dir / f"{i:02d}-conn.log").write_text(
+            _ZEEK_NDJSON_CONN_LINE,
+            encoding="utf-8",
+        )
+    (log_dir / "31-messages").write_text(_FLAT_SYSLOG_LINE, encoding="utf-8")
+    (log_dir / "zz-unexamined.log").write_text("unknown\n", encoding="utf-8")
+
+    cli._build_positional_buckets([str(log_dir)], detector_module=None)
+
+    assert capsys.readouterr().err.splitlines() == [
+        f"{log_dir}: mixed log types sampled (zeek 31, syslog 1) - hunting it "
+        "as zeek; pass the other files directly to include them",
+        f"{log_dir}: routing sampled the first "
+        f"{sources._DIR_SNIFF_SAMPLE_LIMIT} files (zeek 31, syslog 1) - "
+        "hunting it as zeek; files beyond the sample were not examined, so "
+        "pass other log types directly to include them",
+    ]
+
+
+def test_directory_sample_follows_file_symlinks_but_skips_directory_symlinks(
+    tmp_path: Path,
+) -> None:
+    target_file = tmp_path / "conn-target.log"
+    target_file.write_text(_ZEEK_NDJSON_CONN_LINE, encoding="utf-8")
+    target_dir = tmp_path / "target-dir"
+    target_dir.mkdir()
+    (target_dir / "messages").write_text(_FLAT_SYSLOG_LINE, encoding="utf-8")
+    sample = tmp_path / "sample"
+    sample.mkdir()
+    (sample / "conn-link.log").symlink_to(target_file)
+    (sample / "dir-link").symlink_to(target_dir, target_is_directory=True)
+
+    assert sources._directory_vote_tally(sample) == sources.DirectoryVote(
+        {"zeek": 1}, False,
+    )
+
+
+def test_directory_sample_discards_partial_state_on_iterator_oserror(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    child = tmp_path / "conn.log"
+    child.write_text(_ZEEK_NDJSON_CONN_LINE, encoding="utf-8")
+
+    class Entry:
+        name = child.name
+        path = str(child)
+
+        @staticmethod
+        def is_file() -> bool:
+            return True
+
+    class BrokenScan:
+        def __init__(self) -> None:
+            self._first = True
+
+        def __enter__(self) -> "BrokenScan":
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def __iter__(self) -> "BrokenScan":
+            return self
+
+        def __next__(self) -> Entry:
+            if self._first:
+                self._first = False
+                return Entry()
+            raise OSError("directory changed")
+
+    monkeypatch.setattr(sources.os, "scandir", lambda _path: BrokenScan())
+
+    assert sources._directory_vote_tally(tmp_path) == sources.DirectoryVote(
+        {}, False,
+    )
+
+
+def test_directory_sample_handles_scandir_call_oserror(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_scandir(_path: Path) -> None:
+        raise OSError("cannot open")
+
+    monkeypatch.setattr(sources.os, "scandir", fail_scandir)
+
+    assert sources._directory_vote_tally(tmp_path) == sources.DirectoryVote(
+        {}, False,
+    )
+
+
+def test_directory_sample_skips_entry_is_file_oserror(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    child = tmp_path / "conn.log"
+    child.write_text(_ZEEK_NDJSON_CONN_LINE, encoding="utf-8")
+
+    class Entry:
+        def __init__(self, name: str, *, broken: bool) -> None:
+            self.name = name
+            self.path = str(child)
+            self.broken = broken
+
+        def is_file(self) -> bool:
+            if self.broken:
+                raise OSError("vanished")
+            return True
+
+    class Scan:
+        def __enter__(self) -> "Scan":
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def __iter__(self):
+            return iter((
+                Entry("00-broken", broken=True),
+                Entry("01-good", broken=False),
+            ))
+
+    monkeypatch.setattr(sources.os, "scandir", lambda _path: Scan())
+
+    assert sources._directory_vote_tally(tmp_path) == sources.DirectoryVote(
+        {"zeek": 1}, False,
+    )
+
+
+def test_truncated_unrecognizable_directory_does_not_write_vote_sink(
+    tmp_path: Path,
+) -> None:
+    log_dir = tmp_path / "unknown"
+    log_dir.mkdir()
+    for i in range(sources._DIR_SNIFF_SAMPLE_LIMIT + 1):
+        (log_dir / f"{i:02d}.log").write_text("unknown\n", encoding="utf-8")
+    sink: dict[str, sources.DirectoryVote] = {}
+
+    assert sources.route_positional_source(
+        log_dir, detector_module=None, _vote_sink=sink,
+    ) == "zeek_dir"
+    assert sink == {}
+
+
 def test_single_family_directory_positional_prints_no_advisory(
     tmp_path: Path, capsys: pytest.CaptureFixture,
 ) -> None:

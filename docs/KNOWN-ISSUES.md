@@ -10,14 +10,6 @@ twelve eligible weeks, not merely twelve calendar weeks. A shorter archive is st
 but the deck may abstain where the evidence is insufficient. Era intentionally counts raw
 pre-allowlist traffic, so its totals are not expected to match a hunt after suppression.
 
-**`sigwood init` permission advice does not distinguish system and user homes.** When a config
-write fails, the current advice can suggest rerunning with `sudo` without first distinguishing
-the deliberately shared `/etc/sigwood` home from a user-owned `~/.sigwood` reached through
-pipx, uv, or a virtualenv. Elevation can be appropriate for `/etc/sigwood`; for a user home it
-can create root-owned files or invoke a root environment that cannot find the isolated command.
-Until a separate, home-aware product-code change corrects the runtime advice, keep the user home
-writable and run the isolated command as that user rather than with `sudo`.
-
 ## Detectors
 
 **`ssl` certificate legs see only sessions that presented a certificate.** TLS 1.3

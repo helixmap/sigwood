@@ -467,10 +467,23 @@ def test_region_caps_at_top_three() -> None:
     body = ct_digest.summarize(_ct_df(rows))
     slot = _slot_by_label(_compute_slots(_ct_df(rows)), "region")
     assert slot.cells is not None
-    assert slot.cells[0].count("·") == 2  # exactly three entries → two separators
+    assert slot.cells[0].count("·") == 3  # three named entries plus remainder
+    assert slot.cells[0].endswith(" · (other) 14%")
     # Lower-ranked regions must NOT appear.
     assert "ap-south-1" not in slot.cells[0]
     assert "eu-central-1" not in slot.cells[0]
+
+
+def test_region_positive_remainder_below_one_percent_is_visible() -> None:
+    rows = [
+        *[_ct_row(aws_region="us-east-1") for _ in range(1000)],
+        *[_ct_row(aws_region="eu-west-1") for _ in range(500)],
+        *[_ct_row(aws_region="us-west-2") for _ in range(100)],
+        _ct_row(aws_region="ap-south-1"),
+    ]
+    slot = _slot_by_label(_compute_slots(_ct_df(rows)), "region")
+    assert slot.cells is not None
+    assert slot.cells[0].endswith(" · (other) <1%")
 
 
 def test_region_empty_and_missing_column_have_distinct_fallbacks() -> None:

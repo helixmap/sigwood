@@ -29,6 +29,11 @@ ISO_SNIFF_RE = re.compile(rf"^{_ISO_TS}\s+\S+\s+\S+:(?=\s|$)")
 # Matches the leading run of non-whitespace characters up to the first '[' or ':'.
 PROGRAM_RE    = re.compile(r'^[^\[:\s]+')
 
+# Program extraction may look through relay-added transport headers, but input
+# records are attacker-controlled and the loader admits records up to 1 MiB.
+# Keep the work structurally bounded rather than proportional to header depth.
+_PROGRAM_HEADER_DEPTH_LIMIT = 8
+
 # Timestamp in position 0-2 after stripping PRI (month day HH:MM:SS)
 SYSLOG_TS_RE  = re.compile(r'^(\w{3})\s+(\d{1,2})\s+(\d{2}:\d{2}:\d{2})')
 
@@ -169,6 +174,29 @@ def parse_program(body: str) -> str:
     return m.group(0) if m else "unknown"
 
 
+def _has_transport_header(raw: str) -> bool:
+    pri = PRI_RE.match(raw)
+    remainder = raw[pri.end():] if pri is not None else raw
+    return bool(SYSLOG_HDR_RE.match(remainder) or ISO_HDR_RE.match(remainder))
+
+
+def parse_program_from_line(raw: str, *, stripped_once: str | None = None) -> str:
+    """Extract a program through a bounded stack of transport headers.
+
+    Relay-forwarded syslog can prepend another RFC 3164 or ISO-8601 header to
+    an already complete line. Look through at most eight such layers, degrading
+    to the token reached at the cap rather than letting one large record drive
+    unbounded repeated parsing.
+    """
+    body = raw if stripped_once is None else stripped_once
+    remaining = _PROGRAM_HEADER_DEPTH_LIMIT - (stripped_once is not None)
+    for _ in range(remaining):
+        if not _has_transport_header(body):
+            break
+        body = strip_header(body)
+    return parse_program(body)
+
+
 def strip_program(body: str) -> str:
     """Remove a leading syslog program tag and return its message body.
 
@@ -258,7 +286,7 @@ def parse_line(raw: str) -> dict | None:
     return {
         "ts":      parse_timestamp(raw),
         "host":    parse_host(raw),
-        "program": parse_program(body),
+        "program": parse_program_from_line(raw, stripped_once=body),
         "raw":     raw,
         "message": normalize_pids(body),
     }

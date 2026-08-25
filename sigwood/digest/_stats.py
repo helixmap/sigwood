@@ -5,6 +5,8 @@ Hosts:
                                    with top-contributor attribution
   - ``_share`` / ``SHARE_GATE``  - concentration-against-total statistic with no
                                    population floor
+  - ``_top_n_remainder_cell``     - disclosure for positive mass hidden by a
+                                   truncated categorical distribution
   - ``select_insights_and_fields`` - shared selection helper that promotes the
                                      top-N speaking gated slots to insights and
                                      returns the leftover slots as fields
@@ -106,6 +108,30 @@ def _share(sorted_counts: pd.Series, total: int) -> tuple[Any, float] | None:
     if top_share < SHARE_GATE:
         return None
     return sorted_counts.index[0], top_share
+
+
+def _top_n_remainder_cell(
+    sorted_counts: pd.Series,
+    total: int,
+    top_n: int,
+) -> str | None:
+    """Render the positive share withheld by a top-N distribution.
+
+    The caller owns category labels and named-cell formatting. This helper owns
+    only the shared fact: no hidden positive count means no cell; a share that
+    rounds below one percent remains visible as ``(other) <1%``.
+    """
+    if total <= 0 or top_n < 0 or len(sorted_counts) <= top_n:
+        return None
+    shown = int(sorted_counts.head(top_n).sum())
+    hidden = total - shown
+    if hidden <= 0:
+        return None
+    percent = hidden / total * 100
+    rounded = int(round(percent))
+    if rounded < 1:
+        return "(other) <1%"
+    return f"(other) {rounded}%"
 
 
 # ── Insight selection ───────────────────────────────────────────────────────

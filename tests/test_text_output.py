@@ -9,6 +9,7 @@ import sigwood
 
 from sigwood.common.display import TEXT_RULE_WIDTH, fmt_compact_span
 from sigwood.common.finding import RunSummary
+from sigwood.outputs._evidence import exfil_members_at_level
 from sigwood.outputs.text import (
     TextHandler,
     _fmt_window,
@@ -1300,6 +1301,15 @@ def test_exfil_pool_member_detail_follows_the_reading_level() -> None:
     assert "showing 10 of 11 destinations" in at1
     assert "198.51.100.30" in at2
     assert "members: [{" not in at2
+
+
+def test_exfil_member_slicer_owns_level_zero() -> None:
+    finding = _bare_finding("exfil", Severity.MEDIUM, "pool")
+    finding.evidence = {
+        "tier": "destination_pool",
+        "members": [{"dst": "198.51.100.20"}],
+    }
+    assert exfil_members_at_level(finding, 0) == ([], None)
 
 
 def test_severity_sort_primary_within_subsection() -> None:

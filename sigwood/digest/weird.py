@@ -17,6 +17,7 @@ import pandas as pd
 
 from sigwood.common.finding import DigestSlot
 from sigwood.common.sanitize import strip_control
+from sigwood.digest._stats import _top_n_remainder_cell
 from sigwood.digest.conn import (
     CLIFF_GATE,  # noqa: F401 - re-exported for downstream symmetry
     POPULATION_FLOOR,  # noqa: F401 - re-exported for downstream symmetry
@@ -69,6 +70,9 @@ def _render_dist(counts: pd.Series, total: int, empty: str) -> str:
         f"{name} {count / total * 100:.0f}%"
         for name, count in counts.head(_DIST_TOP_N).items()
     ]
+    remainder = _top_n_remainder_cell(counts, total, _DIST_TOP_N)
+    if remainder is not None:
+        parts.append(remainder)
     return " · ".join(parts)
 
 

@@ -18,7 +18,34 @@ All notable changes to sigwood are recorded here. The format follows
   is that a flow spanning roughly one to five years is no longer scored; such a span is not a
   beaconing candidate in any case, and a year remains far wider than any hunt window.
 
+- **The package no longer carries detector modules that were only placeholders.** The planned
+  `protocol` and `weird` detectors were never available to run, and the `weird` digest card is
+  unchanged. An unused email-output module is gone with them. The shipped detector roster is now
+  checked against discovery and the public documentation so dead placeholders cannot make those
+  surfaces drift apart again.
+
+- **Truncated digest mixes now say how much traffic their named categories leave out.** DNS query
+  types, Zeek weird names and analyzers, and CloudTrail regions still name their three largest
+  categories, followed by `(other) N%` when a positive share remains. A share below one percent is
+  shown as `(other) <1%` rather than rounded away; a complete mix is rendered exactly as before.
+
+- **`sigwood init` gives permission advice for the home it is actually writing.** A user or custom
+  home now says to make the location writable as that user or choose another location, avoiding
+  root-owned files from an unnecessary `sudo`. The deliberately shared `/etc/sigwood` home still
+  permits elevation and says that `sudo` needs the executable's full path.
+
 ### Fixed
+
+- **Relay-forwarded syslog now reports the originating program instead of a relay timestamp
+  token.** sigwood looks through up to eight stacked RFC 3164 or ISO-8601 headers for program
+  identity while retaining the outer relay host and the existing one-header message view. On a
+  forwarding fleet, a program column that previously read a token such as `Jul` now names the
+  service that emitted the event; estates without relay-forwarded logs see no change.
+
+- **The shared exfil evidence slicer now enforces the quiet default reading level itself.** Level
+  zero returns no destination-pool members even when the slicer is called directly, while level one
+  remains capped at ten with a truthful remainder note and level two remains complete. Existing
+  text, HTML, PDF, JSON, and CSV output is unchanged.
 
 - **A single malformed log file no longer ends a whole hunt or export.** Four containment sites
   named a narrower set of errors than the code could raise, missing seven exception shapes between

@@ -674,6 +674,82 @@ def test_strip_header_idempotent_when_no_leading_header() -> None:
     assert strip_header(raw) == "prog: body without any leading transport header"
 
 
+@pytest.mark.parametrize(
+    ("outer_header", "inner_header"),
+    [
+        (
+            "Jul 12 21:57:33 relay.example.test ",
+            "Jul 12 21:57:30 origin.example.test ",
+        ),
+        (
+            "2026-07-12T21:57:33Z relay.example.test ",
+            "Jul 12 21:57:30 origin.example.test ",
+        ),
+        (
+            "Jul 12 21:57:33 relay.example.test ",
+            "2026-07-12T21:57:30Z origin.example.test ",
+        ),
+        (
+            "2026-07-12T21:57:33Z relay.example.test ",
+            "2026-07-12T21:57:30Z origin.example.test ",
+        ),
+    ],
+)
+def test_parse_line_uses_inner_program_but_preserves_outer_host_and_message(
+    outer_header: str,
+    inner_header: str,
+) -> None:
+    raw = (
+        f"{outer_header}{inner_header}"
+        "sshd[4242]: Accepted publickey for svc from 192.0.2.44"
+    )
+
+    parsed = parse_line(raw)
+
+    assert parsed is not None
+    assert parsed["program"] == "sshd"
+    assert parsed["host"] == "relay.example.test"
+    assert parsed["message"] == normalize_pids(strip_header(raw))
+
+
+def test_program_header_depth_is_constant_bounded_and_degrades(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    limit = syslog_mod._PROGRAM_HEADER_DEPTH_LIMIT
+
+    def stacked_headers(count: int) -> str:
+        return (
+            "".join(
+                f"Jul 12 21:57:33 relay-{i}.example.test " for i in range(count)
+            )
+            + "sshd[4242]: Accepted publickey for svc from 192.0.2.44"
+        )
+
+    original = syslog_mod.strip_header
+    calls = 0
+
+    def counted_strip_header(raw: str) -> str:
+        nonlocal calls
+        calls += 1
+        return original(raw)
+
+    monkeypatch.setattr(syslog_mod, "strip_header", counted_strip_header)
+
+    assert syslog_mod.parse_program_from_line(stacked_headers(limit)) == "sshd"
+    assert calls == limit
+
+    calls = 0
+    assert syslog_mod.parse_program_from_line(stacked_headers(limit + 1)) == "Jul"
+    assert calls == limit
+
+    calls = 0
+    parsed = syslog_mod.parse_line(
+        "Jul 12 21:57:33 relay.example.test sshd: routine line"
+    )
+    assert parsed is not None and parsed["program"] == "sshd"
+    assert calls == 1
+
+
 # ── load_syslog defensive Zeek-TSV skip (gated on #separator) ─────────────────
 
 def test_load_syslog_directory_silently_drops_zeek_tsv(tmp_path: Path, capsys) -> None:

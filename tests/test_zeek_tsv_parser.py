@@ -601,6 +601,52 @@ def test_zeek_syslog_tsv_ndjson_parity() -> None:
     _compare(tsv_df, ndjson_df)
 
 
+@pytest.mark.parametrize(
+    ("outer_header", "inner_header"),
+    [
+        (
+            "Jul 12 21:57:33 relay.example.test ",
+            "Jul 12 21:57:30 origin.example.test ",
+        ),
+        (
+            "2026-07-12T21:57:33Z relay.example.test ",
+            "Jul 12 21:57:30 origin.example.test ",
+        ),
+        (
+            "Jul 12 21:57:33 relay.example.test ",
+            "2026-07-12T21:57:30Z origin.example.test ",
+        ),
+        (
+            "2026-07-12T21:57:33Z relay.example.test ",
+            "2026-07-12T21:57:30Z origin.example.test ",
+        ),
+    ],
+)
+def test_zeek_syslog_normalizer_uses_inner_program_only(
+    outer_header: str,
+    inner_header: str,
+) -> None:
+    from sigwood.parsers.syslog import normalize_pids, strip_header
+    from sigwood.parsers.zeek import _normalize_zeek_syslog_df
+
+    message = (
+        f"{outer_header}{inner_header}"
+        "sshd[4242]: Accepted publickey for svc from 192.0.2.44"
+    )
+    raw = pd.DataFrame([{
+        "ts": 1779750000.0,
+        "id.orig_h": "198.51.100.20",
+        "message": message,
+    }])
+
+    normalized = _normalize_zeek_syslog_df(raw)
+
+    assert normalized.iloc[0]["program"] == "sshd"
+    assert normalized.iloc[0]["host"] == "relay.example.test"
+    assert normalized.iloc[0]["raw"] == message
+    assert normalized.iloc[0]["message"] == normalize_pids(strip_header(message))
+
+
 def test_zeek_syslog_normalizer_malformed_missing_message_preserves_absence() -> None:
     """Honesty rail: when source `message` is absent, normalizer does NOT
     synthesize message / raw / program just to satisfy shape - the output

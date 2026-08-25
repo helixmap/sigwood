@@ -718,10 +718,10 @@ this section applies: read the code, run the tests.
 
 ### What state is sigwood in?
 
-Early, pre-1.0. The nine detectors above work and are covered by tests. Two more
-DETECTORS - `protocol` and `weird` - are planned but not built. Zeek's `weird.log`
-does have a `digest` card, which reports the shape of that log and reaches no
-verdict; the weird DETECTOR is the part that is still planned. Interfaces may still move before
+Early, pre-1.0. The nine detectors above work and are covered by tests. A protocol
+classifier remains a roadmap future. Zeek's `weird.log` has a `digest` card, which
+reports the shape of that log and reaches no verdict; that card is the shipped form
+of weird analysis rather than a promise of a future detector. Interfaces may still move before
 1.0. The current roadmap and the running list of known rough edges are public, in
 [ROADMAP.md](ROADMAP.md) and [KNOWN-ISSUES.md](KNOWN-ISSUES.md).
 

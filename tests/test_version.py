@@ -10,6 +10,7 @@ The version subsystem has two parts:
 from __future__ import annotations
 
 import importlib.metadata
+import re
 import tomllib
 from pathlib import Path
 
@@ -22,6 +23,7 @@ from sigwood.common.display import version_string
 from sigwood.common.errors import UsageError
 
 _PYPROJECT = Path(__file__).resolve().parents[1] / "pyproject.toml"
+_README = Path(__file__).resolve().parents[1] / "README.md"
 
 
 # ── the --version / -V flag ───────────────────────────────────────────────────
@@ -129,3 +131,13 @@ def test_pyproject_version_is_dynamic():
     assert "version" not in project
     assert "version" in project["dynamic"]
     assert data["tool"]["setuptools"]["dynamic"]["version"]["attr"] == "sigwood.__version__"
+
+
+def test_readme_status_version_matches_package_version() -> None:
+    """Pin only the status line's VERSION token, not its pre-1.0 prose."""
+    matches = re.findall(
+        r"^> \*\*Status:.*\(`([0-9]+\.[0-9]+\.[0-9]+)`\)",
+        _README.read_text(encoding="utf-8"),
+        re.MULTILINE,
+    )
+    assert matches == [sigwood.__version__]

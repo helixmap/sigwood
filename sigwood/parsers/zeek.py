@@ -228,8 +228,8 @@ def _normalize_zeek_syslog_df(df: pd.DataFrame) -> pd.DataFrame:
         raw     = Zeek `message` verbatim (drives finding title)
         host    = embedded RFC 3164 hostname via parse_host(raw); falls back
                   to Zeek `id.orig_h` when parse_host returns "unknown"
-        program = parse_program(strip_header(raw))
-        message = normalize_pids(strip_header(raw))  # canonical, drain3-aligned
+        program = parse_program_from_line(raw)  # bounded relay-header traversal
+        message = normalize_pids(strip_header(raw))  # exactly one header
         ts      = Zeek ts (already canonical epoch float)
 
     Malformed-frame path: when input lacks `message`, the normalizer does
@@ -241,13 +241,14 @@ def _normalize_zeek_syslog_df(df: pd.DataFrame) -> pd.DataFrame:
     Drops uid/id.orig_p/id.resp_h/id.resp_p/proto and id.orig_h (the latter
     after being consumed as the host fallback). Reuses the RFC 3164 helpers
     in parsers/syslog.py so the doubled-timestamp invariant (^-anchored
-    strip_header strips only the leading transport header) holds for both
-    feeds.
+    strip_header strips only the leading transport header) holds for canonical
+    messages on both feeds. Program extraction alone may traverse a bounded
+    stack of relay-added headers; host attribution remains outer-header based.
     """
     from sigwood.parsers.syslog import (
         normalize_pids,
         parse_host,
-        parse_program,
+        parse_program_from_line,
         strip_header,
     )
 
@@ -276,6 +277,14 @@ def _normalize_zeek_syslog_df(df: pd.DataFrame) -> pd.DataFrame:
     # preserving fidelity.
     raw = df["message"].astype(str).str.rstrip("\r\n")
     stripped = raw.map(strip_header)
+    program = pd.Series(
+        [
+            parse_program_from_line(source, stripped_once=body)
+            for source, body in zip(raw, stripped, strict=True)
+        ],
+        index=df.index,
+        dtype=object,
+    )
 
     embedded_host = raw.map(parse_host)
     if "id.orig_h" in df.columns:
@@ -286,7 +295,7 @@ def _normalize_zeek_syslog_df(df: pd.DataFrame) -> pd.DataFrame:
     out = pd.DataFrame({
         "ts":      df["ts"] if "ts" in df.columns else pd.Series(dtype="float64"),
         "host":    host,
-        "program": stripped.map(parse_program),
+        "program": program,
         "raw":     raw,
         "message": stripped.map(normalize_pids),
     })

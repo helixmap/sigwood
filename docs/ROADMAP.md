@@ -106,8 +106,8 @@ prototyped in the open, as scripts and notebooks under `notebooks/` run against
 real logs, before they ship (see [CONTRIBUTING.md](../CONTRIBUTING.md)). Grouped by
 the gap each one could narrow:
 
-- **Command and control** - Zeek's `weird.log`/`notice.log`, and a protocol classifier
-  that notices a service running somewhere it normally does not. (TLS and certificate
+- **Command and control** - a protocol classifier that notices a service running
+  somewhere it normally does not. (TLS and certificate
   anomalies now ship as the opt-in `ssl` detector, judged against your own estate's
   norms rather than a fingerprint database.)
 - **Exfiltration, beyond bulk volume** - `exfil` now answers "who is uploading, and to

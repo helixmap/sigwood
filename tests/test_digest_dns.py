@@ -318,8 +318,31 @@ def test_qtype_mix_top_three_by_share() -> None:
     assert "A 50%" in mix
     assert "AAAA 30%" in mix
     assert "HTTPS 15%" in mix
-    # MX is below top-3
+    # MX is below top-3 but its share is disclosed.
     assert "MX" not in mix
+    assert mix == "A 50% · AAAA 30% · HTTPS 15% · (other) 5%"
+
+
+def test_qtype_mix_discloses_a_positive_remainder_below_one_percent() -> None:
+    rows = (
+        [_zeek_dns_row(qtype=1) for _ in range(1000)]
+        + [_zeek_dns_row(qtype=28) for _ in range(500)]
+        + [_zeek_dns_row(qtype=65) for _ in range(100)]
+        + [_zeek_dns_row(qtype=15)]
+    )
+    slot = dns_digest._slot_qtype_mix(_zeek_dns_df(rows), feed="zeek")
+    assert slot.cells is not None
+    assert slot.cells[0].endswith(" · (other) <1%")
+
+
+def test_qtype_mix_without_hidden_categories_is_byte_identical() -> None:
+    rows = (
+        [_zeek_dns_row(qtype=1) for _ in range(5)]
+        + [_zeek_dns_row(qtype=28) for _ in range(3)]
+        + [_zeek_dns_row(qtype=65) for _ in range(2)]
+    )
+    slot = dns_digest._slot_qtype_mix(_zeek_dns_df(rows), feed="zeek")
+    assert slot.cells == ["A 50% · AAAA 30% · HTTPS 20%"]
 
 
 def test_qtype_mix_maps_unmapped_code_to_TYPE_N() -> None:

@@ -208,14 +208,22 @@ Derivation rules - Zeek `syslog.log`:
 - `raw     = Zeek 'message' verbatim`
 - `host    = embedded RFC 3164 hostname via parse_host(raw); falls back to
              Zeek 'id.orig_h' when parse_host returns "unknown"`
-- `program = parse_program(strip_header(raw))`
+- `program = parse_program_from_line(raw)` - looks through at most eight stacked
+             transport headers, so a relay-forwarded line reports the originating
+             program rather than the relay header's first token
 - `message = normalize_pids(strip_header(raw))`
 - `ts      = Zeek 'ts' (already canonical epoch float)`
 - `facility/severity` carried as-is, uppercase enum strings; consumer
   interprets. The strip-header pipeline is shared with the flat path
-  (parsers/syslog.py helpers), so the doubled-timestamp invariant -
-  `strip_header` is `^`-anchored, only strips the leading transport header -
-  holds for both feeds.
+  (parsers/syslog.py helpers), and `program` and `message` deliberately strip to
+  different depths. `message` strips exactly ONE header, so the doubled-timestamp
+  invariant holds - `strip_header` is `^`-anchored and removes only the leading
+  transport header, leaving an inner application timestamp in the body. `program`
+  instead looks through up to eight stacked headers, because a forwarded line's
+  first token is the relay's own timestamp rather than a program name. Both feeds
+  behave the same way. The eight-header bound means one large record cannot drive
+  unbounded repeated parsing; a line relayed more times than that reports the
+  token reached at the bound rather than failing.
 
 Derivation rules - systemd journal (one compact-JSON object per entry):
 - `ts      = __REALTIME_TIMESTAMP / 1_000_000` - the journal receipt time only

@@ -3,7 +3,8 @@
 Findings flow: list[Finding] → Reporter → one or more OutputHandler instances.
 
 Detectors never know how output is handled. Adding a new output format means
-implementing one OutputHandler subclass in sigwood/outputs/. Nothing else changes.
+implementing an OutputHandler subclass whose module registers it on import, then
+adding that module to register_builtin_handlers() below.
 """
 
 from __future__ import annotations

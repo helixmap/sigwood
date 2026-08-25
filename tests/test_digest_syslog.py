@@ -29,6 +29,7 @@ from sigwood.common.display import default_window_advisory
 from sigwood.common.finding import DigestCard, RunSummary
 from sigwood.digest import syslog as syslog_digest
 from sigwood.outputs.text import TextHandler
+from sigwood.parsers.syslog import parse_line
 
 
 # ─── Fixtures ────────────────────────────────────────────────────────────────
@@ -189,6 +190,31 @@ def test_program_volume_names_rank1_when_speaking() -> None:
     # Magnitude is a raw count for program-volume (mirrors dns domain-volume)
     assert slot.cells[1] == "60"
     assert slot.cells[2].endswith("x")
+
+
+def test_program_volume_fixture_does_not_surface_transport_timestamp_tokens() -> None:
+    rows = []
+    for i in range(60):
+        parsed = parse_line(
+            "Jul 12 21:57:33 relay.example.test "
+            "Jul 12 21:57:30 origin.example.test "
+            f"sshd[{4000 + i}]: Accepted publickey for svc from 192.0.2.44"
+        )
+        assert parsed is not None
+        rows.append(parsed)
+    for program in ("cron", "kernel", "postfix/smtpd", "sudo", "systemd"):
+        for i in range(3):
+            parsed = parse_line(
+                f"Jul 12 21:58:0{i} relay.example.test {program}: routine line"
+            )
+            assert parsed is not None
+            rows.append(parsed)
+
+    slot = syslog_digest._slot_program_volume(_syslog_df(rows))
+
+    assert slot.cells is not None
+    assert slot.entity == "sshd"
+    assert all("Jul" not in cell and "2026-" not in cell for cell in slot.cells)
 
 
 # ─── error-rate kind ─────────────────────────────────────────────────────────

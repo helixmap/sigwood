@@ -1641,6 +1641,16 @@ def _shadow_refusal(home: Path) -> str | None:
     return None
 
 
+def _permission_advice(home: Path) -> str:
+    """Return permission recovery advice appropriate to the selected home."""
+    if home == Path("/etc/sigwood"):
+        return (
+            "re-run with sudo using the full executable path, "
+            "or pick another location"
+        )
+    return "make the location writable as your user, or pick another location"
+
+
 def _writability_error(home: Path, *, private: bool = True) -> str | None:
     """Probe that init can create <home> and write inside it. Returns an
     actionable message or None. Creates <home> on success (mkdir is the probe).
@@ -1658,7 +1668,7 @@ def _writability_error(home: Path, *, private: bool = True) -> str | None:
     except OSError as exc:
         return (
             f"can't write to {home} ({exc}) - "
-            "re-run with sudo, or pick another location"
+            f"{_permission_advice(home)}"
         )
 
 
@@ -1676,7 +1686,7 @@ def _writable_ancestor(home: Path) -> str | None:
             break
         anc = parent
     if not os.access(anc, os.W_OK):
-        return f"can't write to {home} - re-run with sudo, or pick another location"
+        return f"can't write to {home} - {_permission_advice(home)}"
     return None
 
 
@@ -1804,7 +1814,7 @@ def _write_config(
     except OSError as exc:
         raise ValueError(
             f"can't write to {target.parent} ({exc}) - "
-            "re-run with sudo, or pick another location"
+            f"{_permission_advice(target.parent)}"
         ) from exc
     if existing_raw is not None:
         bak_path = target.with_suffix(".toml.bak")
@@ -1825,7 +1835,7 @@ def _write_config(
     except OSError as exc:
         raise ValueError(
             f"can't write {target} ({exc}) - "
-            "re-run with sudo, or pick another location"
+            f"{_permission_advice(target.parent)}"
         ) from exc
 
 

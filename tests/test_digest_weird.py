@@ -87,6 +87,21 @@ def test_distributions_survive_a_single_category_pile() -> None:
     assert fields["analyzer-mix"] == ["TCP 100%"]
 
 
+def test_distributions_disclose_hidden_categories() -> None:
+    names = ["a"] * 50 + ["b"] * 30 + ["c"] * 15 + ["d"] * 5
+    sources = ["TCP"] * 50 + ["UDP"] * 30 + ["ICMP"] * 15 + ["OTHER"] * 5
+    fields = _fields(summarize(_frame(names, sources=sources)))
+    assert fields["name-mix"] == ["a 50% · b 30% · c 15% · (other) 5%"]
+    assert fields["analyzer-mix"] == ["TCP 50% · UDP 30% · ICMP 15% · (other) 5%"]
+
+
+def test_distribution_positive_remainder_below_one_percent_is_visible() -> None:
+    names = ["a"] * 1000 + ["b"] * 500 + ["c"] * 100 + ["d"]
+    assert _fields(summarize(_frame(names)))["name-mix"][0].endswith(
+        " · (other) <1%"
+    )
+
+
 def test_absent_analyzer_becomes_a_category_in_the_all_row_denominator() -> None:
     """A weird raised outside a protocol analyzer is an ordinary kind, so its
     rows stay in the denominator rather than letting the rest overstate."""

@@ -31,7 +31,8 @@ def test_public_pages_name_dnsblock_as_available_and_opt_in() -> None:
     assert "select 21 additional days of rotated files" in faq
     assert "28-day selection aperture" in faq
     state = faq.split("### What state is sigwood in?", 1)[1]
-    assert "Two more" in state
+    assert "A protocol\nclassifier remains a roadmap future" in state
+    assert "promise of a future detector" in state
     assert "`dnsblock`" not in state.split("### How would I add", 1)[0]
 
 

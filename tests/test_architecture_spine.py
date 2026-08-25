@@ -53,19 +53,15 @@ def _finding() -> Finding:
 class ArchitectureSpineTests(unittest.TestCase):
     """Small checks for the app's detector and output boundaries."""
 
-    def test_discover_detectors_excludes_planned_stubs(self) -> None:
+    def test_discover_detectors_matches_shipped_roster(self) -> None:
         detectors = discover_detectors()
 
-        self.assertIn("beacon", detectors)
-        self.assertIn("auth", detectors)
-        self.assertIn("dns", detectors)
-        self.assertIn("exfil", detectors)
-        self.assertIn("dnsblock", detectors)
-        self.assertIn("ssl", detectors)
-        for planned in ("protocol", "weird"):
-            self.assertNotIn(planned, detectors)
+        self.assertEqual(set(detectors), {
+            "auth", "aws", "beacon", "dns", "dnsblock", "exfil", "scan", "ssl",
+            "syslog",
+        })
 
-    def test_discovery_vocabulary_includes_available_and_planned_modules(self) -> None:
+    def test_discovery_vocabulary_matches_available_modules(self) -> None:
         vocab = {}
 
         detectors = discover_detectors(_vocab=vocab)
@@ -74,10 +70,7 @@ class ArchitectureSpineTests(unittest.TestCase):
             "auth", "aws", "beacon", "dns", "dnsblock", "exfil", "scan", "ssl",
             "syslog",
         })
-        self.assertEqual(set(vocab), {
-            "auth", "aws", "beacon", "dns", "dnsblock", "exfil",
-            "protocol", "scan", "ssl", "syslog", "weird",
-        })
+        self.assertEqual(set(vocab), set(detectors))
         self.assertEqual(vocab["dns"]["pihole"], {
             "min_cluster_size": 25,
             "min_samples": 10,

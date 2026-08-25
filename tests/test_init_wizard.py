@@ -1554,6 +1554,44 @@ def test_writability_error_leaves_no_partial_home(tmp_path: Path) -> None:
     assert not home.exists()
 
 
+def test_permission_advice_distinguishes_user_and_system_homes() -> None:
+    user = cli._permission_advice(Path("/srv/sigwood-user"))
+    system = cli._permission_advice(Path("/etc/sigwood"))
+    assert "sudo" not in user
+    assert "writable as your user" in user
+    assert "sudo" in system
+    assert "full executable path" in system
+
+
+def test_all_permission_failure_seams_use_home_aware_advice(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    home = tmp_path / "custom-home"
+
+    def denied(*_args: object, **_kwargs: object) -> None:
+        raise PermissionError("denied")
+
+    monkeypatch.setattr(cli, "private_mkdir", denied)
+    reset_error = cli._writability_error(home)
+    assert reset_error is not None and "sudo" not in reset_error
+
+    monkeypatch.setattr(cli.os, "access", lambda *_args: False)
+    ancestor_error = cli._writable_ancestor(home)
+    assert ancestor_error is not None and "sudo" not in ancestor_error
+
+    with pytest.raises(ValueError, match="writable as your user"):
+        cli._write_config(
+            home / "config.toml", "", {}, fresh=True, existing_raw=None
+        )
+
+    monkeypatch.setattr(cli, "private_mkdir", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(cli, "private_write_bytes", denied)
+    with pytest.raises(ValueError, match="writable as your user"):
+        cli._write_config(
+            home / "config.toml", "", {}, fresh=True, existing_raw=None
+        )
+
+
 # ── reset-allowlist honors configured allowlist_dir;
 #    invalid reset-scope aborts (no `both` default) ────────────────────────────
 

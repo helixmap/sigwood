@@ -67,6 +67,8 @@ def exfil_members_at_level(
     level: int,
 ) -> tuple[list[dict[str, Any]], str | None]:
     """Return the shared human member slice for a destination-pool rollup."""
+    if level < 1:
+        return [], None
     if (
         finding.detector != "exfil"
         or finding.evidence.get("tier") != "destination_pool"

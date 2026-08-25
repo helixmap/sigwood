@@ -43,7 +43,13 @@ from __future__ import annotations
 import pandas as pd
 
 from sigwood.common.finding import DigestSlot
-from sigwood.digest._stats import RATE_FLOOR, SHARE_GATE, _rate, _share
+from sigwood.digest._stats import (
+    RATE_FLOOR,
+    SHARE_GATE,
+    _rate,
+    _share,
+    _top_n_remainder_cell,
+)
 from sigwood.digest.conn import (
     CLIFF_DISPLAY_CAP,  # noqa: F401 - re-exported for downstream symmetry
     CLIFF_GATE,         # noqa: F401 - re-exported for downstream symmetry
@@ -100,6 +106,9 @@ def _region_dist(region_series: pd.Series | None) -> str:
         f"{label} {int(round(count / total * 100))}%"
         for label, count in top_three.items()
     ]
+    remainder = _top_n_remainder_cell(counts, total, 3)
+    if remainder is not None:
+        parts.append(remainder)
     return " · ".join(parts)
 
 

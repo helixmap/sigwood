@@ -4,9 +4,10 @@ The non-dataclass glue kept out of ``types``: ``_log_type`` (glob →
 canonical log type), ``_schema_warning`` (actionable missing-field message),
 ``_zeek_file_read_warning`` / ``_cloudtrail_parse_warning`` /
 ``_zeek_file_parse_warning`` / ``_zeek_bad_lines_warning`` (privacy-safe
-per-file failure wording), and ``_zeek_message_value_warning`` (aggregated
-canonicalization disclosure). Imports the parser schema constants and the
-``plural`` display helper only.
+per-file failure wording), ``_redate_warning`` (bounded RFC 3164 archive
+wording), and ``_zeek_message_value_warning`` (aggregated canonicalization
+disclosure). Imports the parser schema constants and the ``plural`` display
+helper only.
 """
 
 from __future__ import annotations
@@ -147,6 +148,21 @@ def _zeek_file_read_warning(
         reason = f"unreadable ({exc.__class__.__name__})"
     label = display_label or path.name
     return f"{label} could not be read - {reason}; skipping"
+
+
+def _redate_warning(
+    path: Path,
+    days: int,
+    *,
+    display_label: str | None = None,
+) -> str:
+    """Return the bounded per-file RFC 3164 re-dating warning."""
+    label = display_label or path.name
+    return (
+        f"{label}: timestamps parse {days} {plural(days, 'day')} newer than "
+        "the file itself was last written - RFC 3164 carries no year, so an "
+        "archive re-dated into the current year reads this way"
+    )
 
 
 def _permission_denied_message(path: Path) -> str:

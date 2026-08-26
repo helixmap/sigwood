@@ -22,11 +22,17 @@ import pytest
 
 import sigwood.common.loader as loader_module
 import sigwood.common.loader.pipeline as loader_pipeline
+from sigwood.common.loader.redate import (
+    _REDATE_MARGIN_SECONDS,
+    is_redate_suspect,
+    redate_days,
+)
 from datetime import date, timedelta
 
 from sigwood.common.loader import (
     _CLOUDTRAIL_COLUMNS,
     _PIHOLE_COLUMNS,
+    _SYSLOG_COLUMNS,
     _SYSLOG_SNIFF_BYTES,
     _SOURCE_LOADERS,
     _apply_ts_filter,
@@ -1800,7 +1806,7 @@ def test_denied_zeek_layout_uses_universal_trim_not_flat_inference(
 def test_denied_zeek_input_does_not_flatten_readable_dated_sibling(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A readable dated sibling alone supplies the exact dated window."""
+    """A readable dated sibling alone supplies the dated floor and open end."""
     denied = tmp_path / "denied"
     denied.mkdir()
     readable = tmp_path / "readable"
@@ -1828,7 +1834,7 @@ def test_denied_zeek_input_does_not_flatten_readable_dated_sibling(
     assert len(windows) == 1
     assert windows[0].select_window == (
         datetime(2026, 1, 5, tzinfo=timezone.utc),
-        datetime(2026, 1, 5, 23, 59, 59, tzinfo=timezone.utc),
+        None,
     )
     assert windows[0].trim_span is None
     assert list(skips) == [("zeek_dir", denied.resolve())]
@@ -2259,26 +2265,26 @@ def test_zeek_dated_default_window_flat_layout_returns_none(tmp_path: Path) -> N
 def test_zeek_dated_default_window_1d_picks_newest_subdir_only(tmp_path: Path) -> None:
     """GUARDRAIL - single-input dated selection that the union path must
     GENERALIZE (newest N=ceil(span_days) date subdirs, earliest-midnight →
-    newest-23:59:59 UTC). Do NOT reinterpret these assertions; the
+    open end). Do NOT reinterpret these assertions; the
     one-element list IS the degenerate single-input case."""
     (tmp_path / "2026-01-01").mkdir()
     (tmp_path / "2026-01-05").mkdir()
     since, until = _zeek_dated_window([tmp_path], timedelta(days=1))
     assert since == datetime(2026, 1, 5, 0, 0, 0, tzinfo=timezone.utc)
-    assert until == datetime(2026, 1, 5, 23, 59, 59, tzinfo=timezone.utc)
+    assert until is None
 
 
 def test_zeek_dated_default_window_2d_picks_newest_2_subdirs_even_when_sparse(
     tmp_path: Path,
 ) -> None:
     """GUARDRAIL - sparse-archive selection that the union path must
-    GENERALIZE. [2026-01-01, 2026-01-05] with span=2d → BOTH dirs; window
-    Jan 1 → Jan 5. Do NOT reinterpret."""
+    GENERALIZE. [2026-01-01, 2026-01-05] with span=2d → BOTH dirs; floor
+    Jan 1 with an open end. Do NOT reinterpret."""
     (tmp_path / "2026-01-01").mkdir()
     (tmp_path / "2026-01-05").mkdir()
     since, until = _zeek_dated_window([tmp_path], timedelta(days=2))
     assert since == datetime(2026, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
-    assert until == datetime(2026, 1, 5, 23, 59, 59, tzinfo=timezone.utc)
+    assert until is None
 
 
 def test_zeek_dated_default_window_span_exceeds_subdir_count(tmp_path: Path) -> None:
@@ -2286,7 +2292,46 @@ def test_zeek_dated_default_window_span_exceeds_subdir_count(tmp_path: Path) -> 
         (tmp_path / d).mkdir()
     since, until = _zeek_dated_window([tmp_path], timedelta(days=7))
     assert since.date() == date(2026, 1, 1)
-    assert until.date() == date(2026, 1, 5)
+    assert until is None
+
+
+def test_zeek_dated_open_ceiling_is_inert_on_archive_only_tree(
+    tmp_path: Path,
+) -> None:
+    """An archive with nothing beyond its selected days keeps the exact same
+    row identities and order when the unused upper ceiling is open."""
+    zeek_dir = tmp_path / "zeek"
+    zeek_dir.mkdir()
+    rows = (
+        ("2026-01-01", "192.0.2.1"),
+        ("2026-01-03", "192.0.2.3"),
+        ("2026-01-05", "192.0.2.5"),
+    )
+    for day, src in rows:
+        directory = zeek_dir / day
+        directory.mkdir()
+        _write_ndjson(directory / "conn.log", [{
+            "ts": datetime.fromisoformat(day).replace(tzinfo=timezone.utc).timestamp(),
+            "id.orig_h": src,
+            "id.resp_h": "198.51.100.20",
+            "id.resp_p": 443,
+            "proto": "tcp",
+        }])
+
+    selected = _zeek_dated_window([zeek_dir], timedelta(days=2))
+    assert selected == (
+        datetime(2026, 1, 3, tzinfo=timezone.utc),
+        None,
+    )
+    result = load_required_logs(
+        {"conn*.log*": "zeek_dir"},
+        {"zeek_dir": [zeek_dir]},
+        source_windows={"zeek_dir": selected},
+        show_progress=False,
+    )
+
+    assert result.record_counts == {"conn*.log*": 2}
+    assert list(result.logs["conn*.log*"]["src"]) == ["192.0.2.3", "192.0.2.5"]
 
 
 def test_discover_zeek_files_file_input_matching_pattern_returns_file(
@@ -5047,6 +5092,378 @@ def test_rotation_windows_syslog_dir_family(tmp_path: Path) -> None:
     res = load_required_logs({"*.log*": "syslog_dir"}, {"syslog_dir": [d]}, since=since)
     info = res.rotation_skips["*.log*"]
     assert info.loaded == 3 and info.skipped == 1 and not info.fallback
+
+
+def test_redate_tripwire_directory_route_discriminates_one_of_four(
+    tmp_path: Path,
+) -> None:
+    """The operator directory route includes only the genuinely re-dated file.
+
+    Binding regression: pre-fix rotation selection reports loaded=0/skipped=4 and
+    no warning. A repair that merely disables pruning also fails because three
+    ordinary too-new rotations must remain pruned.
+    """
+    d = tmp_path / "syslog"
+    d.mkdir()
+    now = datetime.now().replace(microsecond=0) - timedelta(days=10)
+    files: list[tuple[Path, float]] = []
+    for age in range(4):
+        stamp = now - timedelta(days=age)
+        line = _sys_line(
+            stamp.strftime("%b"), stamp.day, stamp.strftime("%H:%M:%S")
+        )
+        path = d / ("auth.log" if age == 0 else f"auth.log.{age}")
+        _write_rot(path, line)
+        parsed = parse_timestamp(line)
+        assert parsed is not None
+        files.append((path, parsed.timestamp()))
+
+    suspect_path, suspect_ts = files[2]
+    for path, parsed_ts in files:
+        delta = (
+            _REDATE_MARGIN_SECONDS + 1
+            if path == suspect_path
+            else _REDATE_MARGIN_SECONDS
+        )
+        os.utime(path, (parsed_ts - delta, parsed_ts - delta))
+
+    until = datetime.fromtimestamp(
+        min(parsed_ts for _path, parsed_ts in files) - 86_400,
+        tz=timezone.utc,
+    )
+    result = load_required_logs(
+        {"*.log*": "syslog_dir"},
+        {"syslog_dir": [d]},
+        until=until,
+    )
+
+    info = result.rotation_skips["*.log*"]
+    assert info.loaded == 1 and info.skipped == 3 and not info.fallback
+    assert result.logs["*.log*"].empty
+    assert list(result.logs["*.log*"].columns) == _SYSLOG_COLUMNS
+    assert result.warnings == [
+        "auth.log.2: timestamps parse 2 days newer than the file itself was last "
+        "written - RFC 3164 carries no year, so an archive re-dated into the "
+        "current year reads this way"
+    ]
+
+
+def test_redate_policy_is_strict_and_floors_days() -> None:
+    mtime = 1_000_000.0
+    assert not is_redate_suspect(mtime + _REDATE_MARGIN_SECONDS, mtime)
+    assert is_redate_suspect(mtime + _REDATE_MARGIN_SECONDS + 1, mtime)
+    assert redate_days(
+        mtime + _REDATE_MARGIN_SECONDS + (0.6 * 86_400), mtime
+    ) == 2
+
+
+@pytest.mark.parametrize(
+    ("row", "eligible"),
+    [
+        ({"raw": "Jun  5 12:00:00 host sshd[1]: accepted"}, True),
+        ({"raw": "<13>Jun  5 12:00:00 host sshd[1]: accepted"}, True),
+        ({"raw": "  Jun 15 12:00:00 host sshd[1]: accepted  "}, True),
+        ({"raw": "2026-06-05T12:00:00Z host sshd[1]: accepted"}, False),
+        ({"raw": "<13>2026-06-05T12:00:00+00:00 host sshd[1]: accepted"}, False),
+        ({"raw": "host sshd[1]: accepted"}, False),
+        ({}, False),
+        ({"raw": None}, False),
+        ({"raw": 7}, False),
+    ],
+)
+def test_syslog_wall_clock_row_is_total_and_grammar_aware(
+    row: dict,
+    eligible: bool,
+) -> None:
+    assert loader_pipeline._syslog_wall_clock_row(row) is eligible
+
+
+def test_redate_tripwire_mixed_syslog_uses_only_rfc_rows(tmp_path: Path) -> None:
+    stamp = datetime.now().replace(microsecond=0) - timedelta(days=10)
+    rfc = _sys_line(
+        stamp.strftime("%b"), stamp.day, stamp.strftime("%H:%M:%S")
+    )
+    rfc_dt = parse_timestamp(rfc)
+    assert rfc_dt is not None
+    iso_dt = rfc_dt + timedelta(days=5)
+    iso = f"{iso_dt.isoformat()} host sshd[1]: ISO dominates"
+
+    ordinary = tmp_path / "ordinary.log"
+    ordinary.write_text(f"{rfc}\n{iso}\n", encoding="utf-8")
+    os.utime(
+        ordinary,
+        (
+            rfc_dt.timestamp() - _REDATE_MARGIN_SECONDS,
+            rfc_dt.timestamp() - _REDATE_MARGIN_SECONDS,
+        ),
+    )
+    ordinary_warnings: list[str] = []
+    load_syslog(ordinary, _files=[ordinary], _warnings=ordinary_warnings)
+    assert ordinary_warnings == []
+
+    suspect = tmp_path / "suspect.log"
+    suspect.write_text(f"{rfc}\n{iso}\n", encoding="utf-8")
+    os.utime(
+        suspect,
+        (
+            rfc_dt.timestamp() - _REDATE_MARGIN_SECONDS - 1,
+            rfc_dt.timestamp() - _REDATE_MARGIN_SECONDS - 1,
+        ),
+    )
+    suspect_warnings: list[str] = []
+    load_syslog(suspect, _files=[suspect], _warnings=suspect_warnings)
+    assert suspect_warnings == [
+        "suspect.log: timestamps parse 2 days newer than the file itself was last "
+        "written - RFC 3164 carries no year, so an archive re-dated into the "
+        "current year reads this way"
+    ]
+
+
+def test_redate_tripwire_pure_iso_is_silent(tmp_path: Path) -> None:
+    iso_dt = datetime.now(timezone.utc).replace(microsecond=0) - timedelta(days=10)
+    path = tmp_path / "iso.log"
+    path.write_text(
+        f"{iso_dt.isoformat()} host sshd[1]: explicit year\n",
+        encoding="utf-8",
+    )
+    os.utime(
+        path,
+        (
+            iso_dt.timestamp() - _REDATE_MARGIN_SECONDS - 86_400,
+            iso_dt.timestamp() - _REDATE_MARGIN_SECONDS - 86_400,
+        ),
+    )
+    warnings: list[str] = []
+    load_syslog(path, _files=[path], _warnings=warnings)
+    assert warnings == []
+
+
+def test_redate_selector_includes_unvetted_stat_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "auth.log"
+    line = _sys_line("Jun", 5)
+    _write_rot(path, line)
+    ts = parse_timestamp(line)
+    assert ts is not None
+    until = ts - timedelta(days=1)
+
+    real_stat = Path.stat
+
+    def fail_target(self: Path, *args, **kwargs):
+        if self == path:
+            raise OSError("synthetic stat failure")
+        return real_stat(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", fail_target)
+    selected, skipped, fallback = _select_group([path], None, until)
+    assert selected == [path]
+    assert skipped == []
+    assert fallback is False
+
+
+def test_redate_selector_can_include_iso_without_warning(tmp_path: Path) -> None:
+    d = tmp_path / "syslog"
+    d.mkdir()
+    iso_dt = datetime.now(timezone.utc).replace(microsecond=0) - timedelta(days=10)
+    path = d / "auth.log"
+    path.write_text(
+        f"{iso_dt.isoformat()} host sshd[1]: explicit year\n",
+        encoding="utf-8",
+    )
+    os.utime(
+        path,
+        (
+            iso_dt.timestamp() - _REDATE_MARGIN_SECONDS - 1,
+            iso_dt.timestamp() - _REDATE_MARGIN_SECONDS - 1,
+        ),
+    )
+    result = load_required_logs(
+        {"*.log*": "syslog_dir"},
+        {"syslog_dir": [d]},
+        until=iso_dt - timedelta(days=1),
+    )
+    info = result.rotation_skips["*.log*"]
+    assert info.loaded == 1 and info.skipped == 0
+    assert result.logs["*.log*"].empty
+    assert result.warnings == []
+
+
+def test_redate_row_stat_failure_keeps_good_rows(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    stamp = datetime.now().replace(microsecond=0) - timedelta(days=10)
+    line = _sys_line(
+        stamp.strftime("%b"), stamp.day, stamp.strftime("%H:%M:%S")
+    )
+    path = tmp_path / "auth.log"
+    _write_rot(path, line)
+
+    real_stat = Path.stat
+
+    def fail_target(self: Path, *args, **kwargs):
+        if self == path:
+            raise OSError("synthetic stat failure")
+        return real_stat(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", fail_target)
+    warnings: list[str] = []
+    frame = load_syslog(path, _files=[path], _warnings=warnings)
+    assert len(frame) == 1
+    assert warnings == []
+
+
+def test_redate_tripwire_pihole_uses_container_mtime(tmp_path: Path) -> None:
+    stamp = datetime.now().replace(microsecond=0) - timedelta(days=10)
+    line = _dns_line(stamp.strftime("%b"), stamp.day)
+    parsed = parse_timestamp(line)
+    assert parsed is not None
+    path = tmp_path / "pihole.log.gz"
+    path.write_bytes(gzip.compress((line + "\n").encode(), mtime=int(parsed.timestamp())))
+    os.utime(
+        path,
+        (
+            parsed.timestamp() - _REDATE_MARGIN_SECONDS - 1,
+            parsed.timestamp() - _REDATE_MARGIN_SECONDS - 1,
+        ),
+    )
+    warnings: list[str] = []
+    frame = load_pihole(path, _files=[path], _warnings=warnings)
+    assert len(frame) == 1
+    assert warnings == [
+        "pihole.log.gz: timestamps parse 2 days newer than the file itself was last "
+        "written - RFC 3164 carries no year, so an archive re-dated into the "
+        "current year reads this way"
+    ]
+
+
+def test_redate_registry_excludes_non_wall_clock_families() -> None:
+    assert _SOURCE_LOADERS["syslog_dir"].wall_clock_row is not None
+    assert _SOURCE_LOADERS["pihole_dir"].wall_clock_row is not None
+    for source in ("zeek_dir", "cloudtrail_dir", "journal"):
+        assert _SOURCE_LOADERS[source].wall_clock_row is None
+
+
+def test_redate_internal_seams_do_not_extend_loader_facade() -> None:
+    assert not hasattr(loader_module, "_REDATE_MARGIN_SECONDS")
+    assert not hasattr(loader_module, "is_redate_suspect")
+    assert not hasattr(loader_module, "redate_days")
+    assert not hasattr(loader_module, "_redate_warning")
+    assert not hasattr(loader_module, "_syslog_wall_clock_row")
+    assert not hasattr(loader_module, "_pihole_wall_clock_row")
+
+
+def test_redate_sinkless_load_does_not_call_row_hook(tmp_path: Path) -> None:
+    stamp = datetime.now().replace(microsecond=0) - timedelta(days=10)
+    path = tmp_path / "auth.log"
+    _write_rot(
+        path,
+        _sys_line(stamp.strftime("%b"), stamp.day, stamp.strftime("%H:%M:%S")),
+    )
+
+    def explode(_row: dict) -> bool:
+        raise AssertionError("sink-less load evaluated diagnostic hook")
+
+    strategy = loader_pipeline.replace(
+        _SOURCE_LOADERS["syslog_dir"],
+        wall_clock_row=explode,
+    )
+    frame = loader_pipeline.run_load(
+        strategy,
+        [path],
+        "",
+        None,
+        None,
+        _warnings=None,
+    )
+    assert len(frame) == 1
+
+
+def test_redate_tripwire_uses_per_file_max_and_qualified_labels(
+    tmp_path: Path,
+) -> None:
+    stamp = datetime.now().replace(microsecond=0) - timedelta(days=10)
+    older = stamp - timedelta(days=3)
+    newer_line = _sys_line(
+        stamp.strftime("%b"), stamp.day, stamp.strftime("%H:%M:%S")
+    )
+    older_line = _sys_line(
+        older.strftime("%b"), older.day, older.strftime("%H:%M:%S")
+    )
+    newer_ts = parse_timestamp(newer_line)
+    assert newer_ts is not None
+
+    files: list[Path] = []
+    for dirname in ("alpha", "beta"):
+        directory = tmp_path / dirname
+        directory.mkdir()
+        path = directory / "auth.log"
+        path.write_text(f"{older_line}\n{newer_line}\n", encoding="utf-8")
+        os.utime(
+            path,
+            (
+                newer_ts.timestamp() - _REDATE_MARGIN_SECONDS - 1,
+                newer_ts.timestamp() - _REDATE_MARGIN_SECONDS - 1,
+            ),
+        )
+        files.append(path)
+
+    warnings: list[str] = []
+    frame = loader_pipeline.run_load(
+        _SOURCE_LOADERS["syslog_dir"],
+        files,
+        "",
+        None,
+        None,
+        _warnings=warnings,
+    )
+    assert len(frame) == 4
+    assert warnings == [
+        f"{dirname}/auth.log: timestamps parse 2 days newer than the file itself "
+        "was last written - RFC 3164 carries no year, so an archive re-dated "
+        "into the current year reads this way"
+        for dirname in ("alpha", "beta")
+    ]
+
+
+def test_redate_tripwire_live_and_fresh_copy_are_silent(tmp_path: Path) -> None:
+    stamp = datetime.now().replace(microsecond=0) - timedelta(days=10)
+    line = _sys_line(
+        stamp.strftime("%b"), stamp.day, stamp.strftime("%H:%M:%S")
+    )
+    path = tmp_path / "fresh-copy.log"
+    _write_rot(path, line)
+    # The write above gives the copy a current mtime, later than its parsed row.
+    warnings: list[str] = []
+    frame = load_syslog(path, _files=[path], _warnings=warnings)
+    assert len(frame) == 1
+    assert warnings == []
+
+
+def test_redate_late_corrupt_file_gets_only_read_warning(tmp_path: Path) -> None:
+    stamp = datetime.now().replace(microsecond=0) - timedelta(days=10)
+    line = _sys_line(
+        stamp.strftime("%b"), stamp.day, stamp.strftime("%H:%M:%S")
+    )
+    parsed = parse_timestamp(line)
+    assert parsed is not None
+    path = tmp_path / "auth.log.gz"
+    path.write_bytes(gzip.compress((line + "\n").encode())[:-8])
+    os.utime(
+        path,
+        (
+            parsed.timestamp() - _REDATE_MARGIN_SECONDS - 1,
+            parsed.timestamp() - _REDATE_MARGIN_SECONDS - 1,
+        ),
+    )
+    warnings: list[str] = []
+    frame = load_syslog(path, _files=[path], _warnings=warnings)
+    assert frame.empty
+    assert len(warnings) == 1
+    assert "could not be read" in warnings[0]
+    assert "timestamps parse" not in warnings[0]
 
 
 def test_rotation_verbose_skip_lines_tolerate_none_ts(

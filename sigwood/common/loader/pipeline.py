@@ -29,6 +29,7 @@ from sigwood.common.loader.diagnostics import (
     _cloudtrail_parse_warning,
     _log_type,
     _permission_denied_message,
+    _redate_warning,
     _schema_warning,
     _zeek_bad_lines_warning,
     _zeek_file_parse_warning,
@@ -69,6 +70,10 @@ from sigwood.common.loader.provenance import (
     reject_explicit_reserved_path,
     validate_selected_files,
 )
+from sigwood.common.loader.redate import (
+    is_redate_suspect,
+    redate_days,
+)
 from sigwood.common.loader.sniff import _is_ndjson, _looks_binary
 from sigwood.common.loader.types import (
     _CLOUDTRAIL_COLUMNS,
@@ -105,7 +110,11 @@ from sigwood.common.loader.windowing import (
 )
 from sigwood.parsers.cloudtrail import parse_event as _parse_cloudtrail_event
 from sigwood.parsers.dnsmasq import parse_line as _parse_dnsmasq_line
-from sigwood.parsers.syslog import parse_line as _parse_syslog_line
+from sigwood.parsers.syslog import (
+    PRI_RE,
+    SYSLOG_TS_RE,
+    parse_line as _parse_syslog_line,
+)
 from sigwood.parsers.zeek import (
     _COLLISION_MAPS,
     _has_rename_collision,
@@ -165,6 +174,9 @@ class SourceLoader:
         caller-owned directory-denial sink. All four filesystem families opt in
         for their configured input root; CloudTrail recursive child denials stay
         outside that root-probe contract.
+      - ``wall_clock_row(row)``: optional total row-local predicate identifying
+        timestamps whose source grammar relies on wall-clock year inference.
+        It is diagnostic-only and is evaluated only when a warning sink exists.
     """
 
     discover: Callable[[Path, str, datetime | None, datetime | None], list[Path]]
@@ -211,6 +223,8 @@ class SourceLoader:
     # See the class docstring. False preserves programmatic strategy callables
     # and non-filesystem strategies that do not accept the private sink.
     records_directory_denials: bool = False
+    # Total row-local eligibility for the RFC 3164 re-date diagnostic.
+    wall_clock_row: Callable[[dict], bool] | None = None
 
     def discover_paths(
         self,
@@ -525,6 +539,15 @@ def _syslog_strategy_parse(line_iter, *, path, warnings):  # noqa: ARG001
         }
 
 
+def _syslog_wall_clock_row(row: dict) -> bool:
+    """Return whether a canonical syslog row originated as RFC 3164 text."""
+    raw = row.get("raw")
+    if not isinstance(raw, str):
+        return False
+    stripped = PRI_RE.sub("", raw).strip()
+    return SYSLOG_TS_RE.match(stripped) is not None
+
+
 def _pihole_strategy_parse(line_iter, *, path, warnings):  # noqa: ARG001
     """Pi-hole stream parse: yield canonical rows with float/NaN ``ts``.
 
@@ -540,6 +563,11 @@ def _pihole_strategy_parse(line_iter, *, path, warnings):  # noqa: ARG001
         ts_dt = record["ts"]
         record["ts"] = ts_dt.timestamp() if ts_dt is not None else float("nan")
         yield record
+
+
+def _pihole_wall_clock_row(row: dict) -> bool:  # noqa: ARG001
+    """Pi-hole/dnsmasq timestamps always use the yearless wall clock."""
+    return True
 
 
 def _cloudtrail_strategy_parse(line_iter, *, path, warnings):
@@ -769,6 +797,7 @@ def run_load(
         file_rows: list[dict] = []
         file_first_ts: float | None = None
         file_last_ts: float | None = None
+        eligible_observed_max: float | None = None
         file_span: FileSpan | None = None
         attempted_this_file = False
         try:
@@ -840,6 +869,16 @@ def run_load(
                                 continue
                             row["ts"] = normalized_ts
                             tracker.observe(normalized_ts)
+                            if (
+                                _warnings is not None
+                                and strategy.wall_clock_row is not None
+                                and strategy.wall_clock_row(row)
+                                and (
+                                    eligible_observed_max is None
+                                    or normalized_ts > eligible_observed_max
+                                )
+                            ):
+                                eligible_observed_max = normalized_ts
                             if since_ts is not None and normalized_ts < since_ts:
                                 continue
                             if until_ts is not None and normalized_ts > until_ts:
@@ -914,6 +953,22 @@ def run_load(
                     )
                 )
             continue
+        if _warnings is not None and eligible_observed_max is not None:
+            try:
+                mtime = path.stat().st_mtime
+            except OSError:
+                pass
+            else:
+                if is_redate_suspect(eligible_observed_max, mtime):
+                    _warnings.append(
+                        _redate_warning(
+                            path,
+                            redate_days(eligible_observed_max, mtime),
+                            display_label=(
+                                strategy.display_label or _qualified_label(path)
+                            ),
+                        )
+                    )
         if _quality is not None:
             _quality.committed_files += 1
         if strategy.mode == "stream":
@@ -1278,6 +1333,7 @@ _SOURCE_LOADERS: dict[str, SourceLoader] = {
         # Peek rotation candidates → conservative (floor, None) + post-load trim.
         resolve_window=_flat_resolve_window,
         records_directory_denials=True,
+        wall_clock_row=_syslog_wall_clock_row,
     ),
     "pihole_dir": SourceLoader(
         discover=lambda p, pattern, since, until, *, _directory_skips=None: (
@@ -1293,6 +1349,7 @@ _SOURCE_LOADERS: dict[str, SourceLoader] = {
         window_select=_rotation_windowed_files,
         resolve_window=_flat_resolve_window,
         records_directory_denials=True,
+        wall_clock_row=_pihole_wall_clock_row,
     ),
     "cloudtrail_dir": SourceLoader(
         discover=lambda p, pattern, since, until, *, _directory_skips=None: (

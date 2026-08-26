@@ -22,6 +22,7 @@ from sigwood.common.display import (
     default_window_advisory,
     fmt_data_found,
     fmt_generated,
+    group_skips,
     hidden_cursor,
     liveness,
     narration_active,
@@ -30,6 +31,28 @@ from sigwood.common.display import (
     set_narration_enabled,
     version_string,
 )
+
+
+def test_group_skips_returns_raw_ordered_structure() -> None:
+    assert group_skips({
+        "beacon": "zeek_dir not configured",
+        "scan": "zeek_dir not configured",
+        "aws": "cloudtrail_dir not configured",
+        "exfil": "zeek_dir not configured",
+    }) == [
+        ("zeek_dir not configured", ["beacon", "scan", "exfil"]),
+        ("cloudtrail_dir not configured", ["aws"]),
+    ]
+
+
+def test_group_skips_does_not_merge_reasons_that_only_sanitize_equal() -> None:
+    assert group_skips({
+        "beacon": "missing /hostile\npath",
+        "scan": "missing /hostilepath",
+    }) == [
+        ("missing /hostile\npath", ["beacon"]),
+        ("missing /hostilepath", ["scan"]),
+    ]
 
 
 def test_default_window_advisory_exact_string() -> None:
@@ -41,6 +64,10 @@ def test_default_window_advisory_exact_string() -> None:
     )
     # spec is interpolated, not hardcoded
     assert "last 7d of available data" in default_window_advisory("7d")
+    assert default_window_advisory("1d", open_ended=True) == (
+        "default window: last 1d of dated archives plus live data - "
+        "use --all for the full archive, or --since/--days to widen"
+    )
 
 
 @pytest.mark.parametrize(

@@ -401,7 +401,7 @@ def test_documented_config_key_inventory_is_not_defaults_only() -> None:
             "burst_high_error_rate", "burst_high_service_count",
             "composite_medium_threshold", "composite_low_threshold",
         },
-        "beacon": {"bin_seconds", "min_connections", "threshold"},
+        "beacon": {"min_connections", "threshold"},
         "dns": {
             "min_cluster_size", "min_samples", "threshold", "thresh_high_entropy",
             "scan_dense_clusters", "scan_min_high_entropy_fraction",

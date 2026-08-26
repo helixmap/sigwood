@@ -35,6 +35,7 @@ import sigwood.detectors.beacon as beacon_module
 from sigwood.common.finding import DetectorContext, Severity
 from sigwood.detectors.beacon import (
     DEFAULT_CONFIG,
+    _BIN_SECONDS,
     _DEFAULT_HOME_NET,
     _MIN_RELIABLE_SPAN_DAYS,
     _compute_beacon_score,
@@ -48,7 +49,7 @@ from sigwood.detectors.beacon import (
 from tests.test_voice_consistency import assert_report_voice
 
 _T0 = 1_750_000_000.0
-_BIN = DEFAULT_CONFIG["bin_seconds"]
+_BIN = _BIN_SECONDS
 _THRESHOLD = DEFAULT_CONFIG["threshold"]
 _WINDOW = (
     datetime(2026, 6, 1, tzinfo=timezone.utc),
@@ -979,10 +980,6 @@ class BeaconEligibilityTests(unittest.TestCase):
         ({"min_connections": 0}, r"\[detectors\.beacon\]\.min_connections"),
         ({"min_connections": 1.5}, r"\[detectors\.beacon\]\.min_connections"),
         ({"min_connections": True}, r"\[detectors\.beacon\]\.min_connections"),
-        ({"bin_seconds": 0}, r"\[detectors\.beacon\]\.bin_seconds"),
-        ({"bin_seconds": -1}, r"\[detectors\.beacon\]\.bin_seconds"),
-        ({"bin_seconds": 1.5}, r"\[detectors\.beacon\]\.bin_seconds"),
-        ({"bin_seconds": True}, r"\[detectors\.beacon\]\.bin_seconds"),
     ],
 )
 def test_validate_config_rejects_invalid_values(

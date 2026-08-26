@@ -39,6 +39,7 @@ from sigwood.common.config import (
     detector_disclosure_lines,
     get_detector_config,
     parse_window_span,
+    resolve_home_net,
     validate_table_sections,
 )
 from sigwood.common.display import (
@@ -53,6 +54,7 @@ from sigwood.common.display import (
     fmt_compact_span,
     fmt_timestamp,
     fmt_window,
+    group_skips,
     human_bytes,
     hidden_cursor,
     liveness,
@@ -528,6 +530,7 @@ def _run_era_harness(
     windows and sink plans.  The aggregate receipt deliberately contains no
     root path or source filename.
     """
+    home_net = resolve_home_net(config)
     from sigwood.common import loader
     from sigwood.era.harness import EraFoldState, make_era_fold_sink
     from sigwood.era.observation import (
@@ -587,7 +590,6 @@ def _run_era_harness(
         )
 
     interval = ReportInterval(*archive_plan.span)
-    home_net = list(config.get("sigwood", {}).get("home_net", []))
     reducer = EraReducer.from_archive_plan(archive_plan, interval, home_net=home_net)
     inventory = dict(archive_plan.inventory)
     prepared_snapshots: dict[tuple[date, str], Any] = {}
@@ -1061,6 +1063,7 @@ def _run_analyze(
     invocation: str | None = None,
 ) -> int:
     cfg_sigwood = config.get("sigwood", {})
+    home_net = resolve_home_net(config)
 
     # Display timezone for every render surface this run touches (banner,
     # findings, report auto-name date). Set at entry so the dry-run banner and
@@ -1330,7 +1333,6 @@ def _run_analyze(
     # Build run summary and begin output before the detector loop so the banner
     # ("Data found:", "Records:", "Detectors:") appears before analysis starts.
     data_sources = _derive_data_sources(plan.needed_logs, load_result.record_counts)
-    home_net = list(config.get("sigwood", {}).get("home_net", []))
     # Resolve the allowlist plan once before note assembly. New Beacon failure-cause
     # notes inspect the exact post-allowlist view the detector will receive; the two
     # older source-shape notes below deliberately retain their raw-loaded population.
@@ -1452,7 +1454,7 @@ def _run_analyze(
     beacon_span_note = _beacon_span_note(plan, logs, requested_span)
     if beacon_span_note:
         notes.append(beacon_span_note)
-    home_net_note = _home_net_note(plan, config)
+    home_net_note = _home_net_note(plan, config, home_net)
     if home_net_note:
         notes.append(home_net_note)
     default_opt_in_note = _default_opt_in_note(plan, selection, detect_spec)
@@ -1783,8 +1785,7 @@ def _plan_and_load(
         selection=selection,
     )
     _emit_syslog_skip_diagnostic(plan, provider_decision, syslog_intent)
-    for name, reason in plan.skipped.items():
-        _warn_skipped(name, reason)
+    _warn_skips(plan.skipped)
     if not plan.will_run:
         if plan.skipped:
             _estderr(
@@ -1838,7 +1839,15 @@ def _plan_and_load(
                     ),
                 }
     if load_windows and not quiet:
-        _estderr(default_window_advisory(default_spec))
+        open_ended = any(
+            window.trim_span is None
+            and window.select_window is not None
+            and window.select_window[1] is None
+            for window in load_windows
+        )
+        _estderr(default_window_advisory(
+            default_spec, open_ended=open_ended,
+        ))
     dnsblock_prepared: Any | None = None
     report_interval = (
         (since, until) if since is not None and until is not None else None
@@ -3373,9 +3382,18 @@ def _estderr(line: str) -> None:
     print(strip_control(line), file=sys.stderr)
 
 
-def _warn_skipped(detector_name: str, reason: str) -> None:
-    """Print a skip warning to stderr in the canonical format."""
-    _estderr(f"{reason} - skipping {detector_name} detection")
+def _warn_skips(skipped: Mapping[str, str]) -> None:
+    """Group raw-identical plan reasons, then emit each stderr composition."""
+    for reason, names in group_skips(skipped):
+        _warn_skipped(names, reason)
+
+
+def _warn_skipped(detector_names: Sequence[str], reason: str) -> None:
+    """Print one canonical stderr warning for a raw-identical skip group."""
+    if len(detector_names) == 1:
+        _estderr(f"{reason} - skipping {detector_names[0]} detection")
+        return
+    _estderr(f"{reason} - skipping detectors: {', '.join(detector_names)}")
 
 
 # The shipped-Zeek connection/dns/syslog primary log patterns. The dry-run zeek_dir
@@ -3513,12 +3531,8 @@ def _print_dry_run(
     else:
         print(f"{'detectors:':<{_BANNER_LABEL_WIDTH}}  (none - detect spec selected none)")
 
-    # Group detectors by skip reason for compact display
-    by_reason: dict[str, list[str]] = {}
-    for name, reason in skipped.items():
-        by_reason.setdefault(reason, []).append(name)
-
-    for reason, names in by_reason.items():
+    # Promote the shipped raw-equality grouping without changing dry-run bytes.
+    for reason, names in group_skips(skipped):
         print(f"{'skipped:':<{_BANNER_LABEL_WIDTH}}  {', '.join(names)} - {strip_control(reason)}")
 
     if opt_in:
@@ -4702,7 +4716,11 @@ def _beacon_span_note(
     )
 
 
-def _home_net_note(plan: RunPlan, config: dict[str, Any]) -> str | None:
+def _home_net_note(
+    plan: RunPlan,
+    config: dict[str, Any],
+    home_net: list[str],
+) -> str | None:
     """RunSummary note disclosing the internal networks in effect for scan.
 
     Fires only when scan is in plan.will_run. Distinguishes default-vs-declared
@@ -4711,10 +4729,11 @@ def _home_net_note(plan: RunPlan, config: dict[str, Any]) -> str | None:
     RFC1918 list verbatim as "default". When the operator did not declare
     home_net (no config file, or config file omits the key), the parenthetical
     fires; when they did declare it, the note states their value plainly.
+    ``home_net`` is already resolved by the runner entry point; this projector
+    performs no config validation of its own.
     """
     if "scan" not in plan.will_run:
         return None
-    home_net = list(config.get("sigwood", {}).get("home_net", []))
     if not home_net:
         return None
     rendered = ", ".join(home_net)
@@ -5282,7 +5301,14 @@ def _run_graph(
     keep_null = False
     if load_windows:
         window = load_windows[0]
-        default_window_note = default_window_advisory(default_spec)
+        open_ended = (
+            window.trim_span is None
+            and window.select_window is not None
+            and window.select_window[1] is None
+        )
+        default_window_note = default_window_advisory(
+            default_spec, open_ended=open_ended,
+        )
         if window.trim_span is None and window.select_window is not None:
             source_windows = {spec.source_key: window.select_window}
         elif window.trim_span is not None:
@@ -5591,8 +5617,8 @@ def _run_digest(
     # load full and filter by an explicit window only. The caller-side gate below
     # IS the behavior-preservation point - digest invokes the SHARED resolver
     # (loader.resolve_load_windows) for the Zeek source alone, NOT a duplicate
-    # engine. dated → precise (since, until); flat / mixed → post-load trim_span.
-    dated_window: tuple[datetime, datetime] | None = None
+    # engine. dated → open-ended (since, None); flat / mixed → post-load trim_span.
+    dated_window: tuple[datetime, datetime | None] | None = None
     flat_span: timedelta | None = None
     keep_null = False
     default_window_note: str | None = None
@@ -5612,7 +5638,12 @@ def _run_digest(
             # return (we are inside `if _digest_windows:`), NOT the derived
             # dated_window/flat_span locals - it must still hold if the
             # resolver grows another valid window shape.
-            default_window_note = default_window_advisory(default_spec)
+            default_window_note = default_window_advisory(
+                default_spec,
+                open_ended=(
+                    dated_window is not None and dated_window[1] is None
+                ),
+            )
 
     if dry_run:
         print("sigwood  ·  digest  ·  dry run")
@@ -5622,8 +5653,14 @@ def _run_digest(
             print(f"  {'feed:':<{_BANNER_LABEL_WIDTH}} {feed}")
         print(f"  {source_key + ':':<{_BANNER_LABEL_WIDTH}} {strip_control(source_dir)}")
         if dated_window is not None:
+            dated_since, dated_until = dated_window
+            dated_label = (
+                fmt_window((dated_since, dated_until))
+                if dated_until is not None
+                else f"{fmt_timestamp(dated_since)} → end of data"
+            )
             print(
-                f"  {'window:':<{_BANNER_LABEL_WIDTH}} {fmt_window(dated_window)}  "
+                f"  {'window:':<{_BANNER_LABEL_WIDTH}} {dated_label}  "
                 "(dated default)"
             )
         elif flat_span is not None:

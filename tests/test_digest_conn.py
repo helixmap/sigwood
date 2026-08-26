@@ -825,6 +825,69 @@ def test_run_digest_dated_layout_default_window_uses_zeek_dated_helper(
     assert "2026-05-31" in out
 
 
+def test_run_digest_dated_default_keeps_current_row_and_saved_advisory(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    """The digest's own shared-resolver route keeps the live row and its
+    durable saved identity block still carries the shared advisory surface."""
+    zeek_dir = tmp_path / "zeek"
+    archived = datetime(2026, 5, 31, 12, tzinfo=timezone.utc)
+    current = datetime(2026, 6, 1, 12, tzinfo=timezone.utc)
+    _write_conn_ndjson(
+        zeek_dir / "2026-05-31" / "conn.log",
+        [_conn_row(src="10.0.0.1", ts=archived.timestamp())],
+    )
+    _write_conn_ndjson(
+        zeek_dir / "current" / "conn.log",
+        [_conn_row(src="10.0.0.2", ts=current.timestamp())],
+    )
+    captured: dict[str, DigestCard] = {}
+    original = TextHandler.render_digest
+
+    def _spy(self, card):
+        captured["card"] = card
+        return original(self, card)
+
+    monkeypatch.setattr(TextHandler, "render_digest", _spy)
+    saved = tmp_path / "dated-digest.txt"
+    runner.run_digest(
+        config={"sigwood": {"default_window": "1d"}},
+        zeek_dir=zeek_dir,
+        output_file=saved,
+        skip_confirm=True,
+    )
+
+    card = captured["card"]
+    assert card.record_count == 2
+    assert card.data_window == (archived, current)
+    advisory = default_window_advisory("1d", open_ended=True)
+    assert card.default_window_note == advisory
+    assert advisory in saved.read_text(encoding="utf-8")
+
+
+def test_run_digest_dated_default_dry_run_renders_open_end(
+    tmp_path: Path, capsys,
+) -> None:
+    """The open resolver tuple composes as prose; it never reaches fmt_window,
+    whose both-bounds-real invariant remains intact."""
+    zeek_dir = tmp_path / "zeek"
+    _write_conn_ndjson(
+        zeek_dir / "2026-05-31" / "conn.log",
+        [_conn_row(ts=datetime(2026, 5, 31, 12, tzinfo=timezone.utc).timestamp())],
+    )
+
+    runner.run_digest(
+        config={"sigwood": {"default_window": "1d"}},
+        zeek_dir=zeek_dir,
+        dry_run=True,
+    )
+
+    out = capsys.readouterr().out
+    assert "2026-05-31 00:00" in out
+    assert "→ end of data" in out
+    assert "(dated default)" in out
+
+
 def test_run_digest_bounded_target_skips_default_window(
     tmp_path: Path, monkeypatch, capsys
 ) -> None:
@@ -904,7 +967,7 @@ def test_run_digest_dated_default_window_renders_note(
     config: dict[str, Any] = {"sigwood": {"default_window": "1d"}}
     runner.run_digest(config=config, zeek_dir=zeek_dir, skip_confirm=True)
     out = capsys.readouterr().out
-    assert default_window_advisory("1d") in out
+    assert default_window_advisory("1d", open_ended=True) in out
 
 
 def test_run_digest_explicit_since_suppresses_note(

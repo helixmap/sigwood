@@ -25,6 +25,7 @@ from sigwood.common.display import (
     fmt_generated,
     fmt_suppression,
     fmt_window,
+    group_skips,
     human_bytes,
     paint,
     plural,
@@ -624,9 +625,9 @@ class TextHandler(OutputHandler):
             ))
 
         if run_summary.detectors_skipped:
-            for name, reason in run_summary.detectors_skipped.items():
+            for reason, names in group_skips(run_summary.detectors_skipped):
                 lines.extend(_summary_line(
-                    "skipped:", f"{name} - {_sanitize(reason)}"
+                    "skipped:", f"{', '.join(names)} - {_sanitize(reason)}"
                 ))
 
         for note in run_summary.notes:
@@ -826,10 +827,14 @@ class TextHandler(OutputHandler):
                 out.append("")
             out.append(label_line)
 
-            # dense-cluster scan summary: full-width prose rows (mirror
+            # Synthetic DNS disclosures: full-width prose rows (mirror
             # _render_aws_group's summary loop). Keyed on tier, not the label - a
             # full-width row must never fall through to the keyed[...] reads below.
-            if section.findings and section.findings[0].evidence.get("tier") == "scan_summary":
+            if (
+                section.findings
+                and section.findings[0].evidence.get("tier")
+                in {"scan_summary", "unscanned_clusters"}
+            ):
                 for f in section.findings:
                     _keyed, bare = _cells(f)  # bare = [full-width prose]
                     tag = f"{str(f.severity):<4}"

@@ -5,7 +5,7 @@ Algorithm:
   Nyquist floor at twice the bin: nothing faster than a 60s cadence is representable,
   a sub-60s cadence aliases to a longer reported period, and a cadence exactly at the
   floor scores anchor-sensitively (arrivals of a bin-multiple cadence sit on bin
-  boundaries, so identical flows can score far apart). bin_seconds is a calibration
+  boundaries, so identical flows can score far apart). The bin size is a calibration
   constant - threshold, period band, and the reference calibration are tuned to 30s.
 - Compute FFT over the binned time grid (resilient to data gaps vs raw inter-arrival)
 - Composite score: 40% spectral ratio + 40% peak prominence + 20% inverted jitter CV
@@ -47,12 +47,12 @@ OPTIONAL_LOGS: list[dict] = []
 DEFAULT_CONFIG = {
     "threshold": 0.5,
     "min_connections": 20,
-    "bin_seconds": 30,
 }
 
 DETECTOR_METHOD = MethodTag("FFT", named=True)
 
 # Period range to consider (seconds). Outside this, FFT peaks are ignored.
+_BIN_SECONDS = 30
 _MIN_PERIOD = 45
 _MAX_PERIOD = 7200
 _MIN_SCORABLE_SAMPLES = 10
@@ -67,7 +67,7 @@ _MIN_SCORABLE_SAMPLES = 10
 # The bin count is derived from the data span, so nothing chooses it and a
 # prime one is ordinary. Measured: roughly 60 bytes per bin for a smooth bin
 # count and roughly 185 for a prime one, so this ceiling holds dense working
-# memory near 60 MB and 190 MB respectively. At the default 30-second bin size
+# memory near 60 MB and 190 MB respectively. At the fixed 30-second bin size
 # it permits about 347 days - far past any hunt window, and the multi-year
 # spans it now declines are the runaway shape this guard exists to refuse
 # rather than a capability it exists to support.
@@ -109,7 +109,7 @@ def run(context: DetectorContext) -> list[Finding]:
     cfg = context.config
     threshold: float = cfg.get("threshold", DEFAULT_CONFIG["threshold"])
     min_conns: int = cfg.get("min_connections", DEFAULT_CONFIG["min_connections"])
-    bin_size: int = cfg.get("bin_seconds", DEFAULT_CONFIG["bin_seconds"])
+    bin_size = _BIN_SECONDS
 
     df = context.logs.get("conn*.log*")
     if df is None or df.empty:
@@ -317,16 +317,6 @@ def validate_config(cfg: dict) -> None:
             "[detectors.beacon].min_connections must be a positive integer"
         )
 
-    bin_seconds = cfg.get("bin_seconds", DEFAULT_CONFIG["bin_seconds"])
-    if (
-        isinstance(bin_seconds, bool)
-        or not isinstance(bin_seconds, int)
-        or bin_seconds < 1
-    ):
-        raise ValueError(
-            "[detectors.beacon].bin_seconds must be a positive integer"
-        )
-
 
 def _is_non_unicast(ip: object) -> bool:
     """True for a multicast, link-local, or IPv4 limited-broadcast address.
@@ -400,7 +390,7 @@ def analyzed_span_seconds(df: Any) -> float:
 
 def _compute_beacon_score(
     ts_array: np.ndarray,
-    bin_size: int = 30,
+    bin_size: int = _BIN_SECONDS,
 ) -> dict[str, Any] | None:
     """Score a single flow's connection timestamps for periodic beaconing via FFT.
 

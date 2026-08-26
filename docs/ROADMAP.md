@@ -73,7 +73,7 @@ needs re-checking.
 | Discovery | LAN sweeps (`scan`), cloud enumeration bursts (`aws`) | Already the best-served here |
 | Lateral Movement | Multi-host authentication failures for one source and account (`auth`) | Zeek SMB and SSH logs |
 | Collection | Nothing claimed | Zeek SMB logs |
-| Command and Control | Check-in timing (`beacon`); generated-looking domains (`dns`), with the dense tunnel path Zeek-only | TLS anomalies, odd ports, tunnel log |
+| Command and Control | Check-in timing (`beacon`); generated-looking domains (`dns`), with the dense tunnel path Zeek-only | Odd ports, tunnel log |
 | Exfiltration | DNS tunnelling shapes (`dns`, Zeek-only for the dense path); bulk outbound byte transfers (`exfil`) | Transfers below the byte floor or split across many destinations; exfiltration inside an allowed cloud service |
 | Impact | No mining-specific verdict; generic check-ins (`beacon`) can be a downstream clue | Cloud destruction events; SMB file activity |
 

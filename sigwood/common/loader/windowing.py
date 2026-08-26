@@ -23,6 +23,7 @@ import pandas as pd
 
 import sigwood.common.loader as _loader  # facade: _open_log patch-through (call-time only)
 from sigwood.common.loader.io import _safe_resolve
+from sigwood.common.loader.redate import is_redate_suspect
 from sigwood.common.loader.types import (
     CoverageTracker,
     LoadResult,
@@ -49,16 +50,17 @@ class LoadWindow:
 
     Fields:
       - ``source``: the family this resolves for (dir key, e.g. ``"syslog_dir"``).
-      - ``select_window``: the runner routes this by ``trim_span`` - a precise
-        ``(since, until)`` for a dated-Zeek layout (``trim_span`` None) goes to
-        ``source_windows`` (row filter + discovery); a conservative ``(floor, None)``
-        for a peekable flat family (``trim_span`` set) goes to ``file_select_windows``
-        (rotation-peek only); ``None`` loads the family full (flat/mixed Zeek,
-        unpeekable flat fallback, the universal default for a declarationless
-        source). Flat floors preserve the open-ended ``(floor, None)`` shape.
+      - ``select_window``: the runner routes this by ``trim_span`` - a dated-Zeek
+        ``(since, None)`` (``trim_span`` None) goes to ``source_windows`` (row floor
+        + discovery); a conservative flat-family ``(floor, None)`` (``trim_span``
+        set) goes to ``file_select_windows`` (rotation-peek only). The tuple shape
+        is intentionally shared; routing and trim ownership distinguish the paths.
+        ``None`` loads the family full (flat/mixed Zeek, unpeekable flat fallback,
+        the universal default for a declarationless source).
       - ``trim_span``: the precise post-load trim span, anchored on the family's own
-        max-ts. ``None`` ONLY for the dated-Zeek path (its ``select_window`` already
-        cut exactly at load); set for every load-full / conservative path.
+        max-ts. ``None`` ONLY for the dated-Zeek path (date-directory selection plus
+        its open-ended row floor already own the load-time default); set for every
+        load-full / conservative path.
       - ``keep_null``: the source's ts policy - keep-policy families (syslog/pihole)
         retain unparseable-ts rows through the implicit trim, exactly as through an
         explicit window.
@@ -359,6 +361,17 @@ def _select_group(
         prev_ts = ts
         if until is not None and ts > until:
             # Leading file entirely AFTER the window (its oldest row > until).
+            # A re-dated RFC 3164 archive can look too new only because the
+            # parser supplied the current year.  Include it so the grammar-aware
+            # row loop can decide whether to warn; selection remains silent.
+            try:
+                mtime = f.stat().st_mtime
+            except OSError:
+                selected.append(f)  # unvetted → conservative include
+                continue
+            if is_redate_suspect(ts.timestamp(), mtime):
+                selected.append(f)
+                continue
             skipped.append((f.name, ts))
             continue
         if since is not None and ts < since:

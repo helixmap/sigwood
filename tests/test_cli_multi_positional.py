@@ -390,10 +390,10 @@ def test_zeek_dated_default_window_union_across_inputs(tmp_path: Path) -> None:
     (b / "2026-01-05").mkdir()
 
     # span=2d → newest 2 distinct dates across the union (Jan 3 + Jan 5),
-    # window Jan 3 → Jan 5.
+    # floor Jan 3 with an open end.
     since, until = loader._zeek_dated_window([a, b], timedelta(days=2))
     assert since.date().isoformat() == "2026-01-03"
-    assert until.date().isoformat() == "2026-01-05"
+    assert until is None
 
 
 def test_zeek_dated_default_window_returns_none_when_file_alongside_dir(

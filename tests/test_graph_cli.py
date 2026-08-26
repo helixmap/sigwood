@@ -1613,6 +1613,43 @@ def test_run_graph_date_directory_filters_real_zeek_rows_for_every_graph_kind(
     assert meta["default_window_note"] == expected_note
 
 
+def test_run_graph_dated_root_inherits_open_ceiling_for_current_row(
+    tmp_path: Path,
+    restore_display_utc,
+) -> None:
+    """The parent dated root uses the shared resolver and admits ``current/``;
+    the lone exact-date act above remains its own closed same-day exception."""
+    source = tmp_path / "zeek"
+    archived_dir = source / "2026-05-25"
+    current_dir = source / "current"
+    archived_dir.mkdir(parents=True)
+    current_dir.mkdir()
+    archived = datetime(2026, 5, 25, 12, tzinfo=timezone.utc)
+    current = datetime(2026, 5, 26, 12, tzinfo=timezone.utc)
+    _write_conn_gz(archived_dir / "conn.log.gz", archived.timestamp(), "C0")
+    _write_conn_gz(current_dir / "conn.log.gz", current.timestamp(), "C1")
+    config = _config()
+    config["sigwood"]["default_window"] = "1d"
+    stream = io.StringIO()
+
+    runner.run_graph(
+        config,
+        kind="conn",
+        inputs=source,
+        stream=stream,
+        quiet=True,
+        use_utc=True,
+    )
+
+    blob = stream.getvalue().split("const DATA = ", 1)[1].split(";</script>", 1)[0]
+    meta = json.loads(blob)["meta"]
+    assert meta["rows"] == 2
+    assert meta["t1"] == current.timestamp()
+    assert meta["default_window_note"] == default_window_advisory(
+        "1d", open_ended=True,
+    )
+
+
 def test_run_graph_date_directory_meta_omits_fully_excluded_file(
     tmp_path: Path,
     restore_display_utc,

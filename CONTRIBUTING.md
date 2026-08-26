@@ -47,8 +47,15 @@ A detector is a module you drop into `sigwood/detectors/`. There's no registry
 to edit and nothing to import anywhere - the framework scans the package at
 startup and picks up any module that declares `DETECTOR_NAME` and `STATUS =
 "available"`. Set `STATUS = "planned"` and it stays invisible until you're
-ready; flip it the moment `run()` returns real findings. Some planned detectors
-ship in this state.
+ready; flip it the moment `run()` returns real findings.
+
+There are three contribution tiers:
+
+- A **basic detector** is one module plus tests. It uses the generic renderer and
+  is first-class under be-like-water.
+- A **polished detector** also registers a projector, a text group renderer and
+  its `_render_group` dispatch, a curated-evidence entry, and a parity variant.
+- A **new source family** is cross-cutting. Open an issue before building one.
 
 The contract is a handful of module constants and one function:
 
@@ -104,7 +111,7 @@ Tests go in `tests/test_<name>_detector.py`, built by hand: assemble a
 `DetectorContext` around a synthetic frame and call `run()`. `tests/test_scan_detector.py`
 is a good one to read for the fixture style.
 
-> This is the map, not the full territory. For now the six existing detectors are the
+> This is the map, not the full territory. For now the existing detectors are the
 > best guide - pick one and read it end to end.
 
 ## The notebooks

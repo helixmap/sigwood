@@ -137,6 +137,70 @@ def test_dry_run_uses_shared_text_rule_width(capsys) -> None:
     assert all(len(line) == TEXT_RULE_WIDTH for line in rule_lines)
 
 
+def test_dry_run_grouping_extraction_preserves_exact_bytes(capsys) -> None:
+    _print_dry_run(
+        zeek_dir=None,
+        syslog_dir=None,
+        pihole_dir=None,
+        cloudtrail_dir=None,
+        since=None,
+        until=None,
+        load_all=False,
+        will_run=[],
+        skipped={
+            "beacon": "zeek_dir not configured",
+            "scan": "zeek_dir not configured",
+            "aws": "cloudtrail_dir not configured",
+        },
+    )
+
+    rule = "═" * TEXT_RULE_WIDTH
+    assert capsys.readouterr().out == (
+        "sigwood  ·  threat hunt  ·  dry run\n"
+        f"{rule}\n"
+        "zeek_dir:        not configured\n"
+        "syslog_dir:      not configured\n"
+        "pihole_dir:      not configured\n"
+        "cloudtrail_dir:  not configured\n"
+        "window:          all available data\n"
+        "detectors:       (none - required logs unavailable)\n"
+        "skipped:         beacon, scan - zeek_dir not configured\n"
+        "skipped:         aws - cloudtrail_dir not configured\n"
+        f"{rule}\n"
+        "dry run - remove --dry-run to analyze\n"
+    )
+
+
+def test_dry_run_single_skip_keeps_exact_line(capsys) -> None:
+    _print_dry_run(
+        None, None, None, None, None, None, False, [],
+        {"beacon": "zeek_dir not configured"},
+    )
+
+    skipped = [
+        line for line in capsys.readouterr().out.splitlines()
+        if line.startswith("skipped:")
+    ]
+    assert skipped == ["skipped:         beacon - zeek_dir not configured"]
+
+
+def test_runner_groups_raw_identical_skip_warnings_in_order(tmp_path, capsys) -> None:
+    missing = (tmp_path / "missing-zeek").resolve()
+
+    assert runner.run(
+        config={"sigwood": {"detect": "beacon, scan, exfil"}},
+        zeek_dir=missing,
+        load_all=True,
+    ) == 1
+
+    err = capsys.readouterr().err.splitlines()
+    reason = f"zeek_dir {missing} not found"
+    skip_lines = [line for line in err if "skipping" in line]
+    assert skip_lines == [
+        f"{reason} - skipping detectors: beacon, scan, exfil",
+    ]
+
+
 def test_dry_run_lists_cloudtrail_dir(tmp_path: Path, capsys) -> None:
     cloudtrail_dir = tmp_path / "ct"
     cloudtrail_dir.mkdir()
@@ -605,6 +669,73 @@ def test_runner_dated_current_spool_rows_counted_with_explicit_since(
     )
     s = capture_summary["summary"]
     assert s.record_counts.get("conn*.log*", 0) == 2
+
+
+def test_runner_dated_default_keeps_current_row_after_newest_archived_day(
+    tmp_path, capture_summary, capsys,
+):
+    """Daily rotation red gate: prove the fixture loads through an explicit
+    window first, then require the ordinary dated default to keep the same live
+    ``current/`` row after the newest archive day's 23:59:59 ceiling.
+
+    The explicit control prevents a missing file, parser failure, or bad fixture
+    from looking like the expected pre-fix row-filter failure.
+    """
+    zeek_dir = _make_dated_zeek(tmp_path, {
+        "2026-01-05": [_conn(_TS_JAN5)],
+    })
+    current = zeek_dir / "current"
+    current.mkdir()
+    current_ts = _TS_JAN5 + 86400 + 60
+    _write_ndjson(current / "conn.log", [_conn(current_ts)])
+
+    runner.run(
+        config=_BEACON_ONLY,
+        zeek_dir=zeek_dir,
+        since=datetime(2026, 1, 5, tzinfo=timezone.utc),
+        until=datetime(2026, 1, 7, tzinfo=timezone.utc),
+    )
+    assert capture_summary["summary"].record_counts.get("conn*.log*", 0) == 2
+
+    runner.run(config=_BEACON_ONLY, zeek_dir=zeek_dir)
+    summary = capture_summary["summary"]
+    assert summary.record_counts.get("conn*.log*", 0) == 2
+    assert summary.requested_span == timedelta(days=1)
+    assert default_window_advisory(
+        "1d", open_ended=True,
+    ) in capsys.readouterr().err
+
+
+def test_runner_dated_default_deliberately_admits_future_current_row(
+    tmp_path, capture_summary,
+):
+    """The open dated ceiling is deliberately not ``until=now``.
+
+    Derive the row from the live clock so it stays future-stamped whenever the
+    test runs. This defends consistency with flat defaults and ``--all`` without
+    baking a calendar expiration into the regression.
+    """
+    future = (
+        datetime.now(timezone.utc).replace(microsecond=0)
+        + timedelta(days=3650)
+    )
+    archived = future - timedelta(days=20)
+    zeek_dir = _make_dated_zeek(tmp_path, {
+        archived.date().isoformat(): [_conn(archived.timestamp())],
+    })
+    current = zeek_dir / "current"
+    current.mkdir()
+    _write_ndjson(current / "conn.log", [_conn(future.timestamp())])
+
+    config = {"sigwood": {"detect": "beacon", "default_window": "1d"}}
+    runner.run(config=config, zeek_dir=zeek_dir)
+
+    summary = capture_summary["summary"]
+    assert summary.record_counts == {"conn*.log*": 2}
+    assert summary.data_window is not None
+    assert summary.data_window[1] == future
+    assert summary.requested_span == timedelta(days=1)
+    assert not any(_SPAN_NOTE_SUBSTR in note for note in summary.notes)
 
 
 def test_runner_dated_current_tsv_truncated_tail_completes(
@@ -3335,10 +3466,63 @@ def _scan_plan(scan_in_plan: bool) -> SimpleNamespace:
     )
 
 
+def test_home_net_red_gate_programmatic_non_scan_dry_run_rejects_scalar() -> None:
+    from sigwood.common import config as config_module
+
+    with pytest.raises(config_module.ConfigError):
+        runner.run(
+            config={
+                "sigwood": {
+                    "detect": "beacon",
+                    "home_net": "10.0.0.0/8",
+                }
+            },
+            dry_run=True,
+            quiet=True,
+        )
+
+
+def test_home_net_red_gate_scan_run_rejects_before_note_assembly(
+    tmp_path: Path,
+    capture_summary,
+) -> None:
+    """Pre-fix failure text captures the conditional character-list tell."""
+    from sigwood.common import config as config_module
+
+    zeek_dir = _make_flat_zeek(
+        tmp_path,
+        [_conn(_TS_JAN1), _conn(_TS_JAN5)],
+    )
+    try:
+        runner.run(
+            config={
+                "sigwood": {
+                    "detect": "scan",
+                    "default_window": "all",
+                    "home_net": "10.0.0.0/8",
+                }
+            },
+            zeek_dir=zeek_dir,
+            load_all=True,
+        )
+    except config_module.ConfigError:
+        assert capture_summary == {}
+        return
+
+    notes = capture_summary["summary"].notes
+    observed = next(
+        (note for note in notes if note.startswith("internal networks:")),
+        None,
+    )
+    pytest.fail(f"malformed home_net reached RunSummary note assembly as {observed!r}")
+
+
 def test_home_net_note_default_includes_parenthetical() -> None:
     from sigwood.runner import _home_net_note
     config = {"sigwood": {"home_net": _RFC1918_HOME_NET}}
-    note = _home_net_note(_scan_plan(scan_in_plan=True), config)
+    note = _home_net_note(
+        _scan_plan(scan_in_plan=True), config, list(_RFC1918_HOME_NET)
+    )
     assert note is not None
     assert "10.0.0.0/8" in note
     assert "172.16.0.0/12" in note
@@ -3353,7 +3537,9 @@ def test_home_net_note_declared_omits_parenthetical_with_custom_range() -> None:
         "sigwood": {"home_net": ["192.0.2.0/24"]},
         "__user_set__": {"sigwood": {"home_net"}},
     }
-    note = _home_net_note(_scan_plan(scan_in_plan=True), config)
+    note = _home_net_note(
+        _scan_plan(scan_in_plan=True), config, ["192.0.2.0/24"]
+    )
     assert note is not None
     assert "192.0.2.0/24" in note
     assert "RFC1918 default" not in note
@@ -3370,7 +3556,9 @@ def test_home_net_note_declared_omits_parenthetical_when_value_equals_default() 
         "sigwood": {"home_net": list(_RFC1918_HOME_NET)},
         "__user_set__": {"sigwood": {"home_net"}},
     }
-    note = _home_net_note(_scan_plan(scan_in_plan=True), config)
+    note = _home_net_note(
+        _scan_plan(scan_in_plan=True), config, list(_RFC1918_HOME_NET)
+    )
     assert note is not None
     assert "10.0.0.0/8" in note
     assert "RFC1918 default" not in note
@@ -3380,7 +3568,41 @@ def test_home_net_note_declared_omits_parenthetical_when_value_equals_default() 
 def test_home_net_note_returns_none_when_scan_not_in_plan() -> None:
     from sigwood.runner import _home_net_note
     config = {"sigwood": {"home_net": _RFC1918_HOME_NET}}
-    assert _home_net_note(_scan_plan(scan_in_plan=False), config) is None
+    assert _home_net_note(
+        _scan_plan(scan_in_plan=False), config, list(_RFC1918_HOME_NET)
+    ) is None
+
+
+def test_scan_run_resolves_home_net_once_and_threads_it_to_note(
+    tmp_path: Path,
+    capture_summary,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    real_resolve = runner.resolve_home_net
+    calls: list[object] = []
+
+    def recording_resolve(config):
+        calls.append(config)
+        return real_resolve(config)
+
+    monkeypatch.setattr(runner, "resolve_home_net", recording_resolve)
+    zeek_dir = _make_flat_zeek(
+        tmp_path,
+        [_conn(_TS_JAN1), _conn(_TS_JAN5)],
+    )
+    config = {
+        "sigwood": {
+            "detect": "scan",
+            "default_window": "all",
+            "home_net": ["192.0.2.0/24"],
+        },
+        "__user_set__": {"sigwood": {"home_net"}},
+    }
+
+    runner.run(config=config, zeek_dir=zeek_dir, load_all=True)
+
+    assert calls == [config]
+    assert "internal networks: 192.0.2.0/24" in capture_summary["summary"].notes
 
 
 # ── Stage 3: caller-owned TextIO seam for digest fan-out ─────────────────────
@@ -5629,26 +5851,34 @@ def test_beacon_below_scorer_floor_note_is_nonfatal(tmp_path, capture_summary):
     ) in capture_summary["summary"].notes
 
 
-def test_beacon_invalid_config_is_contained_as_prep_error_and_sibling_runs(
-    tmp_path, capture_summary, capsys,
+def test_retired_beacon_bin_seconds_warns_continues_and_is_inert(
+    tmp_path, capture_summary, capsys, monkeypatch,
 ):
+    import sigwood.detectors.beacon as beacon_mod
+
     recs = [_conn_full(_TS_JAN5 + i * 60.0) for i in range(20)]
     zeek_dir = _make_flat_zeek(tmp_path, recs)
+    seen_bin_sizes: list[int] = []
+
+    def _capture_score(_timestamps, bin_size=beacon_mod._BIN_SECONDS):
+        seen_bin_sizes.append(bin_size)
+        return None
+
+    monkeypatch.setattr(beacon_mod, "_compute_beacon_score", _capture_score)
     config = {
-        "sigwood": {"detect": "beacon,scan", "default_window": "1d"},
-        "detectors": {"beacon": {"bin_seconds": 0}},
+        "sigwood": {"detect": "beacon", "default_window": "1d"},
+        "detectors": {"beacon": {"bin_seconds": 1}},
     }
 
-    assert runner.run(config=config, zeek_dir=zeek_dir) == 1
+    assert runner.run(config=config, zeek_dir=zeek_dir) == 0
     err = capsys.readouterr().err
-    reason = (
-        "prep error - [detectors.beacon].bin_seconds must be a positive integer"
+    assert (
+        "config: ignoring unknown setting [detectors.beacon].bin_seconds"
+        in err
     )
-    assert f"beacon: {reason}" in err
-    assert "Traceback" not in err
-    s = capture_summary["summary"]
-    assert s.detectors_failed == {"beacon": reason}
-    assert "scan" in s.detectors_run
+    assert seen_bin_sizes
+    assert set(seen_bin_sizes) == {beacon_mod._BIN_SECONDS}
+    assert capture_summary["summary"].detectors_failed == {}
 
 
 def test_syslog_invalid_config_is_contained_as_prep_error_and_sibling_runs(
@@ -5838,8 +6068,10 @@ def test_conn_summary_only_dir_skips_conn_detectors_no_zero_yield_warning(
         zeek_dir=zeek_dir,
     )
     err = capsys.readouterr().err
-    for name in ("beacon", "scan", "exfil"):
-        assert f"skipping {name} detection" in err
+    assert (
+        f"conn*.log* not found in {zeek_dir} - "
+        "skipping detectors: beacon, scan, exfil"
+    ) in err.splitlines()
     assert "no Zeek records found" not in err
 
 

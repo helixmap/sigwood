@@ -91,6 +91,23 @@ def test_envelope_has_version_and_schema() -> None:
     assert payload["schema_version"] == 1
 
 
+def test_skip_grouping_does_not_change_json_per_detector_mapping() -> None:
+    summary = _run_summary()
+    skipped = {
+        "beacon": "zeek_dir not configured",
+        "scan": "zeek_dir not configured",
+        "aws": "cloudtrail_dir not configured",
+    }
+    summary.detectors_skipped = skipped
+    buf = io.StringIO()
+    handler = JsonHandler(stream=buf)
+    handler.begin(summary)
+    handler.end()
+
+    serialized = json.loads(buf.getvalue())["run_summary"]["detectors_skipped"]
+    assert list(serialized.items()) == list(skipped.items())
+
+
 def test_exfil_pool_members_are_lossless_at_every_reading_level() -> None:
     finding = Finding(
         detector="exfil",

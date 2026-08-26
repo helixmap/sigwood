@@ -106,14 +106,21 @@ def _severity_sort_key(f: Finding) -> int:
 
 
 def _partition_dns(findings: list[Finding]) -> list[Section]:
-    """DNS: groups first, then singletons, then the synthetic dense-cluster scan
-    summary in its own trailing section. Corroborated and promoted families lead
+    """DNS: groups first, then singletons, then a synthetic disclosure section.
+
+    ``scan_summary`` and ``unscanned_clusters`` are mutually exclusive runtime
+    states: the former exists only on the Zeek route and the latter only on the
+    standalone Pi-hole route. Corroborated and promoted families lead
     before the benign-dominant singleton tier. Each
     speaks-iff-non-empty: an empty subsection vanishes entirely. The
-    scan_summary finding is pulled out FIRST - it has no subdomain_count and must
-    not land in the singleton branch."""
+    synthetic findings are pulled out FIRST - they have no subdomain_count and
+    must not land in the singleton branch."""
     scan = [f for f in findings if f.evidence.get("tier") == "scan_summary"]
-    rest = [f for f in findings if f.evidence.get("tier") != "scan_summary"]
+    unscanned = [
+        f for f in findings if f.evidence.get("tier") == "unscanned_clusters"
+    ]
+    synthetic_tiers = {"scan_summary", "unscanned_clusters"}
+    rest = [f for f in findings if f.evidence.get("tier") not in synthetic_tiers]
     singletons = [f for f in rest if "subdomain_count" not in f.evidence]
     groups = [f for f in rest if "subdomain_count" in f.evidence]
     out: list[Section] = []
@@ -123,6 +130,8 @@ def _partition_dns(findings: list[Finding]) -> list[Section]:
         out.append(Section("singletons", singletons, len(singletons)))
     if scan:
         out.append(Section("dense-cluster scan", scan, len(scan)))
+    if unscanned:
+        out.append(Section("unscanned Pi-hole clusters", unscanned, len(unscanned)))
     return out
 
 
@@ -280,7 +289,9 @@ _SEVERITY_SORT_EXEMPT: frozenset[str] = frozenset({"syslog", "dnsblock"})
 # New synthetic all-show tiers join this set; the renderer is otherwise
 # unchanged. dns's ``scan_summary`` (the dense-cluster scan disclosure) is the
 # second entry.
-_ALWAYS_SHOW_TIERS: frozenset[str] = frozenset({"ranked_summary", "scan_summary"})
+_ALWAYS_SHOW_TIERS: frozenset[str] = frozenset({
+    "ranked_summary", "scan_summary", "unscanned_clusters",
+})
 
 
 def _is_always_show(finding: Finding) -> bool:
@@ -453,6 +464,8 @@ def _project_beacon(f: Finding) -> list[Cell]:
 
 def _project_dns(f: Finding) -> list[Cell]:
     ev = f.evidence
+    if ev.get("tier") == "unscanned_clusters":
+        return [Cell(None, f.title, full_width=True)]
     if ev.get("tier") == "scan_summary":
         # Full-width disclosure row (aws ranked_summary shape). MUST come before
         # the subdomain_count / singleton reads - it has neither.

@@ -40,10 +40,15 @@ def _finding(**kw) -> Finding:
     return Finding(**base)
 
 
-def _emit(findings, *, verbose_level: int = 0) -> str:
+def _emit(
+    findings,
+    *,
+    verbose_level: int = 0,
+    summary: RunSummary | None = None,
+) -> str:
     buf = io.StringIO()
     h = CsvHandler(stream=buf, verbose_level=verbose_level)
-    h.begin(_summary())
+    h.begin(summary or _summary())
     h.write(findings)
     h.end()
     return buf.getvalue()
@@ -73,6 +78,19 @@ def test_fixed_column_set_and_order() -> None:
 def test_one_row_per_finding() -> None:
     rows = _rows(_emit([_finding(), _finding(), _finding()]))
     assert len(rows) == 3
+
+
+def test_skip_grouping_does_not_change_csv_bytes() -> None:
+    finding = _finding()
+    baseline = _emit([finding])
+    summary = _summary()
+    summary.detectors_skipped = {
+        "beacon": "zeek_dir not configured",
+        "scan": "zeek_dir not configured",
+        "aws": "cloudtrail_dir not configured",
+    }
+
+    assert _emit([finding], summary=summary) == baseline
 
 
 def test_exfil_pool_stays_one_fixed_shape_row_without_member_list() -> None:

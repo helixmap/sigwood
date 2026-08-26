@@ -73,8 +73,8 @@ sigwood init                         # detection-driven setup, writes a config
 sigwood hunt                         # run the curated default hunt
 ```
 
-**No logs handy?** sigwood ships a small synthetic corpus - one compromised host, no real
-network data - so you can watch it work first:
+**No logs handy?** The repository includes a small synthetic corpus generator - one
+compromised host, no real network data - so you can watch it work first:
 
 ```bash
 git clone https://github.com/helixmap/sigwood
@@ -140,9 +140,8 @@ full run against that corpus, and the same findings as an HTML report:
 Pi-hole for DNS; the live systemd journal, flat rsyslog, and Zeek's own `syslog.log` for syslog -
 and adapt to whichever fidelity they're handed. On a systemd host `syslog` prefers the live
 journal by default (`--syslog-source=auto`); `--syslog-source=files` keeps the flat-file behavior.
-`auth` and `dnsblock` stay opt-in: run `sigwood auth PATH` or
-`sigwood dnsblock /var/log/pihole`, select either by name, or use `--detect=all`.
-Neither joins the curated default hunt automatically.
+`auth` stays opt-in: run `sigwood auth PATH`, select it by name, or use `--detect=all`.
+It does not join the curated default hunt automatically.
 
 Run the curated default hunt (`sigwood hunt`), run everything available
 (`sigwood hunt --detect=all`), select some (`sigwood hunt --detect=beacon,dns`), or exclude
@@ -159,6 +158,14 @@ sees today, what could narrow each gap, and which gaps it will never close - som
 closing them would mean shipping threat-intel feeds or signature packs instead of
 behavior, others because they sit outside its agentless, behavior-first design.
 
+## Evidence and field validation
+
+The [evidence ledger](https://github.com/helixmap/sigwood/blob/main/docs/EVIDENCE.md)
+lists what has been measured for every detector, the limits of each result, and what is
+still owed. To help test sigwood on an environment that did not shape it, use the
+privacy-bounded
+[field validation kit](https://github.com/helixmap/sigwood/blob/main/docs/FIELDKIT.md).
+
 ## Orient before the hunt: `digest`
 
 ```bash
@@ -166,6 +173,15 @@ sigwood digest /var/log/messages
 sigwood digest /var/log/pihole/pihole.log   # a great first move on a Pi-hole box
 sigwood digest conn.log dns.log             # several files → several cards
 ```
+
+For blocked-name behavior behind that same Pi-hole view, run the opt-in detector directly:
+
+```bash
+sigwood dnsblock /var/log/pihole/
+```
+
+The curated default hunt takes only detectors with a measured case for routine use;
+`dnsblock` stays opt-in at 1.0.
 
 `digest` content-sniffs each file, routes it to the right summarizer (conn, dns, syslog,
 weird, cloudtrail), and falls back to a fast byte-profiler - **blob** - for anything it doesn't
@@ -287,6 +303,12 @@ Prefer [uv](https://docs.astral.sh/uv/)? `uv tool install sigwood` does the same
 job. A plain virtualenv also works (`python3 -m venv venv && venv/bin/pip
 install sigwood`; a minimal Debian may need `sudo apt install python3-venv`
 first).
+
+On macOS/arm64, a clean virtualenv install of sigwood 0.5.1 uses roughly half a gigabyte
+on disk; the `[all]` extra rounds to the same figure. Most of that footprint is the
+scientific-Python dependency stack. For run-time memory on large-window DNS runs, see
+**DNS clustering cost rises with the volume of unsuppressed queries** in
+[KNOWN-ISSUES.md](https://github.com/helixmap/sigwood/blob/main/docs/KNOWN-ISSUES.md).
 
 ### Upgrade an existing installation
 

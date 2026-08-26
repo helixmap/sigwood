@@ -139,7 +139,7 @@ def _zeek_dated_window(
     span: timedelta,
     *,
     _directory_skips: dict[tuple[str, Path], DirectorySkipInfo] | None = None,
-) -> tuple[datetime, datetime] | object | None:
+) -> tuple[datetime, datetime | None] | object | None:
     """Compute the default analysis window for a union of Zeek inputs.
 
     PURELY-DATED predicate: every READABLE input is a directory with non-empty
@@ -147,8 +147,10 @@ def _zeek_dated_window(
     represented as empty. When the predicate holds, generalizes the single-input
     selection across the union - gather every discovered date subdir, dedupe by
     date prefix, sort by date, select the newest ``N = ceil(span_days)`` (min 1),
-    and return ``00:00:00`` UTC of the earliest selected → ``23:59:59`` UTC of
-    the newest selected.
+    and return ``00:00:00`` UTC of the earliest selected with an open upper
+    bound. The floor implements the dated default; the open ceiling admits the
+    live ``current/`` spool and deliberately treats future-stamped rows like
+    flat defaults and ``--all`` rather than inventing an ``until=now`` cap.
 
     Returns ``None`` when ANY readable input is a file (file + dated-dir mix) or
     any readable directory is flat (mixed/flat present). Returns the private
@@ -157,11 +159,10 @@ def _zeek_dated_window(
 
     Single-input behavior is BYTE-IDENTICAL with the prior scalar helper: a
     one-element list of a single dated dir runs the same selection
-    (``_zeek_date_subdirs(input)``, newest N, earliest-midnight →
-    newest-23:59:59).
+    (``_zeek_date_subdirs(input)``, newest N, earliest-midnight → open end).
 
     Sparse archives behave correctly: subdirs ``[2026-01-01, 2026-01-05]``
-    with span=2d → BOTH selected, window Jan 1 → Jan 5. Cross-input
+    with span=2d → BOTH selected, floor Jan 1 with an open end. Cross-input
     duplicate dates count once toward N (dedup by date prefix).
     """
     if not paths:
@@ -198,12 +199,9 @@ def _zeek_dated_window(
     n = max(1, math.ceil(span.total_seconds() / 86400))
     selected = unique_by_date[-n:]
     earliest_date = date.fromisoformat(selected[0].name[:10])
-    newest_date = date.fromisoformat(selected[-1].name[:10])
     since = datetime(earliest_date.year, earliest_date.month, earliest_date.day,
                      0, 0, 0, tzinfo=timezone.utc)
-    until = datetime(newest_date.year, newest_date.month, newest_date.day,
-                     23, 59, 59, tzinfo=timezone.utc)
-    return since, until
+    return since, None
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -237,19 +235,20 @@ def _zeek_resolve_window(
     span: timedelta,
     *,
     _directory_skips: dict[tuple[str, Path], DirectorySkipInfo] | None = None,
-) -> tuple[tuple[datetime, datetime] | None, timedelta | None]:
-    """Zeek strategy resolver. Dated layout → a precise ``(since, until)``
-    ``select_window`` and NO post-load trim (the load-time window already cut
-    exactly). Flat / mixed / file and all-denied/unclassifiable → ``(None, span)``
-    (load full, trim post-load); the latter has no rows for the trim to affect.
+) -> tuple[tuple[datetime, datetime | None] | None, timedelta | None]:
+    """Zeek strategy resolver. Dated layout → a lower-bounded ``(since, None)``
+    ``select_window`` and NO post-load trim (date-directory selection and the
+    load-time floor own that default). Flat / mixed / file and
+    all-denied/unclassifiable → ``(None, span)`` (load full, trim post-load); the
+    latter has no rows for the trim to affect.
     """
     dated = _zeek_dated_window(
         dirs, span, _directory_skips=_directory_skips,
     )
     if dated is _ZEEK_DATED_DENIED:
         # No readable input exists from which to infer layout. Preserve the
-        # universal default-window invariant (trim_span is None only when an
-        # exact dated select_window already cut the load); an empty load makes
+        # universal default-window invariant (trim_span is None only when a
+        # dated select_window already owns the load-time default); an empty load makes
         # this post-load trim behaviorally inert.
         return None, span
     if dated is not None:

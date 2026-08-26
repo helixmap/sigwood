@@ -9,6 +9,7 @@ display-labeled ``fmt_window``), and the brand/install-string fixes.
 
 from __future__ import annotations
 
+from collections import Counter
 import io
 import re
 from datetime import datetime, timezone
@@ -471,6 +472,13 @@ def test_range_flag_tripwire_catches_single_value() -> None:
 # This test is the one tracked file that names the private token-file path; the
 # residue scan below excludes this file from itself, so the literal is sanctioned here.
 _RESIDUE_TOKEN_FILE = _SRC_ROOT / "private" / "residue_tokens.txt"
+_RESIDUE_ALLOW_PREFIX = "allow:"
+_RESIDUE_PUBLIC_PREFIX = "public:"
+_RESIDUE_CODE_DIRS = ("sigwood", "tests", "notebooks", "demo")
+_RESIDUE_ROOT_DOCS = ("README.md", "CHANGELOG.md", "CONTRIBUTING.md", "SECURITY.md")
+_RESIDUE_MARKDOWN_FLOOR = 11
+
+ResidueKey = tuple[str, str]
 
 
 def _strip_residue_token_line(line: str) -> str:
@@ -486,15 +494,141 @@ def _strip_residue_token_line(line: str) -> str:
     return "".join(out).strip()
 
 
-def _load_residue_regexes() -> list[re.Pattern[str]]:
+def _parse_residue_policy(
+    text: str,
+) -> tuple[list[re.Pattern[str]], list[re.Pattern[str]], Counter[ResidueKey]]:
+    patterns: list[re.Pattern[str]] = []
+    public_patterns: list[re.Pattern[str]] = []
+    allowances: Counter[ResidueKey] = Counter()
+    for lineno, line in enumerate(text.splitlines(), 1):
+        entry = _strip_residue_token_line(line)
+        if not entry:
+            continue
+        if entry.startswith(_RESIDUE_ALLOW_PREFIX):
+            payload = entry.removeprefix(_RESIDUE_ALLOW_PREFIX)
+            if "\t" not in payload:
+                raise AssertionError(
+                    f"residue policy line {lineno}: allow row needs path<TAB>matched text"
+                )
+            rel_text, matched_text = payload.split("\t", 1)
+            rel = Path(rel_text)
+            if (
+                not rel_text
+                or rel.is_absolute()
+                or rel.as_posix() != rel_text
+                or any(part in ("", ".", "..") for part in rel.parts)
+                or (rel.parts and rel.parts[0] == "private")
+            ):
+                raise AssertionError(
+                    f"residue policy line {lineno}: invalid repository-relative path"
+                )
+            if not matched_text or matched_text != matched_text.strip():
+                raise AssertionError(
+                    f"residue policy line {lineno}: invalid exact matched text"
+                )
+            allowances[(rel_text, matched_text)] += 1
+            continue
+        public = entry.startswith(_RESIDUE_PUBLIC_PREFIX)
+        pattern_text = entry.removeprefix(_RESIDUE_PUBLIC_PREFIX) if public else entry
+        if not pattern_text:
+            raise AssertionError(f"residue policy line {lineno}: empty public pattern")
+        try:
+            compiled = re.compile(pattern_text)
+        except re.error as exc:
+            raise AssertionError(f"residue policy line {lineno}: {exc}") from exc
+        patterns.append(compiled)
+        if public:
+            public_patterns.append(compiled)
+
+    if not patterns:
+        raise AssertionError("residue policy contains no regex patterns")
+    if not public_patterns:
+        raise AssertionError("residue policy contains no public-surface regex patterns")
+    for _rel, matched_text in allowances:
+        if not any(rx.fullmatch(matched_text) for rx in patterns):
+            raise AssertionError(
+                f"residue allowance text is not a full policy match: {matched_text!r}"
+            )
+    return patterns, public_patterns, allowances
+
+
+def _load_residue_policy(
+) -> tuple[list[re.Pattern[str]], list[re.Pattern[str]], Counter[ResidueKey]]:
     if not _RESIDUE_TOKEN_FILE.exists():
         pytest.skip("residue token list not present - dev-box enforced, public CI skips")
-    patterns: list[str] = []
-    for line in _RESIDUE_TOKEN_FILE.read_text(encoding="utf-8").splitlines():
-        pattern = _strip_residue_token_line(line)
-        if pattern:
-            patterns.append(pattern)
-    return [re.compile(pattern) for pattern in patterns]
+    return _parse_residue_policy(_RESIDUE_TOKEN_FILE.read_text(encoding="utf-8"))
+
+
+def _residue_scan_paths() -> list[Path]:
+    paths: list[Path] = []
+    for dirname in _RESIDUE_CODE_DIRS:
+        root = _SRC_ROOT / dirname
+        assert root.is_dir(), f"residue scan root is missing: {root}"
+        for path in sorted(root.rglob("*")):
+            if path.suffix not in (".py", ".ipynb"):
+                continue
+            if any(part in ("__pycache__", ".ipynb_checkpoints") for part in path.parts):
+                continue
+            paths.append(path)
+
+    docs_root = _SRC_ROOT / "docs"
+    assert docs_root.is_dir(), f"residue docs root is missing: {docs_root}"
+    paths.extend(sorted(docs_root.rglob("*.md")))
+    for name in _RESIDUE_ROOT_DOCS:
+        path = _SRC_ROOT / name
+        assert path.is_file(), f"residue root document is missing: {name}"
+        paths.append(path)
+
+    private_root = (_SRC_ROOT / "private").resolve()
+    for path in paths:
+        resolved = path.resolve()
+        assert resolved != private_root and private_root not in resolved.parents, (
+            f"public residue scan path resolves inside private/: {path}"
+        )
+    return paths
+
+
+def _residue_occurrences_for_text(
+    rel: str,
+    text: str,
+    regexes: list[re.Pattern[str]],
+) -> tuple[Counter[ResidueKey], dict[ResidueKey, list[int]]]:
+    observed: Counter[ResidueKey] = Counter()
+    locations: dict[ResidueKey, list[int]] = {}
+    for lineno, line in enumerate(text.splitlines(), 1):
+        for rx in regexes:
+            for match in rx.finditer(line):
+                key = (rel, match.group(0))
+                observed[key] += 1
+                locations.setdefault(key, []).append(lineno)
+    return observed, locations
+
+
+def _residue_policy_delta(
+    observed: Counter[ResidueKey],
+    allowed: Counter[ResidueKey],
+) -> tuple[Counter[ResidueKey], Counter[ResidueKey]]:
+    unexpected = observed - allowed
+    # This subtraction is deliberately two-sided. An unused allowance can look
+    # like harmless bookkeeping, but rejecting it is what makes grandfathering
+    # shrink-only instead of a permanent permission for residue to return.
+    unused = allowed - observed
+    return unexpected, unused
+
+
+def _format_residue_counter(
+    heading: str,
+    counter: Counter[ResidueKey],
+    locations: dict[ResidueKey, list[int]] | None = None,
+) -> list[str]:
+    lines: list[str] = []
+    for key, count in sorted(counter.items()):
+        rel, matched_text = key
+        where = ""
+        if locations and key in locations:
+            where = f" at lines {locations[key]}"
+        lines.append(f"{heading}: {rel}: {matched_text!r} x{count}{where}")
+    return lines
 
 
 def test_no_internal_workflow_residue_in_source() -> None:
@@ -506,28 +640,113 @@ def test_no_internal_workflow_residue_in_source() -> None:
     Some history-shaped phrasing has legitimate runtime uses and is deliberately
     not machine-pinned here.
     """
-    regexes = _load_residue_regexes()
-    dirs = ("sigwood", "tests", "notebooks", "demo")
+    regexes, public_regexes, allowed = _load_residue_policy()
     this_file = Path(__file__).resolve()
-    violations: list[str] = []
-    scanned_files = 0
-    for d in dirs:
-        for path in sorted((_SRC_ROOT / d).rglob("*")):
-            if path.suffix not in (".py", ".ipynb"):
-                continue
-            if any(part in ("__pycache__", ".ipynb_checkpoints") for part in path.parts):
-                continue
-            if path.resolve() == this_file:
-                continue  # this test names the external token-file path
-            scanned_files += 1
-            for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
-                for rx in regexes:
-                    m = rx.search(line)
-                    if m:
-                        rel = path.relative_to(_SRC_ROOT)
-                        violations.append(f"{rel}:{lineno}: {m.group(0)!r}")
-    assert scanned_files > 100, (
-        f"residue scan walked only {scanned_files} files - a scan root naming a "
+    observed: Counter[ResidueKey] = Counter()
+    locations: dict[ResidueKey, list[int]] = {}
+    scanned_code_files = 0
+    scanned_markdown = 0
+    for path in _residue_scan_paths():
+        if path.resolve() == this_file:
+            continue  # this test names and exercises the external policy grammar
+        if path.suffix == ".md":
+            scanned_markdown += 1
+        else:
+            scanned_code_files += 1
+        rel = path.relative_to(_SRC_ROOT).as_posix()
+        active_regexes = public_regexes if path.suffix == ".md" else regexes
+        found, found_locations = _residue_occurrences_for_text(
+            rel, path.read_text(encoding="utf-8"), active_regexes
+        )
+        observed.update(found)
+        for key, line_numbers in found_locations.items():
+            locations.setdefault(key, []).extend(line_numbers)
+    assert scanned_code_files > 100, (
+        f"residue scan walked only {scanned_code_files} code/notebook files - a scan root naming a "
         "missing directory rglobs nothing and enforces nothing"
     )
-    assert not violations, "internal-workflow residue in source:\n" + "\n".join(violations)
+    assert scanned_markdown >= _RESIDUE_MARKDOWN_FLOOR, (
+        f"residue scan walked only {scanned_markdown} public Markdown files; "
+        f"expected at least {_RESIDUE_MARKDOWN_FLOOR}"
+    )
+    unexpected, unused = _residue_policy_delta(observed, allowed)
+    problems = _format_residue_counter("unexpected residue", unexpected, locations)
+    problems.extend(_format_residue_counter("unused allowance", unused))
+    assert not problems, "internal-workflow residue policy mismatch:\n" + "\n".join(problems)
+
+
+@pytest.mark.parametrize(
+    ("text", "matched_text"),
+    [
+        ("# D99 campaign marker", "D99"),
+        ("# old re-decision note", "re-decision"),
+        ("# stale sealed C1 choice", "sealed C1"),
+    ],
+)
+def test_residue_campaign_patterns_flag_independent_seeds(
+    text: str, matched_text: str
+) -> None:
+    _regexes, public_regexes, _allowed = _load_residue_policy()
+    observed, _locations = _residue_occurrences_for_text(
+        "sigwood/seed.py", text, public_regexes
+    )
+    assert observed == Counter({("sigwood/seed.py", matched_text): 1})
+
+
+def test_residue_campaign_patterns_keep_legitimate_controls() -> None:
+    _regexes, public_regexes, _allowed = _load_residue_policy()
+    assert [rx.pattern for rx in public_regexes] == [
+        r"\b[BDRU]\d{2}\b",
+        "re-decision",
+        r"\bsealed\s+C\d\b",
+    ]
+    controls = "\n".join(
+        [
+            "Strip the Unicode C0 and C1 control classes.",
+            "Zeek fixture uid is C1.",
+            "The lifecycle is sealed after output.",
+            "The alias set is ratified for reconciliation.",
+            "Return the canonical closure payload.",
+            "Public prose may use a load-bearing em dash — without process residue.",
+        ]
+    )
+    observed, _locations = _residue_occurrences_for_text(
+        "sigwood/controls.py", controls, public_regexes
+    )
+    assert observed == Counter()
+
+    markdown_seed, _locations = _residue_occurrences_for_text(
+        "docs/seed.md", "Stale D99 explanation.", public_regexes
+    )
+    assert markdown_seed == Counter({("docs/seed.md", "D99"): 1})
+
+
+def test_residue_allowances_are_occurrence_exact_and_shrink_only() -> None:
+    key = ("sigwood/seed.py", "D99")
+    stale = ("tests/gone.py", "R99")
+
+    unexpected, unused = _residue_policy_delta(Counter({key: 2}), Counter({key: 1}))
+    assert unexpected == Counter({key: 1})
+    assert unused == Counter()
+
+    unexpected, unused = _residue_policy_delta(Counter({key: 1}), Counter({stale: 1}))
+    assert unexpected == Counter({key: 1})
+    assert unused == Counter({stale: 1})
+
+    unexpected, unused = _residue_policy_delta(Counter(), Counter({stale: 1}))
+    assert unexpected == Counter()
+    assert unused == Counter({stale: 1})
+
+    unexpected, unused = _residue_policy_delta(Counter(), Counter())
+    assert unexpected == Counter()
+    assert unused == Counter()
+
+
+def test_residue_scan_surface_includes_only_public_markdown() -> None:
+    paths = _residue_scan_paths()
+    rels = {path.relative_to(_SRC_ROOT).as_posix() for path in paths}
+    assert "docs/SCHEMA.md" in rels
+    assert set(_RESIDUE_ROOT_DOCS) <= rels
+    assert {"CODE.md", "AGENTS.md", "CLAUDE.md"}.isdisjoint(rels)
+    private_root = (_SRC_ROOT / "private").resolve()
+    assert all(private_root not in path.resolve().parents for path in paths)

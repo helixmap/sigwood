@@ -20,7 +20,8 @@ box, enumerated badness, or a rulebook.
 ### Is any of my data sent anywhere?
 
 No. sigwood runs on your box, over files on your disk, and talks to no one. There is no
-telemetry, no account, no cloud, no phone-home. The exporters move data *toward* you - they 
+telemetry, no account, no cloud, no phone-home. tldextract has no suffix-list URLs and no
+cache, so it cannot fetch or retain a suffix list. The exporters move data *toward* you - they
 pull logs *in* from Splunk or an S3 CloudTrail bucket to local files - and they never push 
 your data out. (For S3, you authenticate your own shell; sigwood never sees your AWS 
 credentials.)
@@ -615,8 +616,9 @@ claim about the number of human login attempts.
 Every `auth` finding caps at MEDIUM. Failures followed by a success still ride along as
 evidence on the multi-host finding that covers the same source and account — so the report
 does not print one event twice — but that corroboration does not raise a severity today. A
-higher tier has to earn its way back on evidence, and this detector's counting is deliberately
-plain.
+HIGH rule is dormant by design: a synthetic regression pins the multi-host-failure plus
+landing-success shape, but no shipped finding activates that tier. The witness proves that the
+dormant rule recognizes its declared shape; it is not a precision claim about real attacks.
 
 Counts are decision records as each source logged them. A host that reports through more than
 one source — sshd's own log and the audit system, say — can record one event in each, so a
@@ -701,9 +703,14 @@ reproduced.
 
 ### A brand-new repo, a short history, tidy docs - was this written by AI?
 
-Um yep, development was AI-assisted, no point being coy about it. The rest has a less exciting explanation than you might hope. sigwood was built over a few months against one homelab with Zeek, Pi-hole, syslog, a small CloudTrail corpus, and only opened up once it did something useful. The history starts at a single squashed commit because the real history was full of explorations that included that homelab's own IPs, hostnames, and other assets. Squashing was the cleanest way to get every example into line with RFC 5737 (the 192.0.2.x ranges throughout) with nothing real left in the tree. So a repo that looks like it appeared fully formed from Zeus's forehead is really just one person's ordinary, messy iteration, compressed behind that first squashed commit, with the mess kept private for a reason.
+Yes: development was AI-assisted, and the repository's public history begins with a single
+squashed commit because earlier work contained private homelab identifiers that were removed
+before publication.
 
-You don't have to take any of this on faith, though - most of it is checkable. The detection methods are named, published techniques you can look up: FFT for periodicity, HDBSCAN for clustering, drain3 for templating, a plain z-score composite, credited elsewhere in this FAQ. The privacy claim you can verify yourself: tldextract is pinned to run offline, so the tool talks to no one. The test suite is deterministic and passes on a cold install. And [KNOWN-ISSUES.md](KNOWN-ISSUES.md) names and quantifies the tool's own flaws rather than burying them. Read the code, run the tests, point it at your own logs - that will tell you more than this paragraph can.
+Judge the result in the repository: the detection methods and their sources are named above,
+the code is open, the test suite is deterministic,
+[KNOWN-ISSUES.md](KNOWN-ISSUES.md) names and quantifies known flaws, and you can run sigwood
+on your own logs.
 
 ### How do I know the sigwood I installed is genuine?
 

@@ -169,6 +169,13 @@ _VARIANTS: dict[str, Finding] = {
         "dns", Severity.INFO, "dense-cluster scan: high-entropy clusters surfaced", {
             "tier": "scan_summary", "cluster_count": 2, "total_members": 3217,
             "registrable_domains": ["sentineltunnel.example", "sentineldga.example"]}),
+    "dns_unscanned_clusters": _f(
+        "dns", Severity.INFO,
+        "3218 domains formed 2 dense clusters; the dense-cluster tunnel scan runs on "
+        "Zeek DNS only - these clusters were not analyzed.", {
+            "tier": "unscanned_clusters", "cluster_count": 2,
+            "total_members": 3218,
+        }),
 }
 
 

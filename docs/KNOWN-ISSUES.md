@@ -1,9 +1,10 @@
 # Known issues
 
-sigwood is young, and this is the honest ledger of what it doesn't do well yet -
-the rough edges worth knowing before you lean on it. None of them lose or corrupt
-data quietly: where sigwood can't do something well, it says so at run time where it
-can, and in this file where it can't yet. Found something that isn't here? Open an issue.
+sigwood is young, and this is the honest ledger of what it doesn't do well yet — the
+rough edges worth knowing before you lean on it. Where sigwood can notice a gap at run
+time it says so in the run itself; where it can't yet, the entry below is the only
+disclosure — if an entry says "silently," it means it. Found something that
+isn't here? Open an issue.
 
 **Era needs a long, dated archive for all ten cards to speak.** Era's long-horizon cards need
 twelve eligible weeks, not merely twelve calendar weeks. A shorter archive is still measured,
@@ -156,12 +157,15 @@ second is too. Pi-hole DNS findings therefore top out at MEDIUM. This is a fidel
 of the source, not a judgement that the traffic is benign - add Zeek for the same domains
 if you need the distinction.
 
-**On Pi-hole/dnsmasq data, high-volume DNS tunneling can vanish from the report as it
+**On Pi-hole/dnsmasq data, high-volume DNS tunneling stops being identified as it
 grows.** The dense-cluster tunnel scan runs on Zeek DNS only. Pi-hole queries are
 clustered without it, so a burst of random lookups that becomes voluminous enough to
-form its own cluster stops being "noise" and stops being reported - in testing, scaling
-the same DGA burst from 15 to 400 lookups took the report from ten findings to zero,
-with no disclosure that anything was set aside. Until the scan is extended to the
+form its own cluster stops being "noise" and stops producing per-domain findings - in
+testing, scaling the same DGA burst from 15 to 400 lookups took the report from ten
+identified domains to none. One aggregate informational row remains: it states how many
+domains formed how many clusters and that the Zeek-only scan did not inspect them. That
+row names no domain and analyzes nothing - the coverage gap is unchanged, only its
+visibility, and the burst is no longer identifiable from the report alone. Until the scan is extended to the
 Pi-hole path, run the same traffic through Zeek, where the dense-cluster scan closes this
 gap directly. Failing that, read the distinct-domain count on the digest card
 (`sigwood digest /var/log/pihole/pihole.log` prints a `domains:` total): a DGA burst is many
@@ -297,10 +301,11 @@ not a canonical allowlist field, so only whole-host suppression applies on this 
 remote sources disclose that boundary; per-address suppression needs a future normalization and
 allowlist change, not detector-local filtering.
 
-**The only observed auth HIGH witness is synthetic.** The available real estate corpora contain
-no exact multi-host-failure plus landing shape, so they cannot demonstrate HIGH. The positive
-regression uses generated authentication traffic with known structure. That is valid evidence
-that the rule recognizes its declared shape, but it is not a precision claim about real attacks.
+**Auth HIGH is dormant by design, and its positive witness is synthetic.** The available real
+estate corpora contain no exact multi-host-failure plus landing shape, so they cannot activate
+or validate HIGH against real traffic. The positive regression uses generated authentication
+traffic with known structure to pin the dormant rule. That proves the rule recognizes its
+declared shape; it is not a precision claim about real attacks.
 
 **With both Zeek DNS and Pi-hole configured, Pi-hole is enrichment only.** In
 both-source mode Zeek is the clustering source and Pi-hole data enriches those
@@ -387,13 +392,6 @@ pattern (`conn.capture.log` works), or point sigwood at its directory with the
 standard names. Content-trusted explicit files are planned; the filename match is
 the current rule.
 
-**On daily-rotating Zeek trees, the default window can miss today's newest events.**
-The default window is anchored on the newest dated log directory, so on a tree that
-rotates once a day, events written since midnight - which live only in the live
-`current/` spool - can fall just outside it. They're read, then filtered out by the
-window. An explicit `--since` with no `--until` includes them, and `--all` reads the
-whole archive.
-
 **A graph's entity count describes only the timeline it shows.** For bounded Zeek
 files, graph can remove a very small but distant sparse edge so the dense body fills
 the timeline. A host or service found only in that removed edge is therefore absent
@@ -426,7 +424,7 @@ stamps each line with the analysis machine's current year (rolling back one year
 when that would place it more than a week in the future - a stamp a few hours or days
 ahead stays future-dated in the current year) and reads the time in the analysis
 machine's local timezone before converting to UTC. Two consequences: a syslog archive more than a year
-old is silently re-dated into the last twelve months, and a log written on a host in a
+old is re-dated into the last twelve months, and a log written on a host in a
 different timezone (shipped or exported logs) stays offset by the timezone difference -
 and those shifted dates flow into window filtering, digest timelines, and finding data
 windows looking confident. Zeek (epoch), CloudTrail (zoned ISO-8601), and ISO-8601 /
@@ -434,6 +432,30 @@ RFC-3339 syslog (Ubuntu/Pop 24.04+, which carries an explicit year and offset) a
 Analyze wall-clock logs on a machine in the log's own timezone, and treat dates on
 year-old syslog archives with suspicion; a per-source timezone setting is on the list
 if a real deployment needs it.
+
+**sigwood now warns when it can see the re-dating, and cannot see all of it.** A file whose
+timestamps parse more than two days newer than the file's own last-modification time is
+probably an old archive read under the current year, and sigwood says so once per file:
+`timestamps parse 730 days newer than the file itself was last written`. The warning
+**explains, it does not repair** - the dates are still wrong, and every window, timeline and
+data window built from them is still wrong. It is a reason to distrust the run, not a
+correction to it.
+
+Three limits, because knowing which archives it cannot flag matters more than the ones it can:
+
+- **It needs the original modification time.** Copying an archive without preserving mtime
+  (`cp` without `-p`, most downloads, many restores) makes the file look newly written, and
+  nothing is flagged. `tar` and `rsync -a` preserve it; plain copies do not. This one cannot be
+  closed by lowering the threshold - the gap on a fresh copy is a couple of hours, and any
+  threshold that small would false-alarm on ordinary logs shipped far enough across timezones.
+- **The threshold is two days because timezones are worth up to 26 hours.** A log written at
+  UTC+14 and read at UTC-12 legitimately parses more than a full day ahead, so a smaller margin
+  would cry wolf on logs shipped far enough east of where you read them. A genuine re-date is
+  off by a year or more, so the gap between the two is wide - but a file re-dated by less than
+  two days is not flagged.
+- **A mixed-format file whose first line is ISO-8601 can be missed.** sigwood checks a
+  rotation file's first line to decide whether to read it at all; if that line carries an
+  explicit year while later lines do not, the file can be skipped before the check runs.
 
 **ISO-8601 syslog discovery keys on the line shape, so a syslog-shaped application log
 can be picked up.** sigwood recognizes an ISO-8601 syslog line by its `<timestamp> <host>

@@ -6,6 +6,80 @@ All notable changes to sigwood are recorded here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- **`[detectors.beacon].bin_seconds` is no longer a configuration key.** The beacon detector bins a
+  flow's connection times before looking for a rhythm, and every other number in that scorer - the
+  score threshold, the period band it will consider, the peak-prominence normalization, and the
+  reference score quoted in the documentation - was tuned against a 30-second bin. Changing the bin
+  therefore did not adjust sensitivity; it produced scores that could not be compared with any of
+  those numbers, including the threshold deciding whether a finding appeared at all. The value is
+  now fixed in the detector. A configuration file still carrying the key keeps working: sigwood
+  reports `config: ignoring unknown setting [detectors.beacon].bin_seconds` and continues with the
+  calibrated value.
+
+### Added
+
+- **An evidence ledger — what has actually been measured, and what has not.**
+  [docs/EVIDENCE.md](https://github.com/helixmap/sigwood/blob/main/docs/EVIDENCE.md) carries one
+  row for **every** detector, not only the ones with results behind them: what was measured and
+  on what population, what that supports and does not, and what is still owed. Five detectors
+  now have published calibration conclusions under `docs/evidence/`; two are measured with the
+  write-up still owed; and two have no calibration campaign at all, which the ledger says
+  plainly. Nearly all of it rests on one estate, and each record says so itself. If you want to
+  help change that, [FIELDKIT.md](https://github.com/helixmap/sigwood/blob/main/docs/FIELDKIT.md)
+  is the door.
+
+### Fixed
+
+- **sigwood now tells you when a syslog archive's dates look re-dated.** RFC 3164 and Pi-hole
+  logs carry no year, so sigwood stamps them with the current one — which silently moves an
+  archive more than a year old into the last twelve months, and those dates then flow into
+  windows, timelines and finding data windows looking entirely confident. Where the file still
+  carries its original modification time, sigwood now says so once per file: `timestamps parse
+  730 days newer than the file itself was last written`. It explains rather than repairs — the
+  dates are still wrong — and it is deliberately conservative: the two-day threshold exists
+  because a log shipped from a distant timezone legitimately parses up to 26 hours ahead, and a
+  copy made without preserving the modification time cannot be flagged at all. See
+  **RFC 3164 syslog and Pi-hole timestamps carry no year** in
+  [KNOWN-ISSUES.md](https://github.com/helixmap/sigwood/blob/main/docs/KNOWN-ISSUES.md) for
+  what it can and cannot see.
+
+- **On a daily-rotating Zeek tree, a default run now includes today's events.** sigwood anchored
+  its default window on the newest dated log directory and stopped at that day's last second, so
+  anything written since midnight - which lives only in the live `current/` spool - was read from
+  disk and then filtered back out. A plain `sigwood /opt/zeek/logs` at three in the afternoon
+  showed you nothing from that afternoon. The window's lower bound still selects the last N dated
+  days; the upper bound is now open, so the live spool is included. Two consequences worth knowing:
+  a 7-day default can now span eight calendar dates, because it covers seven archived days plus
+  today so far; and a log line stamped in the future - clock skew, a misconfigured sensor - is now
+  admitted rather than silently dropped, which is how every other source already behaved.
+
+- **A large group of Pi-hole domains no longer disappears without a word.** sigwood's
+  dense-cluster tunnel scan runs on Zeek DNS only. On Pi-hole data, domains that cluster together
+  produced no findings and nothing was said about them, so a burst of random lookups that grew
+  large enough to form its own cluster stopped being identified - and where every domain clustered,
+  the run reported nothing at all. The clusters are still not analyzed, which remains a known
+  limitation, but a run now adds one informational row saying how many domains formed how many
+  clusters and that they were not inspected. That row carries counts only - no domain name reaches
+  it - so the burst is still not identifiable from the report alone.
+
+- **Detectors skipped for the same reason are now reported on one line.** Pointing sigwood at a
+  single source - `sigwood /var/log/pihole/` - previously printed one warning per skipped detector
+  and repeated all of them in the report, so a first run could spend ten lines on sources you do
+  not have. Detectors sharing an identical reason are now grouped, and the reason text is unchanged:
+  a source that is configured but outside the paths you named still says so, rather than being
+  described as unconfigured. Machine output is unaffected - the JSON report still carries a
+  separate reason for every skipped detector.
+
+- **A malformed `[sigwood].home_net` now stops the run at startup instead of quietly disabling your
+  topology.** Written as a bare string - `home_net = "10.0.0.0/8"` rather than
+  `home_net = ["10.0.0.0/8"]` - the value was read as a list of single characters, none of which is
+  a network. Depending on which detectors ran, that either silently left sigwood with no internal
+  networks at all, so every address was treated as external and direction-aware analysis lost its
+  meaning, or surfaced as an unhelpful error from the `scan` detector. sigwood now checks the value
+  when it loads your configuration, names the offending entry, and shows the array form.
+
 ## [0.5.1] - 2026-08-25
 
 ### Changed

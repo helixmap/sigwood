@@ -25,6 +25,7 @@ def test_faq_moves_auth_out_of_the_planned_roster_and_explains_severity() -> Non
     state = faq[faq.index("### What state is sigwood in?"):]
     assert "`auth`" not in state.split("### How would I add", 1)[0]
     auth_answer = faq[faq.index("### What does the auth detector look for?"):]
+    auth_answer = auth_answer.split("\n### ", 1)[0]
     for signal in (
         "concentrated failures",
         "source volume",

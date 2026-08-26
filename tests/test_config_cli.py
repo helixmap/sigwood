@@ -264,6 +264,69 @@ from datetime import timedelta
 from sigwood.common.config import parse_window_span
 
 
+def test_home_net_red_gate_bare_string_teaches_array_syntax(tmp_path: Path) -> None:
+    cfg_file = tmp_path / "sigwood.toml"
+    cfg_file.write_text(
+        '[sigwood]\nhome_net = "10.0.0.0/8"\n',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(cfg.ConfigError) as exc_info:
+        cfg.load(cfg_file)
+
+    message = str(exc_info.value)
+    assert "[sigwood].home_net" in message
+    assert 'home_net = ["10.0.0.0/8"]' in message
+
+
+def test_home_net_bad_entry_reports_position_and_value(tmp_path: Path) -> None:
+    cfg_file = tmp_path / "sigwood.toml"
+    cfg_file.write_text(
+        '[sigwood]\nhome_net = ["not-a-network"]\n',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(cfg.ConfigError) as exc_info:
+        cfg.load(cfg_file)
+
+    message = str(exc_info.value)
+    assert "entry 1" in message
+    assert "'not-a-network'" in message
+
+
+def test_home_net_programmatic_bytes_rejected_before_sequence_reasoning() -> None:
+    with pytest.raises(cfg.ConfigError) as exc_info:
+        cfg.resolve_home_net({"sigwood": {"home_net": b"10.0.0.0/8"}})
+
+    assert 'home_net = ["10.0.0.0/8"]' in str(exc_info.value)
+
+
+@pytest.mark.parametrize(
+    ("literal", "expected"),
+    [
+        (
+            '["10.0.0.0/8", "2001:db8::/32"]',
+            ["10.0.0.0/8", "2001:db8::/32"],
+        ),
+        ("[]", []),
+    ],
+)
+def test_home_net_preservation_controls_load_unchanged(
+    tmp_path: Path,
+    literal: str,
+    expected: list[str],
+) -> None:
+    cfg_file = tmp_path / "sigwood.toml"
+    cfg_file.write_text(
+        f"[sigwood]\nhome_net = {literal}\n",
+        encoding="utf-8",
+    )
+
+    config = cfg.load(cfg_file)
+
+    assert config["sigwood"]["home_net"] == expected
+
+
 def test_default_window_in_config_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(cfg, "SEARCH_PATHS", [])
     config = cfg.load(None)

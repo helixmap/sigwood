@@ -16,7 +16,7 @@ import threading
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Iterable, Iterator
+from typing import TYPE_CHECKING, Any, Iterable, Iterator, Mapping
 
 from sigwood import __version__
 
@@ -29,6 +29,21 @@ TEXT_RULE_WIDTH = 80
 TEXT_RULE = "─" * TEXT_RULE_WIDTH
 TEXT_RULE_DOUBLE = "═" * TEXT_RULE_WIDTH
 _UNDERFILL_TOLERANCE = timedelta(hours=1)
+
+
+def group_skips(skipped: Mapping[str, str]) -> list[tuple[str, list[str]]]:
+    """Group detector names by raw-identical skip reason, preserving order.
+
+    This is the structured extraction of the grouping that shipped first in
+    the dry-run banner. Group before any renderer sanitizes or escapes a
+    reason: two raw-distinct values must never merge merely because their
+    safe display forms happen to match. The caller retains ownership of its
+    output grammar and safety choke point.
+    """
+    by_reason: dict[str, list[str]] = {}
+    for name, reason in skipped.items():
+        by_reason.setdefault(reason, []).append(name)
+    return list(by_reason.items())
 
 # Spinner frames cycle in this exact order. Capable terminals use the
 # encode-gated Braille cycle; each frame is one code point and nominally one
@@ -471,15 +486,21 @@ def fmt_generated(generated_at: datetime | None) -> str:
     return f"{fmt_timestamp(generated_at)}  ·  {version_string()}"
 
 
-def default_window_advisory(spec: str) -> str:
-    """The default-window disclosure line, shared by analyze and digest.
+def default_window_advisory(spec: str, *, open_ended: bool = False) -> str:
+    """Return the shared default-window disclosure line.
 
-    One sentence: the unqualified run truncated to the last ``spec`` of
-    available data, plus how to widen. Two consumers route through here so
-    they cannot drift - the analyze pre-load stderr advisory (``run``) and
-    the digest card's identity-block note (``run_digest``).
+    Closed and flat windows retain the original byte-identical sentence.
+    Dated Zeek roots have an open upper bound, so their variant states the
+    archive-date selection plus live-data consequence instead of claiming the
+    result is only the last ``spec`` of all available data. Callers derive
+    ``open_ended`` from the resolved window tuple, never from source layout.
     """
-    return (f"default window: last {spec} of available data - "
+    selected = (
+        f"last {spec} of dated archives plus live data"
+        if open_ended
+        else f"last {spec} of available data"
+    )
+    return (f"default window: {selected} - "
             "use --all for the full archive, or --since/--days to widen")
 
 

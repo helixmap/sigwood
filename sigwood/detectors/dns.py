@@ -108,6 +108,15 @@ _VOLUME_BASIS = "volume-concentration"
 _DENSE_TUNNEL_MIN_CHILDREN = 2
 
 
+@dataclass(frozen=True)
+class PiholeClusterResult:
+    """Standalone Pi-hole clustering result, including the unscanned set-aside."""
+
+    candidates: pd.DataFrame | None
+    cluster_count: int
+    total_members: int
+
+
 def _nxdomain_stats(
     distribution: dict[Any, Any] | pd.Series,
 ) -> tuple[float, int] | None:
@@ -887,12 +896,13 @@ def _run_zeek_path(
 def _run_pihole_path(
     pihole_df: pd.DataFrame,
     pihole_cfg: dict,
-) -> pd.DataFrame | None:
+) -> PiholeClusterResult | None:
     """Run the per-domain aggregate pihole clustering path.
 
-    Returns a candidate_df at the shared-seam contract, source='pihole', with no
-    label-score threshold applied. Returns None when the aggregate is empty or smaller
-    than min_cluster_size (HDBSCAN is undefined on tiny datasets).
+    Returns noise candidates at the shared-seam contract plus counts for every
+    non-noise aggregate row. The counts survive an empty candidate set so an
+    all-cluster run cannot vanish. Returns None only when clustering did not run:
+    the aggregate is empty or smaller than the configured min_cluster_size.
     """
     agg_df = _build_pihole_aggregate(pihole_df)
     if agg_df.empty:
@@ -912,10 +922,17 @@ def _run_pihole_path(
         min_samples=pihole_cfg["min_samples"],
     )
 
+    clustered_labels = labels[labels != -1]
+    cluster_count = int(np.unique(clustered_labels).size)
+    total_members = int(clustered_labels.size)
     noise_mask   = labels == -1
     candidate_df = agg_df[noise_mask].copy().reset_index(drop=True)
     if candidate_df.empty:
-        return None
+        return PiholeClusterResult(
+            candidates=None,
+            cluster_count=cluster_count,
+            total_members=total_members,
+        )
 
     candidate_df["_ext"] = candidate_df["query"].apply(_TLD_EXTRACT)
     candidate_df["label_entropy"] = candidate_df.apply(
@@ -930,7 +947,11 @@ def _run_pihole_path(
     candidate_df.drop(columns=["_ext"], inplace=True)
     candidate_df["source"] = "pihole"
 
-    return candidate_df
+    return PiholeClusterResult(
+        candidates=candidate_df,
+        cluster_count=cluster_count,
+        total_members=total_members,
+    )
 
 
 def _enrich_zeek_with_pihole(
@@ -1202,6 +1223,7 @@ def run(context: DetectorContext) -> list[Finding]:
 
     now = datetime.now(timezone.utc)
     zeek_full_df: pd.DataFrame | None = None
+    pihole_result: PiholeClusterResult | None = None
 
     if has_zeek and has_pihole:
         # Enrich Zeek frame with pihole block data BEFORE clustering (evidence-only;
@@ -1217,7 +1239,10 @@ def run(context: DetectorContext) -> list[Finding]:
             zeek_df, min_cluster_size, min_samples, thresh_high=thresh_high, scan_cfg=scan_cfg,
         )
     else:
-        candidate_df = _run_pihole_path(pihole_df, pihole_cfg)
+        pihole_result = _run_pihole_path(pihole_df, pihole_cfg)
+        candidate_df = (
+            pihole_result.candidates if pihole_result is not None else None
+        )
 
     findings: list[Finding] = []
     surfaced_parents: set[str] = set()
@@ -1238,6 +1263,19 @@ def run(context: DetectorContext) -> list[Finding]:
         )
         if summary is not None:
             findings.append(summary)
+
+    # Standalone Pi-hole clustering has no dense-cluster tunnel scan. Disclose
+    # every non-noise aggregate row exactly once, even when there are zero noise
+    # candidates. This tier and scan_summary are structurally mutually exclusive:
+    # both-source runs cluster on Zeek and standalone Pi-hole never has the Zeek
+    # dense_cluster_id seam.
+    if pihole_result is not None and pihole_result.cluster_count > 0:
+        findings.append(_make_pihole_unscanned_finding(
+            pihole_result.cluster_count,
+            pihole_result.total_members,
+            now,
+            context.data_window,
+        ))
 
     if promote_below_gate and zeek_full_df is not None:
         findings.extend(_make_below_gate_group_findings(
@@ -1603,6 +1641,47 @@ def _make_scan_summary_finding(
             "registrable_domains": reg_domains,
         },
         next_steps=next_steps,
+        ts_generated=now,
+        data_window=data_window,
+    )
+
+
+def _make_pihole_unscanned_finding(
+    cluster_count: int,
+    total_members: int,
+    now: datetime,
+    data_window: tuple[datetime, datetime],
+) -> Finding:
+    """Counts-only disclosure for standalone Pi-hole dense clusters not scanned."""
+    if cluster_count == 1:
+        title = (
+            f"{total_members} domains formed a dense cluster; the dense-cluster "
+            "tunnel scan runs on Zeek DNS only - this cluster was not analyzed."
+        )
+    else:
+        title = (
+            f"{total_members} domains formed {cluster_count} dense clusters; the "
+            "dense-cluster tunnel scan runs on Zeek DNS only - these clusters were "
+            "not analyzed."
+        )
+    return Finding(
+        detector=DETECTOR_NAME,
+        severity=Severity.INFO,
+        title=title,
+        description=(
+            "This is a coverage disclosure, not a detection. Pi-hole supplied the "
+            "aggregate counts, but the Zeek-only dense-cluster scan did not inspect "
+            "the cluster members."
+        ),
+        evidence={
+            "tier": "unscanned_clusters",
+            "cluster_count": cluster_count,
+            "total_members": total_members,
+        },
+        next_steps=[
+            "Use Zeek DNS logs to analyze dense clusters",
+            "See KNOWN-ISSUES for the Pi-hole dense-scan limitation",
+        ],
         ts_generated=now,
         data_window=data_window,
     )

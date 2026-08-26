@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 import inspect
 
 import pandas as pd
+import pytest
 
 from sigwood.common import loader
 from sigwood.era.harness import make_era_fold_sink
@@ -149,6 +150,52 @@ def test_era_harness_names_the_missing_ratified_root_precondition() -> None:
     assert receipt.population_basis == "raw_pre_allowlist"
     assert receipt.missing_precondition == "ratified-archive-root-unreachable"
     assert receipt.rendered_cards is None
+
+
+def test_home_net_red_gate_era_rejects_programmatic_scalar(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    """The era consumer must reject before constructing a reducer."""
+    group = ArchiveDateGroup(_instant(1).date(), (tmp_path,), False)
+    plan = ArchivePlan(
+        groups=(group,),
+        inventory=(),
+        work_estimate=WorkEstimate(0, 0),
+        reconciliation=BaselineReconciliation(
+            expected_dates=frozenset({group.canonical_date}),
+            present_dates=frozenset({group.canonical_date}),
+            missing_dates=(),
+            post_baseline_dates=(),
+            collapsed_tsvpre_dates=(),
+            baseline_source_directory_absent=(),
+        ),
+    )
+
+    def fail_with_observed_home_net(
+        _cls,
+        _plan,
+        _interval,
+        *,
+        home_net,
+        **_kwargs,
+    ):
+        pytest.fail(f"era reducer received malformed home_net as {home_net!r}")
+
+    monkeypatch.setattr(
+        EraReducer,
+        "from_archive_plan",
+        classmethod(fail_with_observed_home_net),
+    )
+
+    from sigwood.common import config as config_module
+
+    with pytest.raises(config_module.ConfigError):
+        _run_era_harness(
+            {"sigwood": {"home_net": "10.0.0.0/8"}},
+            archive_root_candidates=[],
+            _archive_plan=plan,
+        )
 
 
 def test_u7_oracle_receipt_hashes_rendered_deck_without_retaining_paths(monkeypatch) -> None:

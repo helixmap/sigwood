@@ -283,7 +283,7 @@ listed here do not disappear.
     `burst_window_edge_margin_seconds`, `burst_min_firsts`, `burst_high_error_rate`,
     `burst_high_service_count`, `composite_medium_threshold`,
     `composite_low_threshold`
-  - `beacon` — `bin_seconds`, `min_connections`, `threshold`
+  - `beacon` — `min_connections`, `threshold`
   - `dns` — `min_cluster_size`, `min_samples`, `threshold`, `thresh_high_entropy`,
     `scan_dense_clusters`, `scan_min_high_entropy_fraction`,
     `scan_min_cluster_members`, `scan_min_regdomain_share`,

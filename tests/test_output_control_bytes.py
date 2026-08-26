@@ -9,6 +9,8 @@ from datetime import datetime, timezone
 
 import pandas as pd
 
+import sigwood.runner as runner
+from sigwood.common.display import group_skips
 from sigwood.common.finding import RunSummary
 from sigwood.detectors.beacon import _make_finding
 from sigwood.outputs import pdf as pdf_output
@@ -50,6 +52,87 @@ def test_non_control_report_glyphs_survive() -> None:
     value = "flow 192.0.2.1 -> 198.51.100.2 -> ▇"
     assert strip_control(value) == value
     assert strip_control_keep_newlines(value) == value
+
+
+def test_hostile_skip_path_stays_one_safe_group_on_each_human_surface(
+    tmp_path, capsys,
+) -> None:
+    hostile = (tmp_path / "missing\n\x1b<script>alert(1)</script>").resolve()
+    plan = runner.build_run_plan(
+        "beacon, scan",
+        zeek_dir=hostile,
+    )
+    reason = f"zeek_dir {hostile} not found"
+
+    assert plan.skipped == {"beacon": reason, "scan": reason}
+    assert group_skips(plan.skipped) == [(reason, ["beacon", "scan"])]
+
+    runner._warn_skips(plan.skipped)
+    stderr = capsys.readouterr().err
+    assert stderr.count("\n") == 1
+    assert "skipping detectors: beacon, scan" in stderr
+    assert "\x1b" not in stderr
+    assert "<script>alert(1)</script>" in stderr
+
+    summary = RunSummary(
+        data_window=None,
+        record_counts={},
+        data_size_bytes=0,
+        detectors_run=[],
+        detectors_skipped=plan.skipped,
+    )
+    text_stream = io.StringIO()
+    TextHandler(stream=text_stream).begin(summary)
+    text_report = text_stream.getvalue()
+    assert text_report.count("skipped:") == 1
+    assert "beacon, scan - zeek_dir" in text_report
+    assert "\x1b" not in text_report
+    assert "<script>alert(1)</script>" in text_report
+
+    html_report = render_report_html(
+        [], summary, verbose_level=0, max_findings_per_detector=100,
+    )
+    assert html_report.count('<div class="skip">') == 1
+    assert "beacon, scan - zeek_dir" in html_report
+    assert "\x1b" not in html_report
+    assert "<script>alert(1)</script>" not in html_report
+    assert "&lt;script&gt;alert(1)&lt;/script&gt;" in html_report
+
+
+def test_raw_distinct_skip_reasons_stay_separate_after_surface_sanitization(
+    capsys,
+) -> None:
+    skipped = {
+        "beacon": "missing /hostile\npath",
+        "scan": "missing /hostilepath",
+    }
+    assert group_skips(skipped) == [
+        ("missing /hostile\npath", ["beacon"]),
+        ("missing /hostilepath", ["scan"]),
+    ]
+
+    runner._warn_skips(skipped)
+    stderr = capsys.readouterr().err.splitlines()
+    assert stderr == [
+        "missing /hostilepath - skipping beacon detection",
+        "missing /hostilepath - skipping scan detection",
+    ]
+
+    summary = RunSummary(
+        data_window=None,
+        record_counts={},
+        data_size_bytes=0,
+        detectors_run=[],
+        detectors_skipped=skipped,
+    )
+    text_stream = io.StringIO()
+    TextHandler(stream=text_stream).begin(summary)
+    assert text_stream.getvalue().count("skipped:") == 2
+
+    html_report = render_report_html(
+        [], summary, verbose_level=0, max_findings_per_detector=100,
+    )
+    assert html_report.count('<div class="skip">') == 2
 
 
 # os.fsdecode maps a non-UTF-8 filename byte (0x80-0xFF) to a lone surrogate in

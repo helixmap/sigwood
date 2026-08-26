@@ -85,6 +85,23 @@ def test_run_summary_strips_control_bytes_from_skipped_reasons() -> None:
     _assert_no_data_controls(rendered)
 
 
+def test_run_summary_groups_raw_identical_skip_reasons_in_order() -> None:
+    rendered = TextHandler()._render_run_summary(_summary(skipped={
+        "beacon": "zeek_dir outside this run's positional scope",
+        "scan": "zeek_dir outside this run's positional scope",
+        "aws": "cloudtrail_dir not configured",
+    }))
+
+    skipped_lines = [
+        line for line in rendered.splitlines()
+        if line.startswith("skipped:")
+    ]
+    assert skipped_lines == [
+        "skipped:       beacon, scan - zeek_dir outside this run's positional scope",
+        "skipped:       aws - cloudtrail_dir not configured",
+    ]
+
+
 def test_run_summary_wraps_long_skipped_reasons_generally() -> None:
     handler = TextHandler()
     rendered = handler._render_run_summary(_summary(skipped={

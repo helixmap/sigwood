@@ -133,8 +133,8 @@ def test_resolve_load_windows_short_circuit_ignores_injection_validation():
 # ── per-family resolution shapes (the strategy resolver bodies) ───────────────
 
 
-def test_resolve_load_windows_zeek_dated_precise_no_trim(tmp_path):
-    """Dated Zeek layout → precise (since, until) select_window, trim_span None."""
+def test_resolve_load_windows_zeek_dated_open_ceiling_no_trim(tmp_path):
+    """Dated Zeek layout → lower-bounded (since, None), trim_span None."""
     zd = tmp_path / "zeek"
     zd.mkdir()
     (zd / "2026-01-05").mkdir()
@@ -147,7 +147,7 @@ def test_resolve_load_windows_zeek_dated_precise_no_trim(tmp_path):
     assert w.source == "zeek_dir"
     assert w.select_window == (
         datetime(2026, 1, 5, 0, 0, 0, tzinfo=timezone.utc),
-        datetime(2026, 1, 5, 23, 59, 59, tzinfo=timezone.utc),
+        None,
     )
     assert w.trim_span is None
     assert w.keep_null is False  # zeek drops unparseable-ts rows

@@ -1035,6 +1035,212 @@ def test_pihole_only_run_produces_findings(monkeypatch) -> None:
     assert first.evidence["span_seconds"] == 2.0
 
 
+def test_pihole_all_cluster_zero_noise_discloses_identity_free_counts(
+    monkeypatch,
+) -> None:
+    """The all-cluster/zero-noise seam must disclose the unscanned set-aside."""
+    import sigwood.detectors.dns as dns_mod
+
+    hostile_domains = [
+        "<img-src-x-onerror-alert-1>.privacy.invalid",
+        "=cmd-pipe-sentinel.privacy.invalid",
+        "@sum-1-plus-1.privacy.invalid",
+    ] + [f"bulk-{index}.privacy.invalid" for index in range(397)]
+    monkeypatch.setattr(
+        dns_mod,
+        "fit_predict_interruptible",
+        lambda matrix, **kwargs: np.zeros(matrix.shape[0], dtype=int),
+    )
+    pihole_df = pd.DataFrame([
+        {
+            "ts": float(index),
+            "query": domain,
+            "event_type": "query",
+            "src": "192.0.2.10",
+            "qtype": "A",
+        }
+        for index, domain in enumerate(hostile_domains)
+    ])
+
+    findings = run(DetectorContext(
+        logs={"pihole*.log*": pihole_df},
+        config={"pihole": {"min_cluster_size": 2, "min_samples": 1}},
+        allowlist=None,
+        data_window=_WINDOW,
+    ))
+
+    assert len(findings) == 1
+    disclosure = findings[0]
+    assert disclosure.severity == Severity.INFO
+    assert disclosure.title == (
+        "400 domains formed a dense cluster; the dense-cluster tunnel scan runs on "
+        "Zeek DNS only - this cluster was not analyzed."
+    )
+    assert disclosure.evidence == {
+        "tier": "unscanned_clusters",
+        "cluster_count": 1,
+        "total_members": 400,
+    }
+    serialized = repr(disclosure)
+    for domain in hostile_domains:
+        assert domain not in serialized
+
+
+def test_pihole_unscanned_disclosure_branch_boundaries_and_exact_counts(
+    monkeypatch,
+) -> None:
+    """No second floor: only clustered non-noise aggregate rows are counted."""
+    import sigwood.detectors.dns as dns_mod
+
+    domains = [f"domain-{index}.privacy.invalid" for index in range(6)]
+    pihole_df = pd.DataFrame([
+        {
+            "ts": float(index),
+            "query": domain,
+            "event_type": "query",
+            "src": "192.0.2.10",
+            "qtype": "A",
+        }
+        for index, domain in enumerate(domains)
+    ])
+
+    def _run_with(labels: np.ndarray) -> list[Finding]:
+        monkeypatch.setattr(
+            dns_mod,
+            "fit_predict_interruptible",
+            lambda matrix, **kwargs: labels.copy(),
+        )
+        return run(DetectorContext(
+            logs={"pihole*.log*": pihole_df},
+            config={
+                "threshold": 999.0,
+                "pihole": {"min_cluster_size": 2, "min_samples": 1},
+            },
+            allowlist=None,
+            data_window=_WINDOW,
+        ))
+
+    # Clustering does not run below the configured floor, so disclosure is silent.
+    monkeypatch.setattr(
+        dns_mod,
+        "fit_predict_interruptible",
+        lambda matrix, **kwargs: pytest.fail("clustering must not run below its floor"),
+    )
+    assert run(DetectorContext(
+        logs={"pihole*.log*": pihole_df},
+        config={"pihole": {"min_cluster_size": 7, "min_samples": 1}},
+        allowlist=None,
+        data_window=_WINDOW,
+    )) == []
+
+    # A completed all-noise clustering run has no unscanned dense cluster.
+    assert _run_with(np.full(6, -1, dtype=int)) == []
+
+    # Two distinct labels, four aggregate-domain members, two noise candidates.
+    mixed = _run_with(np.array([0, 0, -1, 1, 1, -1], dtype=int))
+    assert len(mixed) == 1
+    assert mixed[0].title == (
+        "4 domains formed 2 dense clusters; the dense-cluster tunnel scan runs on "
+        "Zeek DNS only - these clusters were not analyzed."
+    )
+    assert mixed[0].evidence == {
+        "tier": "unscanned_clusters",
+        "cluster_count": 2,
+        "total_members": 4,
+    }
+
+
+def test_pihole_unscanned_hostile_identity_reaches_no_output_surface(
+    monkeypatch,
+) -> None:
+    """Structured, text, HTML/PDF, JSON, and CSV carry counts but no log identity."""
+    import io
+    import json
+
+    import sigwood.detectors.dns as dns_mod
+    import sigwood.outputs.pdf as pdf_mod
+    from sigwood.outputs.csv import CsvHandler
+    from sigwood.outputs.html import render_report_html
+    from sigwood.outputs.json import JsonHandler
+    from sigwood.outputs.pdf import PdfHandler
+
+    hostile_domains = [
+        "<script>alert-identity-one</script>.privacy.invalid",
+        "=cmd-pipe-identity-two.privacy.invalid",
+        "@sum-identity-three.privacy.invalid",
+    ]
+    monkeypatch.setattr(
+        dns_mod,
+        "fit_predict_interruptible",
+        lambda matrix, **kwargs: np.zeros(matrix.shape[0], dtype=int),
+    )
+    findings = run(DetectorContext(
+        logs={"pihole*.log*": pd.DataFrame([
+            {
+                "ts": float(index),
+                "query": domain,
+                "event_type": "query",
+                "src": "192.0.2.10",
+                "qtype": "A",
+            }
+            for index, domain in enumerate(hostile_domains)
+        ])},
+        config={"pihole": {"min_cluster_size": 2, "min_samples": 1}},
+        allowlist=None,
+        data_window=_WINDOW,
+    ))
+    assert len(findings) == 1
+    finding = findings[0]
+
+    text_stream = io.StringIO()
+    TextHandler(stream=text_stream, max_findings_per_detector=1).write(findings)
+    text_output = text_stream.getvalue()
+    html_output = render_report_html(
+        findings, None, verbose_level=2, max_findings_per_detector=1,
+    )
+
+    captured_pdf_html: list[str] = []
+    monkeypatch.setattr(
+        pdf_mod,
+        "render_pdf_bytes",
+        lambda html: captured_pdf_html.append(html) or b"%PDF-test",
+    )
+    pdf_stream = io.BytesIO()
+    pdf_handler = PdfHandler(
+        stream=pdf_stream, verbose_level=2, max_findings_per_detector=1,
+    )
+    pdf_handler.write(findings)
+    pdf_handler.end()
+    assert captured_pdf_html == [html_output]
+
+    json_stream = io.StringIO()
+    json_handler = JsonHandler(stream=json_stream)
+    json_handler.write(findings)
+    json_handler.end()
+    json_output = json_stream.getvalue()
+    payload = json.loads(json_output)
+    assert payload["findings"][0]["evidence"] == {
+        "tier": "unscanned_clusters",
+        "cluster_count": 1,
+        "total_members": 3,
+    }
+
+    csv_stream = io.StringIO()
+    csv_handler = CsvHandler(stream=csv_stream)
+    csv_handler.write(findings)
+    csv_handler.end()
+    csv_output = csv_stream.getvalue()
+
+    outputs = [
+        repr(finding), text_output, html_output, captured_pdf_html[0],
+        json_output, csv_output,
+    ]
+    for output in outputs:
+        assert "3 domains formed a dense cluster" in output
+        for domain in hostile_domains:
+            assert domain not in output
+
+
 def test_non_psl_candidates_share_one_grouping_key_on_both_paths(
     monkeypatch,
 ) -> None:
@@ -1089,7 +1295,8 @@ def test_non_psl_candidates_share_one_grouping_key_on_both_paths(
     )
 
     assert zeek is not None and set(zeek["registrable_domain"]) == {"lan"}
-    assert pihole is not None and set(pihole["registrable_domain"]) == {"lan"}
+    assert pihole is not None and pihole.candidates is not None
+    assert set(pihole.candidates["registrable_domain"]) == {"lan"}
     findings = dns_mod._shared_back_half(zeek, 1.8, _NOW, _WINDOW)
     groups = [finding for finding in findings if "subdomain_count" in finding.evidence]
     assert len(groups) == 1
@@ -1696,6 +1903,58 @@ def test_dns_partition_orders_groups_singletons_then_scan() -> None:
         "singletons",
         "dense-cluster scan",
     ]
+
+
+def test_dns_unscanned_pihole_section_is_trailing_and_cap_exempt() -> None:
+    """The Pi-hole disclosure has its own section and survives a consumed cap."""
+    import io
+
+    singleton = _make_dns_finding(
+        Severity.MEDIUM,
+        "noise.privacy.invalid",
+        {
+            "source": "pihole",
+            "label_score": 2.0,
+            "query_count": 1,
+            "unique_sources": 1,
+        },
+    )
+    disclosure = _make_dns_finding(
+        Severity.INFO,
+        (
+            "4 domains formed 2 dense clusters; the dense-cluster tunnel scan runs "
+            "on Zeek DNS only - these clusters were not analyzed."
+        ),
+        {
+            "tier": "unscanned_clusters",
+            "cluster_count": 2,
+            "total_members": 4,
+        },
+    )
+
+    assert [section.label for section in _dns_sections([disclosure, singleton])] == [
+        "singletons",
+        "unscanned Pi-hole clusters",
+    ]
+
+    stream = io.StringIO()
+    TextHandler(stream=stream, max_findings_per_detector=1).write([
+        singleton,
+        _make_dns_finding(
+            Severity.LOW,
+            "second-noise.privacy.invalid",
+            {
+                "source": "pihole",
+                "label_score": 1.9,
+                "query_count": 1,
+                "unique_sources": 1,
+            },
+        ),
+        disclosure,
+    ])
+    output = stream.getvalue()
+    assert disclosure.title in output
+    assert "1 more not shown" in output
 
 
 def test_text_renderer_zeek_verbose_rcode_unchanged() -> None:

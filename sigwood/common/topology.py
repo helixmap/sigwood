@@ -37,8 +37,8 @@ def _parsed_home_net(networks: tuple[str, ...]) -> tuple[IPNetwork, ...]:
 
     home_net is a small constant for the life of a run, but membership is asked
     per row, so parsing inside the membership loop rebuilt the same few networks
-    millions of times. An unparseable entry is skipped here exactly as it was
-    skipped in the loop, so the admitted set is unchanged.
+    millions of times. Config-backed runs validate before reaching this helper;
+    the unparseable-entry skip remains a defensive rail for direct callers.
     """
     parsed: list[IPNetwork] = []
     for network in networks:

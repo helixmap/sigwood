@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import copy
 import difflib
+import ipaddress
 import tomllib
 from collections.abc import Mapping
 from datetime import timedelta
@@ -74,6 +75,44 @@ def _validate_syslog_source(config: dict[str, Any]) -> None:
             f"[sigwood].syslog_source={value!r} must be one of "
             "auto, journal, files, or off"
         ) from exc
+
+
+def _validate_home_net(config: Mapping[str, Any]) -> None:
+    """Validate operator topology at the config boundary."""
+    sigwood = config.get("sigwood", {})
+    if not isinstance(sigwood, Mapping):
+        raise ConfigError("[sigwood] must be a table")
+
+    value = sigwood.get("home_net", [])
+    if isinstance(value, (str, bytes)) or not isinstance(value, list):
+        raise ConfigError(
+            f"[sigwood].home_net={value!r} must be a TOML array of IP networks; "
+            'for example: home_net = ["10.0.0.0/8"]'
+        )
+
+    for position, network in enumerate(value, start=1):
+        if not isinstance(network, str):
+            raise ConfigError(
+                f"[sigwood].home_net entry {position}={network!r} "
+                "must be a string containing an IP network"
+            )
+        try:
+            ipaddress.ip_network(network, strict=False)
+        except ValueError as exc:
+            raise ConfigError(
+                f"[sigwood].home_net entry {position}={network!r} "
+                "is not a valid IP network"
+            ) from exc
+
+
+def resolve_home_net(config: Mapping[str, Any]) -> list[str]:
+    """Return one validated, caller-owned copy of ``[sigwood].home_net``."""
+    _validate_home_net(config)
+    sigwood = config.get("sigwood", {})
+    assert isinstance(sigwood, Mapping)  # established by _validate_home_net
+    value = sigwood.get("home_net", [])
+    assert isinstance(value, list)  # established by _validate_home_net
+    return list(value)
 
 
 def validate_table_sections(
@@ -451,6 +490,7 @@ def load(config_file: str | Path | None = None) -> dict[str, Any]:
     parse_window_span(config.get("sigwood", {}).get("default_window"))
     _validate_warn_above(config)
     _validate_syslog_source(config)
+    _validate_home_net(config)
     return config
 
 

@@ -23,6 +23,7 @@ from sigwood.common.display import (
     fmt_data_found,
     fmt_generated,
     fmt_suppression,
+    group_skips,
     human_bytes,
     plural,
 )
@@ -155,8 +156,9 @@ def _render_header(run_summary: "RunSummary | None") -> str:
         ))
         if run_summary.invocation is not None:
             rows.append(_meta_row("as", _esc(run_summary.invocation)))
-        for name, reason in run_summary.detectors_skipped.items():
-            rows.append(f'<div class="skip">{_esc(name)} - {_esc(reason)}</div>')
+        for reason, names in group_skips(run_summary.detectors_skipped):
+            rendered_names = ", ".join(_esc(name) for name in names)
+            rows.append(f'<div class="skip">{rendered_names} - {_esc(reason)}</div>')
         # Failed detectors (crashed during prep or run - recorded on the
         # summary during the detector loop; html renders at end(), so the
         # header sees the final state). The REASON can echo log-derived

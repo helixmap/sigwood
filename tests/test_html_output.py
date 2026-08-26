@@ -85,6 +85,33 @@ def _render(
     )
 
 
+def test_html_groups_raw_identical_skip_reasons_in_order() -> None:
+    rendered = _render([], summary=_summary(detectors_skipped={
+        "beacon": "zeek_dir outside this run's positional scope",
+        "scan": "zeek_dir outside this run's positional scope",
+        "aws": "cloudtrail_dir not configured",
+    }))
+
+    assert rendered.count('<div class="skip">') == 2
+    first = (
+        '<div class="skip">beacon, scan - '
+        "zeek_dir outside this run&#x27;s positional scope</div>"
+    )
+    second = '<div class="skip">aws - cloudtrail_dir not configured</div>'
+    assert first in rendered
+    assert second in rendered
+    assert rendered.index(first) < rendered.index(second)
+
+
+def test_html_single_skip_keeps_exact_element() -> None:
+    rendered = _render([], summary=_summary(detectors_skipped={
+        "dns": "no dns.log",
+    }))
+
+    assert rendered.count('<div class="skip">') == 1
+    assert '<div class="skip">dns - no dns.log</div>' in rendered
+
+
 def _sample_detail_body(rendered: str) -> str:
     marker = '<div class="sample-detail-body">'
     start = rendered.index(marker) + len(marker)

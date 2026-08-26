@@ -6,6 +6,8 @@ All notable changes to sigwood are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-08-25
+
 ### Changed
 
 - **`beacon` now declines to score a flow whose timestamps span more than about a year.** It bins a
@@ -13,7 +15,7 @@ All notable changes to sigwood are recorded here. The format follows
   number of bins, and a ceiling has always refused the extreme cases. That ceiling was set on an
   estimate of what the work costs; measured, the real cost is up to five times higher, because the
   dominant consumer is the Fourier transform's own scratch space rather than the arrays being
-  transformed — and how much it needs depends on how the bin count happens to factor, which nothing
+  transformed - and how much it needs depends on how the bin count happens to factor, which nothing
   chooses. The ceiling is lowered so it delivers the bound it always claimed. The practical effect
   is that a flow spanning roughly one to five years is no longer scored; such a span is not a
   beaconing candidate in any case, and a year remains far wider than any hunt window.
@@ -52,15 +54,15 @@ All notable changes to sigwood are recorded here. The format follows
   them, so one bad input destroyed work that had nothing to do with it. The outcomes now differ by
   input, as they should: a Zeek log whose `_path` is a list or object is profiled as an
   unrecognized source instead of ending the run; a syslog line carrying a far-future timestamp is
-  treated as having no parseable timestamp instead of aborting **directory discovery** — which
+  treated as having no parseable timestamp instead of aborting **directory discovery** - which
   matters most, because that path meant a hostile file merely sitting in the configured log
   directory could stop a hunt it was never pointed at; and a malformed CloudTrail object is skipped
   by name with the rest of the export intact, where before one such object ended the export and
   discarded every valid object already fetched.
 
   The CloudTrail failures also reported themselves badly, in two different ways. A truncated
-  archive member surfaced as `unexpected end of input` — a message that means end-of-input at a
-  prompt, so it named a false cause — while deeply nested JSON produced a raw error trace. Both now
+  archive member surfaced as `unexpected end of input` - a message that means end-of-input at a
+  prompt, so it named a false cause - while deeply nested JSON produced a raw error trace. Both now
   report the object by name.
 
 - **A syslog line dated 29 February keeps its date.** The parser reads a timestamp more than a week
@@ -1306,7 +1308,8 @@ agent, no account.
 - Analysis-window controls (`--since`/`--until`/`--days`/`--all`), a per-source default
   lookback window, and local-or-UTC time rendering.
 
-[Unreleased]: https://github.com/helixmap/sigwood/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/helixmap/sigwood/compare/v0.5.1...HEAD
+[0.5.1]: https://github.com/helixmap/sigwood/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/helixmap/sigwood/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/helixmap/sigwood/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/helixmap/sigwood/compare/v0.2.9...v0.3.0

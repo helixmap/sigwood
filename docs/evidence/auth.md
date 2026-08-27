@@ -1,4 +1,4 @@
-# auth — calibration record
+# auth calibration record
 
 auth reads authentication decisions out of the system-log lane. This record is
 different from its siblings: it documents a measurement study that was **stopped
@@ -9,7 +9,7 @@ the detector ships as instead.
 
 The study asked whether authentication-failure volume could be calibrated into
 reliable thresholds, and how to reconcile the several independent observers that record
-the same authentication event — an SSH daemon, the pluggable-authentication stack, and
+the same authentication event: an SSH daemon, the pluggable-authentication stack, and
 the audit subsystem, each with its own dialect.
 
 ## data
@@ -22,7 +22,7 @@ auth data.
 
 That is the whole finding about the data, and it is what ended the study.
 
-## the outcome — a stop, recorded as a result
+## the outcome: a stop, recorded as a result
 
 **The measurement program was stopped.** The rigor being applied was
 sized for roughly ten times the data variety actually available: one live estate is not
@@ -33,7 +33,7 @@ calibrated and were not.
 Cancelled with it: a cross-producer overlap measurement, a live-fire calibration on a
 second host, an oracle repair, and several further arbitration variants. The defects
 the study had found were then cleared **by simplification rather than by cleverer
-arbitration** — which is the part worth keeping.
+arbitration**, which is the part worth keeping.
 
 ## what shipped instead, and why each choice is conservative
 
@@ -44,7 +44,7 @@ arbitration** — which is the part worth keeping.
   cardinality is coverage-blind (the smaller observer's exclusive decisions vanish).
   Those two failure directions are why no third winner rule is attempted.
 - **Reconciliation survives only inside the audit observer**, where exact event
-  identifiers make duplicate suppression safe — and the identifier is scoped per host,
+  identifiers make duplicate suppression safe. The identifier is scoped per host,
   because two machines reusing one identifier must not erase each other.
 - **Magnitudes are decision-record counts, never inferred human attempts**, and the
   wording says so.
@@ -66,19 +66,19 @@ arbitration** — which is the part worth keeping.
 
 Nothing was frozen as a *calibrated* constant, and that is the point. The numeric
 floors are unchanged from their pre-study values and were deliberately **not**
-retuned for union-scale counting — retuning them against one estate is precisely the
+retuned for union-scale counting. Retuning them against one estate is precisely the
 move the ruling rejected.
 
 What is frozen is structural: the union-counting rule, the per-host scoping of the
 audit identifier, the severity ceiling, and the requirement that every observer dialect
-remain reachable through the stream builder — the last pinned by test, because a
-dialect silently dropping out of the union is invisible in output.
+remain reachable through the stream builder. That last one is pinned by test, because
+a dialect silently dropping out of the union is invisible in output.
 
 ## limitations
 
 All named, none hidden:
 
-- **A host observed by two sources counts each decision once per observer** — up to
+- **A host observed by two sources counts each decision once per observer**, up to
   roughly double. A volume floor can therefore clear at half the true attempt count on
   such a host. Disclosed in the run's own notes on every run, not just here.
 - **The audit-dialect reconciliation may undercount a genuine partial union.**
@@ -86,7 +86,7 @@ All named, none hidden:
   a declination blocks the evidence, the standalone finding is absent entirely and the
   failures surface only if a counting floor is reached.
 - **Allowlisting in this lane suppresses whole hosts**, not individual addresses
-  extracted from message text — disclosed in the run notes alongside the source count.
+  extracted from message text. The run notes disclose that alongside the source count.
 - **No calibrated thresholds and no measured precision.** The detector is built to be
   built on.
 

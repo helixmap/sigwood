@@ -6,7 +6,34 @@ All notable changes to sigwood are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **The dense-cluster tunnel scan now runs on Pi-hole data, not only Zeek.** A family of
+  generated-looking names used to stop being identifiable in a Pi-hole report once it grew
+  large enough to form its own cluster: below that size its domains surfaced individually,
+  above it no finding named them and only a counts-only row remained, reporting how many
+  domains had formed how many clusters. Such a family is now recovered when its names concentrate under a single
+  registrable domain. Recovery is bounded and the bounds are measured: a family sprayed
+  across many domains is still outside the scan, an encoding whose labels only sometimes
+  look generated can still slip the member-fraction bar, and a cluster the scan inspects
+  and rejects produces no row. Pi-hole findings stay capped at MEDIUM, because the volume
+  evidence is not permitted to corroborate on a source that records no resolution outcome.
+  Disabling the scan returns Pi-hole to its previous aggregate disclosure, which now says
+  the scan was disabled rather than claiming a source limitation. The calibration record is
+  published in the DNS evidence page.
+
 ### Changed
+
+- **Dashes are written as hyphens throughout.** The documentation, the shipped tools and
+  sigwood's own output now use an ASCII hyphen rather than an em or en dash. Two operator-facing
+  lines change text: the dnsblock cap disclosure (`dnsblock: analysis stopped: <axis> exceeded
+  its bound ...`) and the withheld-candidate disclosure (`... candidate pairs withheld: not
+  enough prior history in the loaded window`). Nothing else about either is different.
+  A tripwire holds the rule for every file in the repository, and `.githooks/` carries a
+  pre-commit and commit-msg gate that refuses a commit breaking it. Contributors enable
+  the gate once per clone with `git config core.hooksPath .githooks`, which
+  [CONTRIBUTING.md](https://github.com/helixmap/sigwood/blob/main/CONTRIBUTING.md) now
+  documents.
 
 - **`[detectors.beacon].bin_seconds` is no longer a configuration key.** The beacon detector bins a
   flow's connection times before looking for a rhythm, and every other number in that scorer - the
@@ -20,7 +47,7 @@ All notable changes to sigwood are recorded here. The format follows
 
 ### Added
 
-- **An evidence ledger — what has actually been measured, and what has not.**
+- **An evidence ledger: what has actually been measured, and what has not.**
   [docs/EVIDENCE.md](https://github.com/helixmap/sigwood/blob/main/docs/EVIDENCE.md) carries one
   row for **every** detector, not only the ones with results behind them: what was measured and
   on what population, what that supports and does not, and what is still owed. Five detectors
@@ -33,12 +60,12 @@ All notable changes to sigwood are recorded here. The format follows
 ### Fixed
 
 - **sigwood now tells you when a syslog archive's dates look re-dated.** RFC 3164 and Pi-hole
-  logs carry no year, so sigwood stamps them with the current one — which silently moves an
+  logs carry no year, so sigwood stamps them with the current one. That silently moves an
   archive more than a year old into the last twelve months, and those dates then flow into
   windows, timelines and finding data windows looking entirely confident. Where the file still
   carries its original modification time, sigwood now says so once per file: `timestamps parse
-  730 days newer than the file itself was last written`. It explains rather than repairs — the
-  dates are still wrong — and it is deliberately conservative: the two-day threshold exists
+  730 days newer than the file itself was last written`. It explains rather than repairs: the
+  dates are still wrong. It is deliberately conservative: the two-day threshold exists
   because a log shipped from a distant timezone legitimately parses up to 26 hours ahead, and a
   copy made without preserving the modification time cannot be flagged at all. See
   **RFC 3164 syslog and Pi-hole timestamps carry no year** in
@@ -55,14 +82,14 @@ All notable changes to sigwood are recorded here. The format follows
   today so far; and a log line stamped in the future - clock skew, a misconfigured sensor - is now
   admitted rather than silently dropped, which is how every other source already behaved.
 
-- **A large group of Pi-hole domains no longer disappears without a word.** sigwood's
-  dense-cluster tunnel scan runs on Zeek DNS only. On Pi-hole data, domains that cluster together
-  produced no findings and nothing was said about them, so a burst of random lookups that grew
-  large enough to form its own cluster stopped being identified - and where every domain clustered,
-  the run reported nothing at all. The clusters are still not analyzed, which remains a known
-  limitation, but a run now adds one informational row saying how many domains formed how many
-  clusters and that they were not inspected. That row carries counts only - no domain name reaches
-  it - so the burst is still not identifiable from the report alone.
+- **A large group of Pi-hole domains no longer disappears without a word.** On Pi-hole data,
+  domains that clustered together produced no findings and nothing was said about them, so a burst
+  of random lookups that grew large enough to form its own cluster stopped being identifiable - and
+  where every domain clustered, the run reported no findings at all. A run now adds one
+  informational row saying how many domains formed how many clusters. That row carries counts only,
+  and no domain name reaches it. This shipped first as a disclosure over unexamined clusters; the
+  Added entry above then extended the scan itself to Pi-hole, so in this release the row appears
+  when dense-cluster scanning is switched off.
 
 - **Detectors skipped for the same reason are now reported on one line.** Pointing sigwood at a
   single source - `sigwood /var/log/pihole/` - previously printed one warning per skipped detector
@@ -149,8 +176,8 @@ All notable changes to sigwood are recorded here. The format follows
 
 ### Added
 
-- **An opt-in `ssl` detector for outbound TLS sessions.** It asks one question — does a session's
-  setup look unlike this estate's own norm — over two measured legs: a completed, non-resumed
+- **An opt-in `ssl` detector for outbound TLS sessions.** It asks one question: does a session's
+  setup look unlike this estate's own norm? It measures two legs: a completed, non-resumed
   handshake that sent no server name, and a certificate that did not validate. One leg is LOW, both
   on the same source-and-destination pair is MEDIUM. It is **not** part of the default hunt: run it
   with `sigwood ssl` or `--detect=all`, because its calibration rests on a single estate and
@@ -159,7 +186,7 @@ All notable changes to sigwood are recorded here. The format follows
   so rather than implying whole coverage.
 
 - **A `weird` digest card** over Zeek's own protocol-anomaly log, reporting the shape of what the
-  sensor flagged without reaching a verdict — a weird name is a fact about parsing, and the same
+  sensor flagged without reaching a verdict. A weird name is a fact about parsing, and the same
   name that matters on one network is ordinary noise on another. The `weird` DETECTOR remains
   planned; this is orientation only.
 
@@ -171,20 +198,22 @@ All notable changes to sigwood are recorded here. The format follows
 ### Security
 
 - **The bundled DNS allowlist no longer hides names an attacker can register.** Its cloud entries
-  matched whole namespaces — `*.amazonaws.com`, `*.cloudfront.net`, `*.azurewebsites.net`,
-  `*.googleusercontent.com` and others — and anyone can create a name inside those. Because
+  matched whole namespaces such as `*.amazonaws.com`, `*.cloudfront.net`,
+  `*.azurewebsites.net`, `*.googleusercontent.com` and others. Anyone can create a name inside
+  those namespaces. Because
   allowlisting happens before detection, a DNS query to an attacker's own S3 bucket, CloudFront
   distribution or Azure web app was removed from the data before any detector saw it. Those entries
   now cover only the vendors' own control-plane endpoints, so customer-nameable addresses reach the
-  detectors. A `nameservers` entry that matched any name beginning `ns` followed by digits — which
-  covered `ns1.<any-domain>` — is likewise replaced with per-vendor entries, and the mDNS
+  detectors. A `nameservers` entry that matched any name beginning `ns` followed by digits,
+  including `ns1.<any-domain>`, is likewise replaced with per-vendor entries, and the mDNS
   service-discovery entry, previously any name starting with an underscore, now requires the actual
   `_service._tcp.` structure. **Expect more DNS findings than before**, particularly for cloud
   storage, CDN and app-hosting names: that traffic was always there and was being filtered out.
-  Some LEGITIMATE vendor control-plane traffic surfaces too — `management.azure.com` is no longer
+  Some LEGITIMATE vendor control-plane traffic surfaces too. For example,
+  `management.azure.com` is no longer
   suppressed, because the entry covering it also covered every customer-nameable address under
   `azure.com`; allowlist it locally if it is noise on your network.
-  The scoping rule behind the change is written at the top of the list file — an entry may cover
+  The scoping rule behind the change is written at the top of the list file: an entry may cover
   names a vendor operates, never a namespace in which anyone can register one.
 
 ### Changed
@@ -193,7 +222,7 @@ All notable changes to sigwood are recorded here. The format follows
   analysis re-read an identity's whole decision history once for every established
   failure-then-success transition it found, so work grew with the square of that history: the
   measured cost roughly quadrupled each time the input doubled. It now reads the two facts it
-  actually needs — the latest denial per identity and the latest activity per host — and grows in
+  actually needs, the latest denial per identity and the latest activity per host, and grows in
   step with the input instead. This matters most on exactly the data `auth` exists to read, since a
   brute-force campaign is repeated failure-then-success cycles against one identity. **Findings are
   unchanged**: the same runs produce byte-identical results, which was the gate this change had to
@@ -204,37 +233,37 @@ All notable changes to sigwood are recorded here. The format follows
 - **A directory whose first 32 files are all one log family no longer hides the rest in
   silence.** When you pass a directory to `sigwood hunt` (or to `dns`/`syslog`), sigwood
   samples up to 32 files and hunts the whole directory as whichever family wins that vote.
-  It said so when the sample itself held more than one family, but a directory whose first
-  32 files were all Zeek — with syslog files further down — routed as Zeek and reported
+  It said so when the sample itself held more than one family. When the first 32 files were all
+  Zeek while syslog files sat further down, sigwood routed the directory as Zeek and reported
   nothing, so logs of the other family were quietly never hunted as their own kind. sigwood
   now also says when the vote was taken on a sample rather than the whole directory:
   `<dir>: routing sampled the first 32 files (zeek 32) - hunting it as zeek; files beyond
   the sample were not examined, so pass other log types directly to include them`. A
   directory that is both mixed and truncated reports both facts. The existing mixed-sample
-  message is unchanged, and which 32 files are sampled is unchanged — the first 32 by name,
+  message is unchanged, and which 32 files are sampled is unchanged: the first 32 by name,
   the same on every run and every host. Reading the directory no longer loads the whole
   listing into memory first, which matters on a directory holding very many files.
 
 - **A Zeek TSV file whose `#separator` line carries no value no longer stops sigwood.**
   Such a header previously raised an unhandled error: `sigwood digest` failed instead of
-  profiling the file, and on a hunt it ended the whole run — including every other log
-  source in that run — before any findings were reported. `digest` now describes the file
+  profiling the file, and on a hunt it ended the whole run, including every other log
+  source in that run, before any findings were reported. `digest` now describes the file
   as an unrecognized source and exits normally, and a hunt skips just that file with
   `<name> could not be parsed - Zeek TSV header has an empty #separator value; skipping`
   and carries on with the remaining sources. Zeek headers that declare a separator
   normally are read exactly as before.
 
 - **One malformed CloudTrail object no longer ends an export and discards every other
-  object in the window.** An object whose JSON was not a CloudTrail envelope — a bare
+  object in the window.** An object whose JSON was not a CloudTrail envelope, such as a bare
   list or number at the root, a `Records` value that was not a list, an entry inside
   `Records` that was not an event, or an event carrying an `eventTime` that was not text
-  but still held a value, such as a number — previously raised an unhandled error partway
+  but still held a value, such as a number, previously raised an unhandled error partway
   through the export, so a single small object cost every valid object already fetched.
   `sigwood export` now skips just that object with the existing
   `skipped unreadable object: <key>` warning naming its reason, and continues with the
   rest of the window. The object still counts toward the export's object total, so a
   skipped object stays visible rather than quietly reducing the count. Events with no
-  usable `eventTime` — absent, empty, or a value such as `null` or `0` — are dropped
+  usable `eventTime` (absent, empty, or a value such as `null` or `0`) are dropped
   individually exactly as they always have been, and their sibling events in the same
   object are exported unchanged.
 
@@ -248,19 +277,19 @@ All notable changes to sigwood are recorded here. The format follows
   raw Python traceback. Every one of these now stops with a message naming the target
   and what to do, and the target is left exactly as it was. Where sigwood could examine
   the destination it says `<path> is not a regular file - refusing to write to it; choose
-  a regular file or directory`; where the destination could not be opened at all — a named
-  pipe with nothing reading it — it says `<path> could not be opened safely - …` instead,
+  a regular file or directory`. Where the destination could not be opened at all, such as a named
+  pipe with nothing reading it, it explains that the path could not be opened safely instead,
   because in that case sigwood has not established what the target is. Writing to an ordinary
   file, creating a new one, and writing into a directory are unchanged, including a
   destination the tool cannot itself read, which stays replaceable as before.
 
 - **A Zeek `conn.log` or `dns.log` that carries both a Zeek field and its canonical name no
-  longer loses rows silently.** Such a file — a `notice`-style export, or a log rewritten to
-  add a `src` column beside Zeek's own `id.orig_h` — used to be renamed into duplicate
+  longer loses rows silently.** Such a file, whether a `notice`-style export or a log rewritten to
+  add a `src` column beside Zeek's own `id.orig_h`, used to be renamed into duplicate
   columns, after which every row was quietly dropped from analysis while the run summary
   still reported them as loaded, and four Python `FutureWarning`s appeared in the output. On
-  a hunt, sigwood now skips that file with a single message — `conn.log: skipped 1 row - a
-  source column collides with a canonical name; is this a Zeek conn.log?` — and carries on
+  a hunt, sigwood now skips that file with a single message naming the skipped row and the
+  canonical-name collision. It carries on
   with the other sources. `sigwood digest` reports the collision and then states that the
   recognized log had no parseable records. Ordinary Zeek logs are read exactly as before,
   which was confirmed by re-running the full detector suite over a frozen seven-source
@@ -271,7 +300,7 @@ All notable changes to sigwood are recorded here. The format follows
   and explained only under `--verbose`, so the output looked like an ordinary profile of an
   unrecognized file. The explanation is now always shown, while the underlying error detail
   remains reserved for `--verbose`. A related fix stops sigwood suggesting you widen the
-  time window when a file was read but produced no usable rows — widening cannot help there,
+  time window when a file was read but produced no usable rows. Widening cannot help there,
   and the advice sent people looking in the wrong place.
 
 ## [0.4.0] - 2026-08-21
@@ -441,7 +470,7 @@ All notable changes to sigwood are recorded here. The format follows
   counting inside the label score is single-pass, and working tables are released as soon as
   clustering no longer needs them. On the seven-day reference capture the detector-only run
   dropped from about 8 minutes to about 7 (roughly 12% faster), with findings byte-for-byte
-  identical before and after. Peak memory was not improved by this change — the detector
+  identical before and after. Peak memory was not improved by this change; the detector
   process measured a few percent higher at its peak on macOS while the machine-wide peak was
   unchanged. (The Pi-hole change below is what moves peak memory.)
 
@@ -449,7 +478,7 @@ All notable changes to sigwood are recorded here. The format follows
   sigwood reads a Pi-hole or dnsmasq log it no longer keeps five values that nothing in the
   tool reads: the answer payload, the upstream resolver address, the DNSSEC or block
   disposition phrase, the original log line, and the parsed message portion of that line. The
-  grammars still recognize all of it — that is how each line's event type is decided — but the
+  grammars still recognize all of it because that is how each line's event type is decided, but the
   values are no longer carried on every row, which on a multi-million-line capture is
   gigabytes held for no reader. On the seven-day reference capture the detector process peaked
   roughly 2 GiB lower, about a quarter less than before, and the peak across sigwood and its
@@ -457,7 +486,7 @@ All notable changes to sigwood are recorded here. The format follows
   reference captures: findings and graph data matched apart from the timestamp each run
   stamps on itself, and digest cards matched byte for byte. **One consequence to know about:**
   a log line that no grammar recognizes is still kept and still counted, but the row no longer
-  carries the line's text — on the reference capture that is about one line in 650. Reading
+  carries the line's text. On the reference capture that is about one line in 650. Reading
   those lines means going to the source log rather than the loaded table.
 
 - **Every `auth` finding now caps at MEDIUM.** Failures followed by a success are still reported,
@@ -465,8 +494,8 @@ All notable changes to sigwood are recorded here. The format follows
   longer raise a finding to HIGH. The counting this detector does is deliberately plain, and a
   higher tier has to earn its way back on evidence. `auth` remains opt-in.
 - **Auth findings that describe the same activity from different angles now say so.** Source
-  volume, account volume, and multi-host spread continue to report separately — they answer
-  different questions — and each now names the related findings, with a count shown in the report
+  volume, account volume, and multi-host spread continue to report separately because they answer
+  different questions. Each now names the related findings, with a count shown in the report
   row, so three rows are not read as three separate incidents.
 - **The "working" spinner now uses the braille animation common to modern command-line
   tools.** On a terminal that can encode it, the indicator beside a running phase cycles
@@ -506,18 +535,18 @@ All notable changes to sigwood are recorded here. The format follows
 ### Fixed
 
 - **An export given one end of a window no longer silently exports the wrong period.**
-  Passing `--since` without `--until` still applied the unqualified default's end — midnight at
-  the start of today — so an export asked for "the last day" quietly stopped hours ago and wrote
+  Passing `--since` without `--until` still used midnight at the start of today as the
+  unqualified default's end, so an export asked for "the last day" quietly stopped hours ago and wrote
   a plausible, complete-looking file that was missing its newest data. The two ends of that
   default are one window and now apply as one: with neither end given the default is unchanged,
   `--since` alone runs to now, `--until` alone keeps the same one-day width ending where you
   asked, and giving both is honoured as supplied. This is fixed for every export backend, not
   just Splunk. (One narrow compatibility exception is unchanged: an end of `23:59:58` or
-  `23:59:59` — what `--days` produces — is still read as the following midnight.)
+  `23:59:59` (what `--days` produces) is still read as the following midnight.)
 - **A Splunk export no longer silently under-fetches the newest hour, and timestamped results
   are trimmed to exactly the window you asked for.** Requests were fetched in whole hours with
   both ends rounded *down*, so any window not starting and ending on the hour lost up to an hour
-  of its newest data and silently included data from before its start — while the filename named
+  of its newest data and silently included data from before its start, while the filename named
   the window you asked for. Whole-hour fetching stays (it is how the query is chunked), but it
   now rounds outward to cover the request, and results carrying a usable timestamp are trimmed
   back to the exact period. `--days`, which was already correct, is unchanged. A saved search
@@ -528,7 +557,7 @@ All notable changes to sigwood are recorded here. The format follows
   A `--since` set in the future, a `--since`/`--until` pair given the wrong way round, and
   `--hours=N-N` (which asks for a window of no width at all) each produced a window ending at or
   before its start. Nothing can fall inside such a window, so the export fetched nothing, wrote an
-  empty file, described the span as `1h`, and exited as though it had succeeded — and an empty file
+  empty file, described the span as `1h`, and exited as though it had succeeded. An empty file
   is easy to miss when the run gives no reason to look at it. sigwood now stops before contacting
   the backend or creating a file, shows the window it worked out, and says the start must be earlier
   than the end. Spans that are not a whole number of days are also described through sigwood's
@@ -537,7 +566,7 @@ All notable changes to sigwood are recorded here. The format follows
 - **Authentication counting no longer discards one log source's records in favour of another's.**
   Every source that observed an authentication now contributes its records: a benign SSH login can
   no longer hide audit-only failures for the same service, and a source that saw failures no other
-  source recorded can no longer be dropped for being the smaller witness — either behaviour could
+  source recorded can no longer be dropped for being the smaller witness. Either behaviour could
   make a real brute force vanish from the report. `sshd` and `sshd-session` share one service
   identity, and named and numeric renderings of the same audit record are reconciled to one
   without collapsing genuine repetition. Reports label the magnitude as decision records rather

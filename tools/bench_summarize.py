@@ -677,7 +677,7 @@ def _run_child(
             env=env,
         )
     except OSError as exc:
-        raise BenchFailure("bench: could not launch sigwood — details in the bundle", exc) from exc
+        raise BenchFailure("bench: could not launch sigwood; details in the bundle", exc) from exc
 
 
 def _allowlist_state(
@@ -839,16 +839,16 @@ def _measurement(
     (bundle / BUNDLE_FILES["text_stderr"]).write_bytes(text_run.stderr)
 
     if json_run.returncode != text_run.returncode:
-        raise BenchFailure("bench: sigwood runs disagreed — details in the bundle")
+        raise BenchFailure("bench: sigwood runs disagreed; details in the bundle")
     try:
         json_text = json_run.stdout.decode("utf-8")
         report = text_run.stdout.decode("utf-8")
     except UnicodeDecodeError as exc:
-        raise BenchFailure("bench: could not decode sigwood output — details in the bundle", exc) from exc
+        raise BenchFailure("bench: could not decode sigwood output; details in the bundle", exc) from exc
     try:
         raw_payload = json.loads(json_text)
     except json.JSONDecodeError as exc:
-        raise BenchFailure("bench: sigwood run failed — details in the bundle", exc) from exc
+        raise BenchFailure("bench: sigwood run failed; details in the bundle", exc) from exc
 
     payload = _validate_payload(raw_payload)
     _assert_record_counts(
@@ -881,7 +881,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if "SIGWOOD_ROOT" in os.environ:
         return _safe_error(
-            "bench: SIGWOOD_ROOT is set — unset it (the bench resolves paths from --config)"
+            "bench: SIGWOOD_ROOT is set; unset it (the bench resolves paths from --config)"
         )
     try:
         config = cfg.load(args.config)
@@ -918,7 +918,7 @@ def main(argv: list[str] | None = None) -> int:
         return _safe_error(exc.safe_message)
     except (OSError, ValueError, TypeError, KeyError) as exc:
         _write_parent_error(bundle, exc)
-        return _safe_error("bench: measurement failed — details in the bundle")
+        return _safe_error("bench: measurement failed; details in the bundle")
 
 
 if __name__ == "__main__":

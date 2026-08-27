@@ -56,8 +56,8 @@ def test_group_skips_does_not_merge_reasons_that_only_sanitize_equal() -> None:
 
 
 def test_default_window_advisory_exact_string() -> None:
-    """The shared default-window advisory - one sentence, em-dash, the exact
-    bytes both the analyze pre-load advisory and the digest card note emit."""
+    """The shared default-window advisory uses one sentence and a hyphen. These
+    are the exact bytes both the analyze pre-load advisory and digest card note emit."""
     assert default_window_advisory("1d") == (
         "default window: last 1d of available data - "
         "use --all for the full archive, or --since/--days to widen"

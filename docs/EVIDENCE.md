@@ -10,7 +10,7 @@ the shipped decisions those measurements support; they are not claims of univers
 precision, recall, or transfer across environments. If you can help test that transfer,
 use the [field validation kit](FIELDKIT.md).
 
-| Detector | Disposition | What was measured, and on what population | What it supports — and does not | What is owed |
+| Detector | Disposition | What was measured, and on what population | What it supports, and what it does not | What is owed |
 |---|---|---|---|---|
 | `auth` | published conclusion | One live estate plus external corpora that proved not to contain authentication logs; several observer-reconciliation rules were also tested. | [The measurement stopped before producing calibrated thresholds](evidence/auth.md). It supports conservative structural choices, not precision, recall, or an absolute volume calibration. | Authentication data from an independent environment before any threshold calibration. |
 | `aws` | no calibration campaign found | No calibration population was found. | No efficacy or transfer claim is made. | A preregistered study on representative CloudTrail populations. |

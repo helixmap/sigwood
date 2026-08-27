@@ -72,6 +72,12 @@ _VARIANTS: dict[str, Finding] = {
         "source": "zeek", "registrable_domain": "sentinelgroup.example",
         "subdomain_count": 4217, "max_label_score": 4.9117, "min_label_score": 3.1127,
         "total_queries": 81237, "unique_sources": 91}),
+    "dns_pihole_dense": _f("dns", Severity.MEDIUM, "sentineldense.example", {
+        "source": "pihole", "origin": "dense_cluster", "severity_basis": [],
+        "registrable_domain": "sentineldense.example", "subdomain_count": 4319,
+        "max_label_score": 4.9231, "min_label_score": 3.1231,
+        "total_queries": 82319, "unique_sources": 93,
+        "was_blocked": False, "block_ratio": 0.0}),
     "scan_vertical": _f("scan", Severity.HIGH, "x", {
         "scan_type": "vertical", "src": "192.0.2.231", "dst": "198.51.100.241",
         "scan_state_ratio": 0.9117, "distinct_ports": 7717}),
@@ -171,8 +177,8 @@ _VARIANTS: dict[str, Finding] = {
             "registrable_domains": ["sentineltunnel.example", "sentineldga.example"]}),
     "dns_unscanned_clusters": _f(
         "dns", Severity.INFO,
-        "3218 domains formed 2 dense clusters; the dense-cluster tunnel scan runs on "
-        "Zeek DNS only - these clusters were not analyzed.", {
+        "3218 domains formed 2 dense clusters; Pi-hole dense-cluster scanning was "
+        "disabled for this run - these clusters were not analyzed.", {
             "tier": "unscanned_clusters", "cluster_count": 2,
             "total_members": 3218,
         }),

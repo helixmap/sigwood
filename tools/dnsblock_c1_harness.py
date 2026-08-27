@@ -93,7 +93,7 @@ _NOTE_PATTERNS = tuple(
     re.compile(pattern)
     for pattern in (
         r"period coverage is not verifiable from these logs; period counts use data-bearing periods, and burst and recurring activity were not evaluated",
-        r"dnsblock: [0-9]+ candidate (?:pair|pairs) withheld — not enough prior history in the loaded window",
+        r"dnsblock: [0-9]+ candidate (?:pair|pairs) withheld: not enough prior history in the loaded window",
         r"dnsblock: arrival analysis needs at least [0-9]+ prior periods; the loaded window has [0-9]+",
         r"dnsblock: first-activity analysis needs [0-9]+ eligible periods; the window has [0-9]+",
         r"dnsblock: burst analysis needs [0-9]+ eligible periods; the window has [0-9]+",
@@ -421,7 +421,7 @@ def _validate_summary_notes(payload: dict) -> None:
     if not isinstance(notes, list):
         raise ValueError("dnsblock artifact summary_notes must be a list")
     cap_lines = {
-        f"dnsblock: analysis stopped — {axis} exceeded its bound ({limit}); no findings emitted this run"
+        f"dnsblock: analysis stopped: {axis} exceeded its bound ({limit}); no findings emitted this run"
         for _token, axis, limit in runner._DNSBLOCK_CAP_NOTES
     }
     for line in notes:

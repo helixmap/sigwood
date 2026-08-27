@@ -1,9 +1,9 @@
 # Known issues
 
-sigwood is young, and this is the honest ledger of what it doesn't do well yet — the
+sigwood is young, and this is the honest ledger of what it doesn't do well yet: the
 rough edges worth knowing before you lean on it. Where sigwood can notice a gap at run
 time it says so in the run itself; where it can't yet, the entry below is the only
-disclosure — if an entry says "silently," it means it. Found something that
+disclosure, and if an entry says "silently," it means it. Found something that
 isn't here? Open an issue.
 
 **Era needs a long, dated archive for all ten cards to speak.** Era's long-horizon cards need
@@ -152,25 +152,26 @@ you recognize.
 **On Pi-hole/dnsmasq-only data, DNS findings cannot reach HIGH.** HIGH requires a name to
 look generated *and* to be corroborated by something else - lookups that mostly fail to
 resolve, or membership in a dense concentrated cluster. Pi-hole records no DNS response
-code, so the first is unavailable, and the dense-cluster scan runs on Zeek only, so the
-second is too. Pi-hole DNS findings therefore top out at MEDIUM. This is a fidelity limit
+code, so the first is unavailable. The dense-cluster scan does run on Pi-hole, but the
+corroboration it grants is deliberately withheld there: the scan's volume evidence counts
+toward HIGH only on Zeek, where a resolution outcome can corroborate it independently.
+Pi-hole DNS findings therefore top out at MEDIUM. This is a fidelity limit
 of the source, not a judgement that the traffic is benign - add Zeek for the same domains
 if you need the distinction.
 
-**On Pi-hole/dnsmasq data, high-volume DNS tunneling stops being identified as it
-grows.** The dense-cluster tunnel scan runs on Zeek DNS only. Pi-hole queries are
-clustered without it, so a burst of random lookups that becomes voluminous enough to
-form its own cluster stops being "noise" and stops producing per-domain findings - in
-testing, scaling the same DGA burst from 15 to 400 lookups took the report from ten
-identified domains to none. One aggregate informational row remains: it states how many
-domains formed how many clusters and that the Zeek-only scan did not inspect them. That
-row names no domain and analyzes nothing - the coverage gap is unchanged, only its
-visibility, and the burst is no longer identifiable from the report alone. Until the scan is extended to the
-Pi-hole path, run the same traffic through Zeek, where the dense-cluster scan closes this
-gap directly. Failing that, read the distinct-domain count on the digest card
-(`sigwood digest /var/log/pihole/pihole.log` prints a `domains:` total): a DGA burst is many
-names queried once each, so it inflates the distinct-domain count while never rising to a
-heaviest-domain - which is why a per-domain-volume check does not surface it.
+**On Pi-hole/dnsmasq data, a high-volume family is recovered only when it concentrates
+under one parent.** The dense-cluster tunnel scan now runs on Pi-hole as well as Zeek, so a
+burst of random-looking lookups that grows voluminous enough to form its own cluster is
+named again rather than dropping to a counts-only row as it grows. Recovery has a measured
+shape and two edges worth knowing. It covers a family whose names sit under a single
+registrable domain: that concentration is what separates a tunnel from a busy content
+network, and a family sprayed across many separate domains still falls outside the scan on
+both sources. It also depends on the names looking generated to the suffix score, so an
+encoding that only sometimes clears that bar - hexadecimal labels are the measured case,
+and low-digit alphabets behave similarly - can still slip past. Finally, a cluster the scan
+inspects and rejects produces no row at all, so silence about a cluster is not a statement
+that one was examined. If you disable the scan, Pi-hole returns to reporting an aggregate
+count of unexamined clusters and says so in those words.
 
 **Letter-only DGA labels never clear the suspicion score's bar.** The score leans on digit
 density, so a random no-digit label scores roughly a third of a point below a digit-bearing
@@ -193,7 +194,8 @@ shape of base16-encoded tunneling - straddles the high-entropy bar (1.8) the den
 scan requires: measured on seeded random hex, roughly half of labels clear the bar (40-60%
 across lengths 16-63), well short of the 80% of cluster members the scan demands, so a
 high-volume hex tunnel that grows into its own cluster can pass the scan without tripping
-it. Pivot on the volume and registrable-domain concentration of random-looking lookups when
+it. The per-label scores are identical whether the names are read from Zeek queries or from
+Pi-hole's per-domain aggregate, so extending the scan to Pi-hole does not narrow this gap. Pivot on the volume and registrable-domain concentration of random-looking lookups when
 the scan is quiet.
 
 **On a small DNS capture, no clusters form and the method label still names the algorithm.**
@@ -263,7 +265,7 @@ not claim a corroborated verdict. Treat every auth finding as a review lead.
 
 **Auth floors count decision records, not human attempts, and more than one source can record
 the same event.** Each source that observed an authentication contributes its own records, and
-no source's records are discarded to make room for another's — dropping them is how a real
+no source's records are discarded to make room for another's; dropping them is how a real
 attack can disappear. Two consequences. A host reporting through both its service log and the
 audit system can record one event in each, so its magnitudes can run up to about double. And
 where one physical authentication produces several distinct eligible audit types, each
@@ -274,12 +276,12 @@ its notes.
 
 **A same-time auth tie can drop a failures-then-success result.** Landing keeps each source's
 rows coherent rather than mixing them, and among the sources that recorded a transition for an
-episode, the best-placed one owns the whole episode — including an unresolved
+episode, the best-placed one owns the whole episode, including an unresolved
 failure-and-success tie at a single timestamp. Another source's otherwise clear transition is
 not substituted in that case. (A source that recorded no transition at all does not block one:
 it is skipped, and a lower-placed source's result stands.) The result is a conservative miss.
 Where the same source and account also produced a multi-host finding, only that evidence line
-is absent. Where they did not, the failures-then-success finding is absent altogether — the
+is absent. Where they did not, the failures-then-success finding is absent altogether. The
 failures are still counted and will surface on their own if a concentration, volume, or spread
 floor is reached, but nothing guarantees one is. Because landing no longer affects severity,
 this can never lower another finding's tier.
@@ -525,8 +527,8 @@ Reports, decks and other whole files are written to a fresh name and moved into 
 **hard link** at the destination loses one of its names rather than its contents: the file
 another name refers to is left as it was.
 
-One narrower shape remains. A few outputs are written as a stream rather than in one piece —
-exported logs, and reports rendered progressively — and those still open the destination
+One narrower shape remains. A few outputs are written as a stream rather than in one piece,
+including exported logs and reports rendered progressively. Those still open the destination
 directly, so a hard link there would have its contents replaced. It matters only where another
 account can create or replace a name in one of the directories along your output path; if
 every such directory is one only you can write to, it does not apply.
@@ -538,5 +540,5 @@ takes a while. It's correct, just not yet optimized; performance work is on the 
 **A force-killed run can leave the terminal cursor hidden.** sigwood hides the cursor
 while it narrates progress and restores it on every ordinary exit, including errors and
 Ctrl-C. `kill -9` (and an unhandled SIGTERM) gives the process no chance to clean up, so
-the cursor can stay hidden in that shell — the same trade every cursor-hiding CLI makes.
+the cursor can stay hidden in that shell; the same trade every cursor-hiding CLI makes.
 `tput cnorm` (or opening a new tab) brings it back.

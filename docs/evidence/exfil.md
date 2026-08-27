@@ -1,13 +1,13 @@
-# exfil — calibration record
+# exfil calibration record
 
 exfil surfaces bulk outbound transfers to external endpoints over Zeek connection
-logs. Both of its shipped constants were put to a sweep. Both ratified — and the sweep
+logs. Both of its shipped constants were put to a sweep. Both ratified, and the sweep
 found that the detector's real noise problem is not a threshold at all.
 
 ## what was measured
 
 A two-axis sweep of the only two constants an operator sees: the outbound byte floor
-and the originator-share gate. Plus four obligations fixed in advance — report the
+and the originator-share gate. Plus four obligations fixed in advance: report the
 excluded population by mass rather than row share, measure the rate of the one
 asymmetric failure the share gate structurally cannot see, check the synthetic corpus
 in the direction that would trip it, and record the default-hunt evidence without
@@ -26,7 +26,7 @@ connection delta.
 - A frozen one-week capture and a frozen single day from the same source.
 - The shipped synthetic demo corpus.
 
-Measured **without allowlist suppression**, deliberately — see the hazard below.
+Measured **without allowlist suppression**, deliberately. The hazard below is why.
 All real windows come from one estate, so the sweep measures noise and stability there,
 not transfer to another environment.
 
@@ -37,8 +37,8 @@ not transfer to another environment.
   whole-archive number.
 - Report the excluded population by **mass**, not just row count, because a row share
   says nothing about how much data went unmeasured.
-- Record the default-hunt evidence and **do not spend it** — no recommendation on the
-  seat from within the sweep.
+- Record the default-hunt evidence and **do not spend it**. The sweep makes no
+  recommendation on the seat.
 
 ## outcome
 
@@ -47,7 +47,7 @@ not transfer to another environment.
 - **The byte floor** shows smooth decay of roughly −15% per doubling across seven
   grid points, with **no cliff in either direction**. It is not perched on an edge, and
   it is not the lever that governs noise.
-- **The share gate does real work at scale** — at the shipped floor it removes a handful
+- **The share gate does real work at scale.** At the shipped floor it removes a handful
   of pairs carrying tens of gigabytes, correctly excluding genuine download-heavy
   transfers and near-symmetric ones, and it sits safely above the observed
   near-symmetric cluster. Honest bound on that verdict: the shipped value versus the
@@ -55,10 +55,10 @@ not transfer to another environment.
   safer side of an observed cluster; it is **not** finely calibrated, and no surface
   should imply that it is.
 
-**The asymmetric failure class was empty at every scale measured** — zero occurrences
-in 16.1 M rows reaching the byte gate. Scope discipline: that is strong evidence of low
-incidence on these corpora, not proof of impossibility, and it is not restated as
-"cannot happen."
+**The asymmetric failure class was empty at every scale measured**, with zero
+occurrences in 16.1 M rows reaching the byte gate. Scope discipline: that is strong
+evidence of low incidence on these corpora, not proof of impossibility, and it is not
+restated as "cannot happen."
 
 **The dominant finding is the aggregation grain, not the thresholds.** A rotating
 service pool answers on many addresses, so one activity becomes many findings, and the
@@ -70,7 +70,7 @@ pool member of a very large backup clears any plausible floor.
 
 **Two interim conclusions drawn from the one-week corpus were reversed by 121 days**,
 and both are recorded because the failure mode is instructive. The share gate looked
-*inert* on the week — it removed nothing — when in fact the week simply did not contain
+*inert* on the week, removing nothing, when in fact the week simply did not contain
 the population the gate exists for. And the byte floor looked like it sat mid-plateau;
 at scale there is no plateau, only smooth decay. The defensible claim is the weaker one.
 
@@ -78,7 +78,7 @@ at scale there is no plateau, only smooth decay. The defensible claim is the wea
 
 - **The outbound byte floor and the originator-share gate** at their shipped values,
   ratified rather than retuned.
-- **The destination-pool fold** — surfaced pairs sharing one source and one canonical
+- **The destination-pool fold.** Surfaced pairs sharing one source and one canonical
   destination network fold into a single rollup. The fold count and the network prefix
   widths are frozen calibration, not operator tuning. The prefix was chosen *against*
   measurement: a tighter prefix still left double-digit rows for one backup, and two
@@ -86,7 +86,7 @@ at scale there is no plateau, only smooth decay. The defensible claim is the wea
   for less over-merge risk on unseen data.
 - **The fold changes presentation, never measurement.** Every gate, every byte figure,
   and the surfaced-pair population are untouched by it.
-- **Default-hunt membership**, seated on this sweep — and coupled to the fold. Seated
+- **Default-hunt membership**, seated on this sweep and coupled to the fold. Seated
   without it, every default run would inherit the 138-finding weeks the fold removes,
   so the two ship together.
 - **Both gates stay absolute.** No baseline, no learned per-pair normal, no
@@ -96,21 +96,21 @@ at scale there is no plateau, only smooth decay. The defensible claim is the wea
 
 - **Spray across many destinations defeats the per-pair grain**, and low-and-slow
   transfer below the floor is invisible to this detector.
-- **The floor is window-relative** — a transfer split across two runs may clear it in
+- **The floor is window-relative.** A transfer split across two runs may clear it in
   neither.
 - **A benign recurring pair surfaces every run until it is allowlisted**, and for a
   rotating pool that means allowlisting the network, not the address: 343 of 344
   observed destinations appeared on under 5% of days, so per-address rules cannot
   converge.
-- **An unrecorded responder value can make a download present as an upload** — the one
+- **An unrecorded responder value can make a download present as an upload**, the one
   false-positive path the share gate structurally cannot see. Measured incidence on
   these corpora: zero.
 - **Every mass, share, and count figure covers the measured population only.** Outbound
   mass cannot bound the error on the share, so no surface presents a measured share as
   an all-records share.
-- **The synthetic demo corpus cannot exercise this detector at all** — it carries about
+- **The synthetic demo corpus cannot exercise this detector at all.** It carries about
   7 MB of total outbound mass and seeds no bulk transfer. Recorded as a product gap.
-- **Every finding surfaced across every corpus in 121 days was benign** — a pooled
+- **Every finding surfaced across every corpus in 121 days was benign**, a pooled
   backup service and an API endpoint. Zero true-malicious transfers were present to
   find, so this evidence bounds noise, not recall.
 
@@ -118,9 +118,9 @@ at scale there is no plateau, only smooth decay. The defensible claim is the wea
 
 A bare numeric allowlist rule added for one detector **silently recalibrates another**.
 Flat numeric rules are scope-blind. On the frozen week, one such rule added for a
-different detector took exfil from 9 findings to 1 — removing 89% of findings and two
+different detector took exfil from 9 findings to 1, removing 89% of findings and two
 thirds of the surfaced mass. A post-suppression measurement would have reported
-"exfil yields about one finding a week on a real network — nicely quiet," wrong by 9×
+"exfil yields about one finding a week on a real network, nicely quiet," wrong by 9×
 for reasons having nothing to do with exfil's thresholds. Measuring unsuppressed was
 deliberate and is the only reason the headline numbers are right.
 

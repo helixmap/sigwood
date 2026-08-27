@@ -903,6 +903,13 @@ def test_both_mode_pihole_not_independently_clustered(monkeypatch) -> None:
         q, SimpleNamespace(domain="", suffix="", subdomain="", top_domain_under_public_suffix=""),
     ))
     monkeypatch.setattr(clustering, "HDBSCAN", _FakeHDBSCAN3)
+    monkeypatch.setattr(
+        dns_mod,
+        "_run_pihole_path",
+        lambda *args, **kwargs: pytest.fail(
+            "both-mode must not invoke the standalone Pi-hole cluster path"
+        ),
+    )
 
     ctx = DetectorContext(
         logs={"dns*.log*": _BOTH_MODE_ZEEK_DF.copy(), "pihole*.log*": _BOTH_MODE_PIHOLE_DF.copy()},
@@ -971,6 +978,189 @@ def test_special_not_in_cluster_features_but_in_evidence(monkeypatch) -> None:
 
 
 # ── Pihole-only end-to-end test ───────────────────────────────────────────────
+
+_PIHOLE_F3_SEED = 20260827
+_PIHOLE_F3_CONSONANTS = "bcdfghjklmnpqrstvwxyz"
+
+
+def _pihole_dense_f3_frame() -> tuple[pd.DataFrame, set[str]]:
+    """U-01's deterministic digit-heavy F3 witness at twice the frozen floor."""
+    import sigwood.detectors.dns as dns_mod
+
+    count = 2 * dns_mod._PIHOLE_SCAN_MIN_CLUSTER_MEMBERS
+    rng = random.Random((_PIHOLE_F3_SEED << 16) ^ (count << 2) ^ 2)
+    labels: list[str] = []
+    for _ in range(count):
+        body = [rng.choice("0123456789") for _ in range(24)]
+        body.extend(rng.choice(_PIHOLE_F3_CONSONANTS) for _ in range(24))
+        rng.shuffle(body)
+        labels.append("".join(body))
+    assert len(set(labels)) == count
+    assert all(
+        len(label) == 48
+        and sum(char.isdigit() for char in label) == 24
+        and sum(char in _PIHOLE_F3_CONSONANTS for char in label) == 24
+        for label in labels
+    )
+
+    domains = {f"{label}.dga.example.com" for label in labels}
+    rows: list[dict[str, object]] = []
+    for index, domain in enumerate(sorted(domains)):
+        rows.extend((
+            {
+                "ts": float(index),
+                "query": domain,
+                "event_type": "query",
+                "src": "192.0.2.44",
+                "qtype": "A",
+            },
+            {
+                "ts": float(index),
+                "query": domain,
+                "event_type": "forwarded",
+                "src": None,
+                "qtype": None,
+            },
+            {
+                "ts": float(index),
+                "query": domain,
+                "event_type": "reply",
+                "src": None,
+                "qtype": None,
+                "reply": "NXDOMAIN",
+            },
+        ))
+
+    # A compact, varied benign bed supplies the same relative feature geometry as
+    # U-01's frozen-week witness: the F3 family forms one dense cluster while this
+    # low-scoring population forms a separate cluster rejected by the scan gates.
+    for index in range(count):
+        domain = (
+            f"host{index % 17}.service{index % 29}.example.net"
+            if index % 2
+            else f"www{index}.example.org"
+        )
+        for repeat in range(1 + index % 5):
+            rows.append({
+                "ts": 1000.0 + index + repeat / 10,
+                "query": domain,
+                "event_type": "query",
+                "src": f"192.0.2.{10 + index % 20}",
+                "qtype": "AAAA" if index % 3 == 0 else "A",
+            })
+        if index % 3:
+            rows.append({
+                "ts": 1000.0 + index,
+                "query": domain,
+                "event_type": "cached",
+                "src": None,
+                "qtype": None,
+            })
+    return pd.DataFrame(rows), domains
+
+
+def _pihole_f3_extract(query: str) -> SimpleNamespace:
+    """Deterministic public-suffix branch for ``*.dga.example.com``."""
+    parts = query.split(".")
+    return SimpleNamespace(
+        domain=parts[-2],
+        suffix=parts[-1],
+        subdomain=".".join(parts[:-2]),
+        top_domain_under_public_suffix=".".join(parts[-2:]),
+    )
+
+
+def test_pihole_dense_f3_real_path_recovers_self_clustered_family(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The measured F3 family must not vanish after it becomes a dense cluster."""
+    import sigwood.detectors.dns as dns_mod
+
+    pihole_df, domains = _pihole_dense_f3_frame()
+    monkeypatch.setattr(dns_mod, "_TLD_EXTRACT", _pihole_f3_extract)
+
+    findings = run(DetectorContext(
+        logs={"pihole*.log*": pihole_df},
+        config={},
+        allowlist=None,
+        data_window=_WINDOW,
+    ))
+
+    dense = [
+        finding
+        for finding in findings
+        if finding.evidence.get("origin") == "dense_cluster"
+    ]
+    assert len(dense) == 1, [(finding.title, finding.evidence) for finding in findings]
+    recovered = dense[0]
+    assert recovered.severity is Severity.MEDIUM
+    assert recovered.evidence["source"] == "pihole"
+    assert recovered.evidence["severity_basis"] == []
+    assert "rcode_distribution" not in recovered.evidence
+    assert "nxdomain_fraction" not in recovered.evidence
+    assert "nxdomain_count" not in recovered.evidence
+    assert recovered.evidence["subdomain_count"] == len(domains)
+    assert recovered.evidence["total_queries"] == len(domains)
+    assert set(recovered.evidence["sample_domains"]) <= domains
+    assert "noise cluster" not in recovered.description
+    assert "dense, high-entropy cluster" in recovered.description
+
+    summaries = [
+        finding
+        for finding in findings
+        if finding.evidence.get("tier") == "scan_summary"
+    ]
+    assert len(summaries) == 1
+    assert summaries[0].evidence["cluster_count"] == 1
+    assert summaries[0].evidence["total_members"] == len(domains)
+    # The second, low-scoring cluster was scanned but rejected by the gates. It is
+    # intentionally absent from both disclosure tiers; docs must not imply otherwise.
+    assert not any(
+        finding.evidence.get("tier") == "unscanned_clusters"
+        for finding in findings
+    )
+
+
+def test_pihole_dense_f3_scan_off_discloses_disabled_scan_cause(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Scan-off keeps the counts-only disclosure and states why it was skipped."""
+    import sigwood.detectors.dns as dns_mod
+
+    pihole_df, domains = _pihole_dense_f3_frame()
+    monkeypatch.setattr(dns_mod, "_TLD_EXTRACT", _pihole_f3_extract)
+
+    findings = run(DetectorContext(
+        logs={"pihole*.log*": pihole_df},
+        config={"scan_dense_clusters": False},
+        allowlist=None,
+        data_window=_WINDOW,
+    ))
+
+    assert len(findings) == 1
+    disclosure = findings[0]
+    assert disclosure.severity is Severity.INFO
+    assert disclosure.title == (
+        "100 domains formed 2 dense clusters; Pi-hole dense-cluster scanning was "
+        "disabled for this run - these clusters were not analyzed."
+    )
+    assert disclosure.description == (
+        "This is a coverage disclosure, not a detection. Pi-hole supplied the "
+        "aggregate counts, but this run had dense-cluster scanning disabled and "
+        "did not inspect the cluster members."
+    )
+    assert disclosure.evidence == {
+        "tier": "unscanned_clusters",
+        "cluster_count": 2,
+        "total_members": 100,
+    }
+    assert disclosure.next_steps == [
+        "Enable scan_dense_clusters to analyze Pi-hole dense clusters",
+        "Re-run the detector after changing the DNS scan setting",
+    ]
+    serialized = repr(disclosure)
+    assert not any(domain in serialized for domain in domains)
+
 
 _PIHOLE_ONLY_EXT = {
     "a3f7bc19.sus1.example":    SimpleNamespace(domain="sus1", suffix="example", subdomain="a3f7bc19",    top_domain_under_public_suffix="sus1.example"),
@@ -1064,7 +1254,10 @@ def test_pihole_all_cluster_zero_noise_discloses_identity_free_counts(
 
     findings = run(DetectorContext(
         logs={"pihole*.log*": pihole_df},
-        config={"pihole": {"min_cluster_size": 2, "min_samples": 1}},
+        config={
+            "scan_dense_clusters": False,
+            "pihole": {"min_cluster_size": 2, "min_samples": 1},
+        },
         allowlist=None,
         data_window=_WINDOW,
     ))
@@ -1073,8 +1266,8 @@ def test_pihole_all_cluster_zero_noise_discloses_identity_free_counts(
     disclosure = findings[0]
     assert disclosure.severity == Severity.INFO
     assert disclosure.title == (
-        "400 domains formed a dense cluster; the dense-cluster tunnel scan runs on "
-        "Zeek DNS only - this cluster was not analyzed."
+        "400 domains formed a dense cluster; Pi-hole dense-cluster scanning was "
+        "disabled for this run - this cluster was not analyzed."
     )
     assert disclosure.evidence == {
         "tier": "unscanned_clusters",
@@ -1114,6 +1307,7 @@ def test_pihole_unscanned_disclosure_branch_boundaries_and_exact_counts(
             logs={"pihole*.log*": pihole_df},
             config={
                 "threshold": 999.0,
+                "scan_dense_clusters": False,
                 "pihole": {"min_cluster_size": 2, "min_samples": 1},
             },
             allowlist=None,
@@ -1140,8 +1334,8 @@ def test_pihole_unscanned_disclosure_branch_boundaries_and_exact_counts(
     mixed = _run_with(np.array([0, 0, -1, 1, 1, -1], dtype=int))
     assert len(mixed) == 1
     assert mixed[0].title == (
-        "4 domains formed 2 dense clusters; the dense-cluster tunnel scan runs on "
-        "Zeek DNS only - these clusters were not analyzed."
+        "4 domains formed 2 dense clusters; Pi-hole dense-cluster scanning was "
+        "disabled for this run - these clusters were not analyzed."
     )
     assert mixed[0].evidence == {
         "tier": "unscanned_clusters",
@@ -1185,7 +1379,10 @@ def test_pihole_unscanned_hostile_identity_reaches_no_output_surface(
             }
             for index, domain in enumerate(hostile_domains)
         ])},
-        config={"pihole": {"min_cluster_size": 2, "min_samples": 1}},
+        config={
+            "scan_dense_clusters": False,
+            "pihole": {"min_cluster_size": 2, "min_samples": 1},
+        },
         allowlist=None,
         data_window=_WINDOW,
     ))
@@ -1241,6 +1438,113 @@ def test_pihole_unscanned_hostile_identity_reaches_no_output_surface(
             assert domain not in output
 
 
+def test_pihole_dense_hostile_parent_is_contained_across_output_sinks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The newly recovered route keeps one hostile parent data, never executable."""
+    import csv
+    import html
+    import io
+    import json
+    import shlex
+
+    import sigwood.detectors.dns as dns_mod
+    import sigwood.outputs.pdf as pdf_mod
+    from sigwood.outputs.csv import CsvHandler
+    from sigwood.outputs.html import render_report_html
+    from sigwood.outputs.json import JsonHandler
+    from sigwood.outputs.pdf import PdfHandler
+
+    parent = "=<svg_onload=alert(1)>;$(id)|cmd.example"
+    count = dns_mod._PIHOLE_SCAN_MIN_CLUSTER_MEMBERS
+    labels = _high_entropy_labels(count, seed=113)
+    domains = [f"{label}.{parent}" for label in labels]
+
+    def _extract(query: str) -> SimpleNamespace:
+        return SimpleNamespace(
+            domain=parent.removesuffix(".example"),
+            suffix="example",
+            subdomain=query.removesuffix(f".{parent}"),
+            top_domain_under_public_suffix=parent,
+        )
+
+    monkeypatch.setattr(dns_mod, "_TLD_EXTRACT", _extract)
+    monkeypatch.setattr(
+        dns_mod,
+        "fit_predict_interruptible",
+        lambda matrix, **kwargs: np.zeros(matrix.shape[0], dtype=int),
+    )
+    findings = run(DetectorContext(
+        logs={"pihole*.log*": pd.DataFrame([
+            {
+                "ts": float(index),
+                "query": domain,
+                "event_type": "query",
+                "src": "192.0.2.10",
+                "qtype": "A",
+            }
+            for index, domain in enumerate(domains)
+        ])},
+        config={"pihole": {"min_cluster_size": 2, "min_samples": 1}},
+        allowlist=None,
+        data_window=_WINDOW,
+    ))
+    recovered = next(
+        finding
+        for finding in findings
+        if finding.evidence.get("origin") == "dense_cluster"
+    )
+    assert recovered.title == parent
+    assert recovered.next_steps[0] == (
+        f"Check domain registration: whois {shlex.quote(parent)}"
+    )
+
+    text_stream = io.StringIO()
+    TextHandler(stream=text_stream).write(findings)
+    text_output = text_stream.getvalue()
+    html_output = render_report_html(
+        findings, None, verbose_level=2, max_findings_per_detector=100,
+    )
+
+    captured_pdf_html: list[str] = []
+    monkeypatch.setattr(
+        pdf_mod,
+        "render_pdf_bytes",
+        lambda rendered: captured_pdf_html.append(rendered) or b"%PDF-test",
+    )
+    pdf_stream = io.BytesIO()
+    pdf_handler = PdfHandler(
+        stream=pdf_stream, verbose_level=2, max_findings_per_detector=100,
+    )
+    pdf_handler.write(findings)
+    pdf_handler.end()
+
+    json_stream = io.StringIO()
+    json_handler = JsonHandler(stream=json_stream)
+    json_handler.write(findings)
+    json_handler.end()
+    json_payload = json.loads(json_stream.getvalue())
+    json_finding = next(
+        finding
+        for finding in json_payload["findings"]
+        if finding["evidence"].get("origin") == "dense_cluster"
+    )
+
+    csv_stream = io.StringIO()
+    csv_handler = CsvHandler(stream=csv_stream)
+    csv_handler.write(findings)
+    csv_handler.end()
+    csv_row = next(csv.DictReader(io.StringIO(csv_stream.getvalue())))
+
+    assert parent in text_output
+    assert parent not in html_output
+    assert html.escape(parent) in html_output
+    assert captured_pdf_html == [html_output]
+    assert json_finding["title"] == parent
+    assert csv_row["finding"] == "'" + parent
+    assert csv_row["finding"][0] not in "=+-@\t\r"
+
+
 def test_non_psl_candidates_share_one_grouping_key_on_both_paths(
     monkeypatch,
 ) -> None:
@@ -1292,6 +1596,8 @@ def test_non_psl_candidates_share_one_grouping_key_on_both_paths(
             for query in queries
         ]),
         {"min_cluster_size": 2, "min_samples": 1},
+        thresh_high=1.8,
+        scan_cfg=scan_cfg,
     )
 
     assert zeek is not None and set(zeek["registrable_domain"]) == {"lan"}
@@ -1623,8 +1929,16 @@ def test_pihole_cfg_partial_override_keeps_defaults(monkeypatch) -> None:
 
     captured: dict = {}
 
-    def _spy_run_pihole_path(pihole_df: pd.DataFrame, pihole_cfg: dict) -> None:
+    def _spy_run_pihole_path(
+        pihole_df: pd.DataFrame,
+        pihole_cfg: dict,
+        *,
+        thresh_high: float,
+        scan_cfg: dict,
+    ) -> None:
         captured["pihole_cfg"] = dict(pihole_cfg)
+        captured["thresh_high"] = thresh_high
+        captured["scan_cfg"] = dict(scan_cfg)
         return None
 
     monkeypatch.setattr(dns_mod, "_run_pihole_path", _spy_run_pihole_path)
@@ -1645,6 +1959,17 @@ def test_pihole_cfg_partial_override_keeps_defaults(monkeypatch) -> None:
         "min_cluster_size must fall back to DEFAULT_CONFIG when not overridden"
     )
     assert captured["pihole_cfg"]["min_samples"] == 3, "min_samples must be taken from user config"
+    assert captured["thresh_high"] == DEFAULT_CONFIG["thresh_high_entropy"]
+    assert captured["scan_cfg"] == {
+        key: DEFAULT_CONFIG[key]
+        for key in (
+            "scan_dense_clusters",
+            "scan_min_high_entropy_fraction",
+            "scan_min_cluster_members",
+            "scan_min_regdomain_share",
+            "scan_max_members_per_cluster",
+        )
+    }
 
 
 # ── _enrich_zeek_with_pihole: no-match defaults ───────────────────────────────
@@ -1922,8 +2247,8 @@ def test_dns_unscanned_pihole_section_is_trailing_and_cap_exempt() -> None:
     disclosure = _make_dns_finding(
         Severity.INFO,
         (
-            "4 domains formed 2 dense clusters; the dense-cluster tunnel scan runs "
-            "on Zeek DNS only - these clusters were not analyzed."
+            "4 domains formed 2 dense clusters; Pi-hole dense-cluster scanning was "
+            "disabled for this run - these clusters were not analyzed."
         ),
         {
             "tier": "unscanned_clusters",
@@ -2082,6 +2407,52 @@ def _tunnel_extract(query: str) -> SimpleNamespace:
     )
 
 
+def test_dense_scan_query_weight_aligns_on_non_range_index(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pi-hole weights align by owned frame index and affect only query totals."""
+    import sigwood.detectors.dns as dns_mod
+
+    count = dns_mod._PIHOLE_SCAN_MIN_CLUSTER_MEMBERS
+    queries = [f"{label}.tunnel.example" for label in _high_entropy_labels(count)]
+    index = pd.Index([101 + 3 * offset for offset in range(count)], name="aggregate_row")
+    frame = pd.DataFrame({"query": queries}, index=index)
+    weights = pd.Series(range(1, count + 1), index=index, name="query_count")
+    scan_cfg = {
+        "scan_dense_clusters": True,
+        "scan_min_high_entropy_fraction": 0.8,
+        "scan_min_cluster_members": 100,
+        "scan_min_regdomain_share": 0.8,
+        "scan_max_members_per_cluster": 500,
+    }
+    monkeypatch.setattr(dns_mod, "_TLD_EXTRACT", _tunnel_extract)
+
+    records, dominant = dns_mod._surface_dense_clusters(
+        frame,
+        np.zeros(count, dtype=int),
+        thresh_high=1.8,
+        scan_cfg=scan_cfg,
+        member_floor=count,
+        query_weight=weights,
+    )
+
+    assert dominant == set(queries)
+    assert len(records) == count
+    assert records["cluster_true_member_count"].unique().tolist() == [count]
+    assert records["cluster_true_query_total"].unique().tolist() == [
+        int(weights.sum())
+    ]
+    with pytest.raises(ValueError, match="align exactly"):
+        dns_mod._surface_dense_clusters(
+            frame,
+            np.zeros(count, dtype=int),
+            thresh_high=1.8,
+            scan_cfg=scan_cfg,
+            member_floor=count,
+            query_weight=weights.reset_index(drop=True),
+        )
+
+
 def test_dense_scan_concentrates_non_psl_cluster_under_private_root(
     monkeypatch,
 ) -> None:
@@ -2104,6 +2475,7 @@ def test_dense_scan_concentrates_non_psl_cluster_under_private_root(
         np.zeros(len(frame), dtype=int),
         thresh_high=1.8,
         scan_cfg=scan_cfg,
+        member_floor=scan_cfg["scan_min_cluster_members"],
     )
 
     assert len(records) == len(queries)
@@ -2213,6 +2585,62 @@ def _dense_group_candidates(
             ),
         })
     return pd.DataFrame(rows)
+
+
+def test_pihole_dense_group_mixes_noise_once_without_volume_corroboration() -> None:
+    """A shared-parent noise row adds once to a weighted Pi-hole dense group."""
+    candidates = pd.DataFrame([
+        {
+            "query": "2468bcdf.tunnel.example",
+            "label_entropy": 2.2,
+            "registrable_domain": "tunnel.example",
+            "has_public_suffix": True,
+            "unique_sources": 1,
+            "querier_ips": ["192.0.2.10"],
+            "source": "pihole",
+            "query_count": 4,
+            "qtype_counts": {"A": 4},
+            "was_blocked": False,
+            "block_ratio": 0.0,
+            "cache_ratio": 0.0,
+            "forward_ratio": 1.0,
+            "special_count": 0,
+            "dense_cluster_id": 9.0,
+            "cluster_true_member_count": 25.0,
+            "cluster_true_query_total": 100.0,
+        },
+        {
+            "query": "1357hjkl.tunnel.example",
+            "label_entropy": 2.1,
+            "registrable_domain": "tunnel.example",
+            "has_public_suffix": True,
+            "unique_sources": 1,
+            "querier_ips": ["192.0.2.11"],
+            "source": "pihole",
+            "query_count": 7,
+            "qtype_counts": {"AAAA": 7},
+            "was_blocked": False,
+            "block_ratio": 0.0,
+            "cache_ratio": 0.0,
+            "forward_ratio": 0.0,
+            "special_count": 0,
+            "dense_cluster_id": np.nan,
+            "cluster_true_member_count": np.nan,
+            "cluster_true_query_total": np.nan,
+        },
+    ])
+
+    findings = _shared_back_half(candidates, 1.8, _NOW, _WINDOW)
+
+    assert len(findings) == 1
+    finding = findings[0]
+    assert finding.severity is Severity.MEDIUM
+    assert finding.evidence["severity_basis"] == []
+    assert finding.evidence["origin"] == "dense_cluster"
+    assert finding.evidence["subdomain_count"] == 26
+    assert finding.evidence["total_queries"] == 107
+    assert "dense, high-entropy cluster" in finding.description
+    assert "noise cluster" not in finding.description
 
 
 def test_dense_group_noise_rows_cannot_satisfy_distinct_child_floor() -> None:

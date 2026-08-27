@@ -1,0 +1,21 @@
+#!/bin/sh
+# Refuse a commit message carrying dash punctuation.
+#
+# A commit message is published text on GitHub that no file scan reaches, so it
+# needs its own gate. The rule lives in tests/dash_rule.py; comment lines are
+# stripped there, because git drops them before recording the message.
+#
+# Enable per clone:
+#   git config core.hooksPath .githooks
+set -e
+
+if command -v python3 >/dev/null 2>&1; then
+    PY=python3
+elif command -v python >/dev/null 2>&1; then
+    PY=python
+else
+    echo "commit-msg: no python found, cannot check dash punctuation" >&2
+    exit 1
+fi
+
+exec "$PY" tests/dash_rule.py --message-file "$1"

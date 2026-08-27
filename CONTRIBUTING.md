@@ -208,6 +208,16 @@ for this too.
   prefix only at the CLI boundary; status and progress lines carry no prefix;
   finding titles are entities, not sentences. A voice tripwire test locks a lot
   of this so you don't have to memorize.
+- **Rewrite the sentence; a hyphen is the fallback.** Em dash, en dash, figure dash
+  and horizontal bar are banned everywhere in this repository: prose, code, comments,
+  tests and commit messages. If you find yourself reaching for one, restructure the
+  sentence rather than swapping the character. Split it in two, use a colon or a comma,
+  or reorder it so the aside becomes the subject. A hyphen is acceptable only where a
+  rewrite would take real acrobatics, which is rare. The mathematical minus sign is
+  untouched by the rule. While you are editing a file for some other reason, it is worth
+  rewriting the dash constructions you touched or read past on the way. A tripwire holds
+  the character ban for every file, and the git hooks below refuse a commit that breaks
+  it, so you find out before the dash is public rather than after.
 - **Fail with an actionable message.** `KeyError: 'id.orig_h'` is not something a user
   should ever see; `conn.log fields not found - is this a Zeek conn.log?` is.
 
@@ -216,10 +226,16 @@ for this too.
 ```bash
 git clone https://github.com/helixmap/sigwood
 cd sigwood
+git config core.hooksPath .githooks   # enable the repo's commit gates
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e '.[dev]'      # runtime extras + pytest
 python -m pytest             # from the repo root
 ```
+
+The `core.hooksPath` line is a one-time setting per clone. Git will not enable
+hooks on your behalf, by design, so a fresh clone has the hook scripts but not
+the gate until you run it. The hooks only check dash punctuation and add a
+fraction of a second to a commit.
 
 On NixOS the pip route above fails outright; manylinux wheels expect system
 libraries at paths Nix doesn't provide. `nix develop` gives you the same `.venv`,

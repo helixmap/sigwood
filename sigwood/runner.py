@@ -4103,7 +4103,7 @@ def _dnsblock_cap_note(cause: str) -> str | None:
     for token, axis, limit in _DNSBLOCK_CAP_NOTES:
         if token in cause:
             return (
-                f"dnsblock: analysis stopped \N{EM DASH} {axis} exceeded its bound "
+                f"dnsblock: analysis stopped: {axis} exceeded its bound "
                 f"({limit}); no findings emitted this run"
             )
     return None
@@ -4134,8 +4134,8 @@ def _format_dnsblock_summary_notes(prepared: Any) -> list[str]:
     elif facts.insufficient_history_pairs:
         count = facts.insufficient_history_pairs
         lines.append(
-            f"dnsblock: {count} candidate {plural(count, 'pair')} withheld "
-            "\N{EM DASH} not "
+            f"dnsblock: {count} candidate {plural(count, 'pair')} withheld: "
+            "not "
             "enough prior history in the loaded window"
         )
     if facts.insufficient_arrival_coverage is not None:

@@ -108,12 +108,12 @@ uvx pip-audit -r <(.venv/bin/pip freeze --exclude-editable)
 
 `--exclude-editable` drops the editable `sigwood` line itself, so only the third-party
 dependencies are audited. `pip-audit` exits non-zero when it finds a vulnerability. Resolve
-anything it reports — bump the affected version, or consciously accept it with a note — before
+anything it reports by bumping the affected version or consciously accepting it with a note before
 tagging; a clean report is the pass, and an unreviewed one is not.
 
 Finally, confirm that nothing is knowingly shipping in a defective state. A detector outside the
 default hunt is still reachable by name and under `--detect=all`, so "not in the default hunt" is
-not the same as "not reachable" — a detector known to produce wrong results still reaches anyone
+not the same as "not reachable"; a detector known to produce wrong results still reaches anyone
 who asks for it. Clear any open release blocker you are tracking, or consciously accept it, before
 tagging.
 

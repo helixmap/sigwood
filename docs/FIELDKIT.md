@@ -29,7 +29,7 @@ The machine-data section contains these top-level fields:
 - `smoke`: whether the synthetic canary ran and passed
 - `hunt`: the fixed `default_hunt` arm, exit code, and wall-clock seconds
 - `peak_child_rss_mb`: the maximum resident memory reported across all completed
-  child processes—the version probe, canary when enabled, and hunt
+  child processes: the version probe, canary when enabled, and hunt
 - `run_summary`: record counts, data-window span in seconds, requested span,
   data size, source and detector tokens, classified skip/failure/note counts,
   and numeric allowlist-suppression facts

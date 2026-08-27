@@ -514,7 +514,7 @@ def _validate_payload(payload: Any) -> Mapping[str, Any]:
     version = payload.get("schema_version")
     if type(version) is not int or version != REPORT_SCHEMA_VERSION:
         raise SchemaMismatch(
-            "this kit understands sigwood report schema 1 — "
+            "this kit understands sigwood report schema 1; "
             "download the current kit from the repo"
         )
     return payload
@@ -1105,7 +1105,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return 0
     except KeyboardInterrupt:
         _cleanup_bundle(state)
-        print("interrupted — nothing written", file=sys.stderr)
+        print("interrupted: nothing written", file=sys.stderr)
         return 130
     except SchemaMismatch as exc:
         _cleanup_bundle(state)

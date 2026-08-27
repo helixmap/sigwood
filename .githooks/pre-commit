@@ -1,0 +1,24 @@
+#!/bin/sh
+# Refuse a commit whose staged content carries dash punctuation.
+#
+# The rule itself lives in tests/dash_rule.py - this hook only finds an
+# interpreter and calls it, so the ban list has exactly one owner.
+#
+# Enable per clone (git will not do it for you, by design):
+#   git config core.hooksPath .githooks
+#
+# Fails closed. A hook that cannot run must not report success, or the gate
+# quietly stops being a gate.
+set -e
+
+if command -v python3 >/dev/null 2>&1; then
+    PY=python3
+elif command -v python >/dev/null 2>&1; then
+    PY=python
+else
+    echo "pre-commit: no python found, cannot check dash punctuation" >&2
+    echo "pre-commit: fix the interpreter, or bypass once with --no-verify" >&2
+    exit 1
+fi
+
+exec "$PY" tests/dash_rule.py --staged

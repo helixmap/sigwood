@@ -284,9 +284,7 @@ def test_schema_mismatch_refuses_without_bundle(
     assert rc == 1
     assert list(tmp_path.glob("sigwood-field-report_*.md")) == []
     assert capsys.readouterr().err == (
-        "this kit understands sigwood report schema 1 "
-        + chr(0x2014)
-        + " "
+        "this kit understands sigwood report schema 1; "
         "download the current kit from the repo\n"
     )
 

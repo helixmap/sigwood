@@ -581,7 +581,7 @@ def test_note_projector_is_fixed_order_and_suppression_conserves():
     notes = runner._format_dnsblock_summary_notes(prepared)
     assert notes[0].startswith("period coverage is not verifiable")
     assert notes[1] == (
-        "dnsblock: 2 candidate pairs withheld \N{EM DASH} not enough prior history "
+        "dnsblock: 2 candidate pairs withheld: not enough prior history "
         "in the loaded window"
     )
     assert notes[2].startswith("dnsblock: 1 synchronized first appearance withheld")

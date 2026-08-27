@@ -75,18 +75,18 @@ DEFAULT_CONFIG = {
     # suspicion score (dns.entropy() - a weighted lexical heuristic, NOT Shannon
     # entropy), not an information-theoretic measure.
     "thresh_high_entropy": 1.8,
-    # Dense-cluster scan (Zeek path only). A sustained high-volume tunnel
-    # self-clusters past min_cluster_size and escapes the noise-only label-score
-    # gate; this scan surfaces the dominant-registrable-domain members of
-    # clusters that are overwhelmingly high-entropy AND concentrated under one
-    # eTLD+1 (the tunnel shape). Conservative by construction so a benign
-    # high-entropy cluster does not flood. scan_dense_clusters=False is
-    # byte-identical to the noise-only path.
+    # Dense-cluster scan (Zeek and standalone Pi-hole paths). A sustained
+    # high-volume tunnel self-clusters past min_cluster_size and escapes the
+    # noise-only label-score gate. This scan surfaces dominant-registrable-domain
+    # members of clusters that are overwhelmingly high-entropy AND concentrated
+    # under one eTLD+1 (the tunnel shape). Conservative by construction so a benign
+    # high-entropy cluster does not flood. scan_dense_clusters=False keeps Zeek on
+    # the noise-only path and Pi-hole on its shipped counts-disclosure path.
     "scan_dense_clusters": True,
-    "scan_min_high_entropy_fraction": 0.8,   # frac of members >= thresh_high_entropy
-    "scan_min_cluster_members": 100,         # cluster-size floor (rows)
-    "scan_min_regdomain_share": 0.8,         # concentration under one registrable domain
-    "scan_max_members_per_cluster": 500,     # per-cluster surfaced-sample cap (perf)
+    "scan_min_high_entropy_fraction": 0.8,   # both-path frac >= thresh_high_entropy
+    "scan_min_cluster_members": 100,         # Zeek cluster-size floor (rows)
+    "scan_min_regdomain_share": 0.8,         # both-path registrable-domain share
+    "scan_max_members_per_cluster": 500,     # both-path surfaced-sample cap (perf)
     "pihole": {
         "min_cluster_size": 25,   # ~2K aggregated domain rows, not per-query
         "min_samples": 10,
@@ -106,15 +106,18 @@ _NXDOMAIN_MIN_FAILURES = 2
 _RESOLUTION_BASIS = "resolution-outcome"
 _VOLUME_BASIS = "volume-concentration"
 _DENSE_TUNNEL_MIN_CHILDREN = 2
+# Frozen from the U-01 Pi-hole dense calibration record; not an operator lever.
+_PIHOLE_SCAN_MIN_CLUSTER_MEMBERS = 25
 
 
 @dataclass(frozen=True)
 class PiholeClusterResult:
-    """Standalone Pi-hole clustering result, including the unscanned set-aside."""
+    """Standalone Pi-hole clustering result and whether dense clusters were scanned."""
 
     candidates: pd.DataFrame | None
     cluster_count: int
     total_members: int
+    scanned: bool
 
 
 def _nxdomain_stats(
@@ -653,6 +656,8 @@ def _surface_dense_clusters(
     *,
     thresh_high: float,
     scan_cfg: dict,
+    member_floor: int,
+    query_weight: pd.Series | None = None,
 ) -> tuple[pd.DataFrame, set[str]]:
     """Scan non-noise clusters for the DNS-tunnel shape and surface their members.
 
@@ -660,7 +665,7 @@ def _surface_dense_clusters(
     so the noise-only candidate set never sees it. For each non-noise cluster,
     over its member rows, gate on three signals:
       - the fraction of members whose _max_subdomain_entropy clears thresh_high,
-      - the cluster size (rows),
+      - the cluster size (members at the caller's row/domain grain),
       - the share of members under the single most-common registrable domain
         (a tunnel concentrates under one parent; a benign high-entropy cluster
         spreads across many).
@@ -673,13 +678,17 @@ def _surface_dense_clusters(
         carrying dense_cluster_id, cluster_true_member_count (the DOMINANT-domain
         distinct-subdomain count), and cluster_true_query_total (the
         cluster-local query-event total under the dominant domain - NOT
-        whole-cluster totals).
+        whole-cluster totals). With ``query_weight`` this is a weighted sum;
+        otherwise it is the row count.
       - dominant_queries: every surfaced cluster's FULL (uncapped) dominant query
         set, which the caller removes from the noise set so a counted member is
         never also tallied as an independent noise row.
 
     Empty frame + empty set when disabled or nothing passes the gate. Cost is
     bounded: one _TLD_EXTRACT per DISTINCT member query, broadcast to rows.
+
+    ``query_weight`` must have the same index and length as ``dns_df``. It affects
+    only ``cluster_true_query_total``; all gates and member counts remain unweighted.
     """
     empty_cols = [
         "query", "dense_cluster_id",
@@ -688,8 +697,13 @@ def _surface_dense_clusters(
     if not scan_cfg["scan_dense_clusters"]:
         return pd.DataFrame(columns=empty_cols), set()
 
+    if query_weight is not None and (
+        len(query_weight) != len(dns_df)
+        or not query_weight.index.equals(dns_df.index)
+    ):
+        raise ValueError("query_weight must align exactly with dns_df")
+
     frac_floor   = scan_cfg["scan_min_high_entropy_fraction"]
-    member_floor = scan_cfg["scan_min_cluster_members"]
     share_floor  = scan_cfg["scan_min_regdomain_share"]
     cap          = scan_cfg["scan_max_members_per_cluster"]
 
@@ -703,7 +717,13 @@ def _surface_dense_clusters(
     claimed: set[str] = set()
 
     for lbl in np.unique(labels[labels != -1]):
-        member_q = dns_df.loc[labels == lbl, "query"]
+        member_mask = labels == lbl
+        member_q = dns_df.loc[member_mask, "query"]
+        member_weight = (
+            query_weight.loc[member_mask]
+            if query_weight is not None
+            else None
+        )
         if len(member_q) < member_floor:
             continue  # size floor - cheap reject before any extract
 
@@ -728,6 +748,7 @@ def _surface_dense_clusters(
             continue
 
         dom_q = member_q[dom_mask]
+        dom_weight = member_weight[dom_mask] if member_weight is not None else None
         # Only dominant queries not already claimed by an earlier cluster.
         dominant_distinct = [q for q in dict.fromkeys(dom_q.tolist()) if q not in claimed]
         if not dominant_distinct:
@@ -737,7 +758,12 @@ def _surface_dense_clusters(
 
         owned = set(dominant_distinct)
         true_member_count = len(dominant_distinct)
-        true_query_total  = int(dom_q.isin(owned).sum())  # query events for THIS cluster's owned subdomains
+        owned_mask = dom_q.isin(owned)
+        true_query_total = int(
+            dom_weight[owned_mask].sum()
+            if dom_weight is not None
+            else owned_mask.sum()
+        )
 
         # Surfaced sample: owned dominant queries by label score desc, capped.
         ranked = sorted(dominant_distinct, key=lambda q: ent_by_q[q], reverse=True)[:cap]
@@ -812,7 +838,11 @@ def _run_zeek_path(
     # high-volume tunnel never reaches the noise set. Surfaced dense members
     # union with the noise candidates below.
     dense_records, dense_dominant = _surface_dense_clusters(
-        dns_df, labels, thresh_high=thresh_high, scan_cfg=scan_cfg,
+        dns_df,
+        labels,
+        thresh_high=thresh_high,
+        scan_cfg=scan_cfg,
+        member_floor=scan_cfg["scan_min_cluster_members"],
     )
 
     # Pure-tunnel is zero noise but surfaced dense; return None only when BOTH
@@ -896,13 +926,16 @@ def _run_zeek_path(
 def _run_pihole_path(
     pihole_df: pd.DataFrame,
     pihole_cfg: dict,
+    *,
+    thresh_high: float,
+    scan_cfg: dict,
 ) -> PiholeClusterResult | None:
     """Run the per-domain aggregate pihole clustering path.
 
-    Returns noise candidates at the shared-seam contract plus counts for every
-    non-noise aggregate row. The counts survive an empty candidate set so an
-    all-cluster run cannot vanish. Returns None only when clustering did not run:
-    the aggregate is empty or smaller than the configured min_cluster_size.
+    Returns noise candidates union any scan-surfaced dense aggregate rows at the
+    shared-seam contract, plus counts for every non-noise aggregate row and the
+    scan-attempt state. Returns None only when clustering did not run: the aggregate
+    is empty or smaller than the configured min_cluster_size.
     """
     agg_df = _build_pihole_aggregate(pihole_df)
     if agg_df.empty:
@@ -925,13 +958,38 @@ def _run_pihole_path(
     clustered_labels = labels[labels != -1]
     cluster_count = int(np.unique(clustered_labels).size)
     total_members = int(clustered_labels.size)
-    noise_mask   = labels == -1
-    candidate_df = agg_df[noise_mask].copy().reset_index(drop=True)
+    scanned = bool(scan_cfg["scan_dense_clusters"])
+    dense_records, dense_dominant = _surface_dense_clusters(
+        agg_df,
+        labels,
+        thresh_high=thresh_high,
+        scan_cfg=scan_cfg,
+        member_floor=_PIHOLE_SCAN_MIN_CLUSTER_MEMBERS,
+        query_weight=agg_df["query_count"],
+    )
+
+    noise_mask = labels == -1
+    noise_df = agg_df.loc[
+        noise_mask & ~agg_df["query"].isin(dense_dominant)
+    ].copy()
+    if dense_records.empty:
+        candidate_df = noise_df.reset_index(drop=True)
+    else:
+        dense_df = agg_df.merge(
+            dense_records.drop_duplicates("query"),
+            on="query",
+            how="inner",
+            validate="one_to_one",
+        )
+        candidate_df = pd.concat(
+            [noise_df, dense_df], ignore_index=True, sort=False,
+        )
     if candidate_df.empty:
         return PiholeClusterResult(
             candidates=None,
             cluster_count=cluster_count,
             total_members=total_members,
+            scanned=scanned,
         )
 
     candidate_df["_ext"] = candidate_df["query"].apply(_TLD_EXTRACT)
@@ -951,6 +1009,7 @@ def _run_pihole_path(
         candidates=candidate_df,
         cluster_count=cluster_count,
         total_members=total_members,
+        scanned=scanned,
     )
 
 
@@ -1239,7 +1298,12 @@ def run(context: DetectorContext) -> list[Finding]:
             zeek_df, min_cluster_size, min_samples, thresh_high=thresh_high, scan_cfg=scan_cfg,
         )
     else:
-        pihole_result = _run_pihole_path(pihole_df, pihole_cfg)
+        pihole_result = _run_pihole_path(
+            pihole_df,
+            pihole_cfg,
+            thresh_high=thresh_high,
+            scan_cfg=scan_cfg,
+        )
         candidate_df = (
             pihole_result.candidates if pihole_result is not None else None
         )
@@ -1264,12 +1328,14 @@ def run(context: DetectorContext) -> list[Finding]:
         if summary is not None:
             findings.append(summary)
 
-    # Standalone Pi-hole clustering has no dense-cluster tunnel scan. Disclose
-    # every non-noise aggregate row exactly once, even when there are zero noise
-    # candidates. This tier and scan_summary are structurally mutually exclusive:
-    # both-source runs cluster on Zeek and standalone Pi-hole never has the Zeek
-    # dense_cluster_id seam.
-    if pihole_result is not None and pihole_result.cluster_count > 0:
+    # Scan-off returns standalone Pi-hole to the shipped disclosed state. Scan-on
+    # uses the existing scan_summary route, so these two INFO tiers are mutually
+    # exclusive by construction.
+    if (
+        pihole_result is not None
+        and pihole_result.cluster_count > 0
+        and not pihole_result.scanned
+    ):
         findings.append(_make_pihole_unscanned_finding(
             pihole_result.cluster_count,
             pihole_result.total_members,
@@ -1352,7 +1418,7 @@ def _make_group_finding(
     has_public_suffix = bool(grp["has_public_suffix"].all())
     severity, severity_basis = _severity_for(
         rcode_stats,
-        dense_origin=dense_tunnel_supported,
+        dense_origin=dense_tunnel_supported and source == "zeek",
         has_public_suffix=has_public_suffix,
     )
     title    = reg_domain
@@ -1426,6 +1492,8 @@ def _make_group_finding(
             "qtype_counts":      combined_qtypes,
             "severity_basis":    severity_basis,
         }
+        if has_dense:
+            evidence["origin"] = "dense_cluster"
     else:
         # Zeek findings carry resolution-outcome evidence when measurable; a
         # scan-surfaced dense finding additionally carries ``origin``.
@@ -1491,7 +1559,7 @@ def _make_singleton_finding(
     )
     severity, severity_basis = _severity_for(
         rcode_stats,
-        dense_origin=dense_tunnel_supported,
+        dense_origin=dense_tunnel_supported and source == "zeek",
         has_public_suffix=bool(row["has_public_suffix"]),
     )
 
@@ -1535,6 +1603,8 @@ def _make_singleton_finding(
             "special_count": int(row.get("special_count", 0)),
             "severity_basis": severity_basis,
         }
+        if dense_origin:
+            evidence["origin"] = "dense_cluster"
     else:
         # Zeek findings carry resolution-outcome evidence when measurable; a
         # scan-surfaced dense finding additionally carries ``origin``.
@@ -1589,8 +1659,8 @@ def _make_scan_summary_finding(
     pass, so the disclosure can never claim a cluster the report does not show -
     the gate can drop every surfaced dense row when ``threshold`` is set above
     ``thresh_high_entropy``. Returns None when candidate_df carries no
-    dense_cluster_id column or no surviving dense rows (the pihole and
-    zeek-only-noise paths, and the gated-out case), so those runs stay silent.
+    dense_cluster_id column or no surviving dense rows (noise-only and gated-out
+    paths), so those runs stay silent.
     """
     if "dense_cluster_id" not in candidate_df.columns:
         return None
@@ -1655,13 +1725,13 @@ def _make_pihole_unscanned_finding(
     """Counts-only disclosure for standalone Pi-hole dense clusters not scanned."""
     if cluster_count == 1:
         title = (
-            f"{total_members} domains formed a dense cluster; the dense-cluster "
-            "tunnel scan runs on Zeek DNS only - this cluster was not analyzed."
+            f"{total_members} domains formed a dense cluster; Pi-hole dense-cluster "
+            "scanning was disabled for this run - this cluster was not analyzed."
         )
     else:
         title = (
-            f"{total_members} domains formed {cluster_count} dense clusters; the "
-            "dense-cluster tunnel scan runs on Zeek DNS only - these clusters were "
+            f"{total_members} domains formed {cluster_count} dense clusters; Pi-hole "
+            "dense-cluster scanning was disabled for this run - these clusters were "
             "not analyzed."
         )
     return Finding(
@@ -1670,8 +1740,8 @@ def _make_pihole_unscanned_finding(
         title=title,
         description=(
             "This is a coverage disclosure, not a detection. Pi-hole supplied the "
-            "aggregate counts, but the Zeek-only dense-cluster scan did not inspect "
-            "the cluster members."
+            "aggregate counts, but this run had dense-cluster scanning disabled and "
+            "did not inspect the cluster members."
         ),
         evidence={
             "tier": "unscanned_clusters",
@@ -1679,8 +1749,8 @@ def _make_pihole_unscanned_finding(
             "total_members": total_members,
         },
         next_steps=[
-            "Use Zeek DNS logs to analyze dense clusters",
-            "See KNOWN-ISSUES for the Pi-hole dense-scan limitation",
+            "Enable scan_dense_clusters to analyze Pi-hole dense clusters",
+            "Re-run the detector after changing the DNS scan setting",
         ],
         ts_generated=now,
         data_window=data_window,

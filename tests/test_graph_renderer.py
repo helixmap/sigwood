@@ -746,7 +746,9 @@ def test_player_is_self_contained_and_has_no_stale_poc_or_dash_residue() -> None
     assert "link.href = url; link.download = name" in template
 
     lowered = template.lower()
-    for stale in ("poc", "newton", "\u2013", "\u2014"):
+    # Dash codepoints are constructed, not written as escapes: the tracked-file
+    # hyphen rule bans the escape forms outright.
+    for stale in ("poc", "newton", *(chr(cp) for cp in (0x2013, 0x2014))):
         assert stale not in lowered
 
 

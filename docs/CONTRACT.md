@@ -75,14 +75,14 @@ single-detector verbs, exactly `auth` and `syslog` own the local system-log lane
 
 If an ordinary single-valued flag is repeated, the last occurrence wins. `-vv` is the
 exception: it is its own registered token rather than two `-v`s, and it selects the
-fullest reading level whichever order you write it in — `-v -vv` and `-vv -v` both
+fullest reading level whichever order you write it in: `-v -vv` and `-vv -v` both
 behave as `-vv`.
 
 ## Output formats
 
 Five tokens stay available and selectable: `text`, `json`, `csv`, `html`, `pdf`.
 
-Two carry machine contracts — `json` and `csv`. The other three are for reading and
+Two carry machine contracts: `json` and `csv`. The other three are for reading and
 their layout may change. Parse the first two.
 
 `pdf` is always a valid token, but *rendering* one additionally needs the optional
@@ -107,7 +107,7 @@ findings: list[Finding] = run(context)
 
 `DetectorContext.unsuppressed(logs, *, data_window, config=None, data_sources=(),
 home_net=())` builds a context with **suppression off**. Your allowlist is not
-applied, so results can be noisier than the same detector run through the CLI — the
+applied, so results can be noisier than the same detector run through the CLI. The
 name says so on purpose.
 
 The nine callable detectors are `auth`, `aws`, `beacon`, `dns`, `dnsblock`, `exfil`,
@@ -119,7 +119,7 @@ A `Finding` has eight public attributes: `detector`, `severity`, `title`,
 `Severity` has four members: `HIGH` (`"H"`), `MEDIUM` (`"M"`), `LOW` (`"L"`),
 `INFO` (`"I"`).
 
-`import sigwood` stays light — importing the package does not pull pandas.
+`import sigwood` stays light; importing the package does not pull pandas.
 
 ## The json feed
 
@@ -171,8 +171,8 @@ A single JSON object, not one object per line:
 
 That is the complete shape: every run and every finding carries all of these keys.
 
-**Note the case.** `severity` is written **lowercase** in json — `"high"`, `"medium"`,
-`"low"`, `"info"` — even though the Python `Severity` members are uppercase.
+**Note the case.** `severity` is written **lowercase** in json: `"high"`, `"medium"`,
+`"low"`, `"info"`. The Python `Severity` members are uppercase.
 
 ### run_summary fields
 
@@ -189,9 +189,9 @@ All fourteen are always present. Five can be `null`:
 | `detectors_failed` | object of string to string | no |
 | `notes` | array of strings | no |
 | `data_sources` | array of strings | no |
-| `detector_methods` | object of detector name to `{"label": string, "named": boolean}` | no — but an individual detector's **value** can be `null` |
+| `detector_methods` | object of detector name to `{"label": string, "named": boolean}` | no; an individual detector's **value** can be `null` |
 | `requested_span` | number, seconds | **yes** |
-| `suppression` | object of eight fields — `enabled` (boolean) plus `connections`, `domains`, `connection_total`, `domain_total`, `host_rows`, `host_total`, `hosts_matched` (integers) | **yes** |
+| `suppression` | object of eight fields: `enabled` (boolean) plus `connections`, `domains`, `connection_total`, `domain_total`, `host_rows`, `host_total`, `hosts_matched` (integers) | **yes** |
 | `invocation` | string | **yes** |
 | `generated_at` | UTC ISO string | **yes** |
 
@@ -209,7 +209,7 @@ All eight are always present:
 | Field | Type |
 |---|---|
 | `detector` | string |
-| `severity` | lowercase string — `high`, `medium`, `low`, `info` |
+| `severity` | lowercase string: `high`, `medium`, `low`, `info` |
 | `title` | string |
 | `description` | string |
 | `next_steps` | array of strings |
@@ -226,14 +226,14 @@ All eight are always present:
   an ordinary release; that is the consumer's bug, not a contract violation.
 - Timestamps in `json` are ISO-8601 **UTC**, always, regardless of display settings.
 - Diagnostics and report prose are not parsing contracts even inside a
-  machine-readable container. `notes` is a list of human sentences — read it, do not
+  machine-readable container. `notes` is a list of human sentences. Read it; do not
   pattern-match it.
 
 ### Which evidence keys are promised
 
 `evidence` is an open dictionary and most of what it carries is detector-specific
 detail that may change as detectors improve. **The keys promised stable are the ones
-this page names** — the event-time keys in the table below. Anything else in
+this page names**: the event-time keys in the table below. Anything else in
 `evidence` is informational: useful, but not a contract, and it may be renamed or
 dropped without a schema bump.
 
@@ -250,7 +250,7 @@ people; JSON carries the values in `evidence`, and CSV renders them in `signals`
 
 ## The csv worklist
 
-A remediation checklist, not a lossless export — `json` is the lossless one. One row
+A remediation checklist, not a lossless export; `json` is the lossless one. One row
 per finding, and a fixed ten-column header in this order:
 
 `severity` · `detector` · `finding` · `next_steps` · `description` · `signals` ·
@@ -260,7 +260,7 @@ per finding, and a fixed ten-column header in this order:
 varies with `-v`/`-vv`. Its timestamps are ISO-8601 carrying the display timezone's
 offset.
 
-Control characters other than newline — the C0 range, DEL, and C1 — are removed from
+Control characters other than newline (the C0 range, DEL, and C1) are removed from
 every cell before it is written. An embedded newline is deliberately kept, so a
 multi-line `next_steps` cell stays intact as a quoted field. A cell whose remaining
 first character is `=`, `+`, `-`, or `@` is then prefixed with a single quote so a
@@ -272,71 +272,71 @@ The file is `~/.sigwood/config.toml` (or `/etc/sigwood/config.toml`, or whatever
 `--config=` names). These paths stay recognized. New keys may be added; the ones
 listed here do not disappear.
 
-- **`[sigwood]`** — `root`, `detect`, `zeek_dir`, `syslog_dir`, `syslog_source`,
+- **`[sigwood]`:** `root`, `detect`, `zeek_dir`, `syslog_dir`, `syslog_source`,
   `pihole_dir`, `cloudtrail_dir`, `home_net`, `export_dir`, `report_dir`,
   `output_format`, `warn_above`, `default_window`, `quiet`, `use_utc`,
   `max_findings_per_detector`
 - **`[detectors.<name>]`** for each of the nine detectors. The documented tuning keys
   stay recognized; their default values may change. Seven of the nine expose keys;
   `auth` and `dnsblock` expose none, and a section for either is read and ignored.
-  - `aws` — `min_events`, `min_scorable_principals`, `burst_gap_seconds`,
+  - `aws`: `min_events`, `min_scorable_principals`, `burst_gap_seconds`,
     `burst_window_edge_margin_seconds`, `burst_min_firsts`, `burst_high_error_rate`,
     `burst_high_service_count`, `composite_medium_threshold`,
     `composite_low_threshold`
-  - `beacon` — `min_connections`, `threshold`
-  - `dns` — `min_cluster_size`, `min_samples`, `threshold`, `thresh_high_entropy`,
+  - `beacon`: `min_connections`, `threshold`
+  - `dns`: `min_cluster_size`, `min_samples`, `threshold`, `thresh_high_entropy`,
     `scan_dense_clusters`, `scan_min_high_entropy_fraction`,
     `scan_min_cluster_members`, `scan_min_regdomain_share`,
     `scan_max_members_per_cluster`, `promote_below_gate`, `promote_min_subdomains`,
     `promote_min_nxdomain_fraction`, and the nested
     **`[detectors.dns.pihole]`** (`min_cluster_size`, `min_samples`)
-  - `auth` — no public tuning keys
-  - `dnsblock` — no public tuning keys
-  - `exfil` — `min_outbound_bytes`, `min_orig_share`
-  - `ssl` — `min_connections`
-  - `scan` — `window_secs`, `horizontal_threshold`, `vertical_threshold`,
+  - `auth`: no public tuning keys
+  - `dnsblock`: no public tuning keys
+  - `exfil`: `min_outbound_bytes`, `min_orig_share`
+  - `ssl`: `min_connections`
+  - `scan`: `window_secs`, `horizontal_threshold`, `vertical_threshold`,
     `block_host_threshold`, `block_port_threshold`, `block_state_min`,
     `slow_min_ports`, `slow_min_buckets`, `slow_state_min`
-  - `syslog` — `rarity_pct`, `max_count`, `depth`, `sim_thresh`,
+  - `syslog`: `rarity_pct`, `max_count`, `depth`, `sim_thresh`,
     `parametrize_numeric`, `line_trim_limit`, `burst_gap_seconds`, `burst_min_size`,
     `family_min_size`, `reboot_cluster_seconds`, `recognize_transactions`,
     `privileged_programs`
-- **`[allowlist]`** — `enabled`, `allowlist_dir`, `domain_patterns`,
+- **`[allowlist]`:** `enabled`, `allowlist_dir`, `domain_patterns`,
   `connection_rules`
-- **`[allowlist.lists]`** — a boolean per shipped list. The documented names
+- **`[allowlist.lists]`:** a boolean per shipped list. The documented names
   `common`, `devices`, `homelab` stay recognized; new lists may be added.
-- **`[[allowlist.entry]]`** — `match`, `comment`, `detectors` stay recognized, and so
+- **`[[allowlist.entry]]`:** `match`, `comment`, `detectors` stay recognized, and so
   do the two behaviour-bearing `match` kinds and the keys each one reads:
   - `match = "ip_pair"` reads `src`, `dst`, and optionally `dst_port`
   - `match = "dst_port"` reads `value`
 
   Any *other* key in a stanza is carried as open metadata and is not promised.
-- **`[graph]`** — `target_bins`, `top_hosts`, `top_services`, `domain_level`
-- **`[export.splunk]`** — `host`, `port`, `username`, `password`, `verify_tls`,
+- **`[graph]`:** `target_bins`, `top_hosts`, `top_services`, `domain_level`
+- **`[export.splunk]`:** `host`, `port`, `username`, `password`, `verify_tls`,
   `export_dir`
-- **`[export.cloudtrail]`** — `path`, `egress_warn_gb`, `export_dir`
-- **`[export.splunk.query.<name>]`** — the query *name* is yours and is not a
+- **`[export.cloudtrail]`:** `path`, `egress_warn_gb`, `export_dir`
+- **`[export.splunk.query.<name>]`:** the query *name* is yours and is not a
   contract; its leaves are: `spl`, `output_basename`, `export_dir`. (CloudTrail has
-  no query table — it synthesises a single implicit query.)
+  no query table; it synthesises a single implicit query.)
 
 An unknown top-level section is reported on stderr and ignored; the run continues on
 defaults.
 
 ## Exit codes
 
-- **0** — the run completed. Includes a run that found nothing, and a run where you
+- **0:** the run completed. Includes a run that found nothing, and a run where you
   declined the large-dataset confirmation (declining is a choice, not a failure).
-- **1** — a failure: bad configuration, an unreadable source, or a detector that
+- **1:** a failure: bad configuration, an unreadable source, or a detector that
   crashed. A report may still have been written; the code is what tells you the
   night was not clean.
-- **130** — interrupted (Ctrl-C).
-- **141** — a downstream reader closed the pipe, as in `sigwood hunt | head`.
+- **130:** interrupted (Ctrl-C).
+- **141:** a downstream reader closed the pipe, as in `sigwood hunt | head`.
 
 If you schedule sigwood, branch on the exit code, not on whether output appeared.
 
 ## When a finding happened
 
-Every finding carries the run's data window. Most also carry their own event time —
+Every finding carries the run's data window. Most also carry their own event time,
 but the key name depends on the finding type, so a timeline script needs to know
 which to read:
 
@@ -347,7 +347,7 @@ which to read:
 | exfil | `first_seen` | also `last_seen`, `span_seconds` |
 | ssl | `first_seen` | also `last_seen`, `span_seconds` |
 | syslog families, bursts, single rare lines, transactions | `first_seen` | |
-| syslog reboots | `reboot_ts` | the reboot instant — a different meaning, kept deliberately |
+| syslog reboots | `reboot_ts` | the reboot instant (a different meaning, kept deliberately) |
 | aws bursts | `start_time` | ISO-8601 with offset |
 | scan | `window_start` | UTC, but written **without** a timezone offset |
 | aws ranked summary | *(none)* | a summary of a whole scan, with no single entity |
@@ -360,7 +360,7 @@ than an entity, so there is nothing to timestamp.
 
 Deliberately outside the contract, and expected to move:
 
-- which findings a given log produces — thresholds move when measurement says so
+- which findings a given log produces; thresholds move when measurement says so
 - severity calibration and scoring internals
 - evidence keys this page does not name
 - the wording of any human-facing message, including `notes` and `next_steps`

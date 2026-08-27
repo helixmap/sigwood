@@ -41,7 +41,7 @@ def test_contract_roadmap_changelog_and_known_issue_agree() -> None:
     contract = _read("docs/CONTRACT.md")
     assert "Sixteen, all of which stay recognized:" in contract
     assert "The nine callable detectors are" in contract
-    assert "`dnsblock` \u2014 no public tuning keys" in contract
+    assert "`dnsblock`: no public tuning keys" in contract
 
     roadmap = _read("docs/ROADMAP.md")
     shipped = roadmap.split("## MITRE ATT&CK coverage", 1)[0]
@@ -67,7 +67,10 @@ def test_binding_rails_have_no_activation_stubs_left() -> None:
     runner = _read(str(rails / "runner.md"))
 
     assert "| dnsblock   | pihole_dir                           | exists    |" in detectors
-    assert "STATUS available \u2014 opt-in" in detectors
+    # The dash is not pinned: this asserts a phrase inside private/, which the
+    # tracked dash sweep does not govern.
+    assert "STATUS available" in detectors
+    assert "opt-in, not in the curated default hunt" in detectors
     assert "Public discovery includes dnsblock" in detectors
     assert "dnsblock detector (STATUS planned" not in detectors
     assert "planned `dnsblock` detector" not in detectors

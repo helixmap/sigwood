@@ -214,7 +214,7 @@ def test_stack_error_strings_follow_voice() -> None:
         assert m[0].islower()  # lowercase-led
         assert not m.startswith("sigwood")  # cli.main owns the prefix
         assert "Warning:" not in m  # no decorative prefix
-        assert not m.rstrip().endswith(".")  # single clause / em-dash tail
+        assert not m.rstrip().endswith(".")  # single clause / dash tail
     assert (
         "- run: pipx install --force 'sigwood[pdf]' "
         "(pip in a venv: pip install 'sigwood[pdf]')"

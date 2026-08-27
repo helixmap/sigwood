@@ -11,7 +11,9 @@ from __future__ import annotations
 
 from collections import Counter
 import io
+import os
 import re
+import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -20,6 +22,7 @@ import pytest
 from sigwood import cli
 from sigwood import runner
 from sigwood.common import config as cfg
+from tests import dash_rule
 from sigwood.common.errors import DigestEmpty
 
 
@@ -707,7 +710,7 @@ def test_residue_campaign_patterns_keep_legitimate_controls() -> None:
             "The lifecycle is sealed after output.",
             "The alias set is ratified for reconciliation.",
             "Return the canonical closure payload.",
-            "Public prose may use a load-bearing em dash — without process residue.",
+            "Public prose may use a load-bearing dash without process residue.",
         ]
     )
     observed, _locations = _residue_occurrences_for_text(
@@ -750,3 +753,167 @@ def test_residue_scan_surface_includes_only_public_markdown() -> None:
     assert {"CODE.md", "AGENTS.md", "CLAUDE.md"}.isdisjoint(rels)
     private_root = (_SRC_ROOT / "private").resolve()
     assert all(private_root not in path.resolve().parents for path in paths)
+
+
+# --------------------------------------------------------------------------
+# Dash punctuation: hyphen-only house style
+# --------------------------------------------------------------------------
+# The rule and its ban list live in tests/dash_rule.py, which the git hooks in
+# .githooks/ also call. One owner, so the suite and the hooks cannot disagree
+# about what a banned dash is. These tests hold the rule, the gate that enforces
+# it before a commit exists, and the guard's own freedom from self-exemption.
+
+_FIGURE_DASH, _EN_DASH, _EM_DASH, _HORIZONTAL_BAR = dash_rule.DASH_CHARS
+
+# Anchors proving the enumeration actually reached the tree. Without these the
+# scan can pass by finding nothing to scan.
+_DASH_SCAN_ANCHORS = (
+    "README.md",
+    "docs/CONTRACT.md",
+    "docs/evidence/dns.md",
+    "sigwood/runner.py",
+    "tests/dash_rule.py",
+    "tests/test_voice_consistency.py",
+    ".githooks/pre-commit",
+)
+
+
+def test_tracked_files_use_hyphens_not_dash_punctuation() -> None:
+    if not dash_rule.in_git_work_tree(_SRC_ROOT):
+        pytest.skip("no git work tree: a tracked-file export has no inventory to scan")
+
+    scanned = dash_rule.repo_text_files(_SRC_ROOT)
+    seen = {rel for rel, _ in scanned}
+    assert len(scanned) > 100, f"dash scan enumerated only {len(scanned)} files"
+    for anchor in _DASH_SCAN_ANCHORS:
+        assert anchor in seen, f"dash scan never reached {anchor}"
+
+    violations: list[str] = []
+    for rel, text in scanned:
+        violations.extend(dash_rule.violations(rel, text))
+    assert violations == [], f"{dash_rule.ADVICE}\n" + "\n".join(violations)
+
+
+def test_dash_scan_never_reaches_private() -> None:
+    """git's inventory is what keeps excluded working-tree entries out of a
+    public assertion. A filesystem glob would follow them in, and some of them
+    are symlinks pointing outside the repository."""
+    if not dash_rule.in_git_work_tree(_SRC_ROOT):
+        pytest.skip("no git work tree")
+
+    private_root = (_SRC_ROOT / "private").resolve()
+    for rel, _text in dash_rule.repo_text_files(_SRC_ROOT):
+        resolved = (_SRC_ROOT / rel).resolve()
+        assert resolved != private_root and private_root not in resolved.parents, (
+            f"repository path resolves outside the tracked tree: {rel}"
+        )
+
+
+@pytest.mark.parametrize(
+    "seed",
+    [
+        f"a line with an em dash {_EM_DASH} here",
+        f"a line with an en dash {_EN_DASH} here",
+        f"a line with a figure dash {_FIGURE_DASH} here",
+        f"a line with a horizontal bar {_HORIZONTAL_BAR} here",
+        'py escape "\\' + 'u2014" inside a string',
+        'wide escape "\\' + 'U00002014" inside a string',
+        'named escape "\\' + 'N{EM DASH}" inside a string',
+        "constructed via ch" + "r(0x2014) at runtime",
+        "constructed via ch" + "r(8212) at runtime",
+        "markup &" + "mdash; entity",
+        "markup &#" + "8212; entity",
+        "markup &#x" + "2014; entity",
+    ],
+)
+def test_dash_tripwire_catches_every_seeded_form(seed: str) -> None:
+    """The guard must say yes on a known-true case, in each form that shipped
+    here or could substitute for one."""
+    assert dash_rule.violations("seed.py", seed), f"tripwire missed: {seed!r}"
+
+
+def test_dash_tripwire_leaves_hyphen_and_minus_sign_alone() -> None:
+    """Controls: the replacement character, and the mathematical operator this
+    rule deliberately does not govern."""
+    minus = chr(0x2212)
+    assert dash_rule.violations("seed.py", "an ordinary - hyphen") == []
+    assert dash_rule.violations("seed.py", f"f_max {minus} span") == []
+    assert dash_rule.violations("seed.py", f'content: "{minus}"') == []
+
+
+def test_dash_rule_and_this_module_need_no_self_exemption() -> None:
+    """Both files name every banned form, and neither may flag itself. That
+    property lets the rule ship with no exemption table to go stale."""
+    for path in (Path(dash_rule.__file__), Path(__file__)):
+        assert dash_rule.violations(path.name, path.read_text(encoding="utf-8")) == []
+
+
+def test_commit_message_comment_lines_are_not_scanned() -> None:
+    """git drops comment lines before recording a message, so scanning them
+    would reject a dash the commit never carries."""
+    body = dash_rule.message_body(f"a real subject\n# a comment {_EM_DASH} here\n")
+    assert dash_rule.violations("commit message", body) == []
+    assert dash_rule.violations(
+        "commit message", dash_rule.message_body(f"subject {_EM_DASH} here")
+    )
+
+
+# ---- the gate itself, not only the rule ----------------------------------
+
+_HOOKS = ("pre-commit", "commit-msg")
+
+
+def test_hooks_will_travel_with_a_clone_and_are_executable() -> None:
+    """A hook git ignores never reaches a clone, and one without the execute bit
+    is skipped in silence rather than reported. Both are checked as properties
+    of the file, so a hook added in this commit is judged now and not after it
+    lands."""
+    if not dash_rule.in_git_work_tree(_SRC_ROOT):
+        pytest.skip("no git work tree")
+
+    for name in _HOOKS:
+        rel = f".githooks/{name}"
+        path = _SRC_ROOT / rel
+        assert path.is_file(), f"{rel} is missing"
+        assert os.access(path, os.X_OK), f"{rel} is not executable"
+        ignored = subprocess.run(
+            ["git", "check-ignore", "-q", rel],
+            cwd=_SRC_ROOT,
+            capture_output=True,
+        )
+        assert ignored.returncode != 0, f"{rel} is gitignored and would not travel"
+
+
+@pytest.mark.parametrize("name", _HOOKS)
+def test_hooks_delegate_to_the_single_owner(name: str) -> None:
+    """A hook that re-implemented the ban list would drift from the suite."""
+    body = (_SRC_ROOT / ".githooks" / name).read_text(encoding="utf-8")
+    assert "tests/dash_rule.py" in body
+    for pattern in dash_rule.CONSTRUCTION_PATTERNS:
+        assert pattern not in body, f"{name} carries its own copy of {pattern!r}"
+
+
+def test_commit_msg_hook_rejects_a_dash_and_accepts_a_hyphen(tmp_path) -> None:
+    """The gate is exercised through its real entry point, not its helpers."""
+    hook = _SRC_ROOT / ".githooks" / "commit-msg"
+
+    bad = tmp_path / "BAD_MSG"
+    bad.write_text(f"fix the thing {_EM_DASH} properly\n", encoding="utf-8")
+    rejected = subprocess.run(
+        [str(hook), str(bad)], cwd=_SRC_ROOT, capture_output=True, text=True
+    )
+    assert rejected.returncode == 1
+    assert dash_rule.ADVICE in rejected.stderr
+
+    good = tmp_path / "GOOD_MSG"
+    good.write_text("fix the thing - properly\n", encoding="utf-8")
+    accepted = subprocess.run(
+        [str(hook), str(good)], cwd=_SRC_ROOT, capture_output=True, text=True
+    )
+    assert accepted.returncode == 0, accepted.stderr
+
+
+def test_contributing_documents_the_per_clone_hook_enable() -> None:
+    """The hooks travel with a clone; git will not enable them by itself, so
+    the one command that does has to be written down."""
+    assert "core.hooksPath .githooks" in _read("CONTRIBUTING.md")

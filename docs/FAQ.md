@@ -484,12 +484,12 @@ a starting point, not a verdict; the intended pivots are `dns.log` → `conn.log
 reputation → ASN.
 
 **The score decides what gets looked at; behaviour decides how loudly.** Clearing the
-suspicion-score bar makes a name a candidate and is worth a MEDIUM — it says the name *looks*
+suspicion-score bar makes a name a candidate and is worth a MEDIUM: it says the name *looks*
 generated, nothing more. HIGH additionally requires corroboration of a different kind: either
 the name's lookups mostly failed to resolve (a name that looks generated *and* does not
 exist), or it sits in a dense, concentrated cluster of similar names. A name that merely
 scores high is never crowned on that alone, which is why a clean capture can produce a page of
-MEDIUMs and no HIGH at all — that is the tool being honest, not missing something.
+MEDIUMs and no HIGH at all. That is the tool being honest, not missing something.
 
 That division of labor is why the measured catch rates above are one leg's recall, not the
 detector's. A DGA family rarely appears as one name: at typical lengths a fifty-name family
@@ -508,25 +508,28 @@ target. Corroboration carries severity because no spelling rule tested could.
 
 Two consequences worth knowing. On **Pi-hole/dnsmasq-only** data, HIGH is effectively out of
 reach: Pi-hole records no DNS response code, so resolution outcome cannot corroborate, and the
-dense-cluster scan is Zeek-only. The below-gate family net above needs response codes too, so
-it is also Zeek-only - on Pi-hole the score's single-name rates are the whole lexical story.
-Findings there top out at MEDIUM by design rather than by accident. And for a **private namespace** — names under a local-only suffix such as `.lan` or
-`.internal` — a failed lookup is not evidence of anything: failing to resolve outside its own
+dense-cluster scan, which does run on Pi-hole, is not allowed to corroborate on its own there.
+The below-gate family net above needs response codes too, so it is also Zeek-only: on Pi-hole a
+name is reached either by its own score or by the dense scan's concentration test, and nothing
+else.
+Findings there top out at MEDIUM by design rather than by accident. For a **private namespace**,
+such as names under a local-only suffix like `.lan` or `.internal`, a failed lookup is not evidence
+of anything: failing to resolve outside its own
 zone is simply what a private namespace does. Those names are grouped as one family and
 reported, but their failures never count as corroboration.
 
 There is one place "noise is the signal" leaks: a *sustained, high-volume* tunnel is thousands
 of structurally-similar high-entropy queries, so past a size threshold it forms its own dense
 cluster and never reaches the noise set - the loudest exfil would be the one that hides.
-On Zeek DNS, sigwood closes this by also scanning the dense clusters: a cluster whose
-members are overwhelmingly high-entropy *and* concentrated under one registrable domain has
-that shape surfaced into the same suspicion-score ranking, and the run discloses that the
-scan fired. The gate is deliberately conservative, so a benign high-entropy cluster - a CDN
-or telemetry endpoint that happens to look the same - does not flood the report; allowlist
-those you recognize. **The dense-cluster scan runs on Zeek data only.** On Pi-hole/dnsmasq
-data the same blind spot is open: a high-volume tunnel can self-cluster and drop out of the
-report exactly as it grows louder - see [Known issues](KNOWN-ISSUES.md) for the honest
-detail.
+sigwood closes this by also scanning the dense clusters: a cluster whose members are
+overwhelmingly high-entropy *and* concentrated under one registrable domain has that shape
+surfaced into the same suspicion-score ranking, and the run discloses that the scan fired.
+The gate is deliberately conservative, so a benign high-entropy cluster - a CDN or telemetry
+endpoint that happens to look the same - does not flood the report; allowlist those you
+recognize. The scan runs on Pi-hole/dnsmasq data as well as Zeek, with the same two bars, so
+a family that concentrates under one parent is recovered on either source. What it does not
+reach is a family spread across many separate parents, on either source - see
+[Known issues](KNOWN-ISSUES.md) for that bound and the others.
 
 ### `syslog` - why drain3, and what's a "rare template"?
 
@@ -614,14 +617,14 @@ eligible-record, failure, host, and time-span facts attached. An eligible-record
 claim about the number of human login attempts.
 
 Every `auth` finding caps at MEDIUM. Failures followed by a success still ride along as
-evidence on the multi-host finding that covers the same source and account — so the report
-does not print one event twice — but that corroboration does not raise a severity today. A
+evidence on the multi-host finding that covers the same source and account, so the report
+does not print one event twice. That corroboration does not raise a severity today. A
 HIGH rule is dormant by design: a synthetic regression pins the multi-host-failure plus
 landing-success shape, but no shipped finding activates that tier. The witness proves that the
 dormant rule recognizes its declared shape; it is not a precision claim about real attacks.
 
 Counts are decision records as each source logged them. A host that reports through more than
-one source — sshd's own log and the audit system, say — can record one event in each, so a
+one source, such as sshd's own log and the audit system, can record one event in each, so a
 magnitude here is what the logs contain rather than a count of human attempts.
 
 `auth` is opt-in rather than part of the curated default hunt: run `sigwood auth PATH`, name it in

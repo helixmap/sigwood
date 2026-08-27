@@ -697,7 +697,7 @@ def test_render_digest_no_banner_no_header_rule_no_trailing_sep() -> None:
 
 def test_render_digest_identity_line_2_dashes_on_timeline_unavailable() -> None:
     """When the timeline cannot be drawn honestly, identity line 2 is a
-    bare em-dash; the descriptive '(timeline unavailable)' lives on the
+    bare hyphen; the descriptive '(timeline unavailable)' lives on the
     histogram line."""
     card = _digest_card(
         timeline_unavailable=True, data_window=(None, None),

@@ -104,7 +104,7 @@ def _is_behavioral(path: str) -> bool:
 def _validate_float_fields(flat: dict[str, Any]) -> None:
     for path, value in flat.items():
         if isinstance(value, float) and path != RUNTIME_PATH:
-            raise DiffError(f"unexpected float field {path} — extend field-class map")
+            raise DiffError(f"unexpected float field {path}: extend field-class map")
 
 
 def _runtime_result(left: Any, right: Any) -> tuple[bool, float, float]:
@@ -186,7 +186,7 @@ def _compare(
             )
         return (1 if failed else 0), lines
 
-    context = "config unchanged — code/candidate diff" if hash_equal else "config changed"
+    context = "config unchanged; code/candidate diff" if hash_equal else "config changed"
     lines.append(f"diff: {context}")
     if differences:
         lines.extend(f"  {path}: {_display(a)} -> {_display(b)}" for path, a, b in differences)

@@ -100,6 +100,11 @@ DETECTOR_METHOD = MethodTag(
     "fast-HDBSCAN" if ACTIVE_BACKEND == "fast_hdbscan" else "HDBSCAN",
     named=True,
 )
+DETECTOR_MISSION: str = (
+    "Finds domain names and query patterns that stand apart from the rest, "
+    "including generated-looking names and dense groups that can accompany "
+    "automated traffic."
+)
 
 _NXDOMAIN_MAJORITY = 0.5
 _NXDOMAIN_MIN_FAILURES = 2

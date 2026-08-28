@@ -40,6 +40,10 @@ DETECTOR_NAME = "dnsblock"
 STATUS = "available"
 IN_DEFAULT_HUNT = False
 DETECTOR_METHOD = MethodTag("pattern", named=False)
+DETECTOR_MISSION: str = (
+    "Finds clients newly or suddenly busy against names your own blocklists "
+    "already block."
+)
 
 REQUIRED_LOGS = [{"source": "pihole_dir", "pattern": "pihole*.log*"}]
 OPTIONAL_LOGS: list[dict] = []

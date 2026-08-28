@@ -224,12 +224,18 @@ def _summary() -> RunSummary:
         data_size_bytes=4096,
         detectors_run=["syslog"],
         detectors_skipped={},
+        detector_missions={
+            "syslog": "Mission for syslog.",
+            "dnsblock": "Mission for dnsblock.",
+        },
     )
 
 
 def _render_findings_text(findings: list[Finding], level: int) -> str:
     stream = io.StringIO()
-    TextHandler(stream=stream, verbose_level=level).write(findings)
+    handler = TextHandler(stream=stream, verbose_level=level)
+    handler.begin(_summary())
+    handler.write(findings)
     return stream.getvalue()
 
 

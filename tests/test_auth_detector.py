@@ -152,6 +152,7 @@ def _summary(window: tuple[datetime, datetime]) -> RunSummary:
         detectors_run=["auth"],
         detectors_skipped={},
         detector_methods={"auth": MethodTag("heuristics", named=False)},
+        detector_missions={"auth": "Mission for auth."},
     )
 
 
@@ -530,7 +531,7 @@ def test_auth_direct_verb_runs_the_real_loader_and_detector_alone(
 
     captured = capsys.readouterr()
     assert "auth - 1 finding" in captured.out
-    assert "[M]" in captured.out
+    assert "medium" in captured.out
     assert "alice" in captured.out
 
 
@@ -551,11 +552,17 @@ def test_denied_only_hostile_account_is_machine_data_never_title_or_prose() -> N
     assert account_finding.evidence["account"] == hostile
 
     text0 = io.StringIO()
-    TextHandler(stream=text0, verbose_level=0).write([account_finding])
+    handler0 = TextHandler(stream=text0, verbose_level=0)
+    handler0.begin(_summary(account_finding.data_window))
+    handler0.write([account_finding])
     text1 = io.StringIO()
-    TextHandler(stream=text1, verbose_level=1).write([account_finding])
+    handler1 = TextHandler(stream=text1, verbose_level=1)
+    handler1.begin(_summary(account_finding.data_window))
+    handler1.write([account_finding])
     text2 = io.StringIO()
-    TextHandler(stream=text2, verbose_level=2).write([account_finding])
+    handler2 = TextHandler(stream=text2, verbose_level=2)
+    handler2.begin(_summary(account_finding.data_window))
+    handler2.write([account_finding])
     assert "<svg/onload=alert(1)>" not in text0.getvalue()
     assert "<svg/onload=alert(1)>" not in text1.getvalue()
     assert "\x1b" not in text2.getvalue()
@@ -595,7 +602,9 @@ def test_hostile_host_is_sanitized_on_the_new_projection_and_lossless_in_json() 
 
     for level in (0, 1, 2):
         stream = io.StringIO()
-        TextHandler(stream=stream, verbose_level=level).write([finding])
+        handler = TextHandler(stream=stream, verbose_level=level)
+        handler.begin(_summary(finding.data_window))
+        handler.write([finding])
         rendered = stream.getvalue()
         assert "\x1b" not in rendered
         assert "[31m" in rendered

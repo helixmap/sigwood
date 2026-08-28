@@ -23,7 +23,7 @@ if TYPE_CHECKING:
 
 
 class Severity(enum.Enum):
-    """Detection severity levels, rendered as bracketed tags in text output."""
+    """Detection severity levels whose string form is a bracketed letter tag."""
 
     HIGH = "H"
     MEDIUM = "M"
@@ -113,6 +113,9 @@ class RunSummary:
     notes: list[str] = field(default_factory=list)
     data_sources: list[str] = field(default_factory=list)
     detector_methods: dict[str, "MethodTag | None"] = field(default_factory=dict)
+    # Shipped detectors carry missions; third-party detectors predating this
+    # chrome remain valid and simply omit the optional display line.
+    detector_missions: dict[str, str] = field(default_factory=dict)
     # The window the operator asked for (default-window spec, explicit since/until
     # span, or since→now), used by the text handler's data-found underfill
     # parenthetical. None = unconstrained (--all / until-only / bounded full-load).
@@ -136,7 +139,6 @@ class RunSummary:
     # The runner's single captured UTC clock for provenance. Human renderers
     # apply display-timezone policy; machine output keeps an ISO UTC instant.
     generated_at: datetime | None = None
-
 
 @dataclass
 class DigestSlot:

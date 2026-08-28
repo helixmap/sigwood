@@ -46,6 +46,7 @@ def _two_carrier_lane_mod() -> SimpleNamespace:
     """Return a synthetic detector declaring both local system-log carriers."""
     return SimpleNamespace(
         DETECTOR_NAME="lane",
+        DETECTOR_MISSION="Exercise either local system-log carrier.",
         STATUS="available",
         IN_DEFAULT_HUNT=False,
         REQUIRED_LOGS=[],

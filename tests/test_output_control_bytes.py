@@ -200,11 +200,14 @@ def test_beacon_hostile_destination_loses_command_sink_and_renders_inert() -> No
         data_size_bytes=0,
         detectors_run=["beacon"],
         detectors_skipped={},
+        detector_missions={"beacon": "Mission for beacon."},
     )
     sanitized_destination = "=DST_LEFT'DST_RIGHT"
 
     text_stream = io.StringIO()
-    TextHandler(stream=text_stream, verbose_level=1).write([finding])
+    text_handler = TextHandler(stream=text_stream, verbose_level=1)
+    text_handler.begin(summary)
+    text_handler.write([finding])
     text_report = text_stream.getvalue()
     assert strip_control_keep_newlines(text_report) == text_report
     assert sanitized_destination in text_report

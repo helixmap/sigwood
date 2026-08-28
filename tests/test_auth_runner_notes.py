@@ -133,7 +133,7 @@ def test_real_runner_distinguishes_detector_abstention_from_evaluated_zero(
     assert _run_text(_run_config(quiet_root), quiet_source) == 0
     quiet = " ".join(capsys.readouterr().out.split())
     assert (
-        "auth: 1 log observation; no eligible authentication records in the "
+        "auth 1 log observation; no eligible authentication records in the "
         "loaded window - detector abstained; requires at least one supported "
         "authentication success or failure"
     ) in quiet
@@ -152,7 +152,7 @@ def test_real_runner_distinguishes_detector_abstention_from_evaluated_zero(
     assert _run_text(_run_config(evaluated_root), evaluated_source) == 0
     evaluated = " ".join(capsys.readouterr().out.split())
     assert (
-        "auth: 2 log observations; 2 eligible authentication records across "
+        "auth 2 log observations; 2 eligible authentication records across "
         "1 identity group and 1 service - five lenses evaluated"
     ) in evaluated
     assert disclosure in evaluated
@@ -172,7 +172,7 @@ def test_real_runner_names_only_the_two_zero_duration_abstentions(
         "account-volume abstained because the loaded window has no positive duration"
     ) in rendered
     assert (
-        "auth allowlist: 1 remote source address extracted; system-log suppression "
+        "auth allowlist 1 remote source address extracted; system-log suppression "
         "covers whole hosts, not individual source addresses"
     ) in rendered
 
@@ -195,8 +195,8 @@ def test_auth_summary_uses_the_exact_post_allowlist_population(
 
     assert _run_text(config, source) == 0
     rendered = " ".join(capsys.readouterr().out.split())
-    assert "auth: 1 log observation; 1 eligible authentication record" in rendered
-    assert "auth allowlist: 1 remote source address extracted" in rendered
+    assert "auth 1 log observation; 1 eligible authentication record" in rendered
+    assert "auth allowlist 1 remote source address extracted" in rendered
     assert "chatty.example.test" not in rendered
     assert "keep.example.test" not in rendered
 
@@ -320,7 +320,7 @@ def test_real_runner_uses_the_irregular_remote_address_plural(
     assert _run_text(_run_config(tmp_path), source) == 0
     rendered = " ".join(capsys.readouterr().out.split())
     assert (
-        "auth allowlist: 2 remote source addresses extracted; system-log suppression "
+        "auth allowlist 2 remote source addresses extracted; system-log suppression "
         "covers whole hosts, not individual source addresses"
     ) in rendered
     assert "addresss" not in rendered

@@ -19,6 +19,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Iterable, Iterator, Mapping
 
 from sigwood import __version__
+from sigwood.common.finding import Severity
+from sigwood.common.sanitize import strip_control
 
 if TYPE_CHECKING:
     from sigwood.common.finding import SuppressionSummary
@@ -28,7 +30,34 @@ from tqdm import tqdm
 TEXT_RULE_WIDTH = 80
 TEXT_RULE = "─" * TEXT_RULE_WIDTH
 TEXT_RULE_DOUBLE = "═" * TEXT_RULE_WIDTH
+WHY_TIER_HINT = "-v explains why each finding surfaced"
 _UNDERFILL_TOLERANCE = timedelta(hours=1)
+
+_SEVERITY_WORDS = {
+    Severity.HIGH: "high",
+    Severity.MEDIUM: "medium",
+    Severity.LOW: "low",
+    Severity.INFO: "info",
+}
+_SEVERITY_FIELD_WIDTH = max(len(word) for word in _SEVERITY_WORDS.values())
+
+
+def severity_word(severity: Severity) -> str:
+    """Return the canonical lowercase display word for ``severity``."""
+    return _SEVERITY_WORDS[severity]
+
+
+def severity_tag(severity: Severity) -> str:
+    """Return the canonical severity word padded for aligned text rows."""
+    return severity_word(severity).ljust(_SEVERITY_FIELD_WIDTH)
+
+
+def severity_word_from_name(value: object) -> str | None:
+    """Adapt a canonical evidence-string severity name without guessing."""
+    if not isinstance(value, str):
+        return None
+    word = value.strip().casefold()
+    return word if word in _SEVERITY_WORDS.values() else None
 
 
 def group_skips(skipped: Mapping[str, str]) -> list[tuple[str, list[str]]]:
@@ -44,6 +73,25 @@ def group_skips(skipped: Mapping[str, str]) -> list[tuple[str, list[str]]]:
     for name, reason in skipped.items():
         by_reason.setdefault(reason, []).append(name)
     return list(by_reason.items())
+
+
+def partition_note(value: object) -> tuple[str, str] | str:
+    """Split one visible note into a short subject and body when eligible.
+
+    Raw bytes are for identity; visible bytes are for layout. ``group_skips``
+    compares raw because it decides whether two reasons are the same thing;
+    this helper strips first because it decides where a visible string splits
+    and how wide the visible subject is. Merging two distinct values because
+    they display alike is one bug; measuring a column on bytes the reader
+    cannot see is another. Neither rule generalizes to the other.
+    """
+    visible = strip_control(value)
+    if ": " not in visible:
+        return visible
+    subject, body = visible.split(": ", 1)
+    if not subject or len(subject) > TEXT_RULE_WIDTH // 4:
+        return visible
+    return subject, body
 
 # Spinner frames cycle in this exact order. Capable terminals use the
 # encode-gated Braille cycle; each frame is one code point and nominally one
@@ -364,15 +412,17 @@ def to_display_timezone(dt: datetime) -> datetime:
     return dt.astimezone(timezone.utc) if _DISPLAY_UTC else dt.astimezone()
 
 
-def fmt_timestamp(dt: datetime) -> str:
+def fmt_timestamp(dt: datetime, *, include_seconds: bool = False) -> str:
     """One labeled human timestamp: ``2026-06-18 00:00 local``.
 
     For the open-ended (one-sided) window callers - the present bound renders
     through here while the absent bound is composed caller-side as prose
     (``beginning of data`` / ``end of data``). The label comes from
-    ``_tz_label``; callers never write it.
+    ``_tz_label``; callers never write it. Evidence instants opt into seconds;
+    the default minute shape remains byte-identical for every existing caller.
     """
-    return f"{to_display_timezone(dt):%Y-%m-%d %H:%M} {_tz_label()}"
+    shape = "%Y-%m-%d %H:%M:%S" if include_seconds else "%Y-%m-%d %H:%M"
+    return f"{to_display_timezone(dt).strftime(shape)} {_tz_label()}"
 
 
 _SYSLOG_MONTHS = (

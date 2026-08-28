@@ -545,6 +545,7 @@ def test_runner_cloudtrail_integration_lights_data_sources(
 
     fakeaws = SimpleNamespace(
         DETECTOR_NAME="fakeaws",
+        DETECTOR_MISSION="Exercise the synthetic CloudTrail path.",
         STATUS="available",
         REQUIRED_LOGS=[{"source": "cloudtrail_dir", "pattern": "*.json*"}],
         OPTIONAL_LOGS=[],
@@ -1591,7 +1592,7 @@ def test_runner_permission_note_is_report_stdout_not_stderr(
     captured = capsys.readouterr()
     normalized_out = " ".join(captured.out.split())
     assert rc == 0
-    assert "Pi-hole: all 1 discovered file permission denied" in normalized_out
+    assert "Pi-hole all 1 discovered file permission denied" in normalized_out
     assert "no rows loaded from this source" in normalized_out
     assert 'denied[31m<tag attr="x">&.log' in normalized_out
     assert "no rows loaded from" not in captured.err
@@ -1769,7 +1770,7 @@ def test_unlistable_syslog_is_partial_success_with_real_beacon_report(
     assert rc == 0
     assert "192.0.2.10" in captured.out
     assert "syslog - syslog_dir directory could not be listed" in normalized
-    assert "syslog: directory could not be listed" in normalized
+    assert "syslog directory could not be listed" in normalized
     assert "its contents are absent from this run" in normalized
     assert "PermissionError" not in captured.err
 
@@ -1929,6 +1930,7 @@ def test_glob_family_directory_denial_keeps_readable_sibling_and_one_safe_note(
     _deny_directory_listing(monkeypatch, {denied})
     detector = SimpleNamespace(
         DETECTOR_NAME="probe",
+        DETECTOR_MISSION="Exercise a synthetic log-source probe.",
         STATUS="available",
         IN_DEFAULT_HUNT=False,
         REQUIRED_LOGS=[{"source": source_key, "pattern": pattern}],
@@ -2013,6 +2015,7 @@ def test_glob_family_total_directory_denial_is_an_actionable_skip(
     _deny_directory_listing(monkeypatch, {denied})
     detector = SimpleNamespace(
         DETECTOR_NAME="probe",
+        DETECTOR_MISSION="Exercise a synthetic log-source probe.",
         STATUS="available",
         IN_DEFAULT_HUNT=False,
         REQUIRED_LOGS=[{"source": source_key, "pattern": pattern}],
@@ -3077,6 +3080,7 @@ def _drive_handler(handler, close_handler) -> None:
         data_size_bytes=0,
         detectors_run=["beacon"],
         detectors_skipped={},
+        detector_missions={"beacon": "Mission for beacon."},
     )
     handler.begin(summary)
     handler.write([])
@@ -3837,6 +3841,7 @@ def _fake_detector(name: str, run_impl, *, in_default: bool = True):
     """Build a minimal fake detector module suitable for the runner loop."""
     return SimpleNamespace(
         DETECTOR_NAME=name,
+        DETECTOR_MISSION=f"Exercise the synthetic {name} detector.",
         STATUS="available",
         IN_DEFAULT_HUNT=in_default,
         REQUIRED_LOGS=[],
@@ -3850,6 +3855,7 @@ def _two_carrier_lane_detector() -> SimpleNamespace:
     """Return a synthetic detector that can run from either local carrier."""
     return SimpleNamespace(
         DETECTOR_NAME="lane",
+        DETECTOR_MISSION="Exercise either local system-log carrier.",
         STATUS="available",
         IN_DEFAULT_HUNT=False,
         REQUIRED_LOGS=[],

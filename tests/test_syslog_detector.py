@@ -26,7 +26,7 @@ from unittest.mock import patch
 import pandas as pd
 
 import sigwood.detectors.syslog as syslog_detector
-from sigwood.common.finding import DetectorContext, Finding, Severity
+from sigwood.common.finding import DetectorContext, Finding, RunSummary, Severity
 from sigwood.detectors.syslog import (
     BURST_MIN_SIZE,
     DEFAULT_CONFIG,
@@ -76,6 +76,17 @@ def _flat_section(findings: list[Finding]) -> list[_Section]:
 
 _NOW    = datetime(2026, 5, 30, tzinfo=timezone.utc)
 _WINDOW = (_NOW, _NOW)
+
+
+def _output_summary() -> RunSummary:
+    return RunSummary(
+        data_window=_WINDOW,
+        record_counts={},
+        data_size_bytes=0,
+        detectors_run=["syslog"],
+        detectors_skipped={},
+        detector_missions={"syslog": "Mission for syslog."},
+    )
 
 # Fixed unix epoch used across fixtures (2026-05-30 00:00:00 UTC)
 _BASE_TS = 1_748_563_200.0
@@ -563,10 +574,12 @@ class SyslogDetectorTests(unittest.TestCase):
             ["tokens: installed package verified"],
         )
         text_stream = io.StringIO()
-        TextHandler(stream=text_stream, verbose_level=0).write([transaction])
+        text_handler = TextHandler(stream=text_stream, verbose_level=0)
+        text_handler.begin(_output_summary())
+        text_handler.write([transaction])
         html = render_report_html(
             [transaction],
-            None,
+            _output_summary(),
             verbose_level=0,
             max_findings_per_detector=100,
         )
@@ -631,11 +644,13 @@ class SyslogDetectorTests(unittest.TestCase):
             _WINDOW,
         )
         text_stream = io.StringIO()
-        TextHandler(stream=text_stream, verbose_level=0).write([transaction])
+        text_handler = TextHandler(stream=text_stream, verbose_level=0)
+        text_handler.begin(_output_summary())
+        text_handler.write([transaction])
         text = text_stream.getvalue()
         html = render_report_html(
             [transaction],
-            None,
+            _output_summary(),
             verbose_level=0,
             max_findings_per_detector=100,
         )
@@ -3246,10 +3261,10 @@ class SyslogDetectorTests(unittest.TestCase):
             )
             self.assertEqual(rendered.count("members:"), 1)
             self.assertIn(
-                "[M] · useradd<script>sep</script> · 2 rare lines", rendered
+                "medium · useradd<script>sep</script> · 2 rare lines", rendered
             )
             self.assertIn("safe<script>member</script>", rendered)
-            self.assertIn("[L] · CRON, sshd · 3 rare lines", rendered)
+            self.assertIn("low · CRON, sshd · 3 rare lines", rendered)
             self.assertNotIn("member finding", rendered.casefold())
             self.assertNotIn("needle", rendered)
             self.assertNotIn("{'severity'", rendered)
@@ -3411,7 +3426,7 @@ class SyslogDetectorTests(unittest.TestCase):
             TextHandler(verbose_level=0)._render_syslog_group(_partition_syslog([low]))
         )
         self.assertIn("rare events (1)", rendered)
-        self.assertIn("[L]", rendered)
+        self.assertIn("low", rendered)
         self.assertIn("low-sentinel", rendered)
 
     def test_needle_stamp_facts_split_curated_and_debug_text_levels(self) -> None:
@@ -3438,9 +3453,9 @@ class SyslogDetectorTests(unittest.TestCase):
                 _partition_syslog([needle])
             )
         )
-        self.assertIn("first_seen: 2026-07-12T21:57:33+00:00", at1)
+        self.assertIn("first_seen: 2026-07-12 21:57:33 local", at1)
         self.assertNotIn("self_stamped:", at1)
-        self.assertIn("first_seen: 2026-07-12T21:57:33+00:00", at2)
+        self.assertIn("first_seen: 2026-07-12 21:57:33 local", at2)
         self.assertIn("self_stamped: False", at2)
 
     def test_text_level_one_samples_three_and_level_two_keeps_full(self) -> None:
@@ -3758,7 +3773,7 @@ def test_journal_needle_runs_to_time_anchored_text() -> None:
             _partition_syslog(findings)
         )
     )
-    assert "[L]   Oct  9 08:53:20 · journal needle sentinel" in rendered
+    assert "low     Oct  9 08:53:20 · journal needle sentinel" in rendered
 
 
 def test_non_text_zeek_rows_do_not_change_real_detector_contract(tmp_path) -> None:

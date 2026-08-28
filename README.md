@@ -41,20 +41,28 @@ That's it - no config required. Here is the kind of thing a run surfaces (illust
 output, not real network data):
 
 ```
-dns - 1 finding · 1 H
+dns - 1 finding · 1 high
+Finds domain names and query patterns that stand apart from the rest, including
+generated-looking names and dense groups that can accompany automated traffic.
 ────────────────────────────────────────────────────────────────────────────────
 groups (1)
-  [H]   16 sub  score=2.10-1.85  418 qry  1 src  k7x2p9qz3f.example
+  high    names=16  generated-look=2.10-1.85  queries=418  clients=1  k7x2p9qz3f.example
 
-beacon - 2 findings · 2 M
+beacon - 2 findings · 2 medium
+Finds outbound connections that keep a regular rhythm, a pattern worth checking
+for automated check-ins.
 ────────────────────────────────────────────────────────────────────────────────
-[M]  192.168.1.37  →  198.51.100.20:443/tcp    period=3.0m    score=0.624   480 conns
-[M]  192.168.1.37  →  203.0.113.50:8443/tcp    period=10.0m   score=0.606   144 conns
+medium  192.168.1.37  →  198.51.100.20:443/tcp    period=3.0m    rhythm=0.624   480 conns
+medium  192.168.1.37  →  203.0.113.50:8443/tcp    period=10.0m   rhythm=0.606   144 conns
 
-syslog - 1 finding · 1 M
+syslog - 1 finding · 1 medium
+Finds rare log patterns and recorded reboots or administrative runs, so changes
+on a machine do not disappear into routine logs.
 ────────────────────────────────────────────────────────────────────────────────
 privileged (1)
-  [M]   Accepted password for root from 198.51.100.20 port 51900 ssh2
+  medium  Accepted password for root from 198.51.100.20 port 51900 ssh2
+
+-v explains why each finding surfaced
 ```
 
 Read top to bottom, that is a story: an internal host making high-entropy lookups under one

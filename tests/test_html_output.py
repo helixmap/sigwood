@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import html as html_stdlib
 import re
 import sys
 from decimal import Decimal
@@ -14,6 +15,7 @@ import numpy as np
 import pytest
 
 import sigwood
+from sigwood.common.display import TEXT_RULE_WIDTH, WHY_TIER_HINT
 from sigwood.common.finding import Finding, MethodTag, RunSummary, Severity
 from sigwood.outputs import _evidence
 from sigwood.outputs.html import HtmlHandler, render_report_html
@@ -44,6 +46,10 @@ def _summary(**kw) -> RunSummary:
         detector_methods={
             "beacon": MethodTag("FFT", True),
             "aws": MethodTag("statistical", False),
+        },
+        detector_missions={
+            "beacon": "Mission for beacon.",
+            "aws": "Mission for aws.",
         },
     )
     base.update(kw)
@@ -77,9 +83,15 @@ def _render(
     cap=100,
     summary: RunSummary | None = None,
 ) -> str:
+    if summary is None:
+        summary = _summary()
+        summary.detector_missions.update({
+            finding.detector: f"Mission for {finding.detector}."
+            for finding in findings
+        })
     return render_report_html(
         findings,
-        summary if summary is not None else _summary(),
+        summary,
         verbose_level=verbose_level,
         max_findings_per_detector=cap,
     )
@@ -236,6 +248,68 @@ def test_control_bytes_stripped_from_header_notes() -> None:
 
     _assert_no_data_controls(out)
     assert "Z9HOSTILE9Z" in out
+
+
+def test_notes_table_preserves_order_multiplicity_and_full_width_rows() -> None:
+    over_cap = f"{'x' * (TEXT_RULE_WIDTH // 4 + 1)}: full width"
+    notes = [
+        "auth: first",
+        "system logs: second",
+        "auth: first",
+        "colonless disclosure",
+        over_cap,
+    ]
+    out = _render([], summary=_summary(notes=notes))
+    table = out[out.index('<div class="notes">'):out.index("</table></div>") + 14]
+
+    assert table == (
+        '<div class="notes"><table><tbody>'
+        '<tr><th scope="row">auth</th><td>first</td></tr>'
+        '<tr><th scope="row">system logs</th><td>second</td></tr>'
+        '<tr><th scope="row">auth</th><td>first</td></tr>'
+        '<tr><td class="note-full" colspan="2">colonless disclosure</td></tr>'
+        f'<tr><td class="note-full" colspan="2">{over_cap}</td></tr>'
+        "</tbody></table></div>"
+    )
+
+
+def test_notes_table_strips_controls_and_escapes_each_fragment_once() -> None:
+    subject = "a&<>\"'\x00\x7f\x9f"
+    body = "b&<>\"'\x01\x80"
+    out = _render([], summary=_summary(notes=[f"{subject}: {body}"]))
+    row = re.search(
+        r'<tr><th scope="row">(.*?)</th><td>(.*?)</td></tr>',
+        out,
+    )
+
+    assert row is not None
+    assert row.groups() == (
+        "a&amp;&lt;&gt;&quot;&#x27;",
+        "b&amp;&lt;&gt;&quot;&#x27;",
+    )
+    assert html_stdlib.unescape(row.group(1)) == "a&<>\"'"
+    assert html_stdlib.unescape(row.group(2)) == "b&<>\"'"
+    assert "&amp;amp;" not in row.group(0)
+    assert "&amp;lt;" not in row.group(0)
+    _assert_no_data_controls(row.group(0))
+
+
+def test_html_signpost_is_level_zero_after_groups_and_requires_rendering() -> None:
+    level_zero = _render([_finding()], verbose_level=0)
+    assert level_zero.count(WHY_TIER_HINT) == 1
+    assert level_zero.index('class="group"') < level_zero.index(WHY_TIER_HINT)
+    assert level_zero.index(WHY_TIER_HINT) < level_zero.index("</main>")
+
+    assert WHY_TIER_HINT not in _render([_finding()], verbose_level=1)
+    fully_filtered = _render([_finding(
+        detector="dnsblock",
+        severity=Severity.INFO,
+        title="recurring only",
+        evidence={"kind": "recurring_activity"},
+        description="",
+        next_steps=[],
+    )], verbose_level=0)
+    assert WHY_TIER_HINT not in fully_filtered
 
 
 # ── header: chips + local time ───────────────────────────────────────────────
@@ -399,6 +473,39 @@ def test_exfil_low_is_visible_at_level_0() -> None:
     )
     assert "192.0.2.50" in _render([low], verbose_level=0)
     assert "192.0.2.50" in _render([low], verbose_level=1)
+
+
+def test_exfil_transport_and_sent_headers_follow_group_optionality() -> None:
+    with_transport = _finding(
+        detector="exfil", severity=Severity.MEDIUM, title="x",
+        evidence={
+            "src": "192.0.2.50", "dst": "198.51.100.9",
+            "orig_bytes_total": 1_000_000, "resp_bytes_total": 100,
+            "orig_share": 0.9999, "connection_count": 2,
+            "port_mix": "443/tcp (900 KB), 8443/tcp (100 KB)",
+        },
+    )
+    without_transport = _finding(
+        detector="exfil", severity=Severity.MEDIUM, title="y",
+        evidence={
+            "src": "192.0.2.51", "dst": "198.51.100.10",
+            "orig_bytes_total": 2_000_000, "resp_bytes_total": 200,
+            "orig_share": 0.9999, "connection_count": 3,
+        },
+    )
+
+    mixed = _render([with_transport, without_transport])
+    assert '<th class="col-transport">transport</th>' in mixed
+    assert '<th class="num col-sent">sent</th>' in mixed
+    assert mixed.index('col-sent') < mixed.index('col-transport')
+    assert "443/tcp (900 KB), 8443/tcp (100 KB)" in mixed
+    assert "99.99% sent" not in mixed  # `sent` lives in the header, not the data cell
+    assert "99.99%" in mixed
+    assert "share" not in mixed
+
+    empty_group = _render([without_transport])
+    assert '<th class="col-transport">transport</th>' not in empty_group
+    assert '<th class="num col-sent">sent</th>' in empty_group
 
 
 def test_exfil_pool_members_are_bounded_and_html_escaped() -> None:

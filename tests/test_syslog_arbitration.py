@@ -792,8 +792,9 @@ def test_cross_feed_singleton_recovery_converges_with_flat_only(
 
     both_text = _run_text(capsys, both_cfg, both_flat, both_zeek)
     flat_text = _run_text(capsys, flat_cfg, flat_flat, flat_zeek)
-    assert note in " ".join(both_text.split())
-    assert note not in " ".join(flat_text.split())
+    displayed_note = note.replace(": ", " ", 1)
+    assert displayed_note in " ".join(both_text.split())
+    assert displayed_note not in " ".join(flat_text.split())
     assert _text_finding_section(both_text) == _text_finding_section(flat_text)
 
 
@@ -814,8 +815,8 @@ def test_cross_feed_note_renders_through_html(tmp_path: Path, capsys) -> None:
     ) == 0
     rendered = capsys.readouterr().out
     assert (
-        "system logs: 1 host carried by both the local feed and Zeek syslog.log - "
-        "kept the local rows (1 Zeek row set aside)"
+        '<th scope="row">system logs</th><td>1 host carried by both the local '
+        "feed and Zeek syslog.log - kept the local rows (1 Zeek row set aside)</td>"
     ) in rendered
 
 

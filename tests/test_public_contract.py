@@ -116,6 +116,10 @@ def _summary(*, nullable: bool = False) -> RunSummary:
             "beacon": MethodTag("FFT", True),
             "dns": None,
         },
+        detector_missions={
+            "beacon": "Mission for beacon.",
+            "dns": "Mission for dns.",
+        },
         requested_span=None if nullable else timedelta(days=7),
         suppression=(
             None

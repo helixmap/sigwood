@@ -721,6 +721,8 @@ def test_record_count_mismatch_neutralizes_actual_pattern_controls() -> None:
 def test_text_count_contract_handles_singular_and_comma_cap() -> None:
     report = (
         "exfil - 1 finding · 1 H\n"
+        "Mission for exfil that wraps across the text frame without changing\n"
+        "the detector count contract.\n"
         f"{TEXT_RULE}\n"
         "[H] reserved flow\n"
     )
@@ -731,6 +733,7 @@ def test_text_count_contract_handles_singular_and_comma_cap() -> None:
 
     capped_report = (
         "exfil - 1100 findings · 1100 H\n"
+        "Mission for exfil.\n"
         f"{TEXT_RULE}\n"
         "… 1,000 more not shown (showing first 100). Unusually high - narrow with "
         "the allowlist, or this detector may be misbehaving.\n"
@@ -741,6 +744,18 @@ def test_text_count_contract_handles_singular_and_comma_cap() -> None:
     assert visible == {"exfil": 100}
     assert capped == {"exfil": 1000}
     assert level == {"exfil": 0}
+
+
+def test_text_count_contract_rejects_an_overwidth_mission_line() -> None:
+    report = (
+        "exfil - 1 finding · 1 H\n"
+        f"{'x' * 81}\n"
+        f"{TEXT_RULE}\n"
+        "[H] reserved flow\n"
+    )
+
+    with pytest.raises(bench_summarize.SummaryRefusal, match="text.header"):
+        bench_summarize._parse_text_counts(report, {"exfil": 1})
 
 
 def _diff_summary(**overrides: Any) -> dict[str, Any]:

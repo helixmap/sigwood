@@ -597,6 +597,7 @@ class ScanDetectorTests(unittest.TestCase):
             data_size_bytes=0,
             detectors_run=["scan"],
             detectors_skipped={},
+            detector_missions={"scan": "Mission for scan."},
         )
         stream  = io.StringIO()
         handler = TextHandler(stream=stream, verbose_level=0)
@@ -605,7 +606,7 @@ class ScanDetectorTests(unittest.TestCase):
         handler.end()
 
         output = stream.getvalue()
-        self.assertIn("ratio=", output)
+        self.assertIn("70% no normal close seen", output)
         self.assertIn("ports",  output)
         self.assertIn("hosts",  output)
         self.assertIn("vertical",    output)
@@ -620,6 +621,7 @@ class ScanDetectorTests(unittest.TestCase):
             data_size_bytes=0,
             detectors_run=["scan"],
             detectors_skipped={},
+            detector_missions={"scan": "Mission for scan."},
         )
         stream  = io.StringIO()
         handler = TextHandler(stream=stream, verbose_level=1)
@@ -690,10 +692,10 @@ def test_vertical_real_route_renders_winning_window_ratio_and_severity(
 
     output = capsys.readouterr().out
     rendered = [line for line in output.splitlines()
-                if "vertical" in line and "ratio=" in line]
+                if "vertical" in line and "no normal close seen" in line]
     assert len(rendered) == 1
-    assert "[H]" in rendered[0]
-    assert "ratio=1.00" in rendered[0]
+    assert rendered[0].startswith("high")
+    assert "100% no normal close seen" in rendered[0]
 
 
 def test_horizontal_real_route_renders_winning_window_ratio_and_severity(
@@ -750,10 +752,10 @@ def test_horizontal_real_route_renders_winning_window_ratio_and_severity(
 
     output = capsys.readouterr().out
     rendered = [line for line in output.splitlines()
-                if "horizontal" in line and "ratio=" in line]
+                if "horizontal" in line and "no normal close seen" in line]
     assert len(rendered) == 1
-    assert "[H]" in rendered[0]
-    assert "ratio=1.00" in rendered[0]
+    assert rendered[0].startswith("high")
+    assert "100% no normal close seen" in rendered[0]
 
 
 # ── Zone-label seam tests ─────────────────────────────────────────────────────

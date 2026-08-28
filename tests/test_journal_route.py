@@ -98,7 +98,7 @@ def test_forced_journal_real_route_reaches_text_and_json_after_cleanup(
         "--quiet", f"--out={text_path}",
     ]) == 0
     text = text_path.read_text(encoding="utf-8")
-    assert "system logs: journal (explicit;" in text
+    assert "system logs    journal (explicit;" in text
     assert "host.example" in text
 
     json_path = tmp_path / "report.json"

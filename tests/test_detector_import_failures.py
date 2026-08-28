@@ -80,7 +80,7 @@ def _build_pkg(
 def broken_pkg(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> ModuleType:
-    """One well-formed runnable detector (pulse) + one ImportError module (dns)."""
+    """One legacy missionless detector (pulse) + one ImportError module (dns)."""
     pkg = _build_pkg(
         tmp_path,
         monkeypatch,
@@ -135,6 +135,7 @@ def test_discover_records_failure_and_returns_good_sibling(
     assert vocab == {"dns": None, "pulse": {}}
     assert sorted(detectors) == ["pulse"]
     assert detectors["pulse"].DETECTOR_NAME == "pulse"
+    assert not hasattr(detectors["pulse"], "DETECTOR_MISSION")
 
 
 def test_discover_sinkless_is_silent_and_safe(broken_pkg: ModuleType) -> None:

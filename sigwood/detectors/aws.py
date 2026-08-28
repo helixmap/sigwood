@@ -56,6 +56,10 @@ REQUIRED_LOGS = [
 OPTIONAL_LOGS: list[dict] = []
 
 DETECTOR_METHOD = MethodTag("statistical", named=False)
+DETECTOR_MISSION: str = (
+    "Finds CloudTrail principals that stand out from their peers in the loaded "
+    "window or add several first-seen actions within that window in a short span."
+)
 
 DEFAULT_CONFIG = {
     # Per-principal event floor. Interactive principals with fewer events are

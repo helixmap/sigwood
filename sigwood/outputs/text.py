@@ -2,7 +2,7 @@
 
 Output is grouped by detector, each section with a header and ───── separator.
 Default output: title, severity tag, key evidence fields only.
-Verbose adds: description, full evidence dict, next_steps, data window.
+Verbose adds: description, next_steps, evidence, data window.
 next_steps are never shown in default output.
 
 Looks crafted, not generated. Minimal ASCII decoration.
@@ -27,8 +27,13 @@ from sigwood.common.display import (
     fmt_window,
     group_skips,
     human_bytes,
+    partition_note,
     paint,
     plural,
+    severity_tag,
+    severity_word,
+    severity_word_from_name,
+    WHY_TIER_HINT,
 )
 from sigwood.common.finding import (
     BlobCard,
@@ -42,6 +47,7 @@ from sigwood.common.output import OutputHandler, register_handler
 from sigwood.outputs._evidence import (
     evidence_at_level,
     exfil_members_at_level,
+    format_evidence_instants,
     sample_bound_note,
 )
 from sigwood.outputs._render_model import (
@@ -292,6 +298,44 @@ def _summary_line(label: str, value: object) -> list[str]:
     ]
 
 
+def _render_notes(notes: list[str]) -> list[str]:
+    """Render one ordered notes block with a block-wide subject column."""
+    partitioned = [partition_note(note) for note in notes]
+    subject_width = max(
+        _SUMMARY_LABEL_WIDTH,
+        max(
+            (len(item[0]) for item in partitioned if isinstance(item, tuple)),
+            default=0,
+        ),
+    )
+    lines: list[str] = []
+    for item in partitioned:
+        if isinstance(item, str):
+            wrapped = textwrap.wrap(
+                _sanitize(item),
+                width=_WIDTH,
+                break_long_words=False,
+                break_on_hyphens=False,
+            ) or [""]
+            lines.extend(wrapped)
+            continue
+
+        subject, body = (_sanitize(item[0]), _sanitize(item[1]))
+        prefix = f"{subject:<{subject_width}} "
+        subsequent = " " * len(prefix)
+        wrapped = textwrap.wrap(
+            body,
+            width=max(20, _WIDTH - len(prefix)),
+            break_long_words=False,
+            break_on_hyphens=False,
+        ) or [""]
+        lines.extend(
+            f"{prefix if index == 0 else subsequent}{part}"
+            for index, part in enumerate(wrapped)
+        )
+    return lines
+
+
 # ── card pipeline ────────────────────────────────────────────────────────────
 # The pipeline (Section / DetectorRenderable / _build_renderable / partitioners /
 # the two exemptions / the section-walking cap / pre-cap sidecars) MOVED verbatim
@@ -322,9 +366,14 @@ def _verbose_tail(finding: Finding, indent: str, extras: dict[str, Any] | None =
     data-window line appears only when at least one other body element is
     present.
     """
+    extras = format_evidence_instants(extras) if extras is not None else None
     body: list[str] = []
     if finding.description:
         body.append(f"{indent}{_sanitize(finding.description)}")
+    if finding.next_steps:
+        body.append(f"{indent}next steps:")
+        for step in finding.next_steps:
+            body.append(f"{indent}  · {_sanitize(step)}")
     if extras:
         body.append(f"{indent}evidence:")
         for k, v in extras.items():
@@ -341,10 +390,6 @@ def _verbose_tail(finding: Finding, indent: str, extras: dict[str, Any] | None =
                     body.append(f"{indent}    {_sanitize(note)}")
             else:
                 body.append(f"{indent}  {_sanitize(k)}: {_sanitize(v)}")
-    if finding.next_steps:
-        body.append(f"{indent}next steps:")
-        for step in finding.next_steps:
-            body.append(f"{indent}  · {_sanitize(step)}")
     if not body:
         return []
     body.append(f"{indent}data window: {_fmt_window(finding.data_window)}")
@@ -357,16 +402,17 @@ def _debug_tail(finding: Finding, indent: str) -> list[str]:
     body: list[str] = []
     if finding.description:
         body.append(f"{indent}{_sanitize(finding.description)}")
-    if finding.evidence:
-        body.append(f"{indent}evidence:")
-        for k, v in finding.evidence.items():
-            if k in ("member_fragments", "members"):
-                continue  # structured member views render below, never as reprs
-            body.append(f"{indent}  {_sanitize(k)}: {_sanitize(v)}")
     if finding.next_steps:
         body.append(f"{indent}next steps:")
         for step in finding.next_steps:
             body.append(f"{indent}  · {_sanitize(step)}")
+    evidence = format_evidence_instants(finding.evidence)
+    if evidence:
+        body.append(f"{indent}evidence:")
+        for k, v in evidence.items():
+            if k in ("member_fragments", "members"):
+                continue  # structured member views render below, never as reprs
+            body.append(f"{indent}  {_sanitize(k)}: {_sanitize(v)}")
     if not body:
         return []
     body.append(f"{indent}data window: {_fmt_window(finding.data_window)}")
@@ -387,7 +433,24 @@ def _level_tail(finding: Finding, indent: str, verbose_level: int) -> list[str]:
     member_lines = _exfil_member_lines(finding, indent, verbose_level)
     if not member_lines or not tail:
         return tail
+    # Positional dependency: data window is the tail's last element, so exfil
+    # members stay immediately before that final metadata line.
     return [*tail[:-1], *member_lines, tail[-1]]
+
+
+def _separate_finding_blocks(
+    blocks: list[str],
+    verbose_level: int,
+) -> list[str]:
+    """Insert one verbose-only blank between adjacent finding blocks."""
+    if verbose_level <= 0 or len(blocks) < 2:
+        return blocks
+    separated: list[str] = []
+    for block in blocks:
+        if separated:
+            separated.append("")
+        separated.append(block)
+    return separated
 
 
 def _exfil_member_lines(
@@ -427,25 +490,31 @@ def _transaction_member_lines(finding: Finding, indent: str) -> list[str]:
     for member in members:
         if not isinstance(member, dict):
             continue
-        severity = str(member.get("severity", "info"))[:1].upper() or "I"
+        severity = severity_word_from_name(member.get("severity"))
         program = member.get("program")
         if program is None:
             mix = member.get("program_mix")
             if isinstance(mix, (list, tuple)):
                 program = fold_mix_names(mix)
         count = int(member.get("represented_line_count", 1))
-        parts = [
-            f"[{severity}]",
+        parts = []
+        if severity is not None:
+            parts.append(severity)
+        parts.extend([
             str(program or "unknown"),
             f"{count} {plural(count, 'rare line')}",
             str(member.get("title", "")),
-        ]
+        ])
         lines.append(f"{indent}  · {_sanitize(' · '.join(parts))}")
     return lines if len(lines) > 1 else []
 
 
-def _render_group_header(detector: str, renderable: DetectorRenderable) -> list[str]:
-    """Header line: ``detector - N findings · 3 H  18 M  51 I`` + 80-col rule.
+def _render_group_header(
+    detector: str,
+    renderable: DetectorRenderable,
+    mission: str | None,
+) -> list[str]:
+    """Header, detector mission, and 80-column rule.
 
     Counts and breakdown are PRE-CAP - read straight off the renderable's
     ``level_visible_total`` and ``severity_breakdown`` sidecars, never
@@ -458,10 +527,18 @@ def _render_group_header(detector: str, renderable: DetectorRenderable) -> list[
     for sev in _SEVERITY_ORDER:
         n = breakdown.get(sev, 0)
         if n > 0:
-            cells.append(f"{n} {sev.value}")
+            cells.append(f"{n} {severity_word(sev)}")
     if cells:
         parts.append(" · " + "  ".join(cells))
-    return ["".join(parts), TEXT_RULE]
+    mission_lines = []
+    if mission:
+        mission_lines = textwrap.wrap(
+            _sanitize(mission),
+            width=TEXT_RULE_WIDTH,
+            break_long_words=False,
+            break_on_hyphens=False,
+        )
+    return ["".join(parts), *mission_lines, TEXT_RULE]
 
 
 def _render_cap_disclosure(detector: str, renderable: DetectorRenderable, cap: int) -> str:
@@ -504,6 +581,7 @@ class TextHandler(OutputHandler):
         # group already ends with a trailing blank, so the failed-detector
         # tail must not add a second one (single-blank separation either way).
         self._wrote_groups = False
+        self._why_hint_written = False
 
     def begin(self, run_summary: RunSummary) -> None:
         """Print the run summary header before any findings.
@@ -541,8 +619,15 @@ class TextHandler(OutputHandler):
             )
             if renderable.level_visible_total == 0:
                 continue
-            print(file=self._stream)
-            for line in _render_group_header(detector, renderable):
+            # The preceding verbose group already owns the one detector-boundary
+            # blank. Level 0 keeps its historical bytes, including this leading
+            # blank on every group.
+            if not self._wrote_groups or self._verbose_level <= 0:
+                print(file=self._stream)
+            if self._run_summary is None:
+                raise RuntimeError("TextHandler.write() requires begin() first")
+            mission = self._run_summary.detector_missions.get(detector)
+            for line in _render_group_header(detector, renderable, mission):
                 print(line, file=self._stream)
             for line in self._render_group(detector, renderable.sections):
                 print(line, file=self._stream)
@@ -568,9 +653,20 @@ class TextHandler(OutputHandler):
         ``_sanitize``; the detector name is tool-authored and left alone.
         Vanish-don't-dash: a clean run renders nothing here.
         """
+        if (
+            self._wrote_groups
+            and self._verbose_level == 0
+            and not self._why_hint_written
+        ):
+            print(WHY_TIER_HINT, file=self._stream)
+            self._why_hint_written = True
+
         if self._run_summary is None or not self._run_summary.detectors_failed:
             return
-        if not self._wrote_groups:
+        # A rendered group already supplied separation before the signpost. If
+        # the signpost is present, give the failure disclosure its own blank;
+        # without the signpost, preserve the existing one-blank tail grammar.
+        if not self._wrote_groups or self._why_hint_written:
             print(file=self._stream)
         for name, reason in self._run_summary.detectors_failed.items():
             for line in _summary_line("failed:", f"{name} - {_sanitize(reason)}"):
@@ -630,8 +726,7 @@ class TextHandler(OutputHandler):
                     "skipped:", f"{', '.join(names)} - {_sanitize(reason)}"
                 ))
 
-        for note in run_summary.notes:
-            lines.extend(_summary_line("note:", _sanitize(note)))
+        lines.extend(_render_notes(run_summary.notes))
 
         lines.extend(_summary_line(
             "generated:",
@@ -702,8 +797,8 @@ class TextHandler(OutputHandler):
         # Generic fallback - flat detector, one Section with label=None.
         out: list[str] = []
         for s in live:
-            for f in s.findings:
-                out.append(self._render_finding(f))
+            blocks = [self._render_finding(f) for f in s.findings]
+            out.extend(_separate_finding_blocks(blocks, self._verbose_level))
         return out
 
     def _render_dnsblock_group(self, sections: list[Section]) -> list[str]:
@@ -715,16 +810,18 @@ class TextHandler(OutputHandler):
                 out.append("")
             out.append(f"{section.label} ({section.pre_cap_count})")
             keep_indices = [index for index, _column in text_column_indices(section)]
+            blocks: list[str] = []
             for finding in section.findings:
                 cells = project_row(finding)
                 if cells and not cells[0].full_width:
                     cells = [cells[index] for index in keep_indices if index < len(cells)]
-                tag = f"{str(finding.severity):<4}"
+                tag = severity_tag(finding.severity)
                 line = f"  {tag}  " + "  ".join(
                     _sanitize(cell.value) for cell in cells
                 )
                 tail = _level_tail(finding, indent, self._verbose_level)
-                out.append(line + ("\n" + "\n".join(tail) if tail else ""))
+                blocks.append(line + ("\n" + "\n".join(tail) if tail else ""))
+            out.extend(_separate_finding_blocks(blocks, self._verbose_level))
         return out
 
     def _render_auth_group(self, sections: list[Section]) -> list[str]:
@@ -735,7 +832,7 @@ class TextHandler(OutputHandler):
             keyed, bare = _cells(finding)
             rows.append(
                 (
-                    str(finding.severity),
+                    severity_tag(finding.severity),
                     bare[0],
                     keyed["shape"],
                     keyed["failed"],
@@ -760,7 +857,7 @@ class TextHandler(OutputHandler):
         out: list[str] = []
         for tag, title, shape, failed, hosts, successes, span, related, finding in rows:
             line = (
-                f"{tag:<4}  {title:<{title_w}}  {shape:<{shape_w}}  "
+                f"{tag}  {title:<{title_w}}  {shape:<{shape_w}}  "
                 f"{failed:>{failed_w}}  {hosts:>{hosts_w}}"
             )
             if show_successes:
@@ -773,7 +870,7 @@ class TextHandler(OutputHandler):
                 out.append(line + "\n" + "\n".join(tail))
             else:
                 out.append(line)
-        return out
+        return _separate_finding_blocks(out, self._verbose_level)
 
     def _render_beacon_group(self, sections: list[Section]) -> list[str]:
         """Render beacon findings with fully aligned columns. Beacon is a flat
@@ -787,19 +884,24 @@ class TextHandler(OutputHandler):
         for f in findings:
             keyed, bare = _cells(f)  # bare = [src, "→", dst]
             src, dst_str = bare[0], bare[2]
-            period_col, score_col, conns_col = keyed["period"], keyed["score"], keyed["conns"]
-            rows.append((str(f.severity), src, dst_str, period_col, score_col, conns_col, f))
+            period_col = keyed["period"]
+            rhythm_col = keyed["rhythm"]
+            conns_col = keyed["conns"]
+            rows.append((
+                severity_tag(f.severity), src, dst_str,
+                period_col, rhythm_col, conns_col, f,
+            ))
 
         src_w    = max(len(r[1]) for r in rows)
         dst_w    = max(len(r[2]) for r in rows)
         period_w = max(len(r[3]) for r in rows)
-        # score is always "score=0.XXX" - 11 chars, no padding needed
+        # rhythm is always "rhythm=0.XXX" - 12 chars, no padding needed
         conns_w  = max(len(r[5]) for r in rows)
 
-        for tag, src, dst_str, period_col, score_col, conns_col, f in rows:
+        for tag, src, dst_str, period_col, rhythm_col, conns_col, f in rows:
             line = (
                 f"{tag}  {src:<{src_w}}  →  {dst_str:<{dst_w}}   "
-                f"{period_col:<{period_w}}   {score_col}   "
+                f"{period_col:<{period_w}}   {rhythm_col}   "
                 f"{conns_col:>{conns_w}}"
             )
             tail = _level_tail(f, indent, self._verbose_level)
@@ -807,7 +909,7 @@ class TextHandler(OutputHandler):
                 out.append(line + "\n" + "\n".join(tail))
             else:
                 out.append(line)
-        return out
+        return _separate_finding_blocks(out, self._verbose_level)
 
     def _render_dns_group(self, sections: list[Section]) -> list[str]:
         """Render DNS findings: groups first, then singletons.
@@ -826,6 +928,7 @@ class TextHandler(OutputHandler):
             if si > 0:
                 out.append("")
             out.append(label_line)
+            blocks: list[str] = []
 
             # Synthetic DNS disclosures: full-width prose rows (mirror
             # _render_aws_group's summary loop). Keyed on tier, not the label - a
@@ -837,13 +940,14 @@ class TextHandler(OutputHandler):
             ):
                 for f in section.findings:
                     _keyed, bare = _cells(f)  # bare = [full-width prose]
-                    tag = f"{str(f.severity):<4}"
+                    tag = severity_tag(f.severity)
                     line = f"  {tag}  {bare[0]}"
                     tail = _level_tail(f, indent, self._verbose_level)
                     if tail:
-                        out.append(line + "\n" + "\n".join(tail))
+                        blocks.append(line + "\n" + "\n".join(tail))
                     else:
-                        out.append(line)
+                        blocks.append(line)
+                out.extend(_separate_finding_blocks(blocks, self._verbose_level))
                 continue
 
             # Shared emptiness owner: the (optional) blocked column drops iff no
@@ -856,74 +960,94 @@ class TextHandler(OutputHandler):
                 rows = []
                 for f in section.findings:
                     keyed, bare = _cells(f)  # bare = [domain]
-                    tag = f"{str(f.severity):<4}"
-                    score_col, qry_col, src_col = keyed["score"], keyed["qry"], keyed["src"]
+                    tag = severity_tag(f.severity)
+                    generated_look_col = keyed["generated-look"]
+                    queries_col = keyed["queries"]
+                    clients_col = keyed["clients"]
                     blocked_col = keyed["blocked"]
-                    rows.append((tag, score_col, qry_col, src_col, blocked_col, bare[0], f))
+                    rows.append((
+                        tag, generated_look_col, queries_col, clients_col,
+                        blocked_col, bare[0], f,
+                    ))
 
-                score_w     = max(len(r[1]) for r in rows)
-                qry_w     = max(len(r[2]) for r in rows)
-                src_w     = max(len(r[3]) for r in rows)
+                generated_look_w = max(len(r[1]) for r in rows)
+                queries_w   = max(len(r[2]) for r in rows)
+                clients_w   = max(len(r[3]) for r in rows)
                 blocked_w = max(len(r[4]) for r in rows)
 
-                for tag, score_col, qry_col, src_col, blocked_col, domain, f in rows:
+                for (
+                    tag, generated_look_col, queries_col, clients_col,
+                    blocked_col, domain, f,
+                ) in rows:
                     if show_blocked:
                         line = (
-                            f"  {tag}  {score_col:<{score_w}}  "
-                            f"{qry_col:>{qry_w}}  {src_col:>{src_w}}  "
+                            f"  {tag}  {generated_look_col:<{generated_look_w}}  "
+                            f"{queries_col:>{queries_w}}  {clients_col:>{clients_w}}  "
                             f"{blocked_col:<{blocked_w}}  {domain}"
                         )
                     else:
                         line = (
-                            f"  {tag}  {score_col:<{score_w}}  "
-                            f"{qry_col:>{qry_w}}  {src_col:>{src_w}}  {domain}"
+                            f"  {tag}  {generated_look_col:<{generated_look_w}}  "
+                            f"{queries_col:>{queries_w}}  "
+                            f"{clients_col:>{clients_w}}  {domain}"
                         )
                     tail = _level_tail(f, indent, self._verbose_level)
                     if tail:
-                        out.append(line + "\n" + "\n".join(tail))
+                        blocks.append(line + "\n" + "\n".join(tail))
                     else:
-                        out.append(line)
+                        blocks.append(line)
             else:  # "groups"
                 rows = []
                 for f in section.findings:
                     keyed, bare = _cells(f)  # bare = [registrable_domain]
-                    tag = f"{str(f.severity):<4}"
-                    sub_col = keyed["sub"]
-                    score_col = keyed["score"]
-                    qry_col = keyed["qry"]
-                    src_col = keyed["src"]
+                    tag = severity_tag(f.severity)
+                    names_col = keyed["names"]
+                    generated_look_col = keyed["generated-look"]
+                    queries_col = keyed["queries"]
+                    clients_col = keyed["clients"]
                     blocked_col = keyed["blocked"]
-                    rows.append((tag, sub_col, score_col, qry_col, src_col, blocked_col, bare[0], f))
+                    rows.append((
+                        tag, names_col, generated_look_col, queries_col, clients_col,
+                        blocked_col, bare[0], f,
+                    ))
 
-                sub_w     = max(len(r[1]) for r in rows)
-                score_w     = max(len(r[2]) for r in rows)
-                qry_w     = max(len(r[3]) for r in rows)
-                src_w     = max(len(r[4]) for r in rows)
+                names_w     = max(len(r[1]) for r in rows)
+                generated_look_w = max(len(r[2]) for r in rows)
+                queries_w   = max(len(r[3]) for r in rows)
+                clients_w   = max(len(r[4]) for r in rows)
                 blocked_w = max(len(r[5]) for r in rows)
 
-                for tag, sub_col, score_col, qry_col, src_col, blocked_col, domain, f in rows:
+                for (
+                    tag, names_col, generated_look_col, queries_col, clients_col,
+                    blocked_col, domain, f,
+                ) in rows:
                     if show_blocked:
                         line = (
-                            f"  {tag}  {sub_col:>{sub_w}}  {score_col:<{score_w}}  "
-                            f"{qry_col:>{qry_w}}  {src_col:>{src_w}}  "
+                            f"  {tag}  {names_col:>{names_w}}  "
+                            f"{generated_look_col:<{generated_look_w}}  "
+                            f"{queries_col:>{queries_w}}  {clients_col:>{clients_w}}  "
                             f"{blocked_col:<{blocked_w}}  {domain}"
                         )
                     else:
                         line = (
-                            f"  {tag}  {sub_col:>{sub_w}}  {score_col:<{score_w}}  "
-                            f"{qry_col:>{qry_w}}  {src_col:>{src_w}}  {domain}"
+                            f"  {tag}  {names_col:>{names_w}}  "
+                            f"{generated_look_col:<{generated_look_w}}  "
+                            f"{queries_col:>{queries_w}}  "
+                            f"{clients_col:>{clients_w}}  {domain}"
                         )
                     tail = _level_tail(f, indent, self._verbose_level)
                     if tail:
-                        out.append(line + "\n" + "\n".join(tail))
+                        blocks.append(line + "\n" + "\n".join(tail))
                     else:
-                        out.append(line)
+                        blocks.append(line)
+
+            out.extend(_separate_finding_blocks(blocks, self._verbose_level))
 
         return out
 
     def _render_scan_group(self, sections: list[Section]) -> list[str]:
         """Render scan findings with aligned columns across all scan types. Flat
-        detector. Columns: severity | scan_type | ratio | src | type-specific
+        detector. Columns: severity | scan_type | outcome | src | type-specific
         middle | metric. Widths derived from the section's findings before any
         row is formatted."""
         indent = "     "
@@ -933,23 +1057,23 @@ class TextHandler(OutputHandler):
         rows = []
         for f in findings:
             keyed, bare = _cells(f)  # bare = [src]; middle/metric type-specific
-            tag       = f"{str(f.severity):<4}"
+            tag       = severity_tag(f.severity)
             type_col  = keyed["type"]
-            ratio_col = keyed["ratio"]
+            outcome_col = keyed["outcome"]
             src_col   = bare[0]
             middle_col = keyed["middle"]
             metric_col = keyed["metric"]
-            rows.append((tag, type_col, ratio_col, src_col, middle_col, metric_col, f))
+            rows.append((tag, type_col, outcome_col, src_col, middle_col, metric_col, f))
 
         type_w   = max(len(r[1]) for r in rows)
-        ratio_w  = max(len(r[2]) for r in rows)
+        outcome_w = max(len(r[2]) for r in rows)
         src_w    = max(len(r[3]) for r in rows)
         middle_w = max(len(r[4]) for r in rows)
         metric_w = max(len(r[5]) for r in rows)
 
-        for tag, type_col, ratio_col, src_col, middle_col, metric_col, f in rows:
+        for tag, type_col, outcome_col, src_col, middle_col, metric_col, f in rows:
             line = (
-                f"{tag}  {type_col:<{type_w}}  {ratio_col:<{ratio_w}}  "
+                f"{tag}  {type_col:<{type_w}}  {outcome_col:<{outcome_w}}  "
                 f"{src_col:<{src_w}}  {middle_col:<{middle_w}}  {metric_col:>{metric_w}}"
             )
             tail = _level_tail(f, indent, self._verbose_level)
@@ -957,7 +1081,7 @@ class TextHandler(OutputHandler):
                 out.append(line + "\n" + "\n".join(tail))
             else:
                 out.append(line)
-        return out
+        return _separate_finding_blocks(out, self._verbose_level)
 
     def _render_syslog_group(self, sections: list[Section]) -> list[str]:
         """Render syslog's privileged / rare-events / bursts subsections.
@@ -976,8 +1100,9 @@ class TextHandler(OutputHandler):
                     out.append("")
                 out.append(f"{section.label} ({section.pre_cap_count})")
 
+            blocks: list[str] = []
             for f in section.findings:
-                tag = f"{str(f.severity):<4}"
+                tag = severity_tag(f.severity)
                 values = [_sanitize(cell.value) for cell in project_row(f)]
                 line = f"  {tag}  {' · '.join(values)}"
                 row_lines = [line]
@@ -996,7 +1121,8 @@ class TextHandler(OutputHandler):
                     row_lines.extend(_transaction_member_lines(f, indent))
                 tail = _level_tail(f, indent, self._verbose_level)
                 row_lines.extend(tail)
-                out.append("\n".join(row_lines))
+                blocks.append("\n".join(row_lines))
+            out.extend(_separate_finding_blocks(blocks, self._verbose_level))
 
         return out
 
@@ -1011,39 +1137,43 @@ class TextHandler(OutputHandler):
             keyed, bare = _cells(f)
             src, dst = bare[0], bare[2]
             rows.append((
-                str(f.severity), src, dst, keyed.get("dsts", ""), keyed["out"],
-                keyed["share"], keyed["conns"], keyed.get("span", ""), f,
+                severity_tag(f.severity), src, dst, keyed.get("dsts", ""), keyed["out"],
+                keyed["sent"], keyed.get("transport", ""), keyed["conns"],
+                keyed.get("span", ""), f,
             ))
 
         src_w = max(len(row[1]) for row in rows)
         dst_w = max(len(row[2]) for row in rows)
         dsts_w = max(len(row[3]) for row in rows)
         out_w = max(len(row[4]) for row in rows)
-        share_w = max(len(row[5]) for row in rows)
-        conns_w = max(len(row[6]) for row in rows)
-        span_w = max(len(row[7]) for row in rows)
+        sent_w = max(len(row[5]) for row in rows)
+        transport_w = max(len(row[6]) for row in rows)
+        conns_w = max(len(row[7]) for row in rows)
+        span_w = max(len(row[8]) for row in rows)
         show_destination_count = dsts_w > 0
+        show_transport = transport_w > 0
 
-        for tag, src, dst, dsts_col, out_col, share_col, conns_col, span_col, f in rows:
+        for row in rows:
+            tag, src, dst, dsts_col, out_col, sent_col = row[:6]
+            transport_col, conns_col, span_col, f = row[6:]
+            pieces = [f"{tag}  {src:<{src_w}}  →  {dst:<{dst_w}}"]
             if show_destination_count:
-                line = (
-                    f"{tag}  {src:<{src_w}}  →  {dst:<{dst_w}}  "
-                    f"{dsts_col:>{dsts_w}}  {out_col:>{out_w}}  "
-                    f"{share_col:>{share_w}}  {conns_col:>{conns_w}}  "
-                    f"{span_col:>{span_w}}"
-                ).rstrip()
-            else:
-                line = (
-                    f"{tag}  {src:<{src_w}}  →  {dst:<{dst_w}}  "
-                    f"{out_col:>{out_w}}  {share_col:>{share_w}}  "
-                    f"{conns_col:>{conns_w}}  {span_col:>{span_w}}"
-                ).rstrip()
+                pieces.append(f"{dsts_col:>{dsts_w}}")
+            pieces.append(f"{out_col:>{out_w}}")
+            pieces.append(f"{sent_col:>{sent_w}}")
+            if show_transport:
+                pieces.append(f"{transport_col:>{transport_w}}")
+            pieces.extend((
+                f"{conns_col:>{conns_w}}",
+                f"{span_col:>{span_w}}",
+            ))
+            line = "  ".join(pieces).rstrip()
             tail = _level_tail(f, indent, self._verbose_level)
             if tail:
                 out.append(line + "\n" + "\n".join(tail))
             else:
                 out.append(line)
-        return out
+        return _separate_finding_blocks(out, self._verbose_level)
 
     def _render_ssl_group(self, sections: list[Section]) -> list[str]:
         """Render ssl findings with aligned flow and evidence columns.
@@ -1061,7 +1191,7 @@ class TextHandler(OutputHandler):
         for f in findings:
             keyed, bare = _cells(f)
             rows.append((
-                str(f.severity), bare[0], bare[2], keyed.get("basis", ""),
+                severity_tag(f.severity), bare[0], bare[2], keyed.get("basis", ""),
                 keyed.get("conns", ""), keyed.get("status", ""),
                 keyed.get("tls", ""), keyed.get("first", ""), f,
             ))
@@ -1092,7 +1222,7 @@ class TextHandler(OutputHandler):
             line = "  ".join(parts).rstrip()
             tail = _level_tail(f, indent, self._verbose_level)
             out.append(line + "\n" + "\n".join(tail) if tail else line)
-        return out
+        return _separate_finding_blocks(out, self._verbose_level)
 
     def _render_aws_group(self, sections: list[Section]) -> list[str]:
         """Render AWS findings as subsections: burst sweeps, then ranked
@@ -1108,12 +1238,13 @@ class TextHandler(OutputHandler):
             if si > 0:
                 out.append("")
             out.append(label_line)
+            blocks: list[str] = []
 
             if section.label == "burst sweeps":
                 rows = []
                 for f in section.findings:
                     keyed, bare = _cells(f)  # bare = [principal]
-                    tag = f"{str(f.severity):<4}"
+                    tag = severity_tag(f.severity)
                     principal = bare[0]
                     actions_col = keyed["new"]
                     svcs_col = keyed["svc"]
@@ -1135,9 +1266,9 @@ class TextHandler(OutputHandler):
                     )
                     tail = _level_tail(f, indent, self._verbose_level)
                     if tail:
-                        out.append(line + "\n" + "\n".join(tail))
+                        blocks.append(line + "\n" + "\n".join(tail))
                     else:
-                        out.append(line)
+                        blocks.append(line)
             else:  # "ranked principals"
                 ranked = [f for f in section.findings if f.evidence.get("tier") == "ranked"]
                 summary = [f for f in section.findings if f.evidence.get("tier") == "ranked_summary"]
@@ -1146,7 +1277,7 @@ class TextHandler(OutputHandler):
                     rows = []
                     for f in ranked:
                         keyed, bare = _cells(f)  # bare = [principal]
-                        tag = f"{str(f.severity):<4}"
+                        tag = severity_tag(f.severity)
                         principal = bare[0]
                         z_col   = keyed["z"]
                         err_col = keyed["err"]
@@ -1168,24 +1299,26 @@ class TextHandler(OutputHandler):
                         )
                         tail = _level_tail(f, indent, self._verbose_level)
                         if tail:
-                            out.append(line + "\n" + "\n".join(tail))
+                            blocks.append(line + "\n" + "\n".join(tail))
                         else:
-                            out.append(line)
+                            blocks.append(line)
 
                 for f in summary:
                     keyed, bare = _cells(f)  # bare = [full-width prose line]
-                    tag = f"{str(f.severity):<4}"
+                    tag = severity_tag(f.severity)
                     line = f"  {tag}  {bare[0]}"
                     tail = _level_tail(f, indent, self._verbose_level)
                     if tail:
-                        out.append(line + "\n" + "\n".join(tail))
+                        blocks.append(line + "\n" + "\n".join(tail))
                     else:
-                        out.append(line)
+                        blocks.append(line)
+
+            out.extend(_separate_finding_blocks(blocks, self._verbose_level))
 
         return out
 
     def _render_finding(self, finding: Finding) -> str:
-        tag = str(finding.severity)
+        tag = severity_tag(finding.severity)
         line = f"{tag}  {_sanitize(finding.title)}"
 
         indent = "     "

@@ -7,12 +7,14 @@ from datetime import datetime, timedelta, timezone
 
 import sigwood
 
-from sigwood.common.display import TEXT_RULE_WIDTH, fmt_compact_span
+from sigwood.common.display import TEXT_RULE_WIDTH, WHY_TIER_HINT, fmt_compact_span
 from sigwood.common.finding import RunSummary
 from sigwood.outputs._evidence import exfil_members_at_level
 from sigwood.outputs.text import (
     TextHandler,
+    _SUMMARY_LABEL_WIDTH,
     _fmt_window,
+    _render_notes,
 )
 from sigwood.outputs._render_model import (
     _partition_aws as _aws_sections,
@@ -23,6 +25,10 @@ _NOW = datetime(2026, 6, 2, tzinfo=timezone.utc)
 _WINDOW = (_NOW, _NOW)
 
 
+def _missions(*names: str) -> dict[str, str]:
+    return {name: f"Mission for {name}." for name in names}
+
+
 def _summary(notes: list[str] | None = None, skipped: dict[str, str] | None = None) -> RunSummary:
     return RunSummary(
         data_window=_WINDOW,
@@ -30,6 +36,7 @@ def _summary(notes: list[str] | None = None, skipped: dict[str, str] | None = No
         data_size_bytes=0,
         detectors_run=["dns"],
         detectors_skipped=skipped or {},
+        detector_missions=_missions("dns"),
         notes=notes or [],
     )
 
@@ -45,7 +52,7 @@ def test_begin_emits_no_leading_blank_line() -> None:
     assert not out.startswith("\n")
 
 
-def test_run_summary_wraps_long_notes_with_aligned_continuation() -> None:
+def test_run_summary_wraps_long_colonless_note_full_width() -> None:
     handler = TextHandler()
     rendered = handler._render_run_summary(_summary(notes=[
         "running on Pi-hole/dnsmasq logs - RTT, TTL, and connection correlation "
@@ -53,16 +60,45 @@ def test_run_summary_wraps_long_notes_with_aligned_continuation() -> None:
     ]))
     lines = rendered.splitlines()
 
-    note_lines = [
-        line for line in lines
-        if line.startswith("note:") or line.startswith(" " * len("note:          "))
-    ]
+    start = next(i for i, line in enumerate(lines) if line.startswith("running on"))
+    end = next(i for i, line in enumerate(lines) if line.startswith("generated:"))
+    note_lines = lines[start:end]
 
     assert len(note_lines) >= 2
-    assert note_lines[0].startswith("note:          running")
+    assert note_lines[0].startswith("running")
     assert all(len(line) <= TEXT_RULE_WIDTH for line in note_lines)
-    assert note_lines[1].startswith(" " * len("note:          "))
-    assert note_lines[1][len("note:          "):]
+    assert note_lines[1]
+
+
+def test_notes_align_subjects_and_preserve_order_and_duplicates() -> None:
+    over_cap = f"{'x' * (TEXT_RULE_WIDTH // 4 + 1)}: full width"
+    notes = [
+        "auth: first",
+        "system logs: second",
+        "auth: first",
+        "colonless disclosure",
+        over_cap,
+    ]
+
+    assert _render_notes(notes) == [
+        f"{'auth':<{_SUMMARY_LABEL_WIDTH}} first",
+        f"{'system logs':<{_SUMMARY_LABEL_WIDTH}} second",
+        f"{'auth':<{_SUMMARY_LABEL_WIDTH}} first",
+        "colonless disclosure",
+        over_cap,
+    ]
+
+    # Notes share the banner's value rail: 14 label cells plus one gutter.
+    assert _render_notes(["auth: first"])[0].index("first") == 15
+
+
+def test_notes_strip_controls_but_preserve_visible_metacharacters() -> None:
+    lines = _render_notes([
+        "a&<\x00\x7f\x9f: b>&\"'\x01\x80",
+    ])
+
+    assert lines == [f"{'a&<':<{_SUMMARY_LABEL_WIDTH}} b>&\"'"]
+    _assert_no_data_controls("\n".join(lines))
 
 
 def test_run_summary_strips_control_bytes_from_notes() -> None:
@@ -172,6 +208,56 @@ def _burst_finding(principal: str, severity: Severity = Severity.MEDIUM, **overr
     return _aws_finding(severity, ev)
 
 
+def test_level_zero_signpost_renders_once_across_multiple_writes_and_ends() -> None:
+    stream = io.StringIO()
+    handler = TextHandler(stream=stream, verbose_level=0)
+    handler.begin(_summary())
+    handler.write([_burst_finding("first")])
+    handler.write([_burst_finding("second")])
+    handler.end()
+    handler.end()
+
+    assert stream.getvalue().count(WHY_TIER_HINT) == 1
+
+
+def test_signpost_is_level_zero_only_and_requires_a_rendered_group() -> None:
+    verbose_stream = io.StringIO()
+    verbose = TextHandler(stream=verbose_stream, verbose_level=1)
+    verbose.begin(_summary())
+    verbose.write([_burst_finding("visible")])
+    verbose.end()
+    assert WHY_TIER_HINT not in verbose_stream.getvalue()
+
+    filtered_stream = io.StringIO()
+    filtered = TextHandler(stream=filtered_stream, verbose_level=0)
+    filtered.begin(_summary())
+    filtered.write([Finding(
+        detector="dnsblock",
+        severity=Severity.INFO,
+        title="recurring only",
+        description="",
+        evidence={"kind": "recurring_activity"},
+        next_steps=[],
+        ts_generated=_NOW,
+        data_window=_WINDOW,
+    )])
+    filtered.end()
+    assert WHY_TIER_HINT not in filtered_stream.getvalue()
+
+
+def test_signpost_precedes_failure_tail_with_deliberate_blank() -> None:
+    stream = io.StringIO()
+    summary = _summary()
+    summary.detectors_failed["dns"] = "fixture failure"
+    handler = TextHandler(stream=stream, verbose_level=0)
+    handler.begin(summary)
+    handler.write([_burst_finding("visible")])
+    handler.end()
+    out = stream.getvalue()
+
+    assert f"{WHY_TIER_HINT}\n\nfailed:" in out
+
+
 def _ranked_finding(principal: str, severity: Severity = Severity.MEDIUM, **overrides) -> Finding:
     ev = {
         "tier":                  "ranked",
@@ -238,11 +324,11 @@ def test_render_aws_burst_line_is_glanceable_with_aligned_columns() -> None:
                        new_action_count=5, new_service_count=1,
                        span_seconds=300.0, error_rate=0.0),
     ]))
-    # Row lines start with the 2-space indent + severity tag.
-    body = [ln for ln in lines if ln.startswith("  [")]
+    # Row lines start with the 2-space indent + spelled severity tag.
+    body = [ln for ln in lines if ln.startswith(("  high", "  medium"))]
     assert len(body) == 2
     # severity tags appear at the start
-    assert "[H]" in body[0] and "[M]" in body[1]
+    assert body[0].startswith("  high") and body[1].startswith("  medium")
     # principal name visible
     assert "attacker-short" in body[0]
     assert "longer-principal-name" in body[1]
@@ -268,7 +354,7 @@ def test_render_aws_ranked_summary_appears_in_ranked_tier() -> None:
 
     assert "ranked principals" in text          # the tier header fires
     assert "no principals cleared the LOW band" in text
-    assert "[I]" in text                         # info severity tag
+    assert "info" in text                        # info severity tag
     assert "7 scored" in text                    # scorable_count
     assert "placeholder-top" in text             # top pivot
     assert "z=0.40" in text                      # top composite
@@ -398,6 +484,7 @@ def test_render_run_summary_detect_banner_snapshot() -> None:
             "beacon": MethodTag("FFT", named=True),
             "dns":    MethodTag("HDBSCAN", named=True),
         },
+        detector_missions=_missions("beacon", "dns"),
         suppression=SuppressionSummary(
             enabled=True, connections=1_284, domains=312,
             host_rows=9_412, hosts_matched=2,
@@ -414,7 +501,7 @@ def test_render_run_summary_detect_banner_snapshot() -> None:
         "               2 hosts\n"
         "detectors:     beacon (FFT)  ·  dns (HDBSCAN)\n"
         "skipped:       scan - no conn data\n"
-        "note:          test note\n"
+        "test note\n"
         f"generated:     sigwood {sigwood.__version__}\n"
         "════════════════════════════════════════════════════════════════════════════════"
     )
@@ -920,6 +1007,7 @@ def test_render_detectors_named_method_painted_on_tty(monkeypatch) -> None:
         detectors_run=["beacon"],
         detectors_skipped={},
         detector_methods={"beacon": MethodTag("FFT", named=True)},
+        detector_missions=_missions("beacon"),
     )
     rendered = TextHandler(stream=_tty_stream())._render_run_summary(rs)
     # Paint applied - SGR brackets the label only.
@@ -939,6 +1027,7 @@ def test_render_detectors_named_method_plain_on_non_tty(monkeypatch) -> None:
         detectors_run=["beacon"],
         detectors_skipped={},
         detector_methods={"beacon": MethodTag("FFT", named=True)},
+        detector_missions=_missions("beacon"),
     )
     rendered = TextHandler(stream=io.StringIO())._render_run_summary(rs)
     assert "beacon (FFT)" in rendered
@@ -957,6 +1046,7 @@ def test_render_detectors_honest_badge_never_painted(monkeypatch) -> None:
         detectors_run=["scan"],
         detectors_skipped={},
         detector_methods={"scan": MethodTag("pattern", named=False)},
+        detector_missions=_missions("scan"),
     )
     rendered = TextHandler(stream=_tty_stream())._render_run_summary(rs)
     assert "scan [pattern]" in rendered
@@ -973,6 +1063,7 @@ def test_render_detectors_no_tag_renders_bare_name() -> None:
         detectors_run=["mystery"],
         detectors_skipped={},
         detector_methods={"mystery": None},
+        detector_missions=_missions("mystery"),
     )
     rendered = TextHandler(stream=io.StringIO())._render_run_summary(rs)
     assert "mystery" in rendered
@@ -993,6 +1084,7 @@ def test_render_detectors_joined_by_middle_dot() -> None:
             "scan":   MethodTag("pattern", named=False),
             "syslog": MethodTag("drain3", named=True),
         },
+        detector_missions=_missions("beacon", "scan", "syslog"),
     )
     rendered = TextHandler(stream=io.StringIO())._render_run_summary(rs)
     assert "beacon (FFT)  ·  scan [pattern]  ·  syslog (drain3)" in rendered
@@ -1008,6 +1100,7 @@ def test_render_detectors_no_color_env_suppresses_paint(monkeypatch) -> None:
         detectors_run=["beacon"],
         detectors_skipped={},
         detector_methods={"beacon": MethodTag("FFT", named=True)},
+        detector_missions=_missions("beacon"),
     )
     rendered = TextHandler(stream=_tty_stream())._render_run_summary(rs)
     assert "\x1b[" not in rendered
@@ -1025,6 +1118,7 @@ def test_render_detectors_term_dumb_suppresses_paint(monkeypatch) -> None:
         detectors_run=["beacon"],
         detectors_skipped={},
         detector_methods={"beacon": MethodTag("FFT", named=True)},
+        detector_missions=_missions("beacon"),
     )
     rendered = TextHandler(stream=_tty_stream())._render_run_summary(rs)
     assert "\x1b[" not in rendered
@@ -1068,10 +1162,12 @@ def _bare_finding(detector: str, severity: Severity, title: str = "the title") -
 
 
 def _capture_write(handler: TextHandler, findings: list[Finding]) -> str:
+    detector_names = list({f.detector for f in findings})
     summary = RunSummary(
         data_window=_WINDOW, record_counts={}, data_size_bytes=0,
-        detectors_run=list({f.detector for f in findings}),
+        detectors_run=detector_names,
         detectors_skipped={},
+        detector_missions=_missions(*detector_names),
     )
     stream = io.StringIO()
     handler._stream = stream
@@ -1108,6 +1204,7 @@ def test_text_output_strips_control_bytes_from_finding_rows(monkeypatch) -> None
         detectors_run=["syslog"],
         detectors_skipped={},
         detector_methods={"syslog": MethodTag("FFT", named=True)},
+        detector_missions=_missions("syslog"),
     ))
     handler.write([finding])
 
@@ -1158,8 +1255,7 @@ def test_text_output_strips_control_bytes_from_verbose_and_debug_values() -> Non
 
 
 def test_group_header_renders_count_and_severity_breakdown() -> None:
-    """New group header shape: `<detector> - N findings · 3 H  18 M  51 I`
-    + 80-col rule. Nonzero tiers only; H M L I order."""
+    """Group header spells severity words and keeps severity rank order."""
     findings = (
         [_bare_finding("scan", Severity.HIGH) for _ in range(3)]
         + [_bare_finding("scan", Severity.MEDIUM) for _ in range(2)]
@@ -1167,7 +1263,7 @@ def test_group_header_renders_count_and_severity_breakdown() -> None:
     )
     handler = TextHandler(verbose_level=0)
     out = _capture_write(handler, findings)
-    assert "scan - 6 findings · 3 H  2 M  1 I" in out
+    assert "scan - 6 findings · 3 high  2 medium  1 info" in out
     assert "─" * 80 in out
 
 
@@ -1176,7 +1272,7 @@ def test_group_header_omits_zero_severity_tiers() -> None:
     handler = TextHandler(verbose_level=0)
     out = _capture_write(handler, findings)
     header = next(ln for ln in out.split("\n") if ln.startswith("scan -"))
-    assert header == "scan - 4 findings · 4 M"
+    assert header == "scan - 4 findings · 4 medium"
 
 
 def test_vanish_dont_dash_minimal_finding_renders_title_alone() -> None:
@@ -1233,13 +1329,13 @@ def test_beacon_event_time_evidence_follows_reading_levels() -> None:
 
     for key in ("first_seen", "last_seen", "span_seconds", "cycles"):
         assert f"{key}:" not in at_level_0
-    assert "first_seen: 1970-01-01T00:00:00+00:00" in at_level_1
+    assert "first_seen: 1970-01-01 00:00:00 local" in at_level_1
     assert "span_seconds: 85799.0" in at_level_1
     assert "last_seen:" not in at_level_1
     assert "cycles:" not in at_level_1
     for expected in (
-        "first_seen: 1970-01-01T00:00:00+00:00",
-        "last_seen: 1970-01-01T23:49:59+00:00",
+        "first_seen: 1970-01-01 00:00:00 local",
+        "last_seen: 1970-01-01 23:49:59 local",
         "span_seconds: 85799.0",
         "cycles: 143.0",
     ):
@@ -1262,6 +1358,56 @@ def test_vanish_truly_bare_finding_renders_title_only() -> None:
             f"data window line MUST NOT appear when there's no other body "
             f"content at level {level}"
         )
+
+
+def test_verbose_separator_covers_title_only_findings_without_a_terminator() -> None:
+    """Verbose spacing belongs between finding blocks, independent of tails."""
+    title_only = _bare_finding("misc", Severity.HIGH, "title-only")
+    full = _bare_finding("misc", Severity.MEDIUM, "full finding")
+    full.description = "Human explanation."
+    full.next_steps = ["Review the source"]
+
+    verbose = _capture_write(TextHandler(verbose_level=1), [title_only, full])
+    assert "high    title-only\n\nmedium  full finding" in verbose
+    assert "\n\n\n" not in verbose
+
+    compact = _capture_write(TextHandler(verbose_level=0), [title_only, full])
+    assert "high    title-only\nmedium  full finding" in compact
+    assert "high    title-only\n\nmedium  full finding" not in compact
+
+
+def test_verbose_section_and_detector_boundaries_have_one_blank() -> None:
+    """A finding separator never stacks on section or detector boundaries."""
+    privileged = _bare_finding("syslog", Severity.MEDIUM, "privileged event")
+    privileged.description = "Privileged explanation."
+    privileged.next_steps = ["Review privileged context"]
+    privileged.evidence = {
+        "host": "host-a",
+        "template_str": "privileged event",
+        "count": 1,
+        "threshold": 1,
+        "privileged": True,
+    }
+    rare = _bare_finding("syslog", Severity.LOW, "rare event")
+    rare.description = "Rare explanation."
+    rare.next_steps = ["Review rare context"]
+    rare.evidence = {
+        "host": "host-a",
+        "template_str": "rare event",
+        "count": 1,
+        "threshold": 1,
+    }
+    misc = _bare_finding("misc", Severity.LOW, "next detector")
+    misc.description = "Another explanation."
+    misc.next_steps = ["Review the next detector"]
+
+    out = _capture_write(TextHandler(verbose_level=1), [privileged, rare, misc])
+    assert "data window:" in out
+    assert "\n\nrare events (1)" in out
+    assert "\n\nmisc - 1 finding" in out
+    assert "\n\n\nsyslog" not in out
+    assert "\n\n\nmisc" not in out
+    assert "\n\n\n" not in out
 
 
 def test_exfil_findings_stay_visible_at_every_reading_level() -> None:
@@ -1320,6 +1466,52 @@ def test_exfil_pool_member_detail_follows_the_reading_level() -> None:
     assert "members: [{" not in at2
 
 
+def test_exfil_pool_members_render_immediately_before_data_window() -> None:
+    """The positional splice keeps its member block directly before metadata."""
+    finding = _bare_finding("exfil", Severity.MEDIUM, "pool")
+    finding.description = "A destination pool was measured."
+    finding.next_steps = ["Review the destination pool"]
+    finding.evidence = {
+        "tier": "destination_pool",
+        "src": "192.0.2.10",
+        "destination_network": "198.51.96.0/20",
+        "destination_count": 2,
+        "orig_bytes_total": 2_000,
+        "resp_bytes_total": 20,
+        "orig_share": 0.99,
+        "connection_count": 2,
+        "span_seconds": 60.0,
+        "members": [
+            {
+                "dst": "198.51.100.20",
+                "orig_bytes": 1_100,
+                "resp_bytes": 10,
+                "orig_share": 0.99,
+                "connection_count": 1,
+            },
+            {
+                "dst": "198.51.100.21",
+                "orig_bytes": 900,
+                "resp_bytes": 10,
+                "orig_share": 0.99,
+                "connection_count": 1,
+            },
+        ],
+    }
+
+    lines = _capture_write(TextHandler(verbose_level=1), [finding]).splitlines()
+    data_window_index = next(
+        index for index, line in enumerate(lines) if "data window:" in line
+    )
+    assert lines[data_window_index - 3:] == [
+        "     members:",
+        "       · 198.51.100.20 · out=1.1 KB · share=0.9900 · conns=1",
+        "       · 198.51.100.21 · out=900 B · share=0.9900 · conns=1",
+        lines[data_window_index],
+        "",
+    ]
+
+
 def test_exfil_member_slicer_owns_level_zero() -> None:
     finding = _bare_finding("exfil", Severity.MEDIUM, "pool")
     finding.evidence = {
@@ -1327,6 +1519,58 @@ def test_exfil_member_slicer_owns_level_zero() -> None:
         "members": [{"dst": "198.51.100.20"}],
     }
     assert exfil_members_at_level(finding, 0) == ([], None)
+
+
+def test_transaction_member_severity_words_are_bare_and_unknowns_vanish() -> None:
+    finding = _bare_finding("syslog", Severity.INFO, "host-transaction")
+    finding.evidence = {
+        "tier": "transaction",
+        "label": "update run",
+        "host": "host-transaction",
+        "member_count": 4,
+        "represented_line_count": 10,
+        "start_ts": 1.0,
+        "end_ts": 121.0,
+        "first_seen": "1970-01-01T00:00:01+00:00",
+        "span_seconds": 120.0,
+        "program_mix": [["dnf", 6], ["kernel", 4]],
+        "members": [
+            {
+                "severity": "low",
+                "program": "dnf",
+                "represented_line_count": 4,
+                "title": "package family",
+            },
+            {
+                "severity": "MEDIUM",
+                "program_mix": [["dnf", 1], ["kernel", 1]],
+                "represented_line_count": 2,
+                "title": "mixed family",
+            },
+            {
+                "severity": "urgent",
+                "program": "cron",
+                "represented_line_count": 3,
+                "title": "malformed severity",
+            },
+            {
+                "program": "sshd",
+                "represented_line_count": 1,
+                "title": "missing severity",
+            },
+        ],
+    }
+
+    out = _capture_write(TextHandler(verbose_level=1), [finding])
+    member_lines = [line for line in out.splitlines() if line.startswith("       · ")]
+
+    assert member_lines == [
+        "       · low · dnf · 4 rare lines · package family",
+        "       · medium · dnf, kernel · 2 rare lines · mixed family",
+        "       · cron · 3 rare lines · malformed severity",
+        "       · sshd · 1 rare line · missing severity",
+    ]
+    assert "urgent" not in out
 
 
 def test_severity_sort_primary_within_subsection() -> None:
@@ -1342,11 +1586,71 @@ def test_severity_sort_primary_within_subsection() -> None:
     out = _capture_write(TextHandler(verbose_level=0), fs)
     lines = [ln for ln in out.split("\n") if "title-" in ln]
     assert [ln for ln in lines if ln] == [
-        "[H]  title-high",
-        "[M]  title-medium",
-        "[L]  title-low",
-        "[I]  title-info",
+        "high    title-high",
+        "medium  title-medium",
+        "low     title-low",
+        "info    title-info",
     ]
+
+
+def test_high_and_medium_rows_align_in_every_previously_unpadded_group() -> None:
+    def pair(detector: str, evidence: dict) -> list[Finding]:
+        rows = []
+        for severity, suffix in (
+            (Severity.HIGH, "high-marker"),
+            (Severity.MEDIUM, "medium-marker"),
+        ):
+            finding = _bare_finding(detector, severity, suffix)
+            finding.evidence = dict(evidence)
+            rows.append(finding)
+        return rows
+
+    auth = pair("auth", {
+        "signal": "source_volume",
+        "decision_record_count": 12,
+        "denial_count": 10,
+        "host_count": 2,
+        "span_seconds": 60.0,
+        "landing_episodes": [],
+    })
+    beacon = pair("beacon", {
+        "src_ip": "192.0.2.10",
+        "dst_ip": "198.51.100.20",
+        "dst_port": 443,
+        "proto": "tcp",
+        "period_str": "60.0m",
+        "beacon_score": 0.61,
+        "conn_count": 12,
+    })
+    exfil = pair("exfil", {
+        "src": "192.0.2.10",
+        "dst": "198.51.100.20",
+        "orig_bytes_total": 1_000_000,
+        "orig_share": 0.99,
+        "connection_count": 2,
+        "span_seconds": 60.0,
+    })
+    ssl = pair("ssl", {
+        "src": "192.0.2.10",
+        "dst": "198.51.100.20",
+        "severity_basis": ["sni_absent"],
+        "conn_count": 2,
+        "tls_versions": {"TLSv13": 2},
+    })
+    generic = pair("future-detector", {})
+
+    cases = [
+        (auth, "high-marker", "medium-marker"),
+        (beacon, "192.0.2.10", "192.0.2.10"),
+        (exfil, "192.0.2.10", "192.0.2.10"),
+        (ssl, "192.0.2.10", "192.0.2.10"),
+        (generic, "high-marker", "medium-marker"),
+    ]
+    for findings, high_cell, medium_cell in cases:
+        out = _capture_write(TextHandler(verbose_level=0), findings)
+        high_line = next(line for line in out.splitlines() if line.startswith("high"))
+        medium_line = next(line for line in out.splitlines() if line.startswith("medium"))
+        assert high_line.index(high_cell) == medium_line.index(medium_cell) == 8
 
 
 def test_digest_card_verbosity_invariant() -> None:
@@ -1382,6 +1686,7 @@ def test_json_handler_serializes_findings_invariant_across_levels() -> None:
     summary = RunSummary(
         data_window=_WINDOW, record_counts={}, data_size_bytes=0,
         detectors_run=["misc"], detectors_skipped={},
+        detector_missions=_missions("misc"),
     )
     payloads = []
     for level in (0, 1, 2):
@@ -1565,7 +1870,7 @@ def test_w5_cap_trips_on_flat_detector_with_disclosure() -> None:
     )
     handler = TextHandler(verbose_level=0, max_findings_per_detector=100)
     out = _capture_write(handler, fs)
-    assert "misc - 203 findings · 3 H  200 L" in out
+    assert "misc - 203 findings · 3 high  200 low" in out
     # All 3 HIGHs survive (most-severe retained).
     for i in range(3):
         assert f"high-{i}" in out
@@ -1576,6 +1881,23 @@ def test_w5_cap_trips_on_flat_detector_with_disclosure() -> None:
     assert "103 more not shown" in out
     assert "showing first 100" in out
     assert "by severity" not in out
+
+
+def test_verbose_cap_disclosure_keeps_the_existing_single_blank_boundary() -> None:
+    """Cap disclosure is section metadata, not another finding block."""
+    findings = []
+    for index in range(2):
+        finding = _bare_finding("misc", Severity.LOW, f"finding-{index}")
+        finding.description = "Human explanation."
+        finding.next_steps = ["Review the source"]
+        findings.append(finding)
+
+    out = _capture_write(
+        TextHandler(verbose_level=1, max_findings_per_detector=1), findings
+    )
+    assert "data window:" in out
+    assert "\n\n… 1 more not shown" in out
+    assert "\n\n\n… 1 more not shown" not in out
 
 
 def test_w5_cap_zero_means_unlimited() -> None:
@@ -1592,8 +1914,9 @@ def test_w5_cap_zero_means_unlimited() -> None:
 def test_w5_pre_cap_header_breakdown_regression() -> None:
     """The group header reports PRE-CAP
     count AND pre-cap severity breakdown. Build a flat fixture of 150
-    findings with shape 5 H · 25 M · 40 L · 80 I and cap=100. The header
-    MUST read pre-cap totals - never the post-cap 5 H · 25 M · 40 L · 30 I
+    findings with shape 5 high · 25 medium · 40 low · 80 info and cap=100. The
+    header MUST read pre-cap totals - never the post-cap
+    5 high · 25 medium · 40 low · 30 info
     that would result from re-iterating Section.findings."""
     fs = (
         [_bare_finding("misc", Severity.HIGH, f"h-{i}") for i in range(5)]
@@ -1604,7 +1927,7 @@ def test_w5_pre_cap_header_breakdown_regression() -> None:
     handler = TextHandler(verbose_level=1, max_findings_per_detector=100)
     out = _capture_write(handler, fs)
     # Pre-cap header.
-    assert "misc - 150 findings · 5 H  25 M  40 L  80 I" in out
+    assert "misc - 150 findings · 5 high  25 medium  40 low  80 info" in out
     # Cap trimmed 50 rows - disclosure reports it.
     assert "50 more not shown" in out
 
@@ -1618,6 +1941,7 @@ def test_w5_json_handler_ignores_cap() -> None:
     summary = RunSummary(
         data_window=_WINDOW, record_counts={}, data_size_bytes=0,
         detectors_run=["misc"], detectors_skipped={},
+        detector_missions=_missions("misc"),
     )
     stream = io.StringIO()
     h = JsonHandler(stream=stream, verbose_level=0)
@@ -1638,10 +1962,10 @@ def test_w5_per_detector_isolation() -> None:
     handler = TextHandler(verbose_level=0, max_findings_per_detector=50)
     out = _capture_write(handler, fs)
     # loud trips the cap (200 → 50 shown, 150 hidden).
-    assert "loud - 200 findings · 200 M" in out
+    assert "loud - 200 findings · 200 medium" in out
     assert "150 more not shown" in out
     # quiet renders all 5 rows; no disclosure.
-    assert "quiet - 5 findings · 5 M" in out
+    assert "quiet - 5 findings · 5 medium" in out
     for i in range(5):
         assert f"quiet-{i}" in out
 
@@ -1718,6 +2042,7 @@ def test_failed_detector_tail_single_blank_separation() -> None:
     stream2 = io.StringIO()
     handler2 = TextHandler(stream=stream2)
     summary2 = _summary()
+    summary2.detector_missions["scan"] = "Mission for scan."
     handler2._stream = stream2
     handler2.begin(summary2)
     handler2.write(fs)

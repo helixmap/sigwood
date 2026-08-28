@@ -39,6 +39,10 @@ def _run_summary() -> RunSummary:
             "beacon": MethodTag("FFT", True),
             "aws": MethodTag("statistical", False),
         },
+        detector_missions={
+            "beacon": "Mission for beacon.",
+            "aws": "Mission for aws.",
+        },
         requested_span=timedelta(hours=6),
         suppression=SuppressionSummary(
             True, 5, 2, 100, 50,
@@ -136,6 +140,49 @@ def test_exfil_pool_members_are_lossless_at_every_reading_level() -> None:
         {"dst": "198.51.100.20", "orig_bytes": 1_200},
         {"dst": "198.51.100.21", "orig_bytes": 1_100},
     ]
+
+
+def test_projection_copy_does_not_rewrite_exfil_evidence_or_dns_title() -> None:
+    exfil = Finding(
+        detector="exfil",
+        severity=Severity.MEDIUM,
+        title="192.0.2.10 → 198.51.100.20",
+        description="A measured outbound flow.",
+        evidence={
+            "src": "192.0.2.10", "dst": "198.51.100.20",
+            "orig_bytes_total": 1_700_000_000,
+            "resp_bytes_total": 100_000,
+            "orig_share": 0.9999,
+            "port_mix": "443/tcp (1.5 GB), 8443/tcp (200 MB)",
+            "connection_count": 37,
+        },
+        next_steps=[],
+        ts_generated=_W[1],
+        data_window=_W,
+    )
+    dns_summary = Finding(
+        detector="dns",
+        severity=Severity.INFO,
+        title="dense-cluster scan: high-entropy clusters surfaced",
+        description="A scan summary.",
+        evidence={
+            "tier": "scan_summary", "cluster_count": 2,
+            "total_members": 600,
+            "registrable_domains": ["tunnel.example"],
+        },
+        next_steps=[],
+        ts_generated=_W[1],
+        data_window=_W,
+    )
+
+    payload = _emit([exfil, dns_summary])
+    assert payload["findings"][0]["evidence"]["orig_share"] == 0.9999
+    assert payload["findings"][0]["evidence"]["port_mix"] == (
+        "443/tcp (1.5 GB), 8443/tcp (200 MB)"
+    )
+    assert payload["findings"][1]["title"] == (
+        "dense-cluster scan: high-entropy clusters surfaced"
+    )
 
 
 def test_run_summary_provenance_populated_and_nullable() -> None:
@@ -460,6 +507,24 @@ def test_window_null_when_no_data() -> None:
 def test_verbosity_invariant() -> None:
     f = [_finding({"beacon_score": np.float64(0.5)})]
     assert _emit(f, verbose_level=0) == _emit(f, verbose_level=2)
+
+
+def test_run_summary_notes_remain_raw_ordered_and_duplicate_preserving() -> None:
+    notes = [
+        "auth: first",
+        "auth: first",
+        "colonless\x00\x7f\x9f<& disclosure",
+    ]
+    summary = _run_summary()
+    summary.notes = notes
+    buf = io.StringIO()
+    handler = JsonHandler(stream=buf, verbose_level=0)
+    assert handler._run_summary_to_dict(summary)["notes"] is notes
+    handler.begin(summary)
+    handler.write([])
+    handler.end()
+
+    assert json.loads(buf.getvalue())["run_summary"]["notes"] == notes
 
 
 def test_allow_nan_false_guards_the_writer() -> None:

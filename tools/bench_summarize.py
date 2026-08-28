@@ -367,12 +367,28 @@ def _parse_text_counts(
 
     for index, line in enumerate(lines):
         if line == TEXT_RULE:
-            if index == 0:
+            if index < 2:
                 raise SummaryRefusal("text.header", "rule has no header")
-            header_line = lines[index - 1]
-            match = HEADER_RE.match(header_line)
+
+            match = None
+            mission_lines: list[str] = []
+            for candidate in reversed(lines[:index]):
+                candidate_match = HEADER_RE.match(candidate)
+                if candidate_match is not None:
+                    match = candidate_match
+                    break
+                if (
+                    not candidate.strip()
+                    or candidate == TEXT_RULE
+                    or len(candidate) > len(TEXT_RULE)
+                ):
+                    raise SummaryRefusal("text.header", "format changed")
+                mission_lines.append(candidate)
+
             if match is None:
                 raise SummaryRefusal("text.header", "format changed")
+            if not mission_lines:
+                raise SummaryRefusal("text.header", "mission is blank")
             detector = match.group("det")
             if detector in headers:
                 raise SummaryRefusal("text.header", "duplicate detector")

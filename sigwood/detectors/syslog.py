@@ -239,6 +239,10 @@ def validate_config(cfg: dict) -> None:
 
 
 DETECTOR_METHOD = MethodTag("drain3", named=True)
+DETECTOR_MISSION: str = (
+    "Finds rare log patterns and recorded reboots or administrative runs, so "
+    "changes on a machine do not disappear into routine logs."
+)
 
 
 class MinedResult(NamedTuple):

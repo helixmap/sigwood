@@ -24,17 +24,6 @@ All notable changes to sigwood are recorded here. The format follows
 
 ### Changed
 
-- **Dashes are written as hyphens throughout.** The documentation, the shipped tools and
-  sigwood's own output now use an ASCII hyphen rather than an em or en dash. Two operator-facing
-  lines change text: the dnsblock cap disclosure (`dnsblock: analysis stopped: <axis> exceeded
-  its bound ...`) and the withheld-candidate disclosure (`... candidate pairs withheld: not
-  enough prior history in the loaded window`). Nothing else about either is different.
-  A tripwire holds the rule for every file in the repository, and `.githooks/` carries a
-  pre-commit and commit-msg gate that refuses a commit breaking it. Contributors enable
-  the gate once per clone with `git config core.hooksPath .githooks`, which
-  [CONTRIBUTING.md](https://github.com/helixmap/sigwood/blob/main/CONTRIBUTING.md) now
-  documents.
-
 - **`[detectors.beacon].bin_seconds` is no longer a configuration key.** The beacon detector bins a
   flow's connection times before looking for a rhythm, and every other number in that scorer - the
   score threshold, the period band it will consider, the peak-prominence normalization, and the

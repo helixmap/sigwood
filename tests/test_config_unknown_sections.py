@@ -258,6 +258,7 @@ def test_detector_disclosure_also_runs_on_the_live_path(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     detector = SimpleNamespace(
+        DETECTOR_MISSION="Exercise synthetic configuration disclosure.",
         DEFAULT_CONFIG={"threshold": 0.5},
         REQUIRED_LOGS=[],
         OPTIONAL_LOGS=[],

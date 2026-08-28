@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import io
+import shutil
+import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -38,6 +40,7 @@ def _summary() -> RunSummary:
     return RunSummary(
         data_window=_W, record_counts={"conn*.log*": 1}, data_size_bytes=10,
         detectors_run=["beacon"], detectors_skipped={},
+        detector_missions={"beacon": "Mission for beacon."},
     )
 
 
@@ -139,12 +142,67 @@ def test_renders_html_twin_and_writes_to_path(tmp_path, monkeypatch) -> None:
     assert '<span class="brand">sigwood</span>' in recorded["html"]
     assert "threat hunt" in recorded["html"]
     assert "findings-table" in recorded["html"]      # the per-detector table
-    # the beacon row via project_row: the score datum renders ONCE - bare in the
-    # cell, labeled by its <th> header, never double-labeled `score=…` (D-8).
-    assert ">score</th>" in recorded["html"]         # the column header carries the label
+    # the beacon row via project_row: the rhythm datum renders ONCE - bare in the
+    # cell, labeled by its <th> header, never double-labeled `rhythm=…` (D-8).
+    assert ">rhythm</th>" in recorded["html"]        # the column header carries the label
     assert ">0.610</td>" in recorded["html"]         # the cell shows the bare datum
-    assert "score=0.610" not in recorded["html"]     # not double-labeled
+    assert "rhythm=0.610" not in recorded["html"]    # not double-labeled
     assert target.read_bytes() == b"%PDF-fake"
+
+
+def test_pdf_inherits_notes_table_and_level_zero_signpost(monkeypatch, tmp_path) -> None:
+    recorded: dict[str, str] = {}
+
+    def _fake_bytes(html_str: str) -> bytes:
+        recorded["html"] = html_str
+        return b"%PDF-fake"
+
+    monkeypatch.setattr(pdf_mod, "_render_pdf_bytes", _fake_bytes)
+    summary = _summary()
+    summary.notes = ["auth: first", "colonless disclosure"]
+    target = tmp_path / "notes.pdf"
+    handler = PdfHandler(output_path=target, verbose_level=0)
+    handler.begin(summary)
+    handler.write([_finding()])
+    handler.end()
+
+    html = recorded["html"]
+    assert '<div class="notes"><table><tbody>' in html
+    assert '<th scope="row">auth</th><td>first</td>' in html
+    assert '<td class="note-full" colspan="2">colonless disclosure</td>' in html
+    assert "-v explains why each finding surfaced" in html
+
+
+def test_real_pdf_keeps_note_body_column_and_full_width_row(tmp_path) -> None:
+    if not _weasyprint_usable(tmp_path):
+        pytest.skip("WeasyPrint/Pango stack not installed")
+    pdftotext = shutil.which("pdftotext")
+    if pdftotext is None:
+        pytest.skip("pdftotext not installed")
+
+    summary = _summary()
+    summary.notes = [
+        "a: alpha body",
+        "longer subject: beta body",
+        "colonless full width disclosure",
+    ]
+    target = tmp_path / "notes-layout.pdf"
+    handler = PdfHandler(output_path=target, verbose_level=0)
+    handler.begin(summary)
+    handler.write([_finding()])
+    handler.end()
+    extracted = subprocess.run(
+        [pdftotext, "-layout", str(target), "-"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.splitlines()
+
+    alpha = next(line for line in extracted if "alpha body" in line)
+    beta = next(line for line in extracted if "beta body" in line)
+    full = next(line for line in extracted if "colonless full width" in line)
+    assert alpha.index("alpha body") == beta.index("beta body")
+    assert full.index("colonless full width") < alpha.index("alpha body")
 
 
 # ── preflight: fail-fast probe of the WeasyPrint/Pango stack ─────────────────

@@ -91,16 +91,21 @@ def _summary() -> RunSummary:
         detectors_run=["auth"],
         detectors_skipped={},
         detector_methods={"auth": MethodTag("heuristics", named=False)},
+        detector_missions={"auth": "Mission for auth."},
     )
 
 
 def _render_text(findings: list[Finding], *, level: int = 0, cap: int = 100) -> str:
     stream = io.StringIO()
-    TextHandler(
+    handler = TextHandler(
         stream=stream,
         verbose_level=level,
         max_findings_per_detector=cap,
-    ).write(findings)
+    )
+    handler.begin(_summary())
+    stream.seek(0)
+    stream.truncate(0)
+    handler.write(findings)
     return stream.getvalue()
 
 
@@ -260,10 +265,10 @@ def test_golden_auth_mixed_rows() -> None:
     ]
 
     assert _render_text(findings) == (
-        f"\nauth - 3 findings · 1 H  2 M\n{_RULE}\n"
-        "[H]   alice                       multi-host failures + success    13 failed / 15 records  3 hosts  2 successes  2m\n"
-        "[M]   host-a.example.test · sshd  concentrated failures          100 failed / 100 records   1 host               2m\n"
-        "[M]   192.0.2.44                  source volume                    18 failed / 18 records   1 host               2m\n\n"
+        f"\nauth - 3 findings · 1 high  2 medium\nMission for auth.\n{_RULE}\n"
+        "high    alice                       multi-host failures + success    13 failed / 15 records  3 hosts  2 successes  2m\n"
+        "medium  host-a.example.test · sshd  concentrated failures          100 failed / 100 records   1 host               2m\n"
+        "medium  192.0.2.44                  source volume                    18 failed / 18 records   1 host               2m\n\n"
     )
 
 

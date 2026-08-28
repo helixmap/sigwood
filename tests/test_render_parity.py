@@ -24,7 +24,8 @@ from datetime import datetime, timezone
 import pytest
 
 from sigwood.common.display import set_display_utc
-from sigwood.common.finding import Finding, Severity
+from sigwood.common.finding import Finding, RunSummary, Severity
+from sigwood.detectors.scan import SCAN_STATES
 from sigwood.outputs._render_model import (
     Section,
     html_cell_value,
@@ -47,15 +48,34 @@ def _f(detector, severity, title, evidence):
 
 def _text(findings, level=0):
     buf = io.StringIO()
-    TextHandler(stream=buf, verbose_level=level, max_findings_per_detector=100).write(findings)
+    handler = TextHandler(stream=buf, verbose_level=level, max_findings_per_detector=100)
+    handler.begin(_summary(findings))
+    handler.write(findings)
     return buf.getvalue()
 
 
 def _html_text(findings, level=0):
     """Render html, strip tags, unescape - the visible text of the table."""
-    raw = render_report_html(findings, None, verbose_level=level, max_findings_per_detector=100)
+    raw = render_report_html(
+        findings,
+        _summary(findings),
+        verbose_level=level,
+        max_findings_per_detector=100,
+    )
     stripped = re.sub(r"<[^>]+>", " ", raw)
     return _htmllib.unescape(stripped)
+
+
+def _summary(findings: list[Finding]) -> RunSummary:
+    names = list(dict.fromkeys(finding.detector for finding in findings))
+    return RunSummary(
+        data_window=_W,
+        record_counts={},
+        data_size_bytes=0,
+        detectors_run=names,
+        detectors_skipped={},
+        detector_missions={name: f"Mission for {name}." for name in names},
+    )
 
 
 # ── one finding per detector AND per variant, UNIQUE SENTINEL values ─────────
@@ -191,9 +211,17 @@ def test_beacon_default_row_cells_stay_compact() -> None:
         (None, "→"),
         (None, "198.51.100.222:4433/tcp"),
         ("period", "period=61.5m"),
-        ("score", "score=0.617"),
+        ("rhythm", "rhythm=0.617"),
         ("conns", "918,273 conns"),
     ]
+
+    html_out = render_report_html(
+        [_VARIANTS["beacon"]], _summary([_VARIANTS["beacon"]]),
+        verbose_level=0, max_findings_per_detector=100,
+    )
+    assert '<th class="col-rhythm">rhythm</th>' in html_out
+    assert '<td class="data">0.617</td>' in html_out
+    assert "rhythm=0.617" not in html_out
 
 
 @pytest.mark.parametrize("variant", list(_VARIANTS))
@@ -340,7 +368,8 @@ def test_syslog_needle_stamp_projection_uses_strict_four_arm_gate(
 
     text_out = _text([stamped])
     html_out = render_report_html(
-        [stamped], None, verbose_level=0, max_findings_per_detector=100,
+        [stamped], _summary([stamped]), verbose_level=0,
+        max_findings_per_detector=100,
     )
     assert "Jul 12 21:57:33 · bare journal payload" in text_out
     assert '<th class="col-first">first</th>' in html_out
@@ -446,14 +475,104 @@ def test_projection_covers_every_detector_variant() -> None:
             assert len(cols) == len(cells)
 
 
-def test_exfil_projection_keeps_the_three_measured_facts_concise() -> None:
+def test_exfil_projection_keeps_measured_facts_and_restores_transport() -> None:
     from sigwood.outputs._render_model import html_cell_value
 
     cells = project_row(_VARIANTS["exfil"])
     keyed = {cell.key: cell for cell in cells if cell.key is not None}
     assert keyed["out"].value == "out=1.6 GB"
-    assert keyed["share"].value == "share=0.9999"
+    assert keyed["transport"].value == "9931/tcp (1.7 GB)"
+    assert keyed["sent"].value == "99.99% sent"
     assert keyed["conns"].value == "conns=37"
+    assert [cell.key for cell in cells] == [
+        None, None, None, "dsts", "out", "sent", "transport", "conns", "span",
+    ]
     assert html_cell_value(keyed["out"]) == "1.6 GB"
-    assert html_cell_value(keyed["share"]) == "0.9999"
+    assert html_cell_value(keyed["transport"]) == "9931/tcp (1.7 GB)"
+    assert html_cell_value(keyed["sent"]) == "99.99%"
     assert html_cell_value(keyed["conns"]) == "37"
+
+
+def test_dns_renamed_keys_strip_at_singular_counts_on_both_paths() -> None:
+    singleton = _f("dns", Severity.MEDIUM, "single.example", {
+        "source": "zeek", "label_score": 4.1, "query_count": 1,
+        "unique_sources": 1,
+    })
+    group = _f("dns", Severity.MEDIUM, "group.example", {
+        "source": "zeek", "registrable_domain": "group.example",
+        "subdomain_count": 1, "max_label_score": 4.1, "min_label_score": 4.1,
+        "total_queries": 1, "unique_sources": 1,
+    })
+
+    singleton_keyed = {cell.key: cell for cell in project_row(singleton)}
+    assert singleton_keyed["generated-look"].value == "generated-look=4.10"
+    assert singleton_keyed["queries"].value == "queries=1"
+    assert singleton_keyed["clients"].value == "clients=1"
+    assert html_cell_value(singleton_keyed["generated-look"]) == "4.10"
+    assert html_cell_value(singleton_keyed["queries"]) == "1"
+    assert html_cell_value(singleton_keyed["clients"]) == "1"
+
+    group_keyed = {cell.key: cell for cell in project_row(group)}
+    assert group_keyed["names"].value == "names=1"
+    assert group_keyed["generated-look"].value == "generated-look=4.10"
+    assert group_keyed["queries"].value == "queries=1"
+    assert group_keyed["clients"].value == "clients=1"
+    assert html_cell_value(group_keyed["names"]) == "1"
+    assert html_cell_value(group_keyed["generated-look"]) == "4.10"
+
+    range_group = _f("dns", Severity.MEDIUM, "range.example", {
+        "source": "zeek", "registrable_domain": "range.example",
+        "subdomain_count": 2, "max_label_score": 4.1, "min_label_score": 3.2,
+        "total_queries": 2, "unique_sources": 1,
+    })
+    range_keyed = {cell.key: cell for cell in project_row(range_group)}
+    assert range_keyed["generated-look"].value == "generated-look=4.10-3.20"
+    assert html_cell_value(range_keyed["generated-look"]) == "4.10-3.20"
+
+    html_out = render_report_html(
+        [group, singleton], _summary([group, singleton]),
+        verbose_level=0, max_findings_per_detector=100,
+    )
+    assert '<th class="col-generated-look">generated-look</th>' in html_out
+    assert '<td class="data">4.10</td>' in html_out
+    assert "generated-look=4.10" not in html_out
+
+
+def test_exfil_transport_is_whole_group_optional_and_share_boundary_is_exact() -> None:
+    multi = _f("exfil", Severity.MEDIUM, "x", {
+        "src": "192.0.2.1", "dst": "198.51.100.1",
+        "orig_bytes_total": 1_900_000_000, "orig_share": 1.0,
+        "connection_count": 2,
+        "port_mix": "443/tcp (1.5 GB), 8443/tcp (400 MB)",
+    })
+    multi_keyed = {cell.key: cell for cell in project_row(multi)}
+    assert multi_keyed["transport"].value == "443/tcp (1.5 GB), 8443/tcp (400 MB)"
+    assert multi_keyed["sent"].value == "100.00% sent"
+
+    blank = _VARIANTS["exfil_pool"]
+    blank_transport = next(
+        col for col in section_columns(Section(None, [blank], 1))
+        if col.key == "transport"
+    )
+    assert blank_transport.optional is True
+    assert blank_transport.all_empty is True
+
+    mixed_transport = next(
+        col for col in section_columns(Section(None, [blank, multi], 2))
+        if col.key == "transport"
+    )
+    assert mixed_transport.all_empty is False
+
+
+def test_scan_outcome_copy_is_bound_to_the_exact_six_state_set() -> None:
+    assert SCAN_STATES == {"S0", "REJ", "RSTO", "RSTR", "SH", "OTH"}
+    keyed = {cell.key: cell for cell in project_row(_VARIANTS["scan_vertical"])}
+    assert keyed["outcome"].value == "91% no normal close seen"
+
+
+def test_dns_scan_summary_names_the_visible_review_object() -> None:
+    cells = project_row(_VARIANTS["dns_scan_summary"])
+    assert [cell.value for cell in cells] == [
+        "dense-cluster scan surfaced 2 high-entropy clusters (3217 queries) - "
+        "review the dense-cluster findings above before allowlisting"
+    ]

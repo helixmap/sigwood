@@ -387,7 +387,8 @@ less reliably than one comfortably above it - the sweet spot is the minutes-to-h
 where real C2 check-ins live. The bin size is a calibrated constant; the scoring thresholds
 and period band are tuned against it. The score is a composite - 40% how dominant the spectral peak is, 40% how
 far that peak stands above the local noise floor, and 20% how regular the timing is (inverted
-jitter) - over flows of at least 20 connections.
+jitter) - over flows of at least 20 connections. The report shows it as `rhythm=`, because
+what it measures is how regular a flow's cadence is.
 
 The detector measures *periodicity*, not maliciousness: a benign MRTG poller hitting SSH
 every 60 seconds lights up too. That's the right mental model - beaconing is a *shape*, and a
@@ -465,7 +466,9 @@ The features are per-query RTT, TTL, query length/depth, and TLD distribution. T
 domains are then ranked by a per-label **suspicion score** - sigwood's own weighted lexical
 heuristic, not Shannon entropy - computed on the highest-scoring label across all subdomains,
 then grouped by registrable domain (eTLD+1), so fourteen random subdomains of one parent read
-as one finding instead of fourteen. The score leans on digit density, and its biases are
+as one finding instead of fourteen. The report shows it as `generated-look=`, naming what
+the heuristic is tuned to recognize rather than claiming a name was generated. The score
+leans on digit density, and its biases are
 measured (1,000 seeded samples per label length against the live scorer, eleven lengths from
 6 to 63): benign digit-heavy labels such as short hex IDs or versioned hostnames can score
 high; dictionary-word DGAs never cleared the candidate bar (a score of 1.8) in measurement;

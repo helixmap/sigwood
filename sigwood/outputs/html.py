@@ -25,7 +25,10 @@ from sigwood.common.display import (
     fmt_suppression,
     group_skips,
     human_bytes,
+    partition_note,
     plural,
+    severity_word,
+    WHY_TIER_HINT,
 )
 from sigwood.common.finding import Finding, MethodTag, RunSummary, Severity
 from sigwood.common.output import OutputHandler, register_handler
@@ -34,6 +37,7 @@ from sigwood.parsers.syslog import split_header
 from sigwood.outputs._evidence import (
     evidence_at_level,
     exfil_members_at_level,
+    format_evidence_instants,
     sample_bound_note,
 )
 from sigwood.outputs._render_model import (
@@ -123,6 +127,28 @@ def _meta_row(label: str, value_html: str) -> str:
     )
 
 
+def _render_notes(notes: list[str]) -> str:
+    """Render one ordered semantic notes table for HTML and PDF."""
+    if not notes:
+        return ""
+    rows: list[str] = []
+    for item in (partition_note(note) for note in notes):
+        if isinstance(item, str):
+            rows.append(
+                f'<tr><td class="note-full" colspan="2">{_esc(item)}</td></tr>'
+            )
+            continue
+        subject, body = item
+        rows.append(
+            f'<tr><th scope="row">{_esc(subject)}</th><td>{_esc(body)}</td></tr>'
+        )
+    return (
+        '<div class="notes"><table><tbody>'
+        f'{"".join(rows)}'
+        "</tbody></table></div>"
+    )
+
+
 def _render_header(run_summary: "RunSummary | None") -> str:
     """The always-full, verbosity-independent header block."""
     rows: list[str] = []
@@ -165,8 +191,9 @@ def _render_header(run_summary: "RunSummary | None") -> str:
         # bytes - it routes through the _esc choke point like every value.
         for name, reason in run_summary.detectors_failed.items():
             rows.append(f'<div class="fail">{_esc(name)} - {_esc(reason)}</div>')
-        for note in run_summary.notes:
-            rows.append(f'<div class="note">{_esc(note)}</div>')
+        notes = _render_notes(run_summary.notes)
+        if notes:
+            rows.append(notes)
 
     return (
         "<header>"
@@ -187,16 +214,10 @@ def _render_severity_strip(renderables: list[tuple[str, DetectorRenderable]]) ->
     for _detector, renderable in renderables:
         for sev, n in renderable.severity_breakdown.items():
             totals[sev] = totals.get(sev, 0) + n
-    labels = {
-        Severity.HIGH: "High",
-        Severity.MEDIUM: "Medium",
-        Severity.LOW: "Low",
-        Severity.INFO: "Info",
-    }
     cards = "".join(
         f'<div class="sev-card sev-{sev.name.lower()}">'
         f'<div class="sev-count">{totals[sev]:,}</div>'
-        f'<div class="sev-label">{labels[sev]}</div></div>'
+        f'<div class="sev-label">{severity_word(sev).capitalize()}</div></div>'
         for sev in _SEVERITY_ORDER
     )
     return f'<div class="sev-strip">{cards}</div>'
@@ -235,7 +256,11 @@ def _render_detail_row(finding: Finding, *, verbose_level: int, colspan: int) ->
         parts.append(f'<p class="desc">{_esc(finding.description)}</p>')
     parts.append(_render_next_steps(finding.next_steps))
     # evidence_at_level dispatches curated (1) vs full (2).
-    parts.append(_render_kv_grid(evidence_at_level(finding, verbose_level)))
+    parts.append(
+        _render_kv_grid(
+            format_evidence_instants(evidence_at_level(finding, verbose_level))
+        )
+    )
     parts.append(_render_exfil_members(finding, verbose_level))
     body = "".join(p for p in parts if p)
     if not body:
@@ -541,9 +566,15 @@ def _render_group_header(detector: str, renderable: DetectorRenderable) -> str:
 
 
 def _render_detector_block(
-    detector: str, renderable: DetectorRenderable, *, verbose_level: int
+    detector: str,
+    renderable: DetectorRenderable,
+    mission: str | None,
+    *,
+    verbose_level: int,
 ) -> str:
     parts = [_render_group_header(detector, renderable)]
+    if mission:
+        parts.append(f'<div class="mission">{_esc(mission)}</div>')
     if renderable.cap_truncated:
         shown = renderable.level_visible_total - renderable.cap_truncated
         parts.append(
@@ -560,12 +591,20 @@ def _render_detector_block(
 
 
 def _render_findings(
-    renderables: list[tuple[str, DetectorRenderable]], *, verbose_level: int
+    renderables: list[tuple[str, DetectorRenderable]],
+    detector_missions: dict[str, str],
+    *,
+    verbose_level: int,
 ) -> str:
     if not renderables:
         return '<div class="empty">No findings.</div>'
     return "".join(
-        _render_detector_block(det, r, verbose_level=verbose_level)
+        _render_detector_block(
+            det,
+            r,
+            detector_missions.get(det),
+            verbose_level=verbose_level,
+        )
         for det, r in renderables
     )
 
@@ -618,8 +657,13 @@ header { border-bottom: 2px solid var(--border); padding-bottom: 18px; margin-bo
 .meta-row { display: flex; align-items: baseline; margin: 3px 0; }
 .meta-label { color: var(--muted); width: 96px; flex: 0 0 96px; text-transform: lowercase; }
 .meta-value { color: var(--fg); }
-.skip, .note { color: var(--muted); font-size: 13px; margin: 3px 0 0 96px; }
+.skip { color: var(--muted); font-size: 13px; margin: 3px 0 0 96px; }
 .fail { color: var(--sev-high); font-size: 13px; margin: 3px 0 0 96px; }
+.notes { color: var(--muted); font-size: 13px; margin: 5px 0 0 96px; }
+.notes table { border-collapse: collapse; width: 100%; }
+.notes th, .notes td { padding: 2px 0; text-align: left; vertical-align: top; overflow-wrap: anywhere; }
+.notes th { font-weight: 600; padding-right: 12px; white-space: nowrap; }
+.notes .note-full { width: 100%; }
 .chips { display: inline-flex; flex-wrap: wrap; gap: 6px; }
 .chip {
   display: inline-block; padding: 1px 9px; border-radius: 11px; font-size: 13px;
@@ -708,6 +752,8 @@ header { border-bottom: 2px solid var(--border); padding-bottom: 18px; margin-bo
   .desc, .next-steps { max-width: 46em; }
 }
 .syslog-table td.col-first { white-space: pre; }
+.mission { margin: -2px 0 12px; color: var(--muted); max-width: 58em; }
+.why-hint { color: var(--muted); margin: -12px 0 24px; }
 @media print {
   @page { size: __SIGWOOD_PAGE_SIZE__; margin: 1.5cm; }
   body { padding: 0; max-width: none; }
@@ -740,7 +786,19 @@ def render_report_html(
     landscape = needs_landscape(renderables)
     header = _render_header(run_summary)
     strip = _render_severity_strip(renderables)
-    body = _render_findings(renderables, verbose_level=verbose_level)
+    detector_missions = (
+        run_summary.detector_missions if run_summary is not None else {}
+    )
+    body = _render_findings(
+        renderables,
+        detector_missions,
+        verbose_level=verbose_level,
+    )
+    why_hint = (
+        f'<div class="why-hint">{_esc(WHY_TIER_HINT)}</div>'
+        if verbose_level == 0 and renderables
+        else ""
+    )
     return (
         "<!doctype html>\n"
         '<html lang="en">\n<head>\n'
@@ -749,7 +807,7 @@ def render_report_html(
         "  <title>sigwood report</title>\n"
         f"  <style>{_styles(landscape)}</style>\n"
         "</head>\n<body>\n"
-        f"{header}\n{strip}\n<main>{body}</main>\n"
+        f"{header}\n{strip}\n<main>{body}{why_hint}</main>\n"
         "</body>\n</html>\n"
     )
 

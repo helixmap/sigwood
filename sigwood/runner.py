@@ -1496,6 +1496,11 @@ def _run_analyze(
         name: getattr(plan.detectors[name], "DETECTOR_METHOD", None)
         for name in plan.will_run
     }
+    detector_missions = {}
+    for name in plan.will_run:
+        mission = getattr(plan.detectors[name], "DETECTOR_MISSION", None)
+        if isinstance(mission, str) and mission.strip():
+            detector_missions[name] = mission
     record_labels = {
         pattern: _pattern_human_label(plan.needed_logs[pattern], pattern)
         for pattern in load_result.record_counts
@@ -1514,6 +1519,7 @@ def _run_analyze(
         notes=notes,
         data_sources=data_sources,
         detector_methods=detector_methods,
+        detector_missions=detector_missions,
         requested_span=requested_span,
         invocation=invocation,
         generated_at=now,

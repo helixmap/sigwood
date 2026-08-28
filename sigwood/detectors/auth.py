@@ -23,6 +23,10 @@ DETECTOR_NAME = "auth"
 STATUS = "available"
 IN_DEFAULT_HUNT: bool = False
 DETECTOR_METHOD = MethodTag("heuristics", named=False)
+DETECTOR_MISSION: str = (
+    "Finds failed logins concentrated around a source, account, service, or set "
+    "of hosts, including a success after a sustained run of failures."
+)
 
 REQUIRED_LOGS: list[dict] = []
 

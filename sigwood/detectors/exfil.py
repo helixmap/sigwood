@@ -38,6 +38,9 @@ DEFAULT_CONFIG = {
 }
 
 DETECTOR_METHOD = MethodTag("heuristics", named=False)
+DETECTOR_MISSION: str = (
+    "Finds large outbound transfers to hosts outside your network."
+)
 
 _REQUIRED_SCORING_COLUMNS = ("src", "dst", "bytes", "resp_bytes")
 _DEFAULT_HOME_NET = ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"]

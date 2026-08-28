@@ -67,6 +67,7 @@ def _run_summary() -> RunSummary:
         data_size_bytes=0,
         detectors_run=["probe"],
         detectors_skipped={},
+        detector_missions={"probe": "Mission for probe."},
     )
 
 

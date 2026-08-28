@@ -63,6 +63,7 @@ def _summary() -> RunSummary:
         data_size_bytes=42,
         detectors_run=["dnsblock"],
         detectors_skipped={},
+        detector_missions={"dnsblock": "Mission for dnsblock."},
         generated_at=_W[1],
     )
 
@@ -243,13 +244,13 @@ def test_dnsblock_history_column_is_fixed_and_section_pruning_stays_aligned() ->
         assert mixed.count("over 1d") == 1
 
 
-def test_all_legacy_dnsblock_reading_bytes_are_unchanged(pin_tz) -> None:
+def test_legacy_dnsblock_reading_bytes_pin_the_reviewed_mission_chrome(pin_tz) -> None:
     legacy = _arrival_with_history()
     legacy.title = "192.0.2.7"
     legacy.evidence.pop("history_seconds")
     expected = {
-        TextHandler: "9573537233194ee5f5f515d844526cdc495c59544f63419dd53a8be22643e834",
-        HtmlHandler: "4dc764a69d4eccd13608efba8befa6e3210ad6fc1f3b5a9bcb385dec166cf04d",
+        TextHandler: "6049f886132cdabd629c4cc07c3cdd32fa1f7661676d18ae5d293996805ebb25",
+        HtmlHandler: "a423953ef599b94e5a41059ae43380045961b68575598317e7b35fc1d69e3478",
     }
     pin_tz("America/Chicago")
     for handler_type, digest in expected.items():

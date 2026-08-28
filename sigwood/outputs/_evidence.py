@@ -11,10 +11,11 @@ detector result set stays verbosity-invariant; tiering happens here at render.
 
 from __future__ import annotations
 
+from datetime import datetime
 from operator import index
 from typing import Any
 
-from sigwood.common.display import plural
+from sigwood.common.display import fmt_timestamp, plural
 from sigwood.common.finding import Finding, Severity
 
 # Curated (level-1) cap for long evidence LISTS. The full list still appears at
@@ -22,6 +23,48 @@ from sigwood.common.finding import Finding, Severity
 # readable when a burst touches dozens of actions/services.
 _CURATED_LIST_CAP = 12
 EXFIL_MEMBER_DISPLAY_CAP = 10
+
+_EVIDENCE_INSTANT_KEYS = frozenset({
+    "first_seen",
+    "last_seen",
+    "reboot_ts",
+    "start_time",
+    "window_start",
+    "first_failure_at",
+    "success_at",
+})
+
+
+def format_evidence_instants(
+    value: Any,
+    *,
+    current_key: str | None = None,
+) -> Any:
+    """Return a detached human view with allow-listed instants formatted.
+
+    Only a string value whose own key is in the frozen allow-list is parsed.
+    Everything else is copied recursively without shape inference; malformed
+    allow-listed values stay byte-identical. The optional key lets SSL's level-0
+    scalar use the same owner without wrapping it in a synthetic mapping.
+    """
+    if current_key in _EVIDENCE_INSTANT_KEYS:
+        if not isinstance(value, str):
+            return value
+        try:
+            parsed = datetime.fromisoformat(value)
+        except ValueError:
+            return value
+        return fmt_timestamp(parsed, include_seconds=True)
+    if isinstance(value, dict):
+        return {
+            key: format_evidence_instants(item, current_key=key)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [format_evidence_instants(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(format_evidence_instants(item) for item in value)
+    return value
 
 
 def cap_evidence_list(values: "list | tuple") -> str:

@@ -338,6 +338,7 @@ def test_mixed_pihole_sibling_receives_one_ordinary_final_frame(tmp_path):
 
     sibling = SimpleNamespace(
         DETECTOR_NAME="sibling",
+        DETECTOR_MISSION="Exercise an ordinary Pi-hole sibling detector.",
         STATUS="available",
         REQUIRED_LOGS=[{"source": "pihole_dir", "pattern": "pihole*.log*"}],
         OPTIONAL_LOGS=[],

@@ -100,7 +100,10 @@ def test_provider_note_and_multiline_finding_are_safe_across_all_outputs(
     assert "sigwood-journal-" not in text
     assert "fallback[31mforged fallback not loaded" in compact_text
     assert "first <script>alert(1)</script>secondsegment[31m" in text
-    assert sum("system logs: journal" in line for line in text.splitlines()) == 1
+    assert sum(
+        line.startswith("system logs") and "journal" in line
+        for line in text.splitlines()
+    ) == 1
 
     json_source = json_path.read_text(encoding="utf-8")
     assert "\x1b" not in json_source

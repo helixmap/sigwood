@@ -698,11 +698,29 @@ def test_residue_campaign_patterns_flag_independent_seeds(
 
 def test_residue_campaign_patterns_keep_legitimate_controls() -> None:
     _regexes, public_regexes, _allowed = _load_residue_policy()
-    assert [rx.pattern for rx in public_regexes] == [
+    patterns = [rx.pattern for rx in public_regexes]
+    campaign_patterns = [
         r"\b[BDRU]\d{2}\b",
         "re-decision",
         r"\bsealed\s+C\d\b",
     ]
+    for expected in campaign_patterns:
+        assert expected in patterns
+    # The one further public pattern guards references into the repository's
+    # gitignored private/ tree on the shipped-Markdown surface. It is pinned by
+    # BEHAVIOR, never by its literal: embedding that pattern's text here would
+    # put the vocabulary it exists to keep out of tracked bytes into this file.
+    extras = [p for p in patterns if p not in campaign_patterns]
+    assert len(extras) == 1, f"unexpected public pattern count: {patterns}"
+    guard = re.compile(extras[0])
+    hit = guard.search("see private/example for the details")
+    assert hit is not None and hit.group(0) == "private/example"
+    assert guard.search("linked from ../private/example.md") is not None
+    assert guard.search("under sigwood/private/example") is not None
+    # Absolute OS paths and a bare `private/` with no component are not
+    # references into the repository tree and must stay clean.
+    assert guard.search("a 1777 /private/tmp symlink target") is None
+    assert guard.search("grep -iE 'private/|scratch'") is None
     controls = "\n".join(
         [
             "Strip the Unicode C0 and C1 control classes.",
@@ -711,6 +729,7 @@ def test_residue_campaign_patterns_keep_legitimate_controls() -> None:
             "The alias set is ratified for reconciliation.",
             "Return the canonical closure payload.",
             "Public prose may use a load-bearing dash without process residue.",
+            "macOS resolves /tmp to the /private/tmp directory.",
         ]
     )
     observed, _locations = _residue_occurrences_for_text(

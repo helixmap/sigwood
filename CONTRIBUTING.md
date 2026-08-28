@@ -101,6 +101,15 @@ parens and a glow on the run banner; honest house methods get
 heuristic is worth more than one dressed up as an algorithm. No constant at all just
 prints the bare name.
 
+A detector may also carry an optional `DETECTOR_MISSION` - one plain sentence saying what
+it looks for, rendered once beneath the group header on the text and html reports at every
+verbosity. Write it for someone who has never used the tool: name the thing you find and
+why it is worth a look, not the technique you find it with. Omit the constant and the group
+renders without that line; nothing else changes. Every detector that ships with sigwood
+carries one and a tripwire keeps it that way, but that is a standard we hold ourselves to,
+not a requirement on yours - a detector written before this constant existed still loads
+and runs exactly as it did.
+
 The two-source detectors (`dns`, `syslog`) are the pattern for one question over two
 feeds: leave `REQUIRED_LOGS` empty, list both sources in `OPTIONAL_LOGS`, set
 `REQUIRES_ONE_OF_OPTIONAL = True`, and read both pattern keys inside `run()`,
@@ -208,16 +217,6 @@ for this too.
   prefix only at the CLI boundary; status and progress lines carry no prefix;
   finding titles are entities, not sentences. A voice tripwire test locks a lot
   of this so you don't have to memorize.
-- **Rewrite the sentence; a hyphen is the fallback.** Em dash, en dash, figure dash
-  and horizontal bar are banned everywhere in this repository: prose, code, comments,
-  tests and commit messages. If you find yourself reaching for one, restructure the
-  sentence rather than swapping the character. Split it in two, use a colon or a comma,
-  or reorder it so the aside becomes the subject. A hyphen is acceptable only where a
-  rewrite would take real acrobatics, which is rare. The mathematical minus sign is
-  untouched by the rule. While you are editing a file for some other reason, it is worth
-  rewriting the dash constructions you touched or read past on the way. A tripwire holds
-  the character ban for every file, and the git hooks below refuse a commit that breaks
-  it, so you find out before the dash is public rather than after.
 - **Fail with an actionable message.** `KeyError: 'id.orig_h'` is not something a user
   should ever see; `conn.log fields not found - is this a Zeek conn.log?` is.
 

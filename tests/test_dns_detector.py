@@ -19,7 +19,8 @@ import pandas as pd
 import pytest
 
 from sigwood.common import clustering
-from sigwood.common.finding import DetectorContext, Finding, Severity
+from sigwood.common.display import severity_tag
+from sigwood.common.finding import DetectorContext, Finding, RunSummary, Severity
 from sigwood.outputs.text import TextHandler
 from sigwood.outputs._render_model import _partition_dns as _dns_sections
 from sigwood.detectors.dns import (
@@ -58,6 +59,18 @@ def _in_process_clustering(monkeypatch: pytest.MonkeyPatch) -> None:
 
 _NOW = datetime(2026, 5, 30, tzinfo=timezone.utc)
 _WINDOW = (_NOW, _NOW)
+
+
+def _output_summary(findings: list[Finding]) -> RunSummary:
+    names = list(dict.fromkeys(finding.detector for finding in findings))
+    return RunSummary(
+        data_window=findings[0].data_window if findings else _WINDOW,
+        record_counts={},
+        data_size_bytes=0,
+        detectors_run=names,
+        detectors_skipped={},
+        detector_missions={name: f"Mission for {name}." for name in names},
+    )
 
 
 def _ctx(df: pd.DataFrame, cfg: dict | None = None) -> DetectorContext:
@@ -1388,12 +1401,15 @@ def test_pihole_unscanned_hostile_identity_reaches_no_output_surface(
     ))
     assert len(findings) == 1
     finding = findings[0]
+    summary = _output_summary(findings)
 
     text_stream = io.StringIO()
-    TextHandler(stream=text_stream, max_findings_per_detector=1).write(findings)
+    text_handler = TextHandler(stream=text_stream, max_findings_per_detector=1)
+    text_handler.begin(summary)
+    text_handler.write(findings)
     text_output = text_stream.getvalue()
     html_output = render_report_html(
-        findings, None, verbose_level=2, max_findings_per_detector=1,
+        findings, summary, verbose_level=2, max_findings_per_detector=1,
     )
 
     captured_pdf_html: list[str] = []
@@ -1406,12 +1422,14 @@ def test_pihole_unscanned_hostile_identity_reaches_no_output_surface(
     pdf_handler = PdfHandler(
         stream=pdf_stream, verbose_level=2, max_findings_per_detector=1,
     )
+    pdf_handler.begin(summary)
     pdf_handler.write(findings)
     pdf_handler.end()
     assert captured_pdf_html == [html_output]
 
     json_stream = io.StringIO()
     json_handler = JsonHandler(stream=json_stream)
+    json_handler.begin(summary)
     json_handler.write(findings)
     json_handler.end()
     json_output = json_stream.getvalue()
@@ -1424,6 +1442,7 @@ def test_pihole_unscanned_hostile_identity_reaches_no_output_surface(
 
     csv_stream = io.StringIO()
     csv_handler = CsvHandler(stream=csv_stream)
+    csv_handler.begin(summary)
     csv_handler.write(findings)
     csv_handler.end()
     csv_output = csv_stream.getvalue()
@@ -1494,16 +1513,19 @@ def test_pihole_dense_hostile_parent_is_contained_across_output_sinks(
         for finding in findings
         if finding.evidence.get("origin") == "dense_cluster"
     )
+    summary = _output_summary(findings)
     assert recovered.title == parent
     assert recovered.next_steps[0] == (
         f"Check domain registration: whois {shlex.quote(parent)}"
     )
 
     text_stream = io.StringIO()
-    TextHandler(stream=text_stream).write(findings)
+    text_handler = TextHandler(stream=text_stream)
+    text_handler.begin(summary)
+    text_handler.write(findings)
     text_output = text_stream.getvalue()
     html_output = render_report_html(
-        findings, None, verbose_level=2, max_findings_per_detector=100,
+        findings, summary, verbose_level=2, max_findings_per_detector=100,
     )
 
     captured_pdf_html: list[str] = []
@@ -1516,11 +1538,13 @@ def test_pihole_dense_hostile_parent_is_contained_across_output_sinks(
     pdf_handler = PdfHandler(
         stream=pdf_stream, verbose_level=2, max_findings_per_detector=100,
     )
+    pdf_handler.begin(summary)
     pdf_handler.write(findings)
     pdf_handler.end()
 
     json_stream = io.StringIO()
     json_handler = JsonHandler(stream=json_stream)
+    json_handler.begin(summary)
     json_handler.write(findings)
     json_handler.end()
     json_payload = json.loads(json_stream.getvalue())
@@ -1532,6 +1556,7 @@ def test_pihole_dense_hostile_parent_is_contained_across_output_sinks(
 
     csv_stream = io.StringIO()
     csv_handler = CsvHandler(stream=csv_stream)
+    csv_handler.begin(summary)
     csv_handler.write(findings)
     csv_handler.end()
     csv_row = next(csv.DictReader(io.StringIO(csv_stream.getvalue())))
@@ -2090,8 +2115,8 @@ def test_text_renderer_pihole_verbose_shows_ratios() -> None:
     assert "rcode_distribution" not in output, "pihole verbose must not show rcode_distribution"
 
 
-def test_text_renderer_zeek_default_line_unchanged() -> None:
-    """Zeek-only singletons produce the character-identical pre-pihole format (no BLOCKED column)."""
+def test_text_renderer_zeek_singletons_name_counts_without_blocked_column() -> None:
+    """Zeek-only singletons name query/client counts and omit BLOCKED."""
     f1 = _make_dns_finding(
         Severity.HIGH,
         "sub.example.com",
@@ -2120,14 +2145,20 @@ def test_text_renderer_zeek_default_line_unchanged() -> None:
     lines = handler._render_dns_group(_dns_sections([f1, f2]))
 
     # Analytically derive expected strings - column widths are max across both rows:
-    # score_w=10 ("score=2.10"), qry_w=5 ("5 qry"), src_w=5 ("2 src"), blocked_w=0 (no blocked)
-    tag = f"{'[H]':<4}"  # "[H] "
-    expected_1 = f"  {tag}  {'score=2.10':<10}  {'5 qry':>5}  {'2 src':>5}  sub.example.com"
-    expected_2 = f"  {tag}  {'score=1.92':<10}  {'3 qry':>5}  {'1 src':>5}  api.example.net"
+    # generated_look_w=19, queries_w=9, clients_w=9, blocked_w=0 (no blocked).
+    tag = severity_tag(Severity.HIGH)
+    expected_1 = (
+        f"  {tag}  {'generated-look=2.10':<19}  {'queries=5':>9}  "
+        f"{'clients=2':>9}  sub.example.com"
+    )
+    expected_2 = (
+        f"  {tag}  {'generated-look=1.92':<19}  {'queries=3':>9}  "
+        f"{'clients=1':>9}  api.example.net"
+    )
 
     # Row lines start with the 2-space indent + severity tag. Skip the
     # subsection label (e.g. "singletons (2)") and any blank lines.
-    singleton_lines = [l for l in lines if l.startswith("  [")]
+    singleton_lines = [l for l in lines if l.startswith("  high")]
     assert singleton_lines[0] == expected_1, (
         f"line 1 mismatch:\n  got:      {singleton_lines[0]!r}\n  expected: {expected_1!r}"
     )
@@ -2263,7 +2294,7 @@ def test_dns_unscanned_pihole_section_is_trailing_and_cap_exempt() -> None:
     ]
 
     stream = io.StringIO()
-    TextHandler(stream=stream, max_findings_per_detector=1).write([
+    findings = [
         singleton,
         _make_dns_finding(
             Severity.LOW,
@@ -2276,7 +2307,10 @@ def test_dns_unscanned_pihole_section_is_trailing_and_cap_exempt() -> None:
             },
         ),
         disclosure,
-    ])
+    ]
+    handler = TextHandler(stream=stream, max_findings_per_detector=1)
+    handler.begin(_output_summary(findings))
+    handler.write(findings)
     output = stream.getvalue()
     assert disclosure.title in output
     assert "1 more not shown" in output

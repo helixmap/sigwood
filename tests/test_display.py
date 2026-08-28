@@ -26,11 +26,16 @@ from sigwood.common.display import (
     hidden_cursor,
     liveness,
     narration_active,
+    partition_note,
     phase_separator,
     progress,
     set_narration_enabled,
+    severity_tag,
+    severity_word,
+    severity_word_from_name,
     version_string,
 )
+from sigwood.common.finding import Severity
 
 
 def test_group_skips_returns_raw_ordered_structure() -> None:
@@ -53,6 +58,58 @@ def test_group_skips_does_not_merge_reasons_that_only_sanitize_equal() -> None:
         ("missing /hostile\npath", ["beacon"]),
         ("missing /hostilepath", ["scan"]),
     ]
+
+
+def test_partition_note_splits_visible_first_separator_and_uses_frame_cap() -> None:
+    assert partition_note("auth: first: second") == ("auth", "first: second")
+    assert partition_note(f"{'x' * (display_mod.TEXT_RULE_WIDTH // 4)}: body") == (
+        "x" * (display_mod.TEXT_RULE_WIDTH // 4),
+        "body",
+    )
+    over_cap = f"{'x' * (display_mod.TEXT_RULE_WIDTH // 4 + 1)}: body"
+    assert partition_note(over_cap) == over_cap
+    assert partition_note("colonless disclosure") == "colonless disclosure"
+    assert partition_note(": absent subject") == ": absent subject"
+
+
+def test_partition_note_strips_controls_before_split_and_measurement() -> None:
+    assert partition_note("su\x00b\x7f\x9f: bo\x01d\x80y") == ("sub", "body")
+    # The raw string has no `: ` delimiter; stripping the concealed control
+    # reveals the visible delimiter before the helper decides its shape.
+    assert partition_note("auth:\x00 body") == ("auth", "body")
+
+
+def test_severity_words_and_padded_tags_share_one_vocabulary() -> None:
+    assert [severity_word(severity) for severity in Severity] == [
+        "high",
+        "medium",
+        "low",
+        "info",
+    ]
+    assert [severity_tag(severity) for severity in Severity] == [
+        "high  ",
+        "medium",
+        "low   ",
+        "info  ",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (" high ", "high"),
+        ("MEDIUM", "medium"),
+        ("LoW", "low"),
+        ("info", "info"),
+        ("urgent", None),
+        ("", None),
+        (None, None),
+        (Severity.HIGH, None),
+        (1, None),
+    ],
+)
+def test_severity_word_from_name_is_strict(value: object, expected: str | None) -> None:
+    assert severity_word_from_name(value) == expected
 
 
 def test_default_window_advisory_exact_string() -> None:
@@ -752,6 +809,25 @@ def test_fmt_timestamp_is_labeled_single_bound() -> None:
         )
     finally:
         restore()
+
+
+def test_fmt_timestamp_seconds_mode_local_and_utc(
+    pin_tz, restore_display_utc,
+) -> None:
+    """Seconds are opt-in; the default minute bytes remain unchanged."""
+    pin_tz("Etc/GMT+5")
+    instant = datetime(2026, 7, 8, 9, 49, 5, tzinfo=timezone.utc)
+
+    assert fmt_timestamp(instant) == "2026-07-08 04:49 local"
+    assert fmt_timestamp(instant, include_seconds=True) == (
+        "2026-07-08 04:49:05 local"
+    )
+
+    set_display_utc(True)
+    assert fmt_timestamp(instant) == "2026-07-08 09:49 UTC"
+    assert fmt_timestamp(instant, include_seconds=True) == (
+        "2026-07-08 09:49:05 UTC"
+    )
 
 
 def test_fmt_syslog_timestamp_local_and_utc_shapes(

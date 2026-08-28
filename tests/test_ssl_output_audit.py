@@ -76,6 +76,7 @@ def _summary() -> RunSummary:
         data_size_bytes=1024,
         detectors_run=["ssl"],
         detectors_skipped={},
+        detector_missions={"ssl": "Mission for ssl."},
         notes=["ssl: a server certificate was visible on 4 of 4 outbound sessions (100%)"],
     )
 
@@ -184,6 +185,7 @@ def test_the_rendered_note_carries_counts_and_no_log_derived_value() -> None:
         data_size_bytes=1024,
         detectors_run=["ssl"],
         detectors_skipped={},
+        detector_missions={"ssl": "Mission for ssl."},
         notes=[
             "ssl: a server certificate was visible on 1 of 4 outbound sessions "
             "(25%) - the validation leg covers only those"

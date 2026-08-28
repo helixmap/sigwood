@@ -137,6 +137,7 @@ def _summary(record_count: int = 10) -> RunSummary:
         data_size_bytes=100,
         detectors_run=["dns"],
         detectors_skipped={},
+        detector_missions={"dns": "Mission for dns."},
     )
 
 

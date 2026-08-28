@@ -50,6 +50,10 @@ DEFAULT_CONFIG = {
 }
 
 DETECTOR_METHOD = MethodTag("FFT", named=True)
+DETECTOR_MISSION: str = (
+    "Finds outbound connections that keep a regular rhythm, a pattern worth "
+    "checking for automated check-ins."
+)
 
 # Period range to consider (seconds). Outside this, FFT peaks are ignored.
 _BIN_SECONDS = 30

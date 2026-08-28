@@ -39,6 +39,7 @@ from sigwood.common.display import (
     plural,
 )
 from sigwood.common.finding import Finding, Severity
+from sigwood.outputs._evidence import format_evidence_instants
 
 
 def fold_mix_names(mix: Iterable[object]) -> str:
@@ -418,7 +419,8 @@ class Cell:
 def html_cell_value(cell: Cell) -> str:
     """The value HTML renders for a KEYED column, with the in-value label stripped
     so it is not double-printed beneath its own ``<th>`` header (``period=61.5m``
-    under a ``period`` header → ``61.5m``; ``4217 sub`` under ``sub`` → ``4217``).
+    under a ``period`` header → ``61.5m``; ``names=4217`` under ``names`` → ``4217``;
+    ``97.76% sent`` under ``sent`` → ``97.76%``).
 
     Text keeps the labeled ``value`` verbatim - the label is redundant ONLY where a
     column header carries it, which is an HTML/PDF-only surface (text has no header
@@ -457,7 +459,7 @@ def _project_beacon(f: Finding) -> list[Cell]:
         Cell(None, "→"),
         Cell(None, dst),
         Cell("period", f"period={ev.get('period_str', '?')}"),
-        Cell("score", f"score={ev.get('beacon_score', 0):.3f}"),
+        Cell("rhythm", f"rhythm={ev.get('beacon_score', 0):.3f}"),
         Cell("conns", f"{ev.get('conn_count', 0):,} conns", align="right"),
     ]
 
@@ -473,25 +475,30 @@ def _project_dns(f: Finding) -> list[Cell]:
         tm = int(ev.get("total_members", 0))
         value = (
             f"dense-cluster scan surfaced {cc} high-entropy {plural(cc, 'cluster')} "
-            f"({tm} {plural(tm, 'query', 'queries')}) - review before allowlisting"
+            f"({tm} {plural(tm, 'query', 'queries')}) - review the dense-cluster "
+            "findings above before allowlisting"
         )
         return [Cell(None, value, full_width=True)]
     blocked = Cell("blocked", "BLOCKED" if ev.get("was_blocked") else "", optional=True)
     if "subdomain_count" in ev:  # group
         max_e, min_e = ev["max_label_score"], ev["min_label_score"]
-        score = f"score={max_e:.2f}" if max_e == min_e else f"score={max_e:.2f}-{min_e:.2f}"
+        generated_look = (
+            f"generated-look={max_e:.2f}"
+            if max_e == min_e
+            else f"generated-look={max_e:.2f}-{min_e:.2f}"
+        )
         return [
-            Cell("sub", f"{ev['subdomain_count']} sub", align="right"),
-            Cell("score", score),
-            Cell("qry", f"{ev['total_queries']} qry", align="right"),
-            Cell("src", f"{ev['unique_sources']} src", align="right"),
+            Cell("names", f"names={ev['subdomain_count']}", align="right"),
+            Cell("generated-look", generated_look),
+            Cell("queries", f"queries={ev['total_queries']}", align="right"),
+            Cell("clients", f"clients={ev['unique_sources']}", align="right"),
             blocked,
             Cell(None, ev["registrable_domain"]),
         ]
     return [  # singleton
-        Cell("score", f"score={ev['label_score']:.2f}"),
-        Cell("qry", f"{ev['query_count']} qry", align="right"),
-        Cell("src", f"{ev['unique_sources']} src", align="right"),
+        Cell("generated-look", f"generated-look={ev['label_score']:.2f}"),
+        Cell("queries", f"queries={ev['query_count']}", align="right"),
+        Cell("clients", f"clients={ev['unique_sources']}", align="right"),
         blocked,
         Cell(None, f.title),
     ]
@@ -514,7 +521,7 @@ def _project_scan(f: Finding) -> list[Cell]:
         metric = f"{ev.get('distinct_ports', 0)} ports/{ev.get('active_buckets', 0)} win"
     return [
         Cell("type", scan_type),
-        Cell("ratio", f"ratio={ev.get('scan_state_ratio', 0):.2f}"),
+        Cell("outcome", f"{ev.get('scan_state_ratio', 0):.0%} no normal close seen"),
         Cell(None, ev.get("src", "")),
         Cell("middle", middle),
         Cell("metric", metric, align="right"),
@@ -651,7 +658,8 @@ def _project_exfil(f: Finding) -> list[Cell]:
         Cell(None, ev.get("destination_network", ev.get("dst", ""))),
         Cell("dsts", destination_col, align="right", optional=True),
         Cell("out", f"out={human_bytes(float(ev.get('orig_bytes_total', 0)))}", align="right"),
-        Cell("share", f"share={float(ev.get('orig_share', 0)):.4f}", align="right"),
+        Cell("sent", f"{float(ev.get('orig_share', 0)):.2%} sent", align="right"),
+        Cell("transport", str(ev.get("port_mix", "")), optional=True),
         Cell("conns", f"conns={count:,}", align="right"),
         Cell("span", span_col, align="right", optional=True),
     ]
@@ -682,7 +690,15 @@ def _project_ssl(f: Finding) -> list[Cell]:
         Cell("conns", f"conns={int(ev.get('conn_count', 0)):,}", align="right"),
         Cell("status", "" if status is None else str(status), optional=True),
         Cell("tls", str(version_col), optional=True),
-        Cell("first", "" if first is None else str(first), optional=True),
+        Cell(
+            "first",
+            (
+                ""
+                if first is None
+                else str(format_evidence_instants(first, current_key="first_seen"))
+            ),
+            optional=True,
+        ),
     ]
 
 

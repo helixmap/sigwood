@@ -37,6 +37,10 @@ DEFAULT_CONFIG = {
 }
 
 DETECTOR_METHOD = MethodTag("pattern", named=False)
+DETECTOR_MISSION: str = (
+    "Finds one host reaching for many ports or many hosts - the shape of "
+    "something looking around."
+)
 
 # ── Domain-knowledge constants ────────────────────────────────────────────────
 

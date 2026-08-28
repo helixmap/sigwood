@@ -33,6 +33,7 @@ def _summary() -> RunSummary:
         data_size_bytes=0,
         detectors_run=["beacon"],
         detectors_skipped={},
+        detector_missions={"beacon": "Mission for beacon."},
     )
 
 

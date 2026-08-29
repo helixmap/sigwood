@@ -63,6 +63,7 @@ from sigwood.outputs._render_model import (
     text_columns,
 )
 from sigwood.outputs._sanitize import strip_control
+from sigwood.outputs._serialize import jsonable_to_human, to_jsonable
 
 _WIDTH = TEXT_RULE_WIDTH
 _SEP = TEXT_RULE
@@ -405,7 +406,10 @@ def _verbose_tail(finding: Finding, indent: str, extras: dict[str, Any] | None =
                 if note is not None:
                     body.append(f"{indent}    {_sanitize(note)}")
             else:
-                body.append(f"{indent}  {_sanitize(k)}: {_sanitize(v)}")
+                value = jsonable_to_human(
+                    to_jsonable(v), item_sep=", ", kv_sep=": "
+                )
+                body.append(f"{indent}  {_sanitize(k)}: {_sanitize(value)}")
     if not body:
         return []
     body.append(f"{indent}data window: {_fmt_window(finding.data_window)}")
@@ -429,7 +433,10 @@ def _debug_tail(finding: Finding, indent: str) -> list[str]:
         for k, v in evidence.items():
             if k in ("member_fragments", "members"):
                 continue  # structured member views render below, never as reprs
-            body.append(f"{indent}  {_sanitize(k)}: {_sanitize(v)}")
+            value = jsonable_to_human(
+                to_jsonable(v), item_sep=", ", kv_sep=": "
+            )
+            body.append(f"{indent}  {_sanitize(k)}: {_sanitize(value)}")
     if not body:
         return []
     body.append(f"{indent}data window: {_fmt_window(finding.data_window)}")

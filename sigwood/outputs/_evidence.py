@@ -85,6 +85,9 @@ def format_evidence_for_reading(
 
     view: dict[str, Any] = {}
     for key, value in formatted.items():
+        if key == "cert_self_signed":
+            view["cert_leaf_self_signed"] = value
+            continue
         if key == "tuple" and isinstance(value, str):
             parts = value.split("|")
             if len(parts) == 4:

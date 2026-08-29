@@ -3456,7 +3456,7 @@ class SyslogDetectorTests(unittest.TestCase):
         self.assertIn("first_seen: 2026-07-12 21:57:33 local", at1)
         self.assertNotIn("self_stamped:", at1)
         self.assertIn("first_seen: 2026-07-12 21:57:33 local", at2)
-        self.assertIn("self_stamped: False", at2)
+        self.assertIn("self_stamped: false", at2)
 
     def test_text_level_one_samples_three_and_level_two_keeps_full(self) -> None:
         from sigwood.outputs.text import TextHandler

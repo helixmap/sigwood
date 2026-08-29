@@ -2110,7 +2110,7 @@ def test_text_renderer_pihole_verbose_shows_ratios() -> None:
     # curated tail surfaces ratios as raw key:value pairs (no percent
     # formatting in the uniform evidence block).
     assert "block_ratio: 0.5" in output, "block_ratio must appear in verbose output"
-    assert "was_blocked: True" in output, "was_blocked must appear in verbose output"
+    assert "was_blocked: true" in output, "was_blocked must appear in verbose output"
     # Pihole's qtype_counts is part of the pihole curated subset.
     assert "qtype_counts" in output, "qtype_counts must appear in pihole verbose"
     assert "rcode_distribution" not in output, "pihole verbose must not show rcode_distribution"
@@ -2374,7 +2374,7 @@ def test_text_renderer_both_mode_verbose_shows_was_blocked() -> None:
     # enrichment)" prose annotation in the per-detector block
     # - the keys themselves carry the provenance (a Zeek finding doesn't
     # have was_blocked otherwise).
-    assert "was_blocked: True" in output, "both-mode verbose must show was_blocked"
+    assert "was_blocked: true" in output, "both-mode verbose must show was_blocked"
     assert "block_ratio: 0.5" in output, "block_ratio must appear in both-mode verbose"
 
 

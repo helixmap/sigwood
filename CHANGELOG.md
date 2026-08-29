@@ -39,6 +39,37 @@ All notable changes to sigwood are recorded here. The format follows
 
 ### Fixed
 
+- **The default text report no longer prints Python syntax in its evidence block.** At `-v` and
+  `-vv`, a list or mapping evidence value was rendered with its Python `repr`, so a report read
+  `severity_basis: ['resolution-outcome']` where the HTML report already read
+  `severity_basis: resolution-outcome`. The two reading surfaces shared their evidence selection
+  but not the final value rendering, and text is the surface most people see. Both now use the
+  same shared renderer.
+
+  **This also changes how booleans print in text.** They were rendered `True` and `False`, the
+  Python spelling; they now read `true` and `false`, which is what the HTML report and the CSV
+  worklist have always shown. It affects every boolean evidence value on every detector, so a
+  script grepping text output for `was_blocked: True` needs updating to `was_blocked: true`. The
+  machine formats are unchanged: JSON has always emitted real booleans, and CSV already read
+  `true`.
+
+- **`exfil` findings now name the transport instead of repeating the byte total.** The
+  level-0 row rendered its whole `port_mix` value, so a single-service pair showed
+  `443/tcp (1.9 GB)` beside an `out=1.9 GB` cell - the same number twice on one row. The row now
+  reads `443/tcp`. Findings additionally carry a `services` list of the ranked service labels,
+  alongside the unchanged `port_mix`; it appears on pair findings, on destination-pool rollups,
+  and on each member of a rollup. Both values derive from one ranked computation, so they cannot
+  disagree about order or membership. That change to machine output is additive: one new key,
+  nothing removed or altered, and the CSV worklist is untouched.
+
+- **`ssl` evidence no longer looks like it is arguing with itself.** A finding could state that a
+  certificate `did not validate (self-signed certificate in certificate chain)` and, lines later,
+  report `cert_self_signed: False`. Both were correct: the field measures whether the *leaf*
+  certificate is self-signed, while the status describes a self-signed certificate anywhere in
+  the chain, which is the ordinary shape when a leaf is signed by a private root. Reports now
+  name that field `cert_leaf_self_signed`, which distinguishes the two. The change is to the
+  reading surfaces only - JSON and CSV keep the field name `cert_self_signed`.
+
 - **A `dnsblock` run no longer crashes when the default window is turned off.** Setting
   `default_window = "all"` (or an empty value) means "no implicit window", which is
   documented and supported. But `dnsblock` then subtracted that absent span from a

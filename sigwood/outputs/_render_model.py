@@ -663,7 +663,11 @@ def _project_exfil(f: Finding) -> list[Cell]:
         Cell("dsts", destination_col, align="right", optional=True),
         Cell("out", f"out={human_bytes(float(ev.get('orig_bytes_total', 0)))}", align="right"),
         Cell("sent", f"{float(ev.get('orig_share', 0)):.2%} sent", align="right"),
-        Cell("transport", str(ev.get("port_mix", "")), optional=True),
+        Cell(
+            "transport",
+            ", ".join(ev.get("services") or []) or str(ev.get("port_mix", "")),
+            optional=True,
+        ),
         Cell("conns", f"conns={count:,}", align="right"),
         Cell("span", span_col, align="right", optional=True),
     ]

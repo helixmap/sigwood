@@ -6,6 +6,7 @@ the former score-only ladder cannot make a resolution-positive case pass.
 
 from __future__ import annotations
 
+import html as html_stdlib
 import io
 import json
 from datetime import datetime, timezone
@@ -272,10 +273,14 @@ def test_r14_evidence_survives_every_sink_without_new_unsafe_bytes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     finding = _zeek_findings(_singleton_rows([3, 3, 0, 0]))[0]
+    finding.evidence["severity_basis"] = ["resolution<&-outcome"]
     finding.evidence["rcode_distribution"]["bad\x1b<script>"] = 1
 
     text_stream = io.StringIO()
     Reporter([TextHandler(stream=text_stream, verbose_level=1)]).run([finding], _summary())
+
+    debug_stream = io.StringIO()
+    Reporter([TextHandler(stream=debug_stream, verbose_level=2)]).run([finding], _summary())
 
     csv_stream = io.StringIO()
     Reporter([CsvHandler(stream=csv_stream)]).run([finding], _summary())
@@ -298,18 +303,24 @@ def test_r14_evidence_survives_every_sink_without_new_unsafe_bytes(
     pdf_stream = io.BytesIO()
     Reporter([PdfHandler(stream=pdf_stream, verbose_level=1)]).run([finding], _summary())
 
-    assert "severity_basis: ['resolution-outcome']" in text_stream.getvalue()
+    assert "severity_basis: resolution<&-outcome" in text_stream.getvalue()
+    assert "severity_basis: resolution<&-outcome" in debug_stream.getvalue()
     assert "nxdomain_fraction: 0.5" in text_stream.getvalue()
-    assert "severity_basis=resolution-outcome" in csv_stream.getvalue()
+    assert "severity_basis=resolution<&-outcome" in csv_stream.getvalue()
     assert payload["schema_version"] == 1
-    assert payload["findings"][0]["evidence"]["severity_basis"] == ["resolution-outcome"]
+    assert payload["findings"][0]["evidence"]["severity_basis"] == [
+        "resolution<&-outcome"
+    ]
     assert payload["findings"][0]["evidence"]["nxdomain_fraction"] == 0.5
-    assert "resolution-outcome" in html
+    assert "resolution&lt;&amp;-outcome" in html
+    assert "severity_basis" in html_stdlib.unescape(html)
+    assert "resolution<&-outcome" in html_stdlib.unescape(html)
     assert rendered["html"] == html
     assert pdf_stream.getvalue() == b"%PDF-r14"
 
     for human_output in (
         text_stream.getvalue(),
+        debug_stream.getvalue(),
         csv_stream.getvalue(),
         html,
         rendered["html"],

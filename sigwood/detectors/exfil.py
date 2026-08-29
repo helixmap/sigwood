@@ -126,7 +126,7 @@ def _port_proto_label(port: object, proto: object) -> str:
     return f"{port_text}/{proto_text}"
 
 
-def _port_mix(group: pd.DataFrame) -> str:
+def _ranked_services(group: pd.DataFrame) -> list[tuple[str, float]]:
     """Return the three largest measured outbound services in deterministic order."""
     labels = [
         _port_proto_label(port, proto)
@@ -136,7 +136,11 @@ def _port_mix(group: pd.DataFrame) -> str:
     by_service: dict[str, float] = {}
     for label, value in zip(labels, group["_orig_bytes"]):
         by_service[label] = by_service.get(label, 0.0) + float(value)
-    ranked = sorted(by_service.items(), key=lambda item: (-item[1], item[0]))[:3]
+    return sorted(by_service.items(), key=lambda item: (-item[1], item[0]))[:3]
+
+
+def _port_mix_text(ranked: list[tuple[str, float]]) -> str:
+    """Render one already-ranked service list with its measured outbound mass."""
     return ", ".join(f"{label} ({human_bytes(total)})" for label, total in ranked)
 
 
@@ -200,6 +204,7 @@ def _pair_summary(
         return None
     total = orig_total + resp_total
     first_seen, last_seen, span_seconds = _time_evidence(group)
+    ranked = _ranked_services(group)
     return {
         "src": str(src),
         "dst": str(dst),
@@ -209,7 +214,8 @@ def _pair_summary(
         "resp_bytes_total": resp_total,
         "orig_share": round(orig_total / total, 4),
         "connection_count": len(group),
-        "port_mix": _port_mix(group),
+        "port_mix": _port_mix_text(ranked),
+        "services": [label for label, _ in ranked],
         "span_seconds": span_seconds,
         "first_seen": first_seen,
         "last_seen": last_seen,
@@ -249,6 +255,7 @@ def _pair_finding(summary: dict[str, Any], context: DetectorContext) -> Finding:
             "orig_share": summary["orig_share"],
             "connection_count": summary["connection_count"],
             "port_mix": summary["port_mix"],
+            "services": summary["services"],
             "span_seconds": summary["span_seconds"],
             "first_seen": summary["first_seen"],
             "last_seen": summary["last_seen"],
@@ -279,6 +286,7 @@ def _rollup_finding(
             "orig_share": summary["orig_share"],
             "connection_count": summary["connection_count"],
             "port_mix": summary["port_mix"],
+            "services": summary["services"],
             "span_seconds": summary["span_seconds"],
             "first_seen": summary["first_seen"],
             "last_seen": summary["last_seen"],
@@ -288,6 +296,7 @@ def _rollup_finding(
     ]
     members.sort(key=lambda member: (-float(member["orig_bytes"]), str(member["dst"])))
     first_seen, last_seen, span_seconds = _time_evidence(represented)
+    ranked = _ranked_services(represented)
     network_text = str(network)
     return Finding(
         detector=DETECTOR_NAME,
@@ -307,7 +316,8 @@ def _rollup_finding(
             "resp_bytes_total": resp_total,
             "orig_share": round(orig_total / total, 4),
             "connection_count": int(sum(int(summary["connection_count"]) for summary in summaries)),
-            "port_mix": _port_mix(represented),
+            "port_mix": _port_mix_text(ranked),
+            "services": [label for label, _ in ranked],
             "span_seconds": span_seconds,
             "first_seen": first_seen,
             "last_seen": last_seen,

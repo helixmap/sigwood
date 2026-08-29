@@ -46,6 +46,12 @@ _CONN_LINE = (
     '"id.resp_p":443,"proto":"tcp","duration":1.0,"orig_bytes":128}\n'
 )
 
+# A genuine writer hang is unbounded, while this child has a legitimate cold
+# start that imports sigwood.cli and pandas. Three seconds did not cover that
+# startup on a loaded CI runner; thirty keeps the liveness check finite without
+# turning ordinary import contention into a product failure.
+_HANG_TIMEOUT_SECONDS = 30.0
+
 
 def _mode(path: Path) -> int:
     return stat.S_IMODE(path.stat().st_mode)
@@ -59,7 +65,7 @@ def _symlink_refusal(path: Path) -> str:
 
 
 def _run_cli_process(
-    *args: str, timeout: float = 3.0,
+    *args: str, timeout: float = _HANG_TIMEOUT_SECONDS,
 ) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [

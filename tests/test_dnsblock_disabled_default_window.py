@@ -11,19 +11,56 @@ import pytest
 from sigwood import cli
 from sigwood.common import config as config_module
 from sigwood.detectors import dnsblock
+from sigwood.parsers.syslog import parse_timestamp
 
 
 UTC = timezone.utc
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
-def _run_demo_cli(
+def _fixture_config(
+    tmp_path: Path,
+    *,
+    default_window: str,
+) -> tuple[Path, tuple[datetime, datetime]]:
+    """Build a complete, clock-relative Pi-hole input under ``tmp_path``."""
+    pihole_dir = tmp_path / "pihole"
+    pihole_dir.mkdir()
+    anchor = datetime.now(UTC).replace(microsecond=0)
+    instants = (anchor - timedelta(hours=2), anchor - timedelta(hours=1))
+    lines = [
+        (
+            f"{instant:%b} {instant.day:2d} {instant:%H:%M:%S} "
+            f"dnsmasq[1]: query[A] fixture-{index}.test from 192.0.2.10"
+        )
+        for index, instant in enumerate(instants, start=1)
+    ]
+    (pihole_dir / "pihole.log").write_text(
+        "\n".join(lines) + "\n",
+        encoding="utf-8",
+    )
+
+    parsed = [parse_timestamp(line) for line in lines]
+    assert all(value is not None for value in parsed)
+    extrema = sorted(value for value in parsed if value is not None)
+
+    config = tmp_path / "sigwood.toml"
+    config.write_text(
+        (
+            "[sigwood]\n"
+            f'pihole_dir = "{pihole_dir}"\n'
+            f'default_window = "{default_window}"\n'
+        ),
+        encoding="utf-8",
+    )
+    return config, (extrema[0], extrema[-1])
+
+
+def _run_fixture_cli(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
     config_path: Path,
 ) -> tuple[object, tuple[datetime, datetime], str]:
     """Observe the real fold and prepared carrier without supplying either."""
-    monkeypatch.chdir(PROJECT_ROOT)
     monkeypatch.setattr(config_module, "SEARCH_PATHS", [])
     monkeypatch.setenv("FAST_HDBSCAN_NUMBA_CACHE", "false")
 
@@ -67,13 +104,16 @@ def _run_demo_cli(
 
 def test_disabled_default_uses_the_observed_archive_range_through_cli(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    prepared, observed_range, terminal = _run_demo_cli(
-        monkeypatch, capsys, PROJECT_ROOT / "demo" / "sigwood.toml"
+    config, expected_range = _fixture_config(tmp_path, default_window="all")
+    prepared, observed_range, terminal = _run_fixture_cli(
+        monkeypatch, capsys, config
     )
 
     assert "Traceback" not in terminal
+    assert observed_range == expected_range
     assert prepared.preflight.report_interval == observed_range
 
 
@@ -82,18 +122,13 @@ def test_configured_default_keeps_its_existing_report_interval(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    config = tmp_path / "sigwood.toml"
-    source = (PROJECT_ROOT / "demo" / "sigwood.toml").read_text(encoding="utf-8")
-    config.write_text(
-        source.replace('default_window = "all"', 'default_window = "7d"'),
-        encoding="utf-8",
-    )
-
-    prepared, observed_range, terminal = _run_demo_cli(
+    config, expected_range = _fixture_config(tmp_path, default_window="7d")
+    prepared, observed_range, terminal = _run_fixture_cli(
         monkeypatch, capsys, config
     )
 
     assert "Traceback" not in terminal
+    assert observed_range == expected_range
     observed_end = observed_range[1]
     assert prepared.preflight.report_interval == (
         observed_end - timedelta(days=7),

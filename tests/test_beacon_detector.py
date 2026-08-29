@@ -499,9 +499,7 @@ class BeaconRunTests(unittest.TestCase):
         )
         self.assertEqual(
             finding.description,
-            "The strongest periodic component in these connections falls at 10.0m. "
-            "The rhythm score combines that component's spectral share and prominence "
-            "with the steadiness of the gaps between connections.",
+            "The strongest repeating interval in these connections is 10.0m.",
         )
         self.assertEqual(
             finding.next_steps,

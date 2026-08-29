@@ -39,7 +39,8 @@ DEFAULT_CONFIG = {
 
 DETECTOR_METHOD = MethodTag("heuristics", named=False)
 DETECTOR_MISSION: str = (
-    "Finds large outbound transfers to hosts outside your network."
+    "Finds large outbound transfers to hosts outside your network. You decide how big "
+    "a transfer has to be to count as large."
 )
 
 _REQUIRED_SCORING_COLUMNS = ("src", "dst", "bytes", "resp_bytes")
@@ -243,9 +244,8 @@ def _pair_finding(summary: dict[str, Any], context: DetectorContext) -> Finding:
         severity=Severity.MEDIUM,
         title=f"{src} → {dst}",
         description=(
-            "Connection rows with complete byte counts show outbound traffic to an "
-            "external destination, meeting the configured minimum outbound-byte and "
-            "originator-share floors."
+            "This host sent data out to a destination outside your network. The figures "
+            "cover only connections where both byte counts were recorded."
         ),
         evidence={
             "src": src,
@@ -303,9 +303,8 @@ def _rollup_finding(
         severity=Severity.MEDIUM,
         title=f"{src} → {network_text}",
         description=(
-            "Connection rows with complete byte counts show outbound traffic across a "
-            "rotating external destination pool, meeting the configured minimum "
-            "outbound-byte and originator-share floors."
+            "This host sent data out to a group of destinations outside your network. "
+            "The figures cover only connections where both byte counts were recorded."
         ),
         evidence={
             "tier": "destination_pool",

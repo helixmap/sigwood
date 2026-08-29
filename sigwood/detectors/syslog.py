@@ -44,7 +44,7 @@ from typing import Iterable, Mapping, NamedTuple
 import pandas as pd
 from tqdm import tqdm
 
-from sigwood.common.display import narration_active
+from sigwood.common.display import narration_active, plural
 from sigwood.common.finding import DetectorContext, Finding, MethodTag, Severity
 from sigwood.parsers.syslog import (
     ADMIN_SESSION_CLOSE_RE,
@@ -241,7 +241,8 @@ def validate_config(cfg: dict) -> None:
 DETECTOR_METHOD = MethodTag("drain3", named=True)
 DETECTOR_MISSION: str = (
     "Finds rare log patterns and recorded reboots or administrative runs, so "
-    "changes on a machine do not disappear into routine logs."
+    "changes on a machine do not disappear into routine logs. You decide how seldom a "
+    "pattern must appear to count as rare."
 )
 
 
@@ -516,24 +517,25 @@ def run(context: DetectorContext) -> list[Finding]:
     burst_pairs, isolated_remainder = _collapse_bursts(
         sieve_df,
         gap_seconds=gap_seconds, min_size=min_size,
-        now=now, data_window=context.data_window,
+        now=now, data_window=context.data_window, display_max_count=max_count,
     )
     _decorate_burst_first_seen(burst_pairs)
     sieve_pairs = _collapse_families(
         isolated_remainder, freq, threshold,
         min_size=family_min_size, now=now, data_window=context.data_window,
         severity=Severity.LOW, privileged=False, program_totals=program_totals,
-        line_trim_limit=line_trim_limit,
+        line_trim_limit=line_trim_limit, display_max_count=max_count,
     )
     member_pairs = _collapse_families(
         member_df, freq, threshold,
         min_size=family_min_size, now=now, data_window=context.data_window,
         severity=Severity.MEDIUM, privileged=True, program_totals=program_totals,
-        line_trim_limit=line_trim_limit,
+        line_trim_limit=line_trim_limit, display_max_count=max_count,
     )
     pairs = _reconcile(
         boot_events, [*burst_pairs, *sieve_pairs, *member_pairs],
         gap_seconds=gap_seconds, now=now, data_window=context.data_window,
+        display_max_count=max_count,
     )
     if transaction_events:
         pairs = _reconcile_transactions(
@@ -1148,6 +1150,14 @@ def _reconcile_transactions(
     return out
 
 
+def _appearance_limit(display_max_count: int) -> str:
+    """Describe the operator-set count cap without configuration vocabulary."""
+    return (
+        f"appeared at most {display_max_count} "
+        f"{plural(display_max_count, 'time')} in this run"
+    )
+
+
 def _collapse_bursts(
     rare_df: pd.DataFrame,
     *,
@@ -1155,6 +1165,7 @@ def _collapse_bursts(
     min_size: int,
     now: datetime,
     data_window: tuple[datetime, datetime],
+    display_max_count: int = DEFAULT_CONFIG["max_count"],
 ) -> tuple[list[tuple[float, Finding]], pd.DataFrame]:
     """Per-host temporal burst collapse over the rare set.
 
@@ -1185,7 +1196,12 @@ def _collapse_bursts(
         for group in _gap_cluster(parseable.itertuples(), gap_seconds):
             if len(group) >= min_size:
                 burst_member.loc[[int(row.Index) for row in group]] = True
-                timestamped.append(_burst_finding(str(host), group, now, data_window))
+                timestamped.append(
+                    _burst_finding(
+                        str(host), group, now, data_window,
+                        display_max_count=display_max_count,
+                    )
+                )
 
     # Boolean-complement construction makes the accounting seam explicit: rows
     # are never rebuilt from namedtuples, duplicate source indexes cannot expand
@@ -1205,6 +1221,7 @@ def _collapse_families(
     privileged: bool,
     program_totals: dict[tuple[object, object], int],
     line_trim_limit: int = LINE_TRIM_LIMIT,
+    display_max_count: int = DEFAULT_CONFIG["max_count"],
 ) -> list[tuple[float, Finding]]:
     """Fold isolated rare rows into one explicit membership/severity channel.
 
@@ -1232,6 +1249,7 @@ def _collapse_families(
                         privileged=privileged,
                         program_total=program_totals.get((host, program), 0),
                         line_trim_limit=line_trim_limit,
+                        display_max_count=display_max_count,
                     )
                 )
             continue
@@ -1254,8 +1272,8 @@ def _collapse_families(
             ordered.itertuples(index=False)
         )
         description = (
-            "A set of log lines from a single program on this host, each from a "
-            "template at or below this run's rarity threshold."
+            "A set of log lines from a single program on this host, each from a pattern "
+            f"that {_appearance_limit(display_max_count)}."
         )
         if privileged:
             description += " This program is in sigwood's privileged class."
@@ -1317,6 +1335,8 @@ def _burst_finding(
     group: list,
     now: datetime,
     data_window: tuple[datetime, datetime],
+    *,
+    display_max_count: int = DEFAULT_CONFIG["max_count"],
 ) -> tuple[float, Finding]:
     """Build one INFO burst finding from a gap-clustered group of rare rows
     (already ts-sorted). Returns (sort_ts, finding). label is always None here -
@@ -1350,8 +1370,8 @@ def _burst_finding(
         # label and upgrades the description alongside it. An unlabeled burst
         # must not be narrated as a boot the detector never observed.
         description=(
-            "A cluster of log lines on this host, each from a template at or below "
-            "this run's rarity threshold."
+            "A cluster of log lines on this host, each from a pattern that "
+            f"{_appearance_limit(display_max_count)}."
         ),
         evidence={
             "tier":         "burst",
@@ -1384,6 +1404,7 @@ def _isolated_finding(
     privileged: bool,
     program_total: int,
     line_trim_limit: int = LINE_TRIM_LIMIT,
+    display_max_count: int = DEFAULT_CONFIG["max_count"],
 ) -> tuple[float, Finding]:
     """Classify a single rare NON-reboot row in one explicit membership channel.
 
@@ -1394,7 +1415,7 @@ def _isolated_finding(
     program = getattr(row, "program", None)
     program = "unknown" if program is None or pd.isna(program) else str(program)
 
-    description = "Log template observed at or below this run's rarity threshold."
+    description = f"This log pattern {_appearance_limit(display_max_count)}."
     if privileged:
         description += " This program is in sigwood's privileged class."
     evidence = {
@@ -1467,6 +1488,7 @@ def _reconcile(
     gap_seconds: int,
     now: datetime,
     data_window: tuple[datetime, datetime],
+    display_max_count: int = DEFAULT_CONFIG["max_count"],
 ) -> list[tuple[float, Finding]]:
     """Reconcile the two channels to exactly one representation per boot event.
 
@@ -1527,8 +1549,9 @@ def _reconcile(
             # The label and the prose move together: only a burst a boot event
             # actually claimed may be described as a reboot.
             target.description = (
-                "A cluster of log lines on this host, each from a template at or below "
-                "this run's rarity threshold, coinciding with a reboot of this host."
+                "A cluster of log lines on this host, each from a pattern that "
+                f"{_appearance_limit(display_max_count)}, coinciding with a reboot of "
+                "this host."
             )
             claimed.add(id(target))
         else:

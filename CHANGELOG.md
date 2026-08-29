@@ -25,17 +25,33 @@ All notable changes to sigwood are recorded here. The format follows
   `dns` `min_cluster_size = 1` ran on the fast clustering backend while always failing on
   the stock one. Each is now refused with its own message.
 
-- Fifteen printed claims across six detectors now state only what their configuration
-  can support. A sweep of the detectors' finding prose against the values each setting
-  accepts confirmed fifteen claims an ordinary configuration change could make false:
-  `exfil` calling a single byte a bulk transfer, `scan` calling four seconds a
-  deliberately slow scan, `dns` calling one name a family, `syslog` calling three days a
-  short window. The remedies differ by claim - some now print the measured quantity the
-  adjective stood in for, some name the threshold a term of art actually refers to, and
-  some simply drop a magnitude the setting never guaranteed. Findings carry the same
-  evidence, severity and machine fields as before; only the wording changed. The pass was
-  bounded: ten further candidates and the per-detector mission lines were examined without
-  reaching a verdict, and are unchanged.
+- Detector prose no longer makes claims a configuration change can falsify, and no longer
+  explains itself in configuration vocabulary. A sweep against the values each setting
+  accepts found fifteen claims an ordinary change could make false: `exfil` calling a
+  single byte a bulk transfer, `scan` calling four seconds a deliberately slow scan,
+  `dns` calling one name a family, `syslog` calling three days a short window. Nine were
+  rewritten; the other six already stated their measurement plainly and are untouched.
+
+  Where a finding knows its own number it now says so and lets the row's cells carry the
+  magnitude, instead of reaching for an adjective. Where a number genuinely helps a
+  reader it cites the value in force rather than naming the setting behind it: a syslog
+  finding says a pattern "appeared at most 3 times in this run" rather than referring to
+  a rarity threshold. No report now says anything resembling "meeting the configured
+  minimum outbound-byte and originator-share floors" - that sentence was accurate and
+  unreadable, which is its own kind of wrong for a tool meant to be understood by someone
+  who has never opened its configuration.
+
+  Six of the nine detector mission lines - the one-line description under each group
+  heading - gained a second sentence naming what you control. `exfil` now reads *"Finds
+  large outbound transfers to hosts outside your network. You decide how big a transfer
+  has to be to count as large."* That keeps the plain word a report ought to use while
+  making the line yours rather than a claim of ours. `auth` and `dnsblock` have no
+  settings, so theirs are unchanged.
+
+  Findings carry the same evidence, severity and machine fields as before; only wording
+  moved. The pass remains bounded: ten further candidate claims are still unresolved, and
+  the `ssl` mission is excluded pending a separate question about what its checks
+  actually compare.
 
 ### Fixed
 

@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import html
 import importlib
 import io
+import re
 import sys
 from datetime import datetime, timezone
 
@@ -17,6 +19,55 @@ from sigwood.outputs.text import TextHandler
 
 
 _NOW = datetime(2026, 8, 28, tzinfo=timezone.utc)
+
+_EXPECTED_SHIPPED_MISSIONS = {
+    "auth": (
+        "Finds failed logins concentrated around a source, account, service, or set "
+        "of hosts, including a success after a sustained run of failures."
+    ),
+    "aws": (
+        "Finds CloudTrail principals whose activity stands out in the loaded window, "
+        "or that add several first-seen actions close together. You decide how far a "
+        "principal must stand out, and how many actions count as several."
+    ),
+    "beacon": (
+        "Finds outbound connections that keep a regular rhythm, a pattern worth "
+        "checking for automated check-ins. You decide how strict the rhythm has to be "
+        "before it surfaces."
+    ),
+    "dns": (
+        "Finds domain names that stand apart from the rest, including machine-generated-"
+        "looking names of the sort malware uses for disposable command domains, and "
+        "large batches of related lookups. You decide how machine-generated a name must "
+        "look, and how large a batch of lookups counts."
+    ),
+    "dnsblock": (
+        "Finds clients newly or suddenly busy against names your own blocklists already "
+        "block."
+    ),
+    "exfil": (
+        "Finds large outbound transfers to hosts outside your network. You decide how "
+        "big a transfer has to be to count as large."
+    ),
+    "scan": (
+        "Finds one host reaching for many ports or many hosts - the shape of something "
+        "looking around. You decide how many ports or hosts count as many."
+    ),
+    "ssl": "Finds outbound TLS sessions whose setup looks unlike the rest of your estate.",
+    "syslog": (
+        "Finds rare log patterns and recorded reboots or administrative runs, so changes "
+        "on a machine do not disappear into routine logs. You decide how seldom a pattern "
+        "must appear to count as rare."
+    ),
+}
+
+_BANNED_MISSION_VOCABULARY = (
+    "configured",
+    "threshold",
+    "floor",
+    "minimum",
+    "scored by entropy",
+)
 
 
 def _finding(detector: str, *, kind: str | None = None) -> Finding:
@@ -59,6 +110,37 @@ def test_shipped_inventory_has_one_nonempty_mission_per_available_detector() -> 
         isinstance(module.DETECTOR_MISSION, str) and module.DETECTOR_MISSION.strip()
         for module in detectors.values()
     )
+
+
+def test_all_nine_shipped_missions_are_exact_plain_rendered_surfaces() -> None:
+    detectors = runner.discover_detectors()
+    actual = {
+        name: module.DETECTOR_MISSION
+        for name, module in detectors.items()
+    }
+
+    assert actual == _EXPECTED_SHIPPED_MISSIONS
+    for mission in actual.values():
+        lowered = mission.casefold()
+        assert all(
+            re.search(rf"\b{re.escape(word)}\b", lowered) is None
+            for word in _BANNED_MISSION_VOCABULARY
+        )
+
+    for mission in actual.values():
+        finding = _finding("probe")
+        summary = _summary("probe", missions={"probe": mission})
+        stream = io.StringIO()
+        handler = TextHandler(stream=stream, verbose_level=1)
+        handler.begin(summary)
+        handler.write([finding])
+        handler.end()
+        flattened_text = " ".join(stream.getvalue().splitlines())
+        rendered_html = render_report_html(
+            [finding], summary, verbose_level=1, max_findings_per_detector=100,
+        )
+        assert mission in flattened_text
+        assert html.escape(mission) in rendered_html
 
 
 def test_legacy_missionless_dropin_coexists_with_the_shipped_inventory(

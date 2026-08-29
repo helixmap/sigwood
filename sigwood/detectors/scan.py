@@ -75,7 +75,7 @@ def validate_config(cfg: dict) -> None:
 DETECTOR_METHOD = MethodTag("pattern", named=False)
 DETECTOR_MISSION: str = (
     "Finds one host reaching for many ports or many hosts - the shape of "
-    "something looking around."
+    "something looking around. You decide how many ports or hosts count as many."
 )
 
 # ── Domain-knowledge constants ────────────────────────────────────────────────
@@ -522,8 +522,9 @@ def _detect_slow(df: pd.DataFrame, cfg: dict) -> list[dict]:
             pattern_notes = (
                 f"Connection attempts spread across {n_buckets} "
                 f"{plural(n_buckets, 'time window')} of "
-                f"{fmt_compact_span(timedelta(seconds=bucket_secs))} each, staying "
-                "below the per-window detection threshold in every observed window."
+                f"{fmt_compact_span(timedelta(seconds=bucket_secs))} each, with no "
+                f"single window reaching the {vert_threshold} ports that would surface "
+                "it as an ordinary scan."
             )
         else:
             pattern_tag   = 'slow_scan_candidate'

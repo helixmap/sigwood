@@ -59,8 +59,9 @@ OPTIONAL_LOGS: list[dict] = []
 
 DETECTOR_METHOD = MethodTag("statistical", named=False)
 DETECTOR_MISSION: str = (
-    "Finds CloudTrail principals that stand out from their peers in the loaded "
-    "window or add several first-seen actions within that window in a short span."
+    "Finds CloudTrail principals whose activity stands out in the loaded window, or "
+    "that add several first-seen actions close together. You decide how far a "
+    "principal must stand out, and how many actions count as several."
 )
 
 DEFAULT_CONFIG = {
@@ -604,9 +605,9 @@ def _make_ranked_finding(
 
     title = str(principal)
     description = (
-        f"Composite score {row['composite_z']:.2f}, summing standardized error rate, "
-        "distinct source IP, distinct action name, and action entropy values for this "
-        "principal within this population."
+        f"Composite score {row['composite_z']:.2f}. It combines how this principal's "
+        "error rate, source addresses, action variety and action mix compare within "
+        "this window's principal population."
     )
     next_steps = [
         f"Review CloudTrail events for principal {principal}",

@@ -52,7 +52,8 @@ DEFAULT_CONFIG = {
 DETECTOR_METHOD = MethodTag("FFT", named=True)
 DETECTOR_MISSION: str = (
     "Finds outbound connections that keep a regular rhythm, a pattern worth "
-    "checking for automated check-ins."
+    "checking for automated check-ins. You decide how strict the rhythm has to be "
+    "before it surfaces."
 )
 
 # Period range to consider (seconds). Outside this, FFT peaks are ignored.
@@ -576,11 +577,7 @@ def _make_finding(
     if math.isfinite(span) and math.isfinite(period) and period > 0:
         cycles = round(span / period, 1)
 
-    description = (
-        f"The strongest periodic component in these connections falls at {period_str}. "
-        "The rhythm score combines that component's spectral share and prominence "
-        "with the steadiness of the gaps between connections."
-    )
+    description = f"The strongest repeating interval in these connections is {period_str}."
 
     next_steps = [
         f"Identify the process on {src} behind these connections",

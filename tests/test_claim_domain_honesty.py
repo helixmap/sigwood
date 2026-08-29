@@ -10,6 +10,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import html
 import io
+import re
 
 import pandas as pd
 
@@ -24,6 +25,26 @@ _WINDOW = (
     datetime.fromtimestamp(_BASE, timezone.utc),
     datetime.fromtimestamp(_BASE + 14 * 86_400, timezone.utc),
 )
+
+_BANNED_READER_VOCABULARY = (
+    "configured",
+    "threshold",
+    "floor",
+    "minimum",
+    "standardized",
+    "spectral share",
+    "prominence",
+    "scored by entropy",
+)
+
+
+def _assert_plain(description: str) -> None:
+    """Check only an F01-F15 public-run description, never source literals."""
+    lowered = description.casefold()
+    assert all(
+        re.search(rf"\b{re.escape(word)}\b", lowered) is None
+        for word in _BANNED_READER_VOCABULARY
+    )
 
 
 def _context(
@@ -83,6 +104,7 @@ def test_f01_aws_service_count_does_not_print_multiple_services() -> None:
     assert finding.evidence["new_service_count"] == 1
     assert "across multiple services" not in finding.description
     assert "A group of first-seen actions for this principal." in finding.description
+    _assert_plain(finding.description)
 
 
 def test_f02_aws_config_scaled_span_does_not_print_short_window() -> None:
@@ -104,6 +126,7 @@ def test_f02_aws_config_scaled_span_does_not_print_short_window() -> None:
     assert finding.evidence["span_seconds"] == 10 * 86_400
     assert "short window" not in finding.description
     assert "The pattern may reflect enumeration or recon" in finding.description
+    _assert_plain(finding.description)
 
 
 def _aws_ranked(config: dict, rows: list[dict[str, object]]) -> list[object]:
@@ -166,7 +189,8 @@ def test_f03_aws_composite_names_signed_sum_at_zero_and_negative() -> None:
     for finding in [zero[0], negative]:
         assert "unusual for the population" not in finding.description
         assert finding.description.startswith("Composite score ")
-        assert "summing standardized error rate" in finding.description
+        assert "compare within this window's principal population" in finding.description
+        _assert_plain(finding.description)
 
 
 def test_f04_beacon_low_threshold_prints_measured_fft_terms() -> None:
@@ -200,8 +224,9 @@ def test_f04_beacon_low_threshold_prints_measured_fft_terms() -> None:
 
     assert "near-fixed" not in finding.description
     assert "regular cadence" not in finding.description
-    assert finding.description.startswith("The strongest periodic component")
-    assert "spectral share and prominence" in finding.description
+    assert finding.description.startswith("The strongest repeating interval")
+    assert ". " not in finding.description
+    _assert_plain(finding.description)
     assert finding.next_steps[0] == "Identify the process on 192.0.2.10 behind these connections"
 
 
@@ -248,6 +273,7 @@ def test_f05_dns_single_name_does_not_print_family() -> None:
     assert finding.description.startswith(
         "1 distinct name under private namespace example"
     )
+    _assert_plain(finding.description)
 
 
 def test_f06_dns_low_failure_fraction_does_not_print_mostly() -> None:
@@ -256,6 +282,7 @@ def test_f06_dns_low_failure_fraction_does_not_print_mostly() -> None:
     assert finding.evidence["nxdomain_fraction"] == 0.02
     assert "mostly fail" not in finding.description
     assert "failed to resolve in 2% of lookups" in finding.description
+    _assert_plain(finding.description)
 
 
 def _exfil_row(**overrides: object) -> dict[str, object]:
@@ -293,7 +320,11 @@ def test_f07_exfil_pair_uses_inclusive_configured_floors() -> None:
     assert finding.evidence["orig_share"] == 0.01
     assert "originator-dominant" not in finding.description
     assert "bulk data transfer" not in finding.description
-    assert "meeting the configured minimum outbound-byte and originator-share floors" in finding.description
+    assert finding.description == (
+        "This host sent data out to a destination outside your network. The figures "
+        "cover only connections where both byte counts were recorded."
+    )
+    _assert_plain(finding.description)
 
 
 def test_f08_exfil_pool_uses_inclusive_configured_floors() -> None:
@@ -305,8 +336,11 @@ def test_f08_exfil_pool_uses_inclusive_configured_floors() -> None:
     assert all(member["orig_share"] == 0.01 for member in finding.evidence["members"])
     assert "originator-dominant" not in finding.description
     assert "bulk data transfer" not in finding.description
-    assert "rotating external destination pool" in finding.description
-    assert "meeting the configured minimum outbound-byte and originator-share floors" in finding.description
+    assert finding.description == (
+        "This host sent data out to a group of destinations outside your network. "
+        "The figures cover only connections where both byte counts were recorded."
+    )
+    _assert_plain(finding.description)
 
 
 def _scan_context(frame: pd.DataFrame, config: dict) -> DetectorContext:
@@ -347,6 +381,7 @@ def test_f09_scan_one_connection_does_not_print_repeated_attempts() -> None:
     assert finding.evidence["total_conns"] == 1
     assert "repeated connection attempts" not in finding.description
     assert "across 1 connection attempt" in finding.description
+    _assert_plain(finding.description)
 
     plural_frame = pd.concat(
         [frame, frame.assign(ts=_BASE + 1, port=444)], ignore_index=True
@@ -358,6 +393,7 @@ def test_f09_scan_one_connection_does_not_print_repeated_attempts() -> None:
     )
     assert plural_finding.evidence["total_conns"] == 2
     assert "across 2 connection attempts" in plural_finding.description
+    _assert_plain(plural_finding.description)
 
 
 def test_f09_scan_missing_count_defensive_arm_omits_none() -> None:
@@ -416,6 +452,7 @@ def test_f10_scan_one_window_does_not_print_several_or_moderate() -> None:
     assert "several time windows" not in finding.description
     assert "moderate scan-indicative" not in finding.description
     assert "across 1 time window" in finding.description
+    _assert_plain(finding.description)
 
     plural_frame = pd.concat(
         [frame, frame.assign(ts=_BASE + config["window_secs"], port=444)],
@@ -428,6 +465,7 @@ def test_f10_scan_one_window_does_not_print_several_or_moderate() -> None:
     )
     assert plural_finding.evidence["active_buckets"] == 2
     assert "across 2 time windows" in plural_finding.description
+    _assert_plain(plural_finding.description)
 
 
 def _slow_scan(
@@ -469,7 +507,11 @@ def test_f11_scan_slow_names_observed_windows_without_intent() -> None:
     for finding in (one_second, one_hour):
         assert "deliberately slow" not in finding.description
         assert "paced to avoid" not in finding.description
-        assert "staying below the per-window detection threshold in every observed window" in finding.description
+        assert (
+            "with no single window reaching the 15 ports that would surface it as "
+            "an ordinary scan"
+        ) in finding.description
+        _assert_plain(finding.description)
     assert "across 4 time windows of 1s each" in one_second.description
     assert "across 4 time windows of 1h each" in one_hour.description
     assert "across 1 time window of 1s each" in singular.description
@@ -533,7 +575,8 @@ def test_f12_syslog_burst_defines_template_frequency() -> None:
 
     assert "cluster of rare log lines" not in finding.description
     assert "short window" not in finding.description
-    assert "each from a template at or below this run's rarity threshold" in finding.description
+    assert "each from a pattern that appeared at most 100 times in this run" in finding.description
+    _assert_plain(finding.description)
 
 
 def test_f13_syslog_rebooted_burst_keeps_template_frequency_object() -> None:
@@ -555,8 +598,9 @@ def test_f13_syslog_rebooted_burst_keeps_template_frequency_object() -> None:
 
     assert "cluster of rare log lines" not in finding.description
     assert "short window" not in finding.description
-    assert "each from a template at or below this run's rarity threshold" in finding.description
+    assert "each from a pattern that appeared at most 100 times in this run" in finding.description
     assert finding.description.endswith("coinciding with a reboot of this host.")
+    _assert_plain(finding.description)
 
 
 def test_f14_syslog_family_defines_template_frequency() -> None:
@@ -577,7 +621,8 @@ def test_f14_syslog_family_defines_template_frequency() -> None:
 
     assert finding.evidence["line_count"] == 60
     assert "set of rare log lines" not in finding.description
-    assert "each from a template at or below this run's rarity threshold" in finding.description
+    assert "each from a pattern that appeared at most 100 times in this run" in finding.description
+    _assert_plain(finding.description)
 
 
 def test_f15_syslog_needle_defines_template_frequency() -> None:
@@ -596,9 +641,8 @@ def test_f15_syslog_needle_defines_template_frequency() -> None:
     )
 
     assert "Rare log template observed" not in finding.description
-    assert finding.description.startswith(
-        "Log template observed at or below this run's rarity threshold."
-    )
+    assert finding.description.startswith("This log pattern appeared at most 100 times in this run.")
+    _assert_plain(finding.description)
 
 
 def test_representative_narrowings_reach_verbose_text_and_html() -> None:

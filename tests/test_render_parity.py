@@ -350,7 +350,7 @@ def test_ssl_projection_renders_the_three_reason_shapes(
     cells = project_row(finding)
     keyed = {cell.key: cell.value for cell in cells if cell.key is not None}
     assert [cell.key for cell in cells] == [
-        None, None, None, "reason", "conns", "tls", "first",
+        None, None, None, "conns", "tls", "first", "reason",
     ]
     assert keyed["reason"] == expected
     assert keyed["tls"] == "tls=TLSv12"
@@ -366,6 +366,38 @@ def test_ssl_projection_renders_the_three_reason_shapes(
     assert '<th class="col-tls">tls</th>' in html_out
     assert expected in html_out and ">TLSv12</td>" in html_out
     assert "col-basis" not in html_out and "col-status" not in html_out
+
+    row_start = html_out.index('<tr class="finding-row')
+    row_end = html_out.index("</tr>", row_start)
+    row = html_out[row_start:row_end]
+    assert f'<td class="data col-reason">{expected}</td>' in row
+    assert 'class="data col-conns"' not in row
+    assert 'class="data col-tls"' not in row
+    assert 'class="data col-first"' not in row
+    assert row.index(">29</td>") < row.index(">TLSv12</td>")
+    assert row.index(">TLSv12</td>") < row.index(expected)
+
+    screen_start = html_out.index("@media screen {")
+    print_start = html_out.index("@media print")
+    screen_block = html_out[screen_start:print_start]
+    assert ".findings-table td.col-reason { white-space: normal; }" in screen_block
+    assert screen_block.index(
+        ".findings-table td.data { white-space: nowrap; }"
+    ) < screen_block.index(
+        ".findings-table td.col-reason { white-space: normal; }"
+    )
+    assert "td.col-reason" not in html_out[print_start:]
+
+
+def test_ssl_reason_wrap_rule_does_not_move_non_ssl_html() -> None:
+    findings = [_VARIANTS["dns_singleton"], _VARIANTS["syslog_family"]]
+    html_out = render_report_html(
+        findings,
+        _summary(findings),
+        verbose_level=0,
+        max_findings_per_detector=100,
+    )
+    assert ".findings-table td.col-reason { white-space: normal; }" not in html_out
 
 
 def test_ssl_reason_fallback_never_invents_a_qualified_claim() -> None:
@@ -996,8 +1028,22 @@ def test_exfil_transport_is_whole_group_optional_and_share_boundary_is_exact() -
 
 def test_scan_outcome_copy_is_bound_to_the_exact_six_state_set() -> None:
     assert SCAN_STATES == {"S0", "REJ", "RSTO", "RSTR", "SH", "OTH"}
-    keyed = {cell.key: cell for cell in project_row(_VARIANTS["scan_vertical"])}
+    cells = project_row(_VARIANTS["scan_vertical"])
+    assert [cell.key for cell in cells] == [
+        None, "middle", "type", "outcome", "metric",
+    ]
+    keyed = {cell.key: cell for cell in cells}
     assert keyed["outcome"].value == "91% no normal close seen"
+
+    text_out = _text([_VARIANTS["scan_vertical"]])
+    html_out = render_report_html(
+        [_VARIANTS["scan_vertical"]],
+        _summary([_VARIANTS["scan_vertical"]]),
+        verbose_level=0,
+        max_findings_per_detector=100,
+    )
+    assert text_out.index("192.0.2.231") < text_out.index("vertical")
+    assert html_out.index("192.0.2.231") < html_out.index(">vertical</td>")
 
 
 def test_dns_scan_summary_names_the_visible_review_object() -> None:

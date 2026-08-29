@@ -501,6 +501,8 @@ def _render_finding_row(
                 classes.append("data")
                 if finding.detector == "syslog":
                     classes.append(f"col-{spec.key}")
+                if finding.detector == "ssl" and spec.key == "reason":
+                    classes.append("col-reason")
             if i < len(cells) and cells[i].copyable:
                 classes.append("copyable")
             cls = f' class="{" ".join(classes)}"' if classes else ""
@@ -629,7 +631,7 @@ def _render_findings(
 # --------------------------------------------------------------------------- #
 # Document shell + styles
 # --------------------------------------------------------------------------- #
-def _styles(landscape: bool) -> str:
+def _styles(landscape: bool, *, ssl_reason_wrap: bool = False) -> str:
     """Inline CSS. System fonts, NO external resources, NO CSS grid (weasyprint
     partial). Light palette via :root custom properties; dark mode re-binds them;
     an @media print block makes the same string PDF-safe.
@@ -639,7 +641,7 @@ def _styles(landscape: bool) -> str:
     data-cell ``nowrap`` lives under ``@media screen`` so the PRINT page wraps
     instead of clipping wide tables (the correctness floor)."""
     page_size = "A4 landscape" if landscape else "A4"
-    return ("""
+    styles = ("""
 :root {
   --bg: #ffffff; --fg: #1f2933; --muted: #677181; --border: #d7dde4;
   --card-bg: #ffffff; --head-bg: #f6f8fa;
@@ -784,6 +786,13 @@ header { border-bottom: 2px solid var(--border); padding-bottom: 18px; margin-bo
   .findings-table tr.sample-detail { display: none; }
 }
 """.strip().replace("__SIGWOOD_PAGE_SIZE__", page_size))
+    if ssl_reason_wrap:
+        styles = styles.replace(
+            "  .findings-table td.data { white-space: nowrap; }\n",
+            "  .findings-table td.data { white-space: nowrap; }\n"
+            "  .findings-table td.col-reason { white-space: normal; }\n",
+        )
+    return styles
 
 
 def render_report_html(
@@ -805,6 +814,9 @@ def render_report_html(
     # Orientation decided HERE so html and pdf agree (one renderer, two outputs);
     # @page only affects paged media, so the on-screen html is inert to it.
     landscape = needs_landscape(renderables)
+    ssl_reason_wrap = any(
+        detector == "ssl" for detector, _renderable in renderables
+    )
     header = _render_header(run_summary)
     strip = _render_severity_strip(renderables)
     detector_missions = (
@@ -826,7 +838,7 @@ def render_report_html(
         '  <meta charset="utf-8">\n'
         '  <meta name="viewport" content="width=device-width, initial-scale=1">\n'
         "  <title>sigwood report</title>\n"
-        f"  <style>{_styles(landscape)}</style>\n"
+        f"  <style>{_styles(landscape, ssl_reason_wrap=ssl_reason_wrap)}</style>\n"
         "</head>\n<body>\n"
         f"{header}\n{strip}\n<main>{body}{why_hint}</main>\n"
         "</body>\n</html>\n"

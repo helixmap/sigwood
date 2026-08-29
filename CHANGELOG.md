@@ -86,6 +86,20 @@ All notable changes to sigwood are recorded here. The format follows
   name that field `cert_leaf_self_signed`, which distinguishes the two. The change is to the
   reading surfaces only - JSON and CSV keep the field name `cert_self_signed`.
 
+- **`ssl` findings no longer squash addresses into unreadable columns.** In the HTML
+  report the reason column would not wrap, so it claimed whatever width its longest
+  entry needed and the source and destination addresses were squeezed until they broke
+  one character per line. The reason now sits last in the row and wraps, and the
+  addresses keep their own width. A long address still folds at a genuinely narrow
+  window, which is intended. The text report had a milder form of the same fault: every
+  row's reason was padded to the longest in the group, so a row reading "no server name"
+  carried some eighty characters of trailing space. It is no longer padded.
+
+- **`scan` findings now lead with the scanning address.** It sat third, behind the scan
+  type and the connection-state summary, although it is the thing a reader is looking
+  for. It now comes first, followed by what the host was reaching for, which is how
+  `exfil` already reads.
+
 - **A `dnsblock` run no longer crashes when the default window is turned off.** Setting
   `default_window = "all"` (or an empty value) means "no implicit window", which is
   documented and supported. But `dnsblock` then subtracted that absent span from a

@@ -1088,8 +1088,8 @@ class TextHandler(OutputHandler):
 
     def _render_scan_group(self, sections: list[Section]) -> list[str]:
         """Render scan findings with aligned columns across all scan types. Flat
-        detector. Columns: severity | scan_type | outcome | src | type-specific
-        middle | metric. Widths derived from the section's findings before any
+        detector. Columns: severity | src | type-specific middle | scan_type |
+        outcome | metric. Widths derived from the section's findings before any
         row is formatted."""
         indent = "     "
         out: list[str] = []
@@ -1104,18 +1104,19 @@ class TextHandler(OutputHandler):
             src_col   = bare[0]
             middle_col = keyed["middle"]
             metric_col = keyed["metric"]
-            rows.append((tag, type_col, outcome_col, src_col, middle_col, metric_col, f))
+            rows.append((tag, src_col, middle_col, type_col, outcome_col, metric_col, f))
 
-        type_w   = max(len(r[1]) for r in rows)
-        outcome_w = max(len(r[2]) for r in rows)
-        src_w    = max(len(r[3]) for r in rows)
-        middle_w = max(len(r[4]) for r in rows)
+        src_w    = max(len(r[1]) for r in rows)
+        middle_w = max(len(r[2]) for r in rows)
+        type_w   = max(len(r[3]) for r in rows)
+        outcome_w = max(len(r[4]) for r in rows)
         metric_w = max(len(r[5]) for r in rows)
 
-        for tag, type_col, outcome_col, src_col, middle_col, metric_col, f in rows:
+        for tag, src_col, middle_col, type_col, outcome_col, metric_col, f in rows:
             line = (
-                f"{tag}  {type_col:<{type_w}}  {outcome_col:<{outcome_w}}  "
-                f"{src_col:<{src_w}}  {middle_col:<{middle_w}}  {metric_col:>{metric_w}}"
+                f"{tag}  {src_col:<{src_w}}  {middle_col:<{middle_w}}  "
+                f"{type_col:<{type_w}}  {outcome_col:<{outcome_w}}  "
+                f"{metric_col:>{metric_w}}"
             )
             tail = _level_tail(f, indent, self._verbose_level)
             if tail:
@@ -1232,30 +1233,29 @@ class TextHandler(OutputHandler):
         for f in findings:
             keyed, bare = _cells(f)
             rows.append((
-                severity_tag(f.severity), bare[0], bare[2], keyed.get("reason", ""),
-                keyed.get("conns", ""),
-                keyed.get("tls", ""), keyed.get("first", ""), f,
+                severity_tag(f.severity), bare[0], bare[2], keyed.get("conns", ""),
+                keyed.get("tls", ""), keyed.get("first", ""),
+                keyed.get("reason", ""), f,
             ))
 
         src_w = max(len(r[1]) for r in rows)
         dst_w = max(len(r[2]) for r in rows)
-        reason_w = max(len(r[3]) for r in rows)
-        conns_w = max(len(r[4]) for r in rows)
-        tls_w = max(len(r[5]) for r in rows)
-        first_w = max(len(r[6]) for r in rows)
+        conns_w = max(len(r[3]) for r in rows)
+        tls_w = max(len(r[4]) for r in rows)
+        first_w = max(len(r[5]) for r in rows)
         show_tls = tls_w > 0
         show_first = first_w > 0
 
-        for tag, src, dst, reason, conns, tls, first, f in rows:
+        for tag, src, dst, conns, tls, first, reason, f in rows:
             parts = [
                 f"{tag}  {src:<{src_w}}  →  {dst:<{dst_w}}",
-                f"{reason:<{reason_w}}",
                 f"{conns:>{conns_w}}",
             ]
             if show_tls:
                 parts.append(f"{tls:<{tls_w}}")
             if show_first:
                 parts.append(f"{first:<{first_w}}")
+            parts.append(reason)
             line = "  ".join(parts).rstrip()
             tail = _level_tail(f, indent, self._verbose_level)
             out.append(line + "\n" + "\n".join(tail) if tail else line)

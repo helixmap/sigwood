@@ -524,10 +524,10 @@ def _project_scan(f: Finding) -> list[Cell]:
         middle = ""
         metric = f"{ev.get('distinct_ports', 0)} ports/{ev.get('active_buckets', 0)} win"
     return [
-        Cell("type", scan_type),
-        Cell("outcome", f"{ev.get('scan_state_ratio', 0):.0%} no normal close seen"),
         Cell(None, ev.get("src", "")),
         Cell("middle", middle),
+        Cell("type", scan_type),
+        Cell("outcome", f"{ev.get('scan_state_ratio', 0):.0%} no normal close seen"),
         Cell("metric", metric, align="right"),
     ]
 
@@ -705,7 +705,6 @@ def _project_ssl(f: Finding) -> list[Cell]:
         Cell(None, str(ev.get("src", ""))),
         Cell(None, "→"),
         Cell(None, str(ev.get("dst", ""))),
-        Cell("reason", reason_col),
         Cell("conns", f"conns={int(ev.get('conn_count', 0)):,}", align="right"),
         Cell("tls", "" if not version_col else f"tls={version_col}", optional=True),
         Cell(
@@ -717,6 +716,7 @@ def _project_ssl(f: Finding) -> list[Cell]:
             ),
             optional=True,
         ),
+        Cell("reason", reason_col),
     ]
 
 

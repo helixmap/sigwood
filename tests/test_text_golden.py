@@ -144,10 +144,10 @@ def test_golden_scan_all_four_variants():
     ])
     assert out == (
         f"\nscan - 4 findings · 2 high  1 medium  1 low\nMission for scan.\n{RULE}\n"
-        "high    vertical    91% no normal close seen  192.0.2.10  → 198.51.100.20        777 ports\n"
-        "high    horizontal  82% no normal close seen  192.0.2.11  → *:22                 654 hosts\n"
-        "medium  block       73% no normal close seen  192.0.2.12  → *                    88p × 99h\n"
-        "low     slow        64% no normal close seen  192.0.2.13                   31 ports/17 win\n\n"
+        "high    192.0.2.10  → 198.51.100.20  vertical    91% no normal close seen        777 ports\n"
+        "high    192.0.2.11  → *:22           horizontal  82% no normal close seen        654 hosts\n"
+        "medium  192.0.2.12  → *              block       73% no normal close seen        88p × 99h\n"
+        "low     192.0.2.13                   slow        64% no normal close seen  31 ports/17 win\n\n"
     )
 
 
@@ -162,8 +162,37 @@ def test_golden_scan_all_slow_empty_middle_kept_by_text():
     ])
     assert out == (
         f"\nscan - 2 findings · 2 low\nMission for scan.\n{RULE}\n"
-        "low     slow  64% no normal close seen  192.0.2.13    31 ports/17 win\n"
-        "low     slow  66% no normal close seen  192.0.2.14    22 ports/12 win\n\n"
+        "low     192.0.2.13    slow  64% no normal close seen  31 ports/17 win\n"
+        "low     192.0.2.14    slow  66% no normal close seen  22 ports/12 win\n\n"
+    )
+
+
+def test_golden_ssl_reason_is_unpadded_final_column():
+    out = _render([
+        _f("ssl", Severity.LOW, "short reason", {
+            "src": "192.0.2.10", "dst": "198.51.100.20",
+            "severity_basis": ["sni_absent"], "conn_count": 3,
+            "tls_versions": {"TLSv13": 3},
+        }),
+        _f("ssl", Severity.MEDIUM, "long reason", {
+            "src": "192.0.2.11", "dst": "198.51.100.21",
+            "severity_basis": ["sni_absent", "validation"], "conn_count": 17,
+            "validation_status": "self-signed certificate in certificate chain",
+            "tls_versions": {"TLSv12": 17},
+        }),
+        _f("ssl", Severity.LOW, "another short reason", {
+            "src": "192.0.2.12", "dst": "198.51.100.22",
+            "severity_basis": ["sni_absent"], "conn_count": 1,
+            "tls_versions": {"TLSv13": 1},
+        }),
+    ])
+    assert out == (
+        f"\nssl - 3 findings · 1 medium  2 low\nMission for ssl.\n{RULE}\n"
+        "medium  192.0.2.11  →  198.51.100.21  conns=17  tls=TLSv12  "
+        "no server name; certificate did not validate "
+        "(self-signed certificate in certificate chain)\n"
+        "low     192.0.2.10  →  198.51.100.20   conns=3  tls=TLSv13  no server name\n"
+        "low     192.0.2.12  →  198.51.100.22   conns=1  tls=TLSv13  no server name\n\n"
     )
 
 

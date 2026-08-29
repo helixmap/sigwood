@@ -44,7 +44,7 @@ DEFAULT_CONFIG = {
 DETECTOR_METHOD = MethodTag("heuristics", named=False)
 DETECTOR_MISSION: str = (
     "Finds outbound TLS sessions whose setup looks unlike the rest of your "
-    "estate's."
+    "estate."
 )
 
 _SSL_PATTERN = "ssl*.log*"

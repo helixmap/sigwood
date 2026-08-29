@@ -11,11 +11,13 @@ detector result set stays verbosity-invariant; tiering happens here at render.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
+from math import isfinite
+from numbers import Real
 from operator import index
 from typing import Any
 
-from sigwood.common.display import fmt_timestamp, plural
+from sigwood.common.display import fmt_compact_span, fmt_timestamp, plural
 from sigwood.common.finding import Finding, Severity
 
 # Curated (level-1) cap for long evidence LISTS. The full list still appears at
@@ -65,6 +67,161 @@ def format_evidence_instants(
     if isinstance(value, tuple):
         return tuple(format_evidence_instants(item) for item in value)
     return value
+
+
+def format_evidence_for_reading(
+    finding: Finding,
+    selected: dict[str, Any],
+) -> dict[str, Any]:
+    """Return a detached human view after reading-level selection.
+
+    Instant formatting remains the first, shared transform. SSL then gets a
+    presentation-only view of its packed setup tuple and two level-2 numeric
+    fields. Machine evidence and the selection policy are never mutated.
+    """
+    formatted = format_evidence_instants(selected)
+    if finding.detector != "ssl":
+        return formatted
+
+    view: dict[str, Any] = {}
+    for key, value in formatted.items():
+        if key == "tuple" and isinstance(value, str):
+            parts = value.split("|")
+            if len(parts) == 4:
+                for label, part in zip(
+                    ("version", "cipher", "curve", "alpn"),
+                    parts,
+                    strict=True,
+                ):
+                    view[label] = "not recorded" if part == "-" else part
+                continue
+        if key == "tuple_share" and _finite_real(value):
+            view["setup share"] = f"{float(value):.2%} of loaded sessions"
+            continue
+        if key == "span_seconds" and _finite_real(value):
+            try:
+                span = fmt_compact_span(timedelta(seconds=float(value)))
+            except (OverflowError, ValueError):
+                pass
+            else:
+                view["span"] = span
+                continue
+        view[key] = value
+    return view
+
+
+def description_for_reading(finding: Finding) -> str:
+    """Return the detached human description for one Finding.
+
+    dnsblock's machine description is part of its JSON/CSV Finding payload, so
+    the plainer wording belongs here at the human-render boundary.  Unknown or
+    malformed machine state keeps the original description: a reading transform
+    must never turn state it does not understand into confident English.
+    """
+    if finding.detector != "dnsblock":
+        return finding.description
+    ev = finding.evidence
+    kind = ev.get("kind")
+
+    if kind == "arrival":
+        active = _reading_count(ev.get("active_periods"))
+        eligible = _reading_count(ev.get("eligible_periods"))
+        if active is None or eligible is None:
+            return finding.description
+        lane = ev.get("coverage_lane")
+        if lane == "strong":
+            return (
+                "This address had not queried this group of blocked names anywhere "
+                "in the covered history, so the behaviour is new for this pair "
+                "rather than the name being new. The queries fell on "
+                f"{active} of {eligible} covered days."
+            )
+        if lane == "weak":
+            return (
+                "These names were first seen for this address in the rows "
+                "available, which cannot prove there were no earlier queries "
+                "because these logs cannot confirm complete daily coverage. "
+                f"The queries fell on {active} of {eligible} days with data."
+            )
+        return finding.description
+
+    if kind == "burst":
+        peak = _reading_count(ev.get("peak_count"))
+        baseline_twice = _reading_count(ev.get("baseline_median_twice"))
+        if peak is None or baseline_twice is None:
+            return finding.description
+        median = (
+            str(baseline_twice // 2)
+            if baseline_twice % 2 == 0
+            else f"{baseline_twice // 2}.5"
+        )
+        return (
+            "Queries from this address for this group of blocked names reached "
+            f"{peak} in one day, clearing the volume this check requires and "
+            "rising well above its own median of "
+            f"{median} on other active days. Pi-hole records each query; what "
+            "this adds is the comparison against this address's own other days."
+        )
+
+    if kind == "arrival_fold":
+        member_count = _reading_count(ev.get("member_count"))
+        if member_count is None:
+            return finding.description
+        return (
+            f"This address began querying {member_count} separate groups of blocked "
+            "names, condensed here into one row. Each group keeps its own counts "
+            "and first-seen day in the machine evidence."
+        )
+
+    if kind == "recurring_activity":
+        pair_count = _reading_count(ev.get("pair_count"))
+        required = _reading_count(ev.get("periods_required"))
+        total = _reading_count(ev.get("periods_total"))
+        if pair_count is None or required is None or total is None:
+            return finding.description
+        return (
+            f"{pair_count} address and name-group {plural(pair_count, 'pair')} kept "
+            f"appearing on at least {required} of {total} fully covered days "
+            "without meeting any other reporting bar. Persistence across days is "
+            "the only reason they appear here."
+        )
+
+    if kind == "prior_handling_exclusions":
+        names = _reading_count(ev.get("withheld_name_count"))
+        pairings = _reading_count(ev.get("withheld_membership_count"))
+        if names is None or pairings is None:
+            return finding.description
+        return (
+            f"{names} names, covering {pairings} address-and-name pairings, were "
+            "held back from the first-activity results because Pi-hole had already "
+            "logged forwarded or cached handling for them on an earlier day. They "
+            "are not new arrivals, so reporting them would overstate what the data "
+            "shows; no action is needed."
+        )
+
+    return finding.description
+
+
+def _reading_count(value: Any) -> int | None:
+    """A non-negative integral evidence count, excluding bool."""
+    if isinstance(value, bool):
+        return None
+    try:
+        numeric = int(index(value))
+    except TypeError:
+        return None
+    return numeric if numeric >= 0 else None
+
+
+def _finite_real(value: Any) -> bool:
+    """True for finite real numbers, deliberately excluding bool."""
+    if isinstance(value, bool) or not isinstance(value, Real):
+        return False
+    try:
+        numeric = float(value)
+    except (OverflowError, TypeError, ValueError):
+        return False
+    return isfinite(numeric)
 
 
 def cap_evidence_list(values: "list | tuple") -> str:

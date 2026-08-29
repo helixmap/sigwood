@@ -116,7 +116,11 @@ def test_missionless_plugin_keeps_summary_and_renderers_compatible() -> None:
     html = render_report_html(
         [finding], summary, verbose_level=0, max_findings_per_detector=100,
     )
-    assert '<div class="group-head">probe - 1 finding' in html
+    assert (
+        '<div class="group-head"><span class="group-name">probe</span>'
+        '<span class="group-tail"> - 1 finding'
+        in html
+    )
     assert 'class="mission"' not in html
 
 

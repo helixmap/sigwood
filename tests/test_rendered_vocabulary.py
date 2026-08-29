@@ -48,6 +48,24 @@ _DNSBLOCK_PREDICATES = _TEXT_PREDICATES + (
     ("calibration", re.compile(r"\bcalibrat(?:e|ed|ion)\b", re.IGNORECASE)),
     ("ratified", re.compile(r"\bratified\b", re.IGNORECASE)),
 )
+_DNSBLOCK_HUMAN_LEGIBILITY = (
+    ("bare periods", re.compile(r"\bperiods\b", re.IGNORECASE)),
+    ("prior=", re.compile(r"\bprior=")),
+    ("names withheld", re.compile(r"\bnames withheld\b", re.IGNORECASE)),
+    ("available rows", re.compile(r"\bavailable rows\b", re.IGNORECASE)),
+    ("blocked-logged", re.compile(r"\bblocked-logged\b", re.IGNORECASE)),
+    (
+        "family-keyed qualifying-name arrivals",
+        re.compile(r"\bfamily-keyed qualifying-name arrivals\b", re.IGNORECASE),
+    ),
+    ("covered export periods", re.compile(r"\bcovered export periods\b", re.IGNORECASE)),
+    ("prior periods", re.compile(r"\bprior periods\b", re.IGNORECASE)),
+    ("eligible periods", re.compile(r"\beligible periods\b", re.IGNORECASE)),
+    (
+        "report period strongly covered",
+        re.compile(r"\breport period strongly covered\b", re.IGNORECASE),
+    ),
+)
 _SEPARATOR_PATTERN = re.compile(r"^\[([HMLI])\] · (.+?) · (\d+) rare lines?$")
 
 
@@ -331,6 +349,7 @@ def test_dnsblock_history_reading_surfaces_keep_internal_vocabulary_private() ->
         ),
         evidence={
             "kind": "arrival",
+            "coverage_lane": "weak",
             "address": "192.0.2.7",
             "family_key": "example.test",
             "qualifying_name_count": 2,
@@ -349,13 +368,24 @@ def test_dnsblock_history_reading_surfaces_keep_internal_vocabulary_private() ->
     log_derived_inputs = ("192.0.2.7", "example.test")
     assert premise_holds(log_derived_inputs, _DNSBLOCK_PREDICATES) == []
 
-    rendered_text = _render_findings_text([finding], 0)
-    document = render_report_html([finding], _summary(), verbose_level=0)
-    visible_html = "\n".join(_parse_html(document).visible)
-    assert "over 21d" in rendered_text
-    assert "over 21d" in visible_html
-    assert scan(rendered_text, _DNSBLOCK_PREDICATES) == []
-    assert scan(visible_html, _DNSBLOCK_PREDICATES) == []
+    for level in (0, 1, 2):
+        rendered_text = _render_findings_text([finding], level)
+        document = render_report_html([finding], _summary(), verbose_level=level)
+        visible_html = "\n".join(_parse_html(document).visible)
+        assert "over 21d" in rendered_text
+        assert "over 21d" in visible_html
+        predicates = (
+            _DNSBLOCK_PREDICATES
+            if level == 0
+            else tuple(
+                pair for pair in _DNSBLOCK_PREDICATES
+                if pair[0] != "history_seconds"
+            )
+        )
+        assert scan(rendered_text, predicates) == []
+        assert scan(visible_html, predicates) == []
+        assert scan(rendered_text, _DNSBLOCK_HUMAN_LEGIBILITY) == []
+        assert scan(visible_html, _DNSBLOCK_HUMAN_LEGIBILITY) == []
 
     json_stream = io.StringIO()
     json_handler = JsonHandler(stream=json_stream)

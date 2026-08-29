@@ -18,7 +18,9 @@ from __future__ import annotations
 
 import html as _htmllib
 import io
+import math
 import re
+from copy import deepcopy
 from datetime import datetime, timezone
 
 import pytest
@@ -26,6 +28,11 @@ import pytest
 from sigwood.common.display import set_display_utc
 from sigwood.common.finding import Finding, RunSummary, Severity
 from sigwood.detectors.scan import SCAN_STATES
+from sigwood.outputs._evidence import (
+    description_for_reading,
+    evidence_at_level,
+    format_evidence_for_reading,
+)
 from sigwood.outputs._render_model import (
     Section,
     html_cell_value,
@@ -33,6 +40,8 @@ from sigwood.outputs._render_model import (
     section_columns,
 )
 from sigwood.outputs.html import render_report_html
+from sigwood.outputs.csv import CsvHandler
+from sigwood.outputs.json import JsonHandler
 from sigwood.outputs.text import TextHandler
 
 _W = (
@@ -64,6 +73,15 @@ def _html_text(findings, level=0):
     )
     stripped = re.sub(r"<[^>]+>", " ", raw)
     return _htmllib.unescape(stripped)
+
+
+def _machine(handler_cls, findings) -> str:
+    stream = io.StringIO()
+    handler = handler_cls(stream=stream)
+    handler.begin(_summary(findings))
+    handler.write(findings)
+    handler.end()
+    return stream.getvalue()
 
 
 def _summary(findings: list[Finding]) -> RunSummary:
@@ -162,6 +180,46 @@ _VARIANTS: dict[str, Finding] = {
         "leg_a_count": 61, "leg_b_count": 0,
         "tls_versions": {"TLSv13": 61}, "port_mix": "9974 (61)",
         "first_seen": "2026-08-01T00:00:00+00:00"}),
+    "dnsblock_arrival_strong": _f("dnsblock", Severity.LOW, "192.0.2.10 → family-a", {
+        "kind": "arrival", "coverage_lane": "strong", "address": "192.0.2.10",
+        "qualifying_name_count": 3, "attributed_query_count": 17,
+        "active_periods": 2, "eligible_periods": 5,
+        "first_associated_period": "2026-08-01T00:00:00+00:00",
+        "history_seconds": 86400.0, "prior_other_address_count": 7,
+        "prior_other_address_count_at_cap": False,
+    }),
+    "dnsblock_arrival_weak": _f("dnsblock", Severity.LOW, "192.0.2.11 → family-b", {
+        "kind": "arrival", "coverage_lane": "weak", "address": "192.0.2.11",
+        "qualifying_name_count": 4, "attributed_query_count": 19,
+        "active_periods": 3, "eligible_periods": 6,
+        "first_associated_period": "2026-08-02T00:00:00+00:00",
+        "history_seconds": 172800.0, "prior_other_address_count": 100,
+        "prior_other_address_count_at_cap": True,
+    }),
+    "dnsblock_burst": _f("dnsblock", Severity.LOW, "192.0.2.12 → family-c", {
+        "kind": "burst", "coverage_lane": "strong", "address": "192.0.2.12",
+        "peak_count": 401, "baseline_median_twice": 25,
+        "active_periods": 4, "eligible_periods": 7,
+        "attributed_query_count": 777,
+    }),
+    "dnsblock_fold": _f("dnsblock", Severity.LOW, "192.0.2.13", {
+        "kind": "arrival_fold", "coverage_lane": "strong", "address": "192.0.2.13",
+        "member_count": 4, "earliest_first_associated_period": "2026-08-01T00:00:00+00:00",
+        "history_seconds": 259200.0,
+        "members": [
+            {"family_key": "family-d", "first_associated_period": "2026-08-01T00:00:00+00:00"},
+            {"family_key": "family-e", "first_associated_period": "2026-08-03T00:00:00+00:00"},
+        ],
+    }),
+    "dnsblock_recurring": _f("dnsblock", Severity.INFO, "recurring blocked-name activity", {
+        "kind": "recurring_activity", "coverage_lane": "strong", "pair_count": 1,
+        "family_count": 1, "address_count": 1, "periods_required": 4,
+        "periods_total": 7,
+    }),
+    "dnsblock_prior": _f("dnsblock", Severity.INFO, "names withheld from novelty", {
+        "kind": "prior_handling_exclusions", "withheld_name_count": 2,
+        "withheld_membership_count": 5,
+    }),
     "exfil": _f("exfil", Severity.MEDIUM, "x", {
         "src": "192.0.2.241", "dst": "198.51.100.251",
         "orig_bytes_total": 1_700_000_000.0, "resp_bytes_total": 100_000.0,
@@ -201,8 +259,14 @@ _VARIANTS: dict[str, Finding] = {
         "disabled for this run - these clusters were not analyzed.", {
             "tier": "unscanned_clusters", "cluster_count": 2,
             "total_members": 3218,
-        }),
+    }),
 }
+
+# A recurring-only context row deliberately vanishes at level 0 when there is
+# no entity finding, so it is not a valid fixture for the automatic
+# one-finding-per-surface parity sweep below. Dedicated dnsblock tests pair its
+# projection and reading description directly.
+_DNSBLOCK_RECURRING = _VARIANTS.pop("dnsblock_recurring")
 
 
 def test_beacon_default_row_cells_stay_compact() -> None:
@@ -224,6 +288,337 @@ def test_beacon_default_row_cells_stay_compact() -> None:
     assert "rhythm=0.617" not in html_out
 
 
+def test_dns_copyable_metadata_is_exact_opt_in_and_machine_inert() -> None:
+    singleton = _VARIANTS["dns_singleton"]
+    group = _VARIANTS["dns_group"]
+    beacon = _VARIANTS["beacon"]
+    frozen = deepcopy([singleton, group, beacon])
+
+    singleton_cells = project_row(singleton)
+    group_cells = project_row(group)
+    beacon_cells = project_row(beacon)
+
+    assert [cell.copyable for cell in singleton_cells] == [
+        False, False, False, False, True,
+    ]
+    assert [cell.copyable for cell in group_cells] == [
+        False, False, False, False, False, True,
+    ]
+    assert not any(cell.copyable for cell in beacon_cells)
+    assert [singleton, group, beacon] == frozen
+
+    for machine in (JsonHandler, CsvHandler):
+        payload = _machine(machine, [singleton, group, beacon])
+        assert "copyable" not in payload
+
+
+@pytest.mark.parametrize(
+    ("basis", "status", "expected"),
+    [
+        (["sni_absent"], None, "no server name"),
+        (
+            ["validation"],
+            "self-signed certificate in certificate chain",
+            "certificate did not validate "
+            "(self-signed certificate in certificate chain)",
+        ),
+        (
+            ["sni_absent", "validation"],
+            "self-signed certificate in certificate chain",
+            "no server name; certificate did not validate "
+            "(self-signed certificate in certificate chain)",
+        ),
+    ],
+)
+def test_ssl_projection_renders_the_three_reason_shapes(
+    basis: list[str],
+    status: str | None,
+    expected: str,
+) -> None:
+    evidence = {
+        "src": "192.0.2.10",
+        "dst": "198.51.100.20",
+        "severity_basis": basis,
+        "conn_count": 29,
+        "tls_versions": {"TLSv12": 29},
+        "first_seen": "2026-08-01T00:00:00+00:00",
+    }
+    if status is not None:
+        evidence["validation_status"] = status
+    finding = _f("ssl", Severity.MEDIUM, "x", evidence)
+
+    cells = project_row(finding)
+    keyed = {cell.key: cell.value for cell in cells if cell.key is not None}
+    assert [cell.key for cell in cells] == [
+        None, None, None, "reason", "conns", "tls", "first",
+    ]
+    assert keyed["reason"] == expected
+    assert keyed["tls"] == "tls=TLSv12"
+    assert "basis" not in keyed and "status" not in keyed
+
+    text_out = _text([finding])
+    html_out = render_report_html(
+        [finding], _summary([finding]), verbose_level=0,
+        max_findings_per_detector=100,
+    )
+    assert expected in text_out and "tls=TLSv12" in text_out
+    assert '<th class="col-reason">reason</th>' in html_out
+    assert '<th class="col-tls">tls</th>' in html_out
+    assert expected in html_out and ">TLSv12</td>" in html_out
+    assert "col-basis" not in html_out and "col-status" not in html_out
+
+
+def test_ssl_reason_fallback_never_invents_a_qualified_claim() -> None:
+    finding = _f("ssl", Severity.LOW, "x", {
+        "src": "192.0.2.10", "dst": "198.51.100.20",
+        "severity_basis": ["validation", "future_leg"],
+        "conn_count": 1,
+    })
+    reason = next(
+        cell.value for cell in project_row(finding) if cell.key == "reason"
+    )
+    assert reason == "validation; future_leg"
+    assert "certificate did not validate" not in reason
+
+
+def test_ssl_reading_transform_is_detached_strict_and_ordered() -> None:
+    finding = _f("ssl", Severity.LOW, "x", {})
+    selected = {
+        "first_seen": "2026-08-01T00:00:00+00:00",
+        "tuple": "TLSv12|cipher-name|secp256r1|-",
+        "tuple_share": 0.052069,
+        "span_seconds": 129_600.0,
+    }
+    frozen = deepcopy(selected)
+
+    rendered = format_evidence_for_reading(finding, selected)
+    assert list(rendered) == [
+        "first_seen", "version", "cipher", "curve", "alpn",
+        "setup share", "span",
+    ]
+    assert rendered["version"] == "TLSv12"
+    assert rendered["cipher"] == "cipher-name"
+    assert rendered["curve"] == "secp256r1"
+    assert rendered["alpn"] == "not recorded"
+    assert rendered["setup share"] == "5.21% of loaded sessions"
+    assert rendered["span"] == "1.5d"
+    assert selected == frozen
+
+
+def test_ssl_tuple_null_and_malformed_fallback_contract() -> None:
+    finding = _f("ssl", Severity.LOW, "x", {})
+    labels = ("version", "cipher", "curve", "alpn")
+    for null_index in range(4):
+        parts = ["v", "c", "g", "a"]
+        parts[null_index] = "-"
+        rendered = format_evidence_for_reading(
+            finding,
+            {"tuple": "|".join(parts)},
+        )
+        assert rendered[labels[null_index]] == "not recorded"
+        assert list(rendered) == list(labels)
+
+    for malformed in ("v|c|g", "v|c|g|a|extra", ["v", "c", "g", "a"]):
+        rendered = format_evidence_for_reading(finding, {"tuple": malformed})
+        assert rendered == {"tuple": malformed}
+
+
+def test_ssl_numeric_fallback_retains_unrenderable_machine_values() -> None:
+    finding = _f("ssl", Severity.LOW, "x", {})
+    for value in (True, "0.5", float("inf"), float("nan"), 10**1000):
+        selected = {"span_seconds": value, "tuple_share": value}
+        rendered = format_evidence_for_reading(finding, selected)
+        assert set(rendered) == {"span_seconds", "tuple_share"}
+        if isinstance(value, float) and math.isnan(value):
+            assert math.isnan(rendered["span_seconds"])
+            assert math.isnan(rendered["tuple_share"])
+        else:
+            assert rendered == selected
+
+    # A finite share remains renderable even when the same finite number is
+    # too large for timedelta; the failed span conversion keeps its machine key.
+    enormous = format_evidence_for_reading(
+        finding,
+        {"span_seconds": 1e308, "tuple_share": 1e308},
+    )
+    assert set(enormous) == {"span_seconds", "setup share"}
+    assert enormous["span_seconds"] == 1e308
+    assert enormous["setup share"].endswith("% of loaded sessions")
+
+
+def test_ssl_evidence_rewrites_share_one_tier_policy_on_text_and_html() -> None:
+    finding = _f("ssl", Severity.MEDIUM, "x", {
+        "src": "192.0.2.10", "dst": "198.51.100.20",
+        "severity_basis": ["sni_absent", "validation"],
+        "conn_count": 29,
+        "validation_status": "self signed certificate",
+        "tuple": "TLSv12|cipher-name|secp256r1|-",
+        "tuple_share": 0.052069,
+        "span_seconds": 129_600.0,
+        "tls_versions": {"TLSv12": 29},
+        "port_mix": "443 (29)",
+        "first_seen": "2026-08-01T00:00:00+00:00",
+    })
+    selected_v = evidence_at_level(finding, 1)
+    selected_vv = evidence_at_level(finding, 2)
+    assert "tuple" in selected_v
+    assert "tuple_share" not in selected_v and "span_seconds" not in selected_v
+    assert "tuple_share" in selected_vv and "span_seconds" in selected_vv
+
+    text_v = _text([finding], level=1)
+    text_vv = _text([finding], level=2)
+    html_v = _html_text([finding], level=1)
+    html_vv = _html_text([finding], level=2)
+    for output in (text_v, html_v):
+        assert "version" in output and "cipher-name" in output
+        assert "alpn" in output and "not recorded" in output
+        assert "setup share" not in output and "span_seconds" not in output
+        # Curated validation_status deliberately repeats the measured qualifier
+        # from the reason cell; dropping it would change CSV's signals.
+        assert output.count("self signed certificate") == 2
+    assert "setup share: 5.21% of loaded sessions" in text_vv
+    assert "span: 1.5d" in text_vv
+    assert "setup share" in html_vv and "5.21% of loaded sessions" in html_vv
+    assert "span" in html_vv and "1.5d" in html_vv
+    for output in (text_vv, html_vv):
+        assert "tuple_share" not in output and "span_seconds" not in output
+
+
+def test_dnsblock_projection_translates_days_prior_and_context_title() -> None:
+    strong = project_row(_VARIANTS["dnsblock_arrival_strong"])
+    weak = project_row(_VARIANTS["dnsblock_arrival_weak"])
+    burst = project_row(_VARIANTS["dnsblock_burst"])
+    prior = project_row(_VARIANTS["dnsblock_prior"])
+    recurring = project_row(_DNSBLOCK_RECURRING)
+
+    assert next(cell.value for cell in strong if cell.key == "days") == (
+        "2 of 5 covered days"
+    )
+    assert next(cell.value for cell in weak if cell.key == "days") == (
+        "3 of 6 days with data"
+    )
+    assert next(cell.value for cell in burst if cell.key == "days") == (
+        "4 of 7 covered days"
+    )
+    assert next(cell.value for cell in strong if cell.key == "prior") == (
+        "7 other addresses queried it"
+    )
+    assert next(cell.value for cell in weak if cell.key == "prior") == (
+        "100+ other addresses queried it"
+    )
+    assert prior[0].value == (
+        "names not reported as new, because Pi-hole had already handled them"
+    )
+    assert recurring[0].value == "recurring blocked-name activity"
+
+    raw_html = render_report_html(
+        [_VARIANTS["dnsblock_arrival_strong"]],
+        _summary([_VARIANTS["dnsblock_arrival_strong"]]),
+        verbose_level=0,
+        max_findings_per_detector=100,
+    )
+    assert '<th class="num col-days">days</th>' in raw_html
+    assert "periods" not in _text([_VARIANTS["dnsblock_arrival_strong"]])
+
+
+@pytest.mark.parametrize(
+    ("variant", "expected"),
+    [
+        (
+            "dnsblock_arrival_strong",
+            "This address had not queried this group of blocked names anywhere in the "
+            "covered history, so the behaviour is new for this pair rather than the name "
+            "being new. The queries fell on 2 of 5 covered days.",
+        ),
+        (
+            "dnsblock_arrival_weak",
+            "These names were first seen for this address in the rows available, which "
+            "cannot prove there were no earlier queries because these logs cannot confirm "
+            "complete daily coverage. The queries fell on 3 of 6 days with data.",
+        ),
+        (
+            "dnsblock_burst",
+            "Queries from this address for this group of blocked names reached 401 in one "
+            "day, clearing the volume this check requires and rising well above its own "
+            "median of 12.5 on other active days. Pi-hole records each query; what this "
+            "adds is the comparison against this address's own other days.",
+        ),
+        (
+            "dnsblock_fold",
+            "This address began querying 4 separate groups of blocked names, condensed "
+            "here into one row. Each group keeps its own counts and first-seen day in the "
+            "machine evidence.",
+        ),
+        (
+            "dnsblock_recurring",
+            "1 address and name-group pair kept appearing on at least 4 of 7 fully covered "
+            "days without meeting any other reporting bar. Persistence across days is the "
+            "only reason they appear here.",
+        ),
+        (
+            "dnsblock_prior",
+            "2 names, covering 5 address-and-name pairings, were held back from the "
+            "first-activity results because Pi-hole had already logged forwarded or cached "
+            "handling for them on an earlier day. They are not new arrivals, so reporting "
+            "them would overstate what the data shows; no action is needed.",
+        ),
+    ],
+)
+def test_dnsblock_descriptions_are_detached_and_shared(
+    variant: str,
+    expected: str,
+) -> None:
+    finding = deepcopy(
+        _DNSBLOCK_RECURRING if variant == "dnsblock_recurring" else _VARIANTS[variant]
+    )
+    finding.description = "machine description sentinel"
+    frozen = deepcopy(finding)
+
+    assert description_for_reading(finding) == expected
+    for output in (_text([finding], level=1), _html_text([finding], level=1)):
+        assert expected in output
+        assert "machine description sentinel" not in output
+    assert finding == frozen
+
+
+def test_dnsblock_reading_fallback_never_invents_an_understood_lane() -> None:
+    finding = deepcopy(_VARIANTS["dnsblock_arrival_strong"])
+    finding.description = "machine description sentinel"
+    finding.evidence["coverage_lane"] = "future-lane"
+    assert description_for_reading(finding) == "machine description sentinel"
+    days = next(cell.value for cell in project_row(finding) if cell.key == "days")
+    assert days == "2/5 periods"
+
+    del finding.evidence["active_periods"]
+    assert description_for_reading(finding) == "machine description sentinel"
+
+
+def test_dnsblock_human_rendering_keeps_machine_finding_bytes_unchanged() -> None:
+    findings = [
+        deepcopy(_VARIANTS[name])
+        for name in (
+            "dnsblock_arrival_strong",
+            "dnsblock_arrival_weak",
+            "dnsblock_burst",
+            "dnsblock_fold",
+            "dnsblock_prior",
+        )
+    ] + [deepcopy(_DNSBLOCK_RECURRING)]
+    for finding in findings:
+        finding.description = f"machine description for {finding.evidence['kind']}"
+    frozen = deepcopy(findings)
+    json_before = _machine(JsonHandler, findings)
+    csv_before = _machine(CsvHandler, findings)
+
+    for level in (0, 1, 2):
+        assert "dnsblock" in _text(findings, level=level)
+        assert "dnsblock" in _html_text(findings, level=level)
+
+    assert findings == frozen
+    assert _machine(JsonHandler, findings) == json_before
+    assert _machine(CsvHandler, findings) == csv_before
+
+
 @pytest.mark.parametrize("variant", list(_VARIANTS))
 def test_row_signal_parity_text_and_html(variant: str) -> None:
     """Every NON-empty project_row cell of this row appears in BOTH surfaces.
@@ -242,7 +637,9 @@ def test_row_signal_parity_text_and_html(variant: str) -> None:
         if cell.value == "":
             continue  # empty optional / vanished cell - never assert presence
         html_val = html_cell_value(cell)  # header-stripped for keyed cols; bare cells unchanged
-        assert cell.value in text_out, f"{variant}: {cell.value!r} missing from TEXT"
+        # The DATUM must reach both surfaces. Whether text carries the label inline
+        # or under a column header is a per-table grammar, pinned separately below.
+        assert html_val in text_out, f"{variant}: {html_val!r} missing from TEXT"
         assert html_val in html_out, f"{variant}: {html_val!r} missing from HTML"
         checked += 1
     assert checked > 0, f"{variant}: no non-empty cells exercised"
@@ -263,11 +660,41 @@ def test_html_strips_redundant_keyed_labels() -> None:
             stripped = html_cell_value(cell)
             if stripped == cell.value:
                 continue  # no embedded label - nothing to double-print
-            assert cell.value in text_out, f"{variant}/{cell.key}: labeled form missing from TEXT"
             assert cell.value not in html_out, (
                 f"{variant}/{cell.key}: double-labeled {cell.value!r} leaked into HTML"
             )
             assert stripped in html_out, f"{variant}/{cell.key}: bare datum {stripped!r} missing from HTML"
+
+
+def test_text_labels_a_keyed_column_inline_or_by_header() -> None:
+    """A keyed datum is never left unlabelled in TEXT.
+
+    Two table grammars ship. Most detectors repeat the label on every row
+    (`period=61.5m`); the dns tables carry it once as a column header and print the
+    bare datum beneath it. Either is fine - printing the datum with NEITHER is the
+    defect this pins, and it is what a half-applied header change produces.
+
+    Derived from the render, never a list of detector names: a stripped datum in text
+    is what says the column is header-labelled, and the header is then required."""
+    for variant, finding in _VARIANTS.items():
+        text_out = _text([finding])
+        for cell in project_row(finding):
+            if cell.key is None or cell.value == "":
+                continue
+            stripped = html_cell_value(cell)
+            if stripped == cell.value:
+                continue  # value never embedded its key - no label to place
+            if cell.value in text_out:
+                continue  # labelled inline on every row
+            assert stripped in text_out, (
+                f"{variant}/{cell.key}: datum {stripped!r} missing from TEXT entirely"
+            )
+            # Label stripped, so some line must carry it as a header - and that line
+            # is not the row itself, which holds the datum.
+            assert any(
+                cell.key in line and stripped not in line
+                for line in text_out.split("\n")
+            ), f"{variant}/{cell.key}: label stripped from TEXT with no column header"
 
 
 def test_html_projectorless_detector_falls_back_to_title() -> None:
@@ -505,20 +932,20 @@ def test_dns_renamed_keys_strip_at_singular_counts_on_both_paths() -> None:
     })
 
     singleton_keyed = {cell.key: cell for cell in project_row(singleton)}
-    assert singleton_keyed["generated-look"].value == "generated-look=4.10"
+    assert singleton_keyed["entropy"].value == "entropy=4.10"
     assert singleton_keyed["queries"].value == "queries=1"
     assert singleton_keyed["clients"].value == "clients=1"
-    assert html_cell_value(singleton_keyed["generated-look"]) == "4.10"
+    assert html_cell_value(singleton_keyed["entropy"]) == "4.10"
     assert html_cell_value(singleton_keyed["queries"]) == "1"
     assert html_cell_value(singleton_keyed["clients"]) == "1"
 
     group_keyed = {cell.key: cell for cell in project_row(group)}
     assert group_keyed["names"].value == "names=1"
-    assert group_keyed["generated-look"].value == "generated-look=4.10"
+    assert group_keyed["entropy"].value == "entropy=4.10"
     assert group_keyed["queries"].value == "queries=1"
     assert group_keyed["clients"].value == "clients=1"
     assert html_cell_value(group_keyed["names"]) == "1"
-    assert html_cell_value(group_keyed["generated-look"]) == "4.10"
+    assert html_cell_value(group_keyed["entropy"]) == "4.10"
 
     range_group = _f("dns", Severity.MEDIUM, "range.example", {
         "source": "zeek", "registrable_domain": "range.example",
@@ -526,16 +953,19 @@ def test_dns_renamed_keys_strip_at_singular_counts_on_both_paths() -> None:
         "total_queries": 2, "unique_sources": 1,
     })
     range_keyed = {cell.key: cell for cell in project_row(range_group)}
-    assert range_keyed["generated-look"].value == "generated-look=4.10-3.20"
-    assert html_cell_value(range_keyed["generated-look"]) == "4.10-3.20"
+    assert range_keyed["entropy"].value == "entropy=4.10-3.20"
+    assert html_cell_value(range_keyed["entropy"]) == "4.10-3.20"
 
     html_out = render_report_html(
         [group, singleton], _summary([group, singleton]),
         verbose_level=0, max_findings_per_detector=100,
     )
-    assert '<th class="col-generated-look">generated-look</th>' in html_out
+    # The header text is the READER label; the class is the machine KEY. They are
+    # deliberately different words here - a bare `entropy` header would invite the
+    # number to be read as bits of Shannon entropy, which it is not.
+    assert '<th class="col-entropy">entropy score</th>' in html_out
     assert '<td class="data">4.10</td>' in html_out
-    assert "generated-look=4.10" not in html_out
+    assert "entropy=4.10" not in html_out
 
 
 def test_exfil_transport_is_whole_group_optional_and_share_boundary_is_exact() -> None:

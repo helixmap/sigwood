@@ -425,8 +425,8 @@ def test_harness_uses_real_runner_and_writes_aggregate_preflight(tmp_path):
     assert payload["channels"]["recurring"]["status"] == "ABSTAINED"
     assert payload["burst_grids"] == []
     assert payload["summary_notes"][0] == (
-        "period coverage is not verifiable from these logs; period counts use "
-        "data-bearing periods, and burst and recurring activity were not evaluated"
+        "these logs cannot prove how complete each day is, so counts use the days "
+        "that carry data; burst and recurring activity were not evaluated"
     )
     assert {label for label, _seconds in payload["preflight"]["pass_wall_seconds"]} == {
         "anchor_block",
@@ -587,7 +587,7 @@ def test_harness_batch_request_uses_real_shared_runner_and_json_serializer(tmp_p
         ]
     assert any(
         # The batch request uses the shipped arrival vector, now five periods.
-        "first-activity analysis needs 5 eligible periods" in note
+        "first-activity reporting needs 5 days with data" in note
         for item in payload["results"]
         for note in item["aggregate"]["summary_notes"]
     )

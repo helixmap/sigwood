@@ -79,6 +79,7 @@ def test_recurring_visibility_matrix_is_output_owned_and_counts_are_pre_cap() ->
         "arrival",
         address="192.0.2.7",
         family_key="example.test",
+        coverage_lane="strong",
         first_associated_period="2026-01-02T00:00:00+00:00",
     )
     for level in (0, 1, 2):
@@ -139,12 +140,15 @@ def test_dnsblock_headline_projection_formats_exact_sufficient_statistics() -> N
         prior_other_address_count=100,
         prior_other_address_count_at_cap=True,
     )
-    assert [cell.value for cell in project_row(arrival)][-1] == "prior=≥100"
+    assert [cell.value for cell in project_row(arrival)][-1] == (
+        "100+ other addresses queried it"
+    )
 
     burst = _finding(
         "burst",
         address="192.0.2.7",
         family_key="example.test",
+        coverage_lane="strong",
         peak_count=25,
         baseline_median_twice=5,
         active_periods=4,
@@ -178,6 +182,7 @@ def _arrival_with_history(value: object = 86_400.0) -> Finding:
         "arrival",
         address="192.0.2.7",
         family_key="example.test",
+        coverage_lane="strong",
         qualifying_name_count=2,
         attributed_query_count=6,
         active_periods=2,
@@ -222,7 +227,7 @@ def test_dnsblock_history_column_is_fixed_and_section_pruning_stays_aligned() ->
     mixed_section = Section("first activity", [legacy, current], 2)
     current_section = Section("first activity", [current], 1)
     assert [column.key for column in text_columns(legacy_section)] == [
-        None, "names", "queries", "periods", "first", "prior"
+        None, "names", "queries", "days", "first", "prior"
     ]
     assert [column.key for column in text_columns(mixed_section)][-3:] == [
         "first", "history", "prior"
@@ -231,7 +236,7 @@ def test_dnsblock_history_column_is_fixed_and_section_pruning_stays_aligned() ->
         "first", "history", "prior"
     ]
     assert [column.key for _, column in html_columns(legacy_section)] == [
-        None, "names", "queries", "periods", "first", "prior"
+        None, "names", "queries", "days", "first", "prior"
     ]
     assert [column.key for _, column in html_columns(mixed_section)][-3:] == [
         "first", "history", "prior"
@@ -249,8 +254,8 @@ def test_legacy_dnsblock_reading_bytes_pin_the_reviewed_mission_chrome(pin_tz) -
     legacy.title = "192.0.2.7"
     legacy.evidence.pop("history_seconds")
     expected = {
-        TextHandler: "6049f886132cdabd629c4cc07c3cdd32fa1f7661676d18ae5d293996805ebb25",
-        HtmlHandler: "a423953ef599b94e5a41059ae43380045961b68575598317e7b35fc1d69e3478",
+        TextHandler: "3c1347a2c142d609c9b9f109e5fa96cf8196538ab5f9449239c5b3b6c88abcc4",
+        HtmlHandler: "0712f416763064c8684b02b25f8e89bf1188ab7f9c45ef3e146cfdf80bb3fa6f",
     }
     pin_tz("America/Chicago")
     for handler_type, digest in expected.items():

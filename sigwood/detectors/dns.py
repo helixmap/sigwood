@@ -102,7 +102,8 @@ DETECTOR_METHOD = MethodTag(
 )
 DETECTOR_MISSION: str = (
     "Finds domain names and query patterns that stand apart from the rest, "
-    "including generated-looking names and dense groups that can accompany "
+    "including generated-looking names (scored by entropy) of the sort malware "
+    "uses for disposable command domains, and dense groups that can accompany "
     "automated traffic."
 )
 

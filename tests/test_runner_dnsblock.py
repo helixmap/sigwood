@@ -226,11 +226,11 @@ def test_injected_planned_detector_traverses_runner_and_receives_preflight(
     [
         (
             False,
-            "dnsblock: blocked-name activity found, but nothing met the reporting thresholds",
+            "dnsblock: blocked-name activity was examined and nothing met the reporting bar",
         ),
         (
             True,
-            "dnsblock: all block-outcome rows were removed by the allowlist",
+            "dnsblock: every blocked-name row in this window was removed by your allowlist before analysis",
         ),
     ],
 )
@@ -278,7 +278,9 @@ def test_real_population_path_selects_honest_zero_cause(
     ) == 0
     payload = json.loads(artifact.read_text(encoding="utf-8"))
     assert payload["summary_notes"][-1] == expected
-    assert payload["summary_notes"][-1] != "dnsblock: no Pi-hole query rows in the window"
+    assert payload["summary_notes"][-1] != (
+        "dnsblock: this window contains no Pi-hole query rows at all"
+    )
 
 
 def test_dnsblock_only_passes_never_retain_a_second_frame(

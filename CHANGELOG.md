@@ -24,6 +24,61 @@ All notable changes to sigwood are recorded here. The format follows
 
 ### Changed
 
+- **Reports are written to be read.** A first-time reader described sigwood's output as mostly
+  cryptic, and the pass below answers that verdict rather than a lint. None of it changes what
+  sigwood finds: the detectors and their thresholds are untouched, and the same run produces the
+  same findings, with the same evidence, that it did before. What changed is how those findings
+  are put on the page. Two qualifications, so the sentence above is not read wider than it
+  holds: the wording of some human-facing notes changed, which `json` carries verbatim in
+  `run_summary.notes` and has always documented as prose rather than contract; and one dns
+  display cell was renamed, which is projection and never reached `json` or `csv`. The
+  individual changes follow.
+
+- **Severity is spelled out, everywhere a person reads it.** The text report showed `[H]`,
+  `[M]`, `[L]` and `[I]`; a novice reader took those for magnitudes, times and sizes in a single
+  sitting, while the spelled word decoded unaided. Text now reads `high`, `medium`, `low` and
+  `info`, padded so mixed rows keep their columns; the html report spells and capitalizes the
+  same words in its summary cards, its row pills and its group headers. `json` keeps its
+  lowercase token and `csv` its column, both unchanged.
+
+- **Verbose reports put the prose before the machine facts.** At `-v` and `-vv` the order is now
+  description, then next steps, then evidence, with the data window last. Previously the
+  imperative advice sat below the evidence block, and a reader who bounced off the evidence
+  never reached the part telling them what to do. Adjacent findings are separated by one blank
+  line, which the dense default view still does without.
+
+- **Each detector group says what that detector looks for.** A one-line mission renders beneath
+  the group header on both reading surfaces, so a reader meeting `beacon` or `dnsblock` for the
+  first time is told what question it asks before being shown its answers. A report also carries
+  one pointer, once, to the tier that explains why each finding surfaced, and it appears only
+  when a group actually rendered.
+
+- **Level-zero rows name what they hold.** dns counts read as `names`, `queries` and `clients`;
+  beacon's composite reads as `rhythm`. The dns tables now carry their labels once as column
+  headers rather than repeating them on every row, which is what the html tables already did.
+  The dns lexical score is labelled `entropy score`, and the word `score` is doing work: the
+  number is a weighted lexical measure with no units, so a bare `entropy` heading invites a
+  reader to take it as a count of bits, which it is not.
+
+- **Evidence timestamps are readable and unambiguous.** Instants inside the evidence block used
+  to render as raw machine strings in UTC while the report's own window was shown in local time,
+  so two lines of one block could describe the same moment and appear to disagree. Accepted
+  instants now follow the report's display timezone, carry their `local` or `UTC` label, and
+  include seconds where a distinction depends on them, such as an authentication failure and the
+  success that followed it.
+
+- **ssl and dnsblock findings explain themselves in plain language.** An ssl row said which
+  internal signals fired; it now says that no server name was offered, or that a certificate did
+  not validate, and it keeps the measured validation status that separates an expired
+  certificate from a self-signed one. dnsblock descriptions say in words what its counts mean,
+  keeping the distinction between complete daily coverage and coverage that cannot be confirmed.
+  Both are rendering only: the machine payloads under them are unchanged.
+
+- **The html report carries sigwood's own identity, and dns entities are one click to copy.**
+  Detector names in group headers wear the wordmark's serif and colour, so the page reads as
+  sigwood's document at every section boundary rather than only in the corner. A dns domain cell
+  selects whole on one click, with no visual marking, and that convenience is absent from print.
+
 - **`[detectors.beacon].bin_seconds` is no longer a configuration key.** The beacon detector bins a
   flow's connection times before looking for a rhythm, and every other number in that scorer - the
   score threshold, the period band it will consider, the peak-prominence normalization, and the

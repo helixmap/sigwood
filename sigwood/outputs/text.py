@@ -46,8 +46,9 @@ from sigwood.common.finding import (
 from sigwood.common.output import OutputHandler, register_handler
 from sigwood.outputs._evidence import (
     evidence_at_level,
+    description_for_reading,
     exfil_members_at_level,
-    format_evidence_instants,
+    format_evidence_for_reading,
     sample_bound_note,
 )
 from sigwood.outputs._render_model import (
@@ -55,6 +56,7 @@ from sigwood.outputs._render_model import (
     Section,
     _SEVERITY_ORDER,
     _build_renderable,
+    column_label,
     fold_mix_names,
     project_row,
     text_column_indices,
@@ -343,6 +345,15 @@ def _render_notes(notes: list[str]) -> list[str]:
 # two reading surfaces cannot drift. Imported at the top of this module.
 
 
+def _unlabelled(key: str, value: str) -> str:
+    """Strip a cell's own ``key=`` prefix so the label can live in a column header.
+
+    The dns tables carry their labels as headers rather than repeating them on
+    every row; a value that does not embed its key is returned unchanged."""
+    prefix = f"{key}="
+    return value[len(prefix):] if value.startswith(prefix) else value
+
+
 def _cells(finding: Finding) -> tuple[dict[str, str], list[str]]:
     """Split a finding's ``project_row`` into (keyed values, ordered bare values).
 
@@ -366,10 +377,15 @@ def _verbose_tail(finding: Finding, indent: str, extras: dict[str, Any] | None =
     data-window line appears only when at least one other body element is
     present.
     """
-    extras = format_evidence_instants(extras) if extras is not None else None
+    extras = (
+        format_evidence_for_reading(finding, extras)
+        if extras is not None
+        else None
+    )
     body: list[str] = []
-    if finding.description:
-        body.append(f"{indent}{_sanitize(finding.description)}")
+    description = description_for_reading(finding)
+    if description:
+        body.append(f"{indent}{_sanitize(description)}")
     if finding.next_steps:
         body.append(f"{indent}next steps:")
         for step in finding.next_steps:
@@ -400,13 +416,14 @@ def _debug_tail(finding: Finding, indent: str) -> list[str]:
     """Raw debug - level 2. Full evidence dict. Same vanish discipline as
     ``_verbose_tail``: empty description / evidence / next_steps → ``[]``."""
     body: list[str] = []
-    if finding.description:
-        body.append(f"{indent}{_sanitize(finding.description)}")
+    description = description_for_reading(finding)
+    if description:
+        body.append(f"{indent}{_sanitize(description)}")
     if finding.next_steps:
         body.append(f"{indent}next steps:")
         for step in finding.next_steps:
             body.append(f"{indent}  · {_sanitize(step)}")
-    evidence = format_evidence_instants(finding.evidence)
+    evidence = format_evidence_for_reading(finding, finding.evidence)
     if evidence:
         body.append(f"{indent}evidence:")
         for k, v in evidence.items():
@@ -961,33 +978,41 @@ class TextHandler(OutputHandler):
                 for f in section.findings:
                     keyed, bare = _cells(f)  # bare = [domain]
                     tag = severity_tag(f.severity)
-                    generated_look_col = keyed["generated-look"]
-                    queries_col = keyed["queries"]
-                    clients_col = keyed["clients"]
+                    entropy_col = _unlabelled("entropy", keyed["entropy"])
+                    queries_col = _unlabelled("queries", keyed["queries"])
+                    clients_col = _unlabelled("clients", keyed["clients"])
                     blocked_col = keyed["blocked"]
                     rows.append((
-                        tag, generated_look_col, queries_col, clients_col,
+                        tag, entropy_col, queries_col, clients_col,
                         blocked_col, bare[0], f,
                     ))
 
-                generated_look_w = max(len(r[1]) for r in rows)
-                queries_w   = max(len(r[2]) for r in rows)
-                clients_w   = max(len(r[3]) for r in rows)
-                blocked_w = max(len(r[4]) for r in rows)
+                entropy_w = max(max(len(r[1]) for r in rows), len(column_label("entropy")))
+                queries_w   = max(max(len(r[2]) for r in rows), len("queries"))
+                clients_w   = max(max(len(r[3]) for r in rows), len("clients"))
+                blocked_w = max(max(len(r[4]) for r in rows), len("blocked") if show_blocked else 0)
+                tag_w = len(rows[0][0])
+                header = (
+                    f"  {'':<{tag_w}}  {column_label('entropy'):<{entropy_w}}  "
+                    f"{'queries':>{queries_w}}  {'clients':>{clients_w}}"
+                )
+                if show_blocked:
+                    header += f"  {'blocked':<{blocked_w}}"
+                out.append(header)
 
                 for (
-                    tag, generated_look_col, queries_col, clients_col,
+                    tag, entropy_col, queries_col, clients_col,
                     blocked_col, domain, f,
                 ) in rows:
                     if show_blocked:
                         line = (
-                            f"  {tag}  {generated_look_col:<{generated_look_w}}  "
+                            f"  {tag}  {entropy_col:<{entropy_w}}  "
                             f"{queries_col:>{queries_w}}  {clients_col:>{clients_w}}  "
                             f"{blocked_col:<{blocked_w}}  {domain}"
                         )
                     else:
                         line = (
-                            f"  {tag}  {generated_look_col:<{generated_look_w}}  "
+                            f"  {tag}  {entropy_col:<{entropy_w}}  "
                             f"{queries_col:>{queries_w}}  "
                             f"{clients_col:>{clients_w}}  {domain}"
                         )
@@ -1001,37 +1026,46 @@ class TextHandler(OutputHandler):
                 for f in section.findings:
                     keyed, bare = _cells(f)  # bare = [registrable_domain]
                     tag = severity_tag(f.severity)
-                    names_col = keyed["names"]
-                    generated_look_col = keyed["generated-look"]
-                    queries_col = keyed["queries"]
-                    clients_col = keyed["clients"]
+                    names_col = _unlabelled("names", keyed["names"])
+                    entropy_col = _unlabelled("entropy", keyed["entropy"])
+                    queries_col = _unlabelled("queries", keyed["queries"])
+                    clients_col = _unlabelled("clients", keyed["clients"])
                     blocked_col = keyed["blocked"]
                     rows.append((
-                        tag, names_col, generated_look_col, queries_col, clients_col,
+                        tag, names_col, entropy_col, queries_col, clients_col,
                         blocked_col, bare[0], f,
                     ))
 
-                names_w     = max(len(r[1]) for r in rows)
-                generated_look_w = max(len(r[2]) for r in rows)
-                queries_w   = max(len(r[3]) for r in rows)
-                clients_w   = max(len(r[4]) for r in rows)
-                blocked_w = max(len(r[5]) for r in rows)
+                names_w     = max(max(len(r[1]) for r in rows), len("names"))
+                entropy_w = max(max(len(r[2]) for r in rows), len(column_label("entropy")))
+                queries_w   = max(max(len(r[3]) for r in rows), len("queries"))
+                clients_w   = max(max(len(r[4]) for r in rows), len("clients"))
+                blocked_w = max(max(len(r[5]) for r in rows), len("blocked") if show_blocked else 0)
+                tag_w = len(rows[0][0])
+                header = (
+                    f"  {'':<{tag_w}}  {'names':>{names_w}}  "
+                    f"{column_label('entropy'):<{entropy_w}}  "
+                    f"{'queries':>{queries_w}}  {'clients':>{clients_w}}"
+                )
+                if show_blocked:
+                    header += f"  {'blocked':<{blocked_w}}"
+                out.append(header)
 
                 for (
-                    tag, names_col, generated_look_col, queries_col, clients_col,
+                    tag, names_col, entropy_col, queries_col, clients_col,
                     blocked_col, domain, f,
                 ) in rows:
                     if show_blocked:
                         line = (
                             f"  {tag}  {names_col:>{names_w}}  "
-                            f"{generated_look_col:<{generated_look_w}}  "
+                            f"{entropy_col:<{entropy_w}}  "
                             f"{queries_col:>{queries_w}}  {clients_col:>{clients_w}}  "
                             f"{blocked_col:<{blocked_w}}  {domain}"
                         )
                     else:
                         line = (
                             f"  {tag}  {names_col:>{names_w}}  "
-                            f"{generated_look_col:<{generated_look_w}}  "
+                            f"{entropy_col:<{entropy_w}}  "
                             f"{queries_col:>{queries_w}}  "
                             f"{clients_col:>{clients_w}}  {domain}"
                         )
@@ -1191,30 +1225,26 @@ class TextHandler(OutputHandler):
         for f in findings:
             keyed, bare = _cells(f)
             rows.append((
-                severity_tag(f.severity), bare[0], bare[2], keyed.get("basis", ""),
-                keyed.get("conns", ""), keyed.get("status", ""),
+                severity_tag(f.severity), bare[0], bare[2], keyed.get("reason", ""),
+                keyed.get("conns", ""),
                 keyed.get("tls", ""), keyed.get("first", ""), f,
             ))
 
         src_w = max(len(r[1]) for r in rows)
         dst_w = max(len(r[2]) for r in rows)
-        basis_w = max(len(r[3]) for r in rows)
+        reason_w = max(len(r[3]) for r in rows)
         conns_w = max(len(r[4]) for r in rows)
-        status_w = max(len(r[5]) for r in rows)
-        tls_w = max(len(r[6]) for r in rows)
-        first_w = max(len(r[7]) for r in rows)
-        show_status = status_w > 0
+        tls_w = max(len(r[5]) for r in rows)
+        first_w = max(len(r[6]) for r in rows)
         show_tls = tls_w > 0
         show_first = first_w > 0
 
-        for tag, src, dst, basis, conns, status, tls, first, f in rows:
+        for tag, src, dst, reason, conns, tls, first, f in rows:
             parts = [
                 f"{tag}  {src:<{src_w}}  →  {dst:<{dst_w}}",
-                f"{basis:<{basis_w}}",
+                f"{reason:<{reason_w}}",
                 f"{conns:>{conns_w}}",
             ]
-            if show_status:
-                parts.append(f"{status:<{status_w}}")
             if show_tls:
                 parts.append(f"{tls:<{tls_w}}")
             if show_first:

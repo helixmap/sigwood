@@ -466,8 +466,9 @@ The features are per-query RTT, TTL, query length/depth, and TLD distribution. T
 domains are then ranked by a per-label **suspicion score** - sigwood's own weighted lexical
 heuristic, not Shannon entropy - computed on the highest-scoring label across all subdomains,
 then grouped by registrable domain (eTLD+1), so fourteen random subdomains of one parent read
-as one finding instead of fourteen. The report shows it as `generated-look=`, naming what
-the heuristic is tuned to recognize rather than claiming a name was generated. The score
+as one finding instead of fourteen. The report shows it in an `entropy score` column - **score**, because the number
+carries no units and is not a count of bits, and **entropy** naming what the heuristic
+is tuned to recognize rather than claiming a name was generated. The score
 leans on digit density, and its biases are
 measured (1,000 seeded samples per label length against the live scorer, eleven lengths from
 6 to 63): benign digit-heavy labels such as short hex IDs or versioned hostnames can score

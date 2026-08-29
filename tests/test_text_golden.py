@@ -72,7 +72,8 @@ def test_golden_dns_singleton_no_blocked_column():
     assert out == (
         f"\ndns - 1 finding · 1 medium\nMission for dns.\n{RULE}\n"
         "singletons (1)\n"
-        "  medium  generated-look=4.78  queries=531  clients=7  weirddomain.example\n\n"
+        "          entropy score  queries  clients\n"
+        "  medium  4.78               531        7  weirddomain.example\n\n"
     )
 
 
@@ -83,7 +84,8 @@ def test_golden_dns_singleton_blocked_column_present():
     assert out == (
         f"\ndns - 1 finding · 1 high\nMission for dns.\n{RULE}\n"
         "singletons (1)\n"
-        "  high    generated-look=4.91  queries=612  clients=3  BLOCKED  blockeddomain.example\n\n"
+        "          entropy score  queries  clients  blocked\n"
+        "  high    4.91               612        3  BLOCKED  blockeddomain.example\n\n"
     )
 
 
@@ -95,7 +97,8 @@ def test_golden_dns_group():
     assert out == (
         f"\ndns - 1 finding · 1 medium\nMission for dns.\n{RULE}\n"
         "groups (1)\n"
-        "  medium  names=42  generated-look=4.90-3.10  queries=8123  clients=9  example.net\n\n"
+        "          names  entropy score  queries  clients\n"
+        "  medium     42  4.90-3.10         8123        9  example.net\n\n"
     )
 
 
@@ -115,7 +118,8 @@ def test_golden_dns_dense_cluster_scan_summary():
     assert out == (
         f"\ndns - 2 findings · 1 high  1 info\nMission for dns.\n{RULE}\n"
         "groups (1)\n"
-        "  high    names=600  generated-look=2.19-1.97  queries=600  clients=1  tunnel.example\n\n"
+        "          names  entropy score  queries  clients\n"
+        "  high      600  2.19-1.97          600        1  tunnel.example\n\n"
         "dense-cluster scan (1)\n"
         "  info    dense-cluster scan surfaced 1 high-entropy cluster (600 queries) - "
         "review the dense-cluster findings above before allowlisting\n\n"

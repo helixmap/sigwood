@@ -30,6 +30,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from math import gcd, isfinite
 from numbers import Real
+from operator import index
 
 from sigwood.common.display import (
     fmt_compact_span,
@@ -407,13 +408,16 @@ class Cell:
     (None = a bare entity/flow/domain/principal cell). ``align`` is text's
     justify ("right" for numeric counts). ``optional`` marks a column text
     conditionally drops (dns ``blocked``). ``full_width`` marks a single
-    spanning prose row (aws ``ranked_summary``)."""
+    spanning prose row (aws ``ranked_summary``). ``copyable`` is an explicit,
+    default-false HTML affordance marker; renderers must never infer it from
+    position or key shape."""
 
     key: str | None
     value: str
     align: str = "left"
     optional: bool = False
     full_width: bool = False
+    copyable: bool = False
 
 
 def html_cell_value(cell: Cell) -> str:
@@ -483,24 +487,24 @@ def _project_dns(f: Finding) -> list[Cell]:
     if "subdomain_count" in ev:  # group
         max_e, min_e = ev["max_label_score"], ev["min_label_score"]
         generated_look = (
-            f"generated-look={max_e:.2f}"
+            f"entropy={max_e:.2f}"
             if max_e == min_e
-            else f"generated-look={max_e:.2f}-{min_e:.2f}"
+            else f"entropy={max_e:.2f}-{min_e:.2f}"
         )
         return [
             Cell("names", f"names={ev['subdomain_count']}", align="right"),
-            Cell("generated-look", generated_look),
+            Cell("entropy", generated_look),
             Cell("queries", f"queries={ev['total_queries']}", align="right"),
             Cell("clients", f"clients={ev['unique_sources']}", align="right"),
             blocked,
-            Cell(None, ev["registrable_domain"]),
+            Cell(None, ev["registrable_domain"], copyable=True),
         ]
     return [  # singleton
-        Cell("generated-look", f"generated-look={ev['label_score']:.2f}"),
+        Cell("entropy", f"entropy={ev['label_score']:.2f}"),
         Cell("queries", f"queries={ev['query_count']}", align="right"),
         Cell("clients", f"clients={ev['unique_sources']}", align="right"),
         blocked,
-        Cell(None, f.title),
+        Cell(None, f.title, copyable=True),
     ]
 
 
@@ -668,15 +672,26 @@ def _project_exfil(f: Finding) -> list[Cell]:
 def _project_ssl(f: Finding) -> list[Cell]:
     """The ssl row: the flow, why it surfaced, and the facts behind that.
 
-    ``status`` and ``tls`` VANISH rather than render a placeholder when the
-    session negotiated nothing or presented no certificate - an absent
-    negotiation is not an empty one, and a dash would invite the reader to
-    compare rows on a fact one of them never had.
+    ``tls`` VANISHES rather than rendering a placeholder when the session
+    negotiated nothing. Validation status rides the reason clause it qualifies;
+    when that measured status is absent the literal machine leg is retained.
     """
     ev = f.evidence
-    basis = ev.get("severity_basis") or []
-    basis_col = "+".join(str(b) for b in basis)
+    raw_basis = ev.get("severity_basis") or []
+    basis = raw_basis if isinstance(raw_basis, (list, tuple)) else [raw_basis]
     status = ev.get("validation_status")
+    status_text = "" if status is None else str(status)
+    reasons: list[str] = []
+    for item in basis:
+        token = str(item)
+        if token == "sni_absent":
+            reasons.append("no server name")
+        elif token == "validation" and status_text:
+            reasons.append(f"certificate did not validate ({status_text})")
+        else:
+            # Unknown state stays literal; never turn it into a confident claim.
+            reasons.append(token)
+    reason_col = "; ".join(reasons)
     versions = ev.get("tls_versions") or {}
     version_col = ""
     if isinstance(versions, dict) and versions:
@@ -686,10 +701,9 @@ def _project_ssl(f: Finding) -> list[Cell]:
         Cell(None, str(ev.get("src", ""))),
         Cell(None, "→"),
         Cell(None, str(ev.get("dst", ""))),
-        Cell("basis", basis_col),
+        Cell("reason", reason_col),
         Cell("conns", f"conns={int(ev.get('conn_count', 0)):,}", align="right"),
-        Cell("status", "" if status is None else str(status), optional=True),
-        Cell("tls", str(version_col), optional=True),
+        Cell("tls", "" if not version_col else f"tls={version_col}", optional=True),
         Cell(
             "first",
             (
@@ -816,6 +830,32 @@ def _half_integer(value: object) -> str:
     return str(twice // 2) if twice % 2 == 0 else f"{twice // 2}.5"
 
 
+def _dnsblock_count(value: object) -> int | None:
+    """A non-negative integral dnsblock display count, excluding bool."""
+    if isinstance(value, bool):
+        return None
+    try:
+        numeric = int(index(value))
+    except TypeError:
+        return None
+    return numeric if numeric >= 0 else None
+
+
+def _dnsblock_days(ev: dict, *, burst: bool = False) -> str:
+    """Translate a valid lane denominator; retain literal state otherwise."""
+    active = _dnsblock_count(ev.get("active_periods"))
+    eligible = _dnsblock_count(ev.get("eligible_periods"))
+    lane = ev.get("coverage_lane")
+    if active is not None and eligible is not None:
+        if lane == "strong":
+            return f"{active} of {eligible} covered days"
+        if not burst and lane == "weak":
+            return f"{active} of {eligible} days with data"
+    return (
+        f"{ev.get('active_periods', 0)}/{ev.get('eligible_periods', 0)} periods"
+    )
+
+
 def _closed_multiplier(peak: object, baseline_twice: object) -> str:
     numerator = 2 * int(peak)
     denominator = int(baseline_twice)
@@ -848,7 +888,12 @@ def _project_dnsblock(f: Finding) -> list[Cell]:
     ):
         return [Cell(None, f.title, full_width=True)]
     if kind in ("prior_handling_exclusions", "recurring_activity"):
-        return [Cell(None, f.title, full_width=True)]
+        title = (
+            "names not reported as new, because Pi-hole had already handled them"
+            if kind == "prior_handling_exclusions"
+            else f.title
+        )
+        return [Cell(None, title, full_width=True)]
     if kind == "arrival_fold":
         return [
             Cell(None, str(ev.get("address", f.title))),
@@ -864,22 +909,24 @@ def _project_dnsblock(f: Finding) -> list[Cell]:
             Cell("peak", f"peak={peak:,}", align="right"),
             Cell("median", f"median={_half_integer(baseline_twice)}", align="right"),
             Cell("multiple", _closed_multiplier(peak, baseline_twice), align="right"),
-            Cell("periods", f"{int(ev.get('active_periods', 0))}/{int(ev.get('eligible_periods', 0))} periods", align="right"),
+            Cell("days", _dnsblock_days(ev, burst=True), align="right"),
             Cell("queries", f"{int(ev.get('attributed_query_count', 0)):,} queries", align="right"),
         ]
-    prior = (
-        "≥100"
-        if ev.get("prior_other_address_count_at_cap")
-        else str(int(ev.get("prior_other_address_count", 0)))
-    )
+    prior_count = _dnsblock_count(ev.get("prior_other_address_count"))
+    if ev.get("prior_other_address_count_at_cap") is True:
+        prior = "100+ other addresses queried it"
+    elif prior_count is not None:
+        prior = f"{prior_count} other addresses queried it"
+    else:
+        prior = f"prior={ev.get('prior_other_address_count', 0)}"
     return [
         Cell(None, f.title),
         Cell("names", f"{int(ev.get('qualifying_name_count', 0)):,} names", align="right"),
         Cell("queries", f"{int(ev.get('attributed_query_count', 0)):,} queries", align="right"),
-        Cell("periods", f"{int(ev.get('active_periods', 0))}/{int(ev.get('eligible_periods', 0))} periods", align="right"),
+        Cell("days", _dnsblock_days(ev), align="right"),
         Cell("first", _dnsblock_time(ev.get("first_associated_period"))),
         Cell("history", _dnsblock_history(ev.get("history_seconds")), align="right", optional=True),
-        Cell("prior", f"prior={prior}", align="right"),
+        Cell("prior", prior, align="right"),
     ]
 
 
@@ -904,6 +951,19 @@ def project_row(finding: Finding) -> list[Cell]:
 
 
 # ── per-section column plan ──────────────────────────────────────────────────
+
+
+#: Reader-facing header text for a column whose KEY is not the right word to show.
+#: The key stays the machine identity (it forms html's ``col-<key>`` class and the
+#: ``<key>=`` prefix text strips); this maps it to what a person should read. dns's
+#: ``entropy`` is scored by a weighted lexical heuristic with NO units, so the bare
+#: word would invite a reader to take the number as bits of Shannon entropy.
+_COLUMN_LABELS: dict[str, str] = {"entropy": "entropy score"}
+
+
+def column_label(key: str) -> str:
+    """The reader-facing header text for a column key (the key itself by default)."""
+    return _COLUMN_LABELS.get(key, key)
 
 
 @dataclass(frozen=True)

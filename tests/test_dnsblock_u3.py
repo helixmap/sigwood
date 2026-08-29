@@ -579,14 +579,18 @@ def test_note_projector_is_fixed_order_and_suppression_conserves():
         analysis=replace(prepared.analysis, notes=facts),
     )
     notes = runner._format_dnsblock_summary_notes(prepared)
-    assert notes[0].startswith("period coverage is not verifiable")
+    assert notes[0].startswith("these logs cannot prove how complete each day is")
     assert notes[1] == (
-        "dnsblock: 2 candidate pairs withheld: not enough prior history "
-        "in the loaded window"
+        "dnsblock: 2 candidate pairs not reported: not enough earlier history "
+        "in this window to call them new"
     )
-    assert notes[2].startswith("dnsblock: 1 synchronized first appearance withheld")
+    assert notes[2] == (
+        "dnsblock: 1 first appearance not reported: 3 addresses reached the same "
+        "group in one day, so the arrival is not distinctive to any one of them"
+    )
     assert notes[3] == (
-        "dnsblock: the allowlist removed 1 block-outcome row from the report interval and 2 from context"
+        "dnsblock: your allowlist removed 1 blocked-query row before analysis, and "
+        "2 from the earlier history"
     )
 
 
@@ -602,8 +606,30 @@ def test_note_projector_uses_detector_owned_vector_facts():
     notes = runner._format_dnsblock_summary_notes(
         replace(prepared, analysis=replace(prepared.analysis, notes=facts))
     )
-    assert "arrival analysis needs at least 9 prior periods" in notes[1]
-    assert "first-activity analysis needs 4 eligible periods" in notes[2]
+    assert notes[1] == (
+        "dnsblock: first-activity reporting needs 9 earlier days of history and "
+        "this window has 8; nothing is wrong, it will report once the archive is longer"
+    )
+    assert notes[2] == (
+        "dnsblock: first-activity reporting needs 4 days with data and this window has 2"
+    )
+
+
+def test_arrival_coverage_note_keeps_the_strong_lane_denominator() -> None:
+    prepared = _prepared(strong=True)
+    facts = replace(
+        prepared.analysis.notes,
+        arrival_days_required=4,
+        insufficient_arrival_coverage=2,
+    )
+    notes = runner._format_dnsblock_summary_notes(
+        replace(prepared, analysis=replace(prepared.analysis, notes=facts))
+    )
+    assert (
+        "dnsblock: first-activity reporting needs 4 covered days and this window has 2"
+        in notes
+    )
+    assert not any("4 days with data" in note for note in notes)
 
 
 def test_note_projector_hides_nonconserving_suppression_state():
@@ -651,7 +677,7 @@ def test_cap_note_table_is_lockstep_with_every_detector_cap_cause():
                 "raw_block_report_rows": 0,
                 "filtered_block_report_rows": 0,
             },
-            "dnsblock: no Pi-hole query rows in the window",
+            "dnsblock: this window contains no Pi-hole query rows at all",
         ),
         (
             {
@@ -659,7 +685,7 @@ def test_cap_note_table_is_lockstep_with_every_detector_cap_cause():
                 "raw_block_report_rows": 0,
                 "filtered_block_report_rows": 0,
             },
-            "dnsblock: no blocked-name outcomes logged in the window",
+            "dnsblock: Pi-hole logged no blocked names in this window, so there was nothing to analyse",
         ),
         (
             {
@@ -667,7 +693,7 @@ def test_cap_note_table_is_lockstep_with_every_detector_cap_cause():
                 "raw_block_report_rows": 1,
                 "filtered_block_report_rows": 0,
             },
-            "dnsblock: all block-outcome rows were removed by the allowlist",
+            "dnsblock: every blocked-name row in this window was removed by your allowlist before analysis",
         ),
         (
             {
@@ -675,7 +701,7 @@ def test_cap_note_table_is_lockstep_with_every_detector_cap_cause():
                 "raw_block_report_rows": 1,
                 "filtered_block_report_rows": 1,
             },
-            "dnsblock: blocked-name activity found, but nothing met the reporting thresholds",
+            "dnsblock: blocked-name activity was examined and nothing met the reporting bar",
         ),
     ],
 )

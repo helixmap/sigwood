@@ -92,18 +92,18 @@ def _series_watchdog_seconds(batch_window_counts: tuple[int, ...]) -> int:
 _NOTE_PATTERNS = tuple(
     re.compile(pattern)
     for pattern in (
-        r"period coverage is not verifiable from these logs; period counts use data-bearing periods, and burst and recurring activity were not evaluated",
-        r"dnsblock: [0-9]+ candidate (?:pair|pairs) withheld: not enough prior history in the loaded window",
-        r"dnsblock: arrival analysis needs at least [0-9]+ prior periods; the loaded window has [0-9]+",
-        r"dnsblock: first-activity analysis needs [0-9]+ eligible periods; the window has [0-9]+",
-        r"dnsblock: burst analysis needs [0-9]+ eligible periods; the window has [0-9]+",
-        r"dnsblock: recurring analysis needs every report period strongly covered; [0-9]+ of [0-9]+ were not",
-        r"dnsblock: [0-9]+ synchronized first (?:appearance|appearances) withheld \([0-9]+ addresses reached the same family in one period\)",
-        r"dnsblock: the allowlist removed [0-9]+ block-outcome (?:row|rows) from the report interval and [0-9]+ from context",
-        r"dnsblock: no Pi-hole query rows in the window",
-        r"dnsblock: no blocked-name outcomes logged in the window",
-        r"dnsblock: all block-outcome rows were removed by the allowlist",
-        r"dnsblock: blocked-name activity found, but nothing met the reporting thresholds",
+        r"these logs cannot prove how complete each day is, so counts use the days that carry data; burst and recurring activity were not evaluated",
+        r"dnsblock: first-activity reporting needs [0-9]+ earlier days of history and this window has [0-9]+; nothing is wrong, it will report once the archive is longer",
+        r"dnsblock: [0-9]+ candidate (?:pair|pairs) not reported: not enough earlier history in this window to call them new",
+        r"dnsblock: first-activity reporting needs [0-9]+ (?:covered days|days with data) and this window has [0-9]+",
+        r"dnsblock: burst reporting needs [0-9]+ covered days and this window has [0-9]+",
+        r"dnsblock: recurring reporting needs every day of the report fully covered; [0-9]+ of [0-9]+ were not",
+        r"dnsblock: [0-9]+ first (?:appearance|appearances) not reported: [0-9]+ addresses reached the same group in one day, so the arrival is not distinctive to any one of them",
+        r"dnsblock: your allowlist removed [0-9]+ blocked-query (?:row|rows) before analysis, and [0-9]+ from the earlier history",
+        r"dnsblock: this window contains no Pi-hole query rows at all",
+        r"dnsblock: Pi-hole logged no blocked names in this window, so there was nothing to analyse",
+        r"dnsblock: every blocked-name row in this window was removed by your allowlist before analysis",
+        r"dnsblock: blocked-name activity was examined and nothing met the reporting bar",
     )
 )
 

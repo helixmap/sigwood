@@ -4121,8 +4121,8 @@ def _format_dnsblock_summary_notes(prepared: Any) -> list[str]:
     preflight = prepared.preflight
     if preflight.coverage_lane is CoverageLane.WEAK:
         lines.append(
-            "period coverage is not verifiable from these logs; period counts use "
-            "data-bearing periods, and burst and recurring activity were not evaluated"
+            "these logs cannot prove how complete each day is, so counts use the "
+            "days that carry data; burst and recurring activity were not evaluated"
         )
     analysis = prepared.analysis
     cap_line = _dnsblock_cap_note(preflight.cause)
@@ -4133,22 +4133,27 @@ def _format_dnsblock_summary_notes(prepared: Any) -> list[str]:
     facts = analysis.notes
     if facts.insufficient_context_periods is not None:
         lines.append(
-            "dnsblock: arrival analysis needs at least "
-            f"{facts.arrival_history_required} prior periods; the "
-            f"loaded window has {facts.insufficient_context_periods}"
+            "dnsblock: first-activity reporting needs "
+            f"{facts.arrival_history_required} earlier days of history and this "
+            f"window has {facts.insufficient_context_periods}; nothing is wrong, "
+            "it will report once the archive is longer"
         )
     elif facts.insufficient_history_pairs:
         count = facts.insufficient_history_pairs
         lines.append(
-            f"dnsblock: {count} candidate {plural(count, 'pair')} withheld: "
-            "not "
-            "enough prior history in the loaded window"
+            f"dnsblock: {count} candidate {plural(count, 'pair')} not reported: "
+            "not enough earlier history in this window to call them new"
         )
     if facts.insufficient_arrival_coverage is not None:
+        day_kind = (
+            "covered days"
+            if preflight.coverage_lane is CoverageLane.STRONG
+            else "days with data"
+        )
         lines.append(
-            "dnsblock: first-activity analysis needs "
-            f"{facts.arrival_days_required} eligible periods; the "
-            f"window has {facts.insufficient_arrival_coverage}"
+            "dnsblock: first-activity reporting needs "
+            f"{facts.arrival_days_required} {day_kind} and this window has "
+            f"{facts.insufficient_arrival_coverage}"
         )
     if (
         preflight.coverage_lane is CoverageLane.STRONG
@@ -4156,9 +4161,9 @@ def _format_dnsblock_summary_notes(prepared: Any) -> list[str]:
         and facts.burst_cause == "insufficient_coverage"
     ):
         lines.append(
-            "dnsblock: burst analysis needs "
-            f"{facts.burst_active_required} eligible periods; the "
-            f"window has {facts.burst_eligible_periods}"
+            "dnsblock: burst reporting needs "
+            f"{facts.burst_active_required} covered days and this window has "
+            f"{facts.burst_eligible_periods}"
         )
     if (
         preflight.coverage_lane is CoverageLane.STRONG
@@ -4166,16 +4171,16 @@ def _format_dnsblock_summary_notes(prepared: Any) -> list[str]:
         and facts.recurring_cause == "incomplete_strong_coverage"
     ):
         lines.append(
-            "dnsblock: recurring analysis needs every report period strongly "
+            "dnsblock: recurring reporting needs every day of the report fully "
             f"covered; {facts.recurring_missing_periods} of "
             f"{facts.recurring_periods_total} were not"
         )
     if facts.synchronized_pairs:
         count = facts.synchronized_pairs
         lines.append(
-            f"dnsblock: {count} synchronized first {plural(count, 'appearance')} "
-            f"withheld ({facts.synchronized_addresses} addresses reached the same "
-            "family in one period)"
+            f"dnsblock: {count} first {plural(count, 'appearance')} not reported: "
+            f"{facts.synchronized_addresses} addresses reached the same group in "
+            "one day, so the arrival is not distinctive to any one of them"
         )
     if cap_line:
         lines.append(cap_line)
@@ -4191,10 +4196,10 @@ def _format_dnsblock_summary_notes(prepared: Any) -> list[str]:
         and (suppressed_report or suppressed_context)
     ):
         lines.append(
-            "dnsblock: the allowlist removed "
-            f"{suppressed_report} block-outcome "
-            f"{plural(suppressed_report, 'row')} from the report interval and "
-            f"{suppressed_context} from context"
+            "dnsblock: your allowlist removed "
+            f"{suppressed_report} blocked-query "
+            f"{plural(suppressed_report, 'row')} before analysis, and "
+            f"{suppressed_context} from the earlier history"
         )
     if (
         not cap_line
@@ -4206,17 +4211,21 @@ def _format_dnsblock_summary_notes(prepared: Any) -> list[str]:
             facts.filtered_block_report_rows + facts.filtered_block_context_rows
         )
         if facts.raw_query_rows == 0:
-            lines.append("dnsblock: no Pi-hole query rows in the window")
+            lines.append("dnsblock: this window contains no Pi-hole query rows at all")
         elif raw_blocks == 0:
-            lines.append("dnsblock: no blocked-name outcomes logged in the window")
+            lines.append(
+                "dnsblock: Pi-hole logged no blocked names in this window, so "
+                "there was nothing to analyse"
+            )
         elif filtered_blocks == 0:
             lines.append(
-                "dnsblock: all block-outcome rows were removed by the allowlist"
+                "dnsblock: every blocked-name row in this window was removed by "
+                "your allowlist before analysis"
             )
         else:
             lines.append(
-                "dnsblock: blocked-name activity found, but nothing met the "
-                "reporting thresholds"
+                "dnsblock: blocked-name activity was examined and nothing met "
+                "the reporting bar"
             )
     return lines
 

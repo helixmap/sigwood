@@ -43,10 +43,13 @@ output, not real network data):
 ```
 dns - 1 finding · 1 high
 Finds domain names and query patterns that stand apart from the rest, including
-generated-looking names and dense groups that can accompany automated traffic.
+generated-looking names (scored by entropy) of the sort malware uses for
+disposable command domains, and dense groups that can accompany automated
+traffic.
 ────────────────────────────────────────────────────────────────────────────────
 groups (1)
-  high    names=16  generated-look=2.10-1.85  queries=418  clients=1  k7x2p9qz3f.example
+          names  entropy score  queries  clients
+  high       16  2.10-1.85          418        1  k7x2p9qz3f.example
 
 beacon - 2 findings · 2 medium
 Finds outbound connections that keep a regular rhythm, a pattern worth checking

@@ -150,6 +150,25 @@ def test_renders_html_twin_and_writes_to_path(tmp_path, monkeypatch) -> None:
     assert target.read_bytes() == b"%PDF-fake"
 
 
+def test_pdf_html_spine_never_calls_severity_str(tmp_path, monkeypatch) -> None:
+    def _forbidden(_severity: Severity) -> str:
+        raise AssertionError("Severity.__str__ reached a renderer")
+
+    recorded: dict[str, str] = {}
+    monkeypatch.setattr(Severity, "__str__", _forbidden)
+    monkeypatch.setattr(
+        pdf_mod,
+        "_render_pdf_bytes",
+        lambda html_str: recorded.setdefault("html", html_str) and b"%PDF-fake",
+    )
+
+    target = tmp_path / "severity.pdf"
+    _handler(target).end()
+
+    assert '<span class="pill sev-medium">Medium</span>' in recorded["html"]
+    assert target.read_bytes() == b"%PDF-fake"
+
+
 def test_pdf_inherits_notes_table_and_level_zero_signpost(monkeypatch, tmp_path) -> None:
     recorded: dict[str, str] = {}
 

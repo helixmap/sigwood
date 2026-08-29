@@ -23,6 +23,7 @@ from sigwood.common.display import severity_tag
 from sigwood.common.finding import DetectorContext, Finding, RunSummary, Severity
 from sigwood.outputs.text import TextHandler
 from sigwood.outputs._render_model import _partition_dns as _dns_sections
+from sigwood.outputs._render_model import column_label
 from sigwood.detectors.dns import (
     DEFAULT_CONFIG,
     _add_top_suffix_dummies,
@@ -2144,16 +2145,23 @@ def test_text_renderer_zeek_singletons_name_counts_without_blocked_column() -> N
     handler = TextHandler(verbose_level=0)
     lines = handler._render_dns_group(_dns_sections([f1, f2]))
 
-    # Analytically derive expected strings - column widths are max across both rows:
-    # generated_look_w=19, queries_w=9, clients_w=9, blocked_w=0 (no blocked).
+    # Analytically derive expected strings. The labels live in a column HEADER, so
+    # each width is the max of its data and its own header LABEL - which for entropy
+    # is the reader-facing "entropy score" (13), not the machine key: queries 7,
+    # clients 7; no blocked column.
     tag = severity_tag(Severity.HIGH)
+    ent = column_label("entropy")
+    expected_header = (
+        f"  {' ':<{len(tag)}}  {ent:<{len(ent)}}  {'queries':>7}  {'clients':>7}"
+    )
     expected_1 = (
-        f"  {tag}  {'generated-look=2.10':<19}  {'queries=5':>9}  "
-        f"{'clients=2':>9}  sub.example.com"
+        f"  {tag}  {'2.10':<{len(ent)}}  {'5':>7}  {'2':>7}  sub.example.com"
     )
     expected_2 = (
-        f"  {tag}  {'generated-look=1.92':<19}  {'queries=3':>9}  "
-        f"{'clients=1':>9}  api.example.net"
+        f"  {tag}  {'1.92':<{len(ent)}}  {'3':>7}  {'1':>7}  api.example.net"
+    )
+    assert expected_header in lines, (
+        f"column header missing:\n  expected: {expected_header!r}\n  got: {lines!r}"
     )
 
     # Row lines start with the 2-space indent + severity tag. Skip the

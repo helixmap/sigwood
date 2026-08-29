@@ -11,6 +11,7 @@ from __future__ import annotations
 import csv
 import io
 import json
+from copy import deepcopy
 from datetime import datetime, timezone
 
 import pandas as pd
@@ -81,13 +82,17 @@ def _summary() -> RunSummary:
     )
 
 
-def _render(handler_cls, **kw) -> str:
+def _render_finding(handler_cls, finding: Finding, *, level: int = 2, **kw) -> str:
     stream = io.StringIO()
-    handler = handler_cls(stream=stream, verbose_level=2, **kw)
+    handler = handler_cls(stream=stream, verbose_level=level, **kw)
     handler.begin(_summary())
-    handler.write([_finding()])
+    handler.write([finding])
     handler.end()
     return stream.getvalue()
+
+
+def _render(handler_cls, **kw) -> str:
+    return _render_finding(handler_cls, _finding(), **kw)
 
 
 _CONTROL = ("\x1b", "\x9b", "\x00", "\x07")
@@ -173,6 +178,33 @@ def test_json_stays_valid_and_lossless() -> None:
     assert finding["evidence"]["src"] == SRC
     assert finding["evidence"]["dst"] == DST
     assert "\x1b" not in out and "\\u001b" in out
+
+
+def test_human_rendering_cannot_mutate_machine_bytes_or_source_evidence() -> None:
+    finding = _finding()
+    frozen_evidence = deepcopy(finding.evidence)
+    json_before = _render_finding(JsonHandler, finding)
+    csv_before = _render_finding(CsvHandler, finding)
+
+    for level in (1, 2):
+        text = _render_finding(
+            TextHandler,
+            finding,
+            level=level,
+            max_findings_per_detector=100,
+        )
+        html = _render_finding(
+            HtmlHandler,
+            finding,
+            level=level,
+            max_findings_per_detector=100,
+        )
+        assert SRC in text and DST in text
+        assert SRC in html and DST in html
+
+    assert finding.evidence == frozen_evidence
+    assert _render_finding(JsonHandler, finding) == json_before
+    assert _render_finding(CsvHandler, finding) == csv_before
 
 
 def test_the_rendered_note_carries_counts_and_no_log_derived_value() -> None:

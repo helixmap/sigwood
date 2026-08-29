@@ -285,8 +285,8 @@ def test_weak_lane_refuses_burst_and_recurring_without_grid_evaluation():
     assert analysis.burst_channel.cause == "weak_coverage"
     assert analysis.recurring.status is dnsblock.ChannelStatus.ABSTAINED
     notes = runner._format_dnsblock_summary_notes(_prepared(weak=True))
-    assert notes[0].startswith("period coverage is not verifiable")
-    assert not any("burst analysis needs" in line for line in notes)
+    assert notes[0].startswith("these logs cannot prove how complete each day is")
+    assert not any("burst reporting needs" in line for line in notes)
 
 
 def test_steady_partial_capture_does_not_clear_burst_and_missing_strong_period_speaks():
@@ -320,7 +320,7 @@ def test_steady_partial_capture_does_not_clear_burst_and_missing_strong_period_s
     assert prepared.analysis.recurring.missing_periods == 1
     assert any(
         line == (
-            "dnsblock: recurring analysis needs every report period strongly "
+            "dnsblock: recurring reporting needs every day of the report fully "
             "covered; 1 of 5 were not"
         )
         for line in runner._format_dnsblock_summary_notes(prepared)
@@ -419,11 +419,19 @@ def test_harness_note_guard_rejects_identity_or_non_template_prose():
     dnsblock_c1_harness._validate_summary_notes(
         {
             "summary_notes": [
-                "dnsblock: burst analysis needs 3 eligible periods; the window has 2",
-                "dnsblock: recurring analysis needs every report period strongly covered; 1 of 5 were not",
+                "dnsblock: burst reporting needs 3 covered days and this window has 2",
+                "dnsblock: recurring reporting needs every day of the report fully covered; 1 of 5 were not",
             ]
         }
     )
+    for seeded in (
+        "dnsblock: burst reporting needs 192.0.2.7 covered days and this window has 2",
+        "dnsblock: burst reporting needs x.example covered days and this window has 2",
+    ):
+        with pytest.raises(ValueError, match="non-template"):
+            dnsblock_c1_harness._validate_summary_notes(
+                {"summary_notes": [seeded]}
+            )
 
 
 def test_harness_rejects_unsafe_provisional_note_before_final_artifact(

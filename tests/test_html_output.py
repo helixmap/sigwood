@@ -210,6 +210,83 @@ def test_title_with_markup_is_escaped() -> None:
     assert "<b>x</b>" not in out
 
 
+def test_dns_copy_cue_is_explicit_escaped_and_absent_from_beacon() -> None:
+    hostile_domain = 'grp"</td><script>alert(1)</script>.example?u=http://third-party.example/'
+    grouped = _finding(
+        detector="dns",
+        severity=Severity.HIGH,
+        title="group-title",
+        evidence={
+            "source": "zeek",
+            "registrable_domain": hostile_domain,
+            "subdomain_count": 9,
+            "max_label_score": 4.3,
+            "min_label_score": 3.1,
+            "total_queries": 99,
+            "unique_sources": 3,
+        },
+    )
+    singleton = _finding(
+        detector="dns",
+        severity=Severity.MEDIUM,
+        title="single.example",
+        evidence={
+            "source": "zeek",
+            "label_score": 4.2,
+            "query_count": 12,
+            "unique_sources": 2,
+        },
+    )
+    beacon = _finding(
+        detector="beacon",
+        evidence={
+            "src_ip": "192.0.2.10",
+            "dst_ip": "198.51.100.20",
+            "dst_port": 443,
+            "proto": "tcp",
+            "period_str": "60.0m",
+            "beacon_score": 0.61,
+            "conn_count": 12,
+        },
+    )
+
+    out = _render([grouped, singleton, beacon])
+    escaped = html_stdlib.escape(hostile_domain, quote=True)
+
+    assert out.count('<td class="copyable">') == 2
+    assert f'<td class="copyable">{escaped}</td>' in out
+    assert '<td class="copyable">single.example</td>' in out
+    assert '<td class="copyable">192.0.2.10</td>' not in out
+    assert "<script>alert(1)</script>" not in out
+    assert "href=" not in out
+    assert 'class="copyable grp' not in out
+
+
+def test_dns_copy_select_css_is_screen_only_and_carries_no_visible_cue() -> None:
+    """One-click selection on a dns entity is a SCREEN-ONLY convenience, and it is
+    INVISIBLE: the cell carries `user-select: all` and nothing that decorates it.
+
+    A dotted underline shipped here and was withdrawn - it read as an out-of-place
+    mark in a table whose other columns carry none. The negative is pinned, not
+    merely absent, because a decoration is the obvious thing to re-add."""
+    out = _render([_finding()])
+    style = out[out.index("<style>") + len("<style>"):out.index("</style>")]
+    screen = style[style.index("@media screen {"):style.index("@media print")]
+    print_block = style[style.index("@media print"):]
+
+    assert ".findings-table td.copyable {" in screen
+    assert "-webkit-user-select: all;" in screen
+    assert "user-select: all;" in screen
+    assert "copyable" not in print_block
+
+    # The copyable rule declares selection behaviour ONLY - no border, background,
+    # colour, outline or text decoration anywhere in its block.
+    block = screen[screen.index(".findings-table td.copyable {"):]
+    block = block[:block.index("}")]
+    for decoration in ("border", "background", "color", "outline", "text-decoration"):
+        assert decoration not in block, f"copyable cue re-added a {decoration} declaration"
+
+
 def test_control_bytes_and_markup_are_neutralized_in_html_values() -> None:
     hostile = "Z9HOST" + "".join(_DATA_CONTROLS) + "ILE9Z<script>alert(1)</script>"
     key = "Z9KEY" + "".join(_DATA_CONTROLS) + "END9Z"
@@ -561,7 +638,30 @@ def test_group_header_uses_pre_cap_counts() -> None:
     findings = [_finding(title=f"f{i}") for i in range(5)]
     out = _render(findings, cap=2)
     # header reflects the pre-cap total, not the 2 shown cards
-    assert "beacon - 5 findings" in out
+    assert (
+        '<div class="group-head"><span class="group-name">beacon</span>'
+        '<span class="group-tail"> - 5 findings · 5 Medium</span></div>'
+        in out
+    )
+
+
+@pytest.mark.parametrize(
+    ("severity", "word"),
+    [
+        (Severity.HIGH, "High"),
+        (Severity.MEDIUM, "Medium"),
+        (Severity.LOW, "Low"),
+        (Severity.INFO, "Info"),
+    ],
+)
+def test_html_row_severity_pills_use_words(
+    severity: Severity,
+    word: str,
+) -> None:
+    out = _render([_finding(severity=severity)])
+
+    assert f'<span class="pill sev-{word.lower()}">{word}</span>' in out
+    assert f">[{severity.value}]</span>" not in out
 
 
 def test_cap_disclosure_and_card_count() -> None:
@@ -653,7 +753,7 @@ def test_html_syslog_sample_details_real_path_is_closed_escaped_and_print_hidden
         _assert_no_data_controls(out)
         assert (
             '<details class="row-toggle"><summary><span class="pill sev-low">'
-            '[L]</span></summary></details>'
+            'Low</span></summary></details>'
         ) in out
         assert "sampled log lines" not in out
         assert '<th class="col-first">first</th>' in out
@@ -724,7 +824,7 @@ def test_html_syslog_transaction_summary_and_member_drilldown_are_safe() -> None
     ) in out
     assert (
         '<details class="row-toggle"><summary><span class="pill sev-medium">'
-        '[M]</span></summary></details>'
+        'Medium</span></summary></details>'
     ) in out
     family_separator = (
         "[M] · useradd&lt;script&gt;sep&lt;/script&gt; · 3 rare lines"
@@ -849,7 +949,7 @@ def test_html_syslog_severity_pill_is_native_css_only_toggle() -> None:
 
     assert (
         '<details class="row-toggle"><summary><span class="pill sev-info">'
-        '[I]</span></summary></details>'
+        'Info</span></summary></details>'
     ) in out
     screen_block = out[out.index("@media screen {"):out.index("@media print")]
     assert (
@@ -1012,12 +1112,19 @@ def test_html_wordmark_keeps_graph_and_era_brand_token_parity() -> None:
         " · threat hunt</div>"
         in document
     )
-    assert (
-        ".wordmark .brand { "
+    shared_consumer = (
+        ".wordmark .brand, .group-name { "
         'font-family: Georgia, "Bookman Old Style", "Times New Roman", serif; '
         "color: var(--wordmark); }"
-        in style
     )
+    assert shared_consumer in style
+    assert style.count(stack) == 1
+    assert (
+        '<div class="group-head"><span class="group-name">beacon</span>'
+        '<span class="group-tail"> - 1 finding · 1 Medium</span></div>'
+        in document
+    )
+    assert ".wordmark .brand, .group-name, .group-tail" not in style
 
 
 def test_html_severity_pill_palettes_meet_wcag_contrast_floor() -> None:

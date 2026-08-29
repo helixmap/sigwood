@@ -36,8 +36,9 @@ from sigwood.common.paths import private_mkdir, private_write_text
 from sigwood.parsers.syslog import split_header
 from sigwood.outputs._evidence import (
     evidence_at_level,
+    description_for_reading,
     exfil_members_at_level,
-    format_evidence_instants,
+    format_evidence_for_reading,
     sample_bound_note,
 )
 from sigwood.outputs._render_model import (
@@ -46,6 +47,7 @@ from sigwood.outputs._render_model import (
     Section,
     _SEVERITY_ORDER,
     _build_renderable,
+    column_label,
     fold_mix_names,
     html_cell_value,
     html_columns,
@@ -252,13 +254,17 @@ def _render_detail_row(finding: Finding, *, verbose_level: int, colspan: int) ->
     if verbose_level < 1:
         return ""
     parts: list[str] = []
-    if finding.description:
-        parts.append(f'<p class="desc">{_esc(finding.description)}</p>')
+    description = description_for_reading(finding)
+    if description:
+        parts.append(f'<p class="desc">{_esc(description)}</p>')
     parts.append(_render_next_steps(finding.next_steps))
     # evidence_at_level dispatches curated (1) vs full (2).
     parts.append(
         _render_kv_grid(
-            format_evidence_instants(evidence_at_level(finding, verbose_level))
+            format_evidence_for_reading(
+                finding,
+                evidence_at_level(finding, verbose_level),
+            )
         )
     )
     parts.append(_render_exfil_members(finding, verbose_level))
@@ -444,7 +450,8 @@ def _render_finding_row(
     sev_class = f"sev-{finding.severity.name.lower()}"
     colspan = max(1, len(keep))  # defensive: a ranked_summary-only section has 0 cols
     pill_value = (
-        f'<span class="pill {sev_class}">{_esc(str(finding.severity))}</span>'
+        f'<span class="pill {sev_class}">'
+        f'{_esc(severity_word(finding.severity).capitalize())}</span>'
     )
     if (
         _syslog_samples(finding) is not None
@@ -494,6 +501,8 @@ def _render_finding_row(
                 classes.append("data")
                 if finding.detector == "syslog":
                     classes.append(f"col-{spec.key}")
+            if i < len(cells) and cells[i].copyable:
+                classes.append("copyable")
             cls = f' class="{" ".join(classes)}"' if classes else ""
             rendered = _esc(value)
             if finding.detector == "syslog" and spec.key is None:
@@ -531,7 +540,7 @@ def _render_section(
             if spec.key is not None:
                 classes.append(f"col-{spec.key}")
             cls = f' class="{" ".join(classes)}"' if classes else ""
-            label = _esc(spec.key) if spec.key else ""
+            label = _esc(column_label(spec.key)) if spec.key else ""
             header_cells.append(f"<th{cls}>{label}</th>")
         thead = (
             f'<thead><tr><th class="sev-col"></th>'
@@ -553,16 +562,24 @@ def _render_section(
 
 
 def _render_group_header(detector: str, renderable: DetectorRenderable) -> str:
-    """``beacon - 12 findings · 3 H · 9 M`` from the PRE-CAP sidecars."""
+    """``beacon - 12 findings · 3 High · 9 Medium`` from the PRE-CAP sidecars.
+
+    Severity words come from the one display owner and are capitalized like the
+    strip and the row pills - the raw enum letters read as magnitudes to a novice,
+    which is why no html surface shows them."""
     total = renderable.level_visible_total
     bits = [
-        f"{renderable.severity_breakdown[sev]} {sev.value}"
+        f"{renderable.severity_breakdown[sev]} {severity_word(sev).capitalize()}"
         for sev in _SEVERITY_ORDER
         if renderable.severity_breakdown.get(sev)
     ]
     tail = (" · " + " · ".join(bits)) if bits else ""
-    head = f"{_esc(detector)} - {total} {_esc(plural(total, 'finding'))}{tail}"
-    return f'<div class="group-head">{head}</div>'
+    name = f'<span class="group-name">{_esc(detector)}</span>'
+    tail_text = f" - {total} {plural(total, 'finding')}{tail}"
+    return (
+        f'<div class="group-head">{name}'
+        f'<span class="group-tail">{_esc(tail_text)}</span></div>'
+    )
 
 
 def _render_detector_block(
@@ -653,7 +670,7 @@ body {
 }
 header { border-bottom: 2px solid var(--border); padding-bottom: 18px; margin-bottom: 24px; }
 .wordmark { font-size: 22px; font-weight: 700; letter-spacing: .2px; margin-bottom: 14px; }
-.wordmark .brand { font-family: Georgia, "Bookman Old Style", "Times New Roman", serif; color: var(--wordmark); }
+.wordmark .brand, .group-name { font-family: Georgia, "Bookman Old Style", "Times New Roman", serif; color: var(--wordmark); }
 .meta-row { display: flex; align-items: baseline; margin: 3px 0; }
 .meta-label { color: var(--muted); width: 96px; flex: 0 0 96px; text-transform: lowercase; }
 .meta-value { color: var(--fg); }
@@ -732,6 +749,10 @@ header { border-bottom: 2px solid var(--border); padding-bottom: 18px; margin-bo
      word-break: break-word and WRAPS - the page wraps instead of clipping wide
      tables (the correctness floor; paged media has no horizontal scroll). */
   .findings-table td.data { white-space: nowrap; }
+  .findings-table td.copyable {
+    -webkit-user-select: all;
+    user-select: all;
+  }
   .syslog-table { table-layout: fixed; width: 100%; }
   .syslog-table th.sev-col, .syslog-table td.sev-cell { width: 64px; }
   .syslog-table th.col-first, .syslog-table td.col-first { width: 135px; }

@@ -200,8 +200,8 @@ def test_quiet_family_promotes_at_inclusive_defaults(
         "span_seconds": 9.0,
     }
     assert finding.description == (
-        "Registrable domain family.example has a family of names that mostly "
-        "fail to resolve. This pattern may resemble automated name generation."
+        "5 distinct names under registrable domain family.example failed to resolve "
+        "in 90% of lookups. This pattern may resemble automated name generation."
     )
     assert finding.next_steps == [
         "Review the queried names under family.example",
@@ -413,9 +413,9 @@ def test_non_psl_eligible_family_promotes_once(
     assert absent[0].severity == Severity.INFO
     assert absent[0].evidence["severity_basis"] == []
     assert absent[0].description == (
-        "Private namespace lan has a family of names that mostly fail to resolve. "
-        "Names in a private namespace routinely fail to resolve outside their "
-        "local zone."
+        "5 distinct names under private namespace lan failed to resolve in 100% of "
+        "lookups. Names in a private namespace routinely fail to resolve outside "
+        "their local zone."
     )
     assert absent[0].next_steps == [
         "Review the queried names under lan",

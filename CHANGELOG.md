@@ -6,6 +6,37 @@ All notable changes to sigwood are recorded here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- A mistyped setting for the `aws`, `dns` or `scan` detectors is now reported instead of
+  reaching the analysis. Those three had no validation, so `window_secs = "3600"` - a
+  quoted number, the ordinary TOML slip - reached the scan detector and put a raw internal
+  error in the report body; `window_secs = 0` did the same by a different route; and
+  `vertical_threshold = true` was accepted in silence and ran as 1. Each now fails during
+  preparation with a message naming the setting and the shape it accepts, and the run
+  continues with the other detectors. The rejected value is never echoed back. The
+  `beacon`, `exfil`, `ssl` and `syslog` detectors already validated their settings.
+
+  No default and no documented range changed. But a setting that was outside the
+  documented shape and happened to run before will now stop the detector rather than
+  proceed, so a config carrying one needs a look: inverted `aws` severity bands
+  (`composite_low_threshold` above `composite_medium_threshold`) previously ran with the
+  LOW band silently unreachable, a `true` where a number belongs previously ran as 1, and
+  `dns` `min_cluster_size = 1` ran on the fast clustering backend while always failing on
+  the stock one. Each is now refused with its own message.
+
+- Fifteen printed claims across six detectors now state only what their configuration
+  can support. A sweep of the detectors' finding prose against the values each setting
+  accepts confirmed fifteen claims an ordinary configuration change could make false:
+  `exfil` calling a single byte a bulk transfer, `scan` calling four seconds a
+  deliberately slow scan, `dns` calling one name a family, `syslog` calling three days a
+  short window. The remedies differ by claim - some now print the measured quantity the
+  adjective stood in for, some name the threshold a term of art actually refers to, and
+  some simply drop a magnitude the setting never guaranteed. Findings carry the same
+  evidence, severity and machine fields as before; only the wording changed. The pass was
+  bounded: ten further candidates and the per-detector mission lines were examined without
+  reaching a verdict, and are unchanged.
+
 ## [0.6.0] - 2026-08-28
 
 ### Added

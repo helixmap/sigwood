@@ -237,8 +237,9 @@ def _pair_finding(summary: dict[str, Any], context: DetectorContext) -> Finding:
         severity=Severity.MEDIUM,
         title=f"{src} → {dst}",
         description=(
-            "Complete-byte connection rows show originator-dominant traffic to an "
-            "external destination, which resembles bulk data transfer."
+            "Connection rows with complete byte counts show outbound traffic to an "
+            "external destination, meeting the configured minimum outbound-byte and "
+            "originator-share floors."
         ),
         evidence={
             "src": src,
@@ -293,8 +294,9 @@ def _rollup_finding(
         severity=Severity.MEDIUM,
         title=f"{src} → {network_text}",
         description=(
-            "Complete-byte connection rows show originator-dominant traffic across "
-            "a rotating external destination pool, which resembles bulk data transfer."
+            "Connection rows with complete byte counts show outbound traffic across a "
+            "rotating external destination pool, meeting the configured minimum "
+            "outbound-byte and originator-share floors."
         ),
         evidence={
             "tier": "destination_pool",

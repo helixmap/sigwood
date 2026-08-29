@@ -577,12 +577,13 @@ def _make_finding(
         cycles = round(span / period, 1)
 
     description = (
-        f"Connections recur on a near-fixed {period_str} period - the regular "
-        "cadence of an automated check-in."
+        f"The strongest periodic component in these connections falls at {period_str}. "
+        "The rhythm score combines that component's spectral share and prominence "
+        "with the steadiness of the gaps between connections."
     )
 
     next_steps = [
-        f"Identify the process on {src} making connections every {period_str}",
+        f"Identify the process on {src} behind these connections",
         f"Pivot to dns.log - search for lookups resolving to {dst}",
         f"Review the full connection history for {dst} in conn.log",
         f"Check {dst} on VirusTotal, Shodan, and ASN lookup",

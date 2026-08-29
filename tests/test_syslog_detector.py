@@ -1358,8 +1358,8 @@ class SyslogDetectorTests(unittest.TestCase):
         })
         self.assertEqual(
             family.description,
-            "A set of rare log lines from a single program on this host, each at or "
-            "below the rarity threshold.",
+            "A set of log lines from a single program on this host, each from a "
+            "template at or below this run's rarity threshold.",
         )
         self.assertEqual(
             family.next_steps,

@@ -7,11 +7,14 @@ Detects vertical (one→many ports), horizontal (one→many hosts), block
 from __future__ import annotations
 
 import ipaddress
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+import math
+from numbers import Real
 
 import numpy as np
 import pandas as pd
 
+from sigwood.common.display import fmt_compact_span, plural
 from sigwood.common.finding import DetectorContext, Finding, MethodTag, Severity
 
 DETECTOR_NAME = "scan"
@@ -35,6 +38,39 @@ DEFAULT_CONFIG = {
     "slow_min_ports": 8,
     "slow_min_buckets": 4,
 }
+
+
+def validate_config(cfg: dict) -> None:
+    """Validate Scan's overlaid tuning section without mutation."""
+    if not isinstance(cfg, dict):
+        raise ValueError("[detectors.scan] must be a table")
+
+    for key in (
+        "vertical_threshold",
+        "horizontal_threshold",
+        "block_port_threshold",
+        "block_host_threshold",
+        "window_secs",
+        "slow_min_ports",
+        "slow_min_buckets",
+    ):
+        value = cfg.get(key, DEFAULT_CONFIG[key])
+        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+            raise ValueError(
+                f"[detectors.scan].{key} must be a positive integer"
+            )
+
+    for key in ("block_state_min", "slow_state_min"):
+        value = cfg.get(key, DEFAULT_CONFIG[key])
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, Real)
+            or not math.isfinite(float(value))
+            or not 0 <= float(value) <= 1
+        ):
+            raise ValueError(
+                f"[detectors.scan].{key} must be a finite number from 0 through 1"
+            )
 
 DETECTOR_METHOD = MethodTag("pattern", named=False)
 DETECTOR_MISSION: str = (
@@ -484,15 +520,17 @@ def _detect_slow(df: pd.DataFrame, cfg: dict) -> list[dict]:
         elif scan_state_ratio >= 0.60:
             pattern_tag   = 'slow_scan'
             pattern_notes = (
-                f"Connection attempts paced across {n_buckets} time windows, below a "
-                "per-window detection threshold - a cadence consistent with a "
-                "deliberately slow scan."
+                f"Connection attempts spread across {n_buckets} "
+                f"{plural(n_buckets, 'time window')} of "
+                f"{fmt_compact_span(timedelta(seconds=bucket_secs))} each, staying "
+                "below the per-window detection threshold in every observed window."
             )
         else:
             pattern_tag   = 'slow_scan_candidate'
             pattern_notes = (
-                "Connection attempts spread across several time windows with moderate "
-                "scan-indicative behavior - short of a confident slow-scan call."
+                f"Connection attempts spread across {n_buckets} "
+                f"{plural(n_buckets, 'time window')} - short of a confident slow-scan "
+                "call."
             )
 
         results.append({
@@ -633,10 +671,21 @@ def _make_finding(row: dict, data_window: tuple) -> Finding:
     else:
         title = f"{src}"
 
-    description = row.get('pattern_notes') or (
-        f"A {scan_type} scan pattern - repeated connection attempts consistent with "
-        "port or host enumeration."
-    )
+    description = row.get('pattern_notes')
+    if not description:
+        total_conns = row.get('total_conns')
+        # Public detector rows always carry the measured count.  Keep the no-count
+        # form defensive for hand-built/legacy rows rather than rendering None.
+        if isinstance(total_conns, int) and not isinstance(total_conns, bool):
+            description = (
+                f"A {scan_type} scan pattern across {total_conns} "
+                f"{plural(total_conns, 'connection attempt')} - consistent with port "
+                "or host enumeration."
+            )
+        else:
+            description = (
+                f"A {scan_type} scan pattern consistent with port or host enumeration."
+            )
 
     evidence: dict = {
         'scan_type'        : scan_type,

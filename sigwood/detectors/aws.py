@@ -37,6 +37,8 @@ source IPs → whois / threat-intel on non-AWS source IPs → regions touched.
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import math
+from numbers import Real
 from typing import Any
 
 import numpy as np
@@ -102,6 +104,76 @@ DEFAULT_CONFIG = {
     "composite_medium_threshold": 2.0,  # absolute band, not rank position → MEDIUM
     "composite_low_threshold":    1.0,  # mild standout → LOW; below → INFO band
 }
+
+
+def validate_config(cfg: dict) -> None:
+    """Validate AWS's overlaid tuning section without mutation."""
+    if not isinstance(cfg, dict):
+        raise ValueError("[detectors.aws] must be a table")
+
+    for key in (
+        "min_events",
+        "min_scorable_principals",
+        "burst_gap_seconds",
+        "burst_high_service_count",
+    ):
+        value = cfg.get(key, DEFAULT_CONFIG[key])
+        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+            raise ValueError(
+                f"[detectors.aws].{key} must be a positive integer"
+            )
+
+    margin = cfg.get(
+        "burst_window_edge_margin_seconds",
+        DEFAULT_CONFIG["burst_window_edge_margin_seconds"],
+    )
+    if isinstance(margin, bool) or not isinstance(margin, int) or margin < 0:
+        raise ValueError(
+            "[detectors.aws].burst_window_edge_margin_seconds must be a "
+            "non-negative integer"
+        )
+
+    min_firsts = cfg.get("burst_min_firsts", DEFAULT_CONFIG["burst_min_firsts"])
+    if (
+        isinstance(min_firsts, bool)
+        or not isinstance(min_firsts, int)
+        or min_firsts < 2
+    ):
+        raise ValueError(
+            "[detectors.aws].burst_min_firsts must be an integer greater than "
+            "or equal to 2"
+        )
+
+    error_rate = cfg.get(
+        "burst_high_error_rate", DEFAULT_CONFIG["burst_high_error_rate"]
+    )
+    if (
+        isinstance(error_rate, bool)
+        or not isinstance(error_rate, Real)
+        or not math.isfinite(float(error_rate))
+        or not 0 <= float(error_rate) <= 1
+    ):
+        raise ValueError(
+            "[detectors.aws].burst_high_error_rate must be a finite number "
+            "from 0 through 1"
+        )
+
+    bands: dict[str, float] = {}
+    for key in ("composite_medium_threshold", "composite_low_threshold"):
+        value = cfg.get(key, DEFAULT_CONFIG[key])
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, Real)
+            or not math.isfinite(float(value))
+        ):
+            raise ValueError(f"[detectors.aws].{key} must be a finite number")
+        bands[key] = float(value)
+
+    if bands["composite_low_threshold"] > bands["composite_medium_threshold"]:
+        raise ValueError(
+            "[detectors.aws].composite_low_threshold must be less than or equal "
+            "to [detectors.aws].composite_medium_threshold"
+        )
 
 
 # ── Pure helper: below-floor count ────────────────────────────────────────────
@@ -464,9 +536,9 @@ def _make_burst_finding(
 
     title = str(burst["principal"])
     description = (
-        "A burst of first-seen actions across multiple services in a short window. "
-        "The pattern resembles an enumeration or recon sweep - recon, manual "
-        "exploration, or a misconfigured first-time deploy."
+        "A group of first-seen actions for this principal. The pattern may reflect "
+        "enumeration or recon, manual exploration, or a misconfigured first-time "
+        "deploy."
     )
     next_steps = [
         f"Review CloudTrail events for principal {burst['principal']}",
@@ -532,9 +604,9 @@ def _make_ranked_finding(
 
     title = str(principal)
     description = (
-        f"Composite z-score {row['composite_z']:.2f} across error rate, "
-        "distinct source IPs, distinct action names, and action entropy - this "
-        "principal's behavioral fingerprint is unusual for the population."
+        f"Composite score {row['composite_z']:.2f}, summing standardized error rate, "
+        "distinct source IP, distinct action name, and action entropy values for this "
+        "principal within this population."
     )
     next_steps = [
         f"Review CloudTrail events for principal {principal}",

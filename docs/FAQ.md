@@ -418,11 +418,12 @@ Because recurring automated connections are worth seeing, they are close to invi
 shape of this tool. That is the claim, and it stops there.
 
 What the detector actually does: it reads the connection log you supplied, on your
-machine, and reports flows whose timing repeats. It does not identify malware from
-timing, so a finding tops out at MEDIUM and its text says "the regular cadence of an
-automated check-in" rather than naming a threat. The first steps it suggests are local -
-the process on the source host, the DNS lookups that resolved to that destination, that
-destination's history in `conn.log` - because the evidence lives in your own logs. Each
+machine, and reports connection groups whose rhythm score clears the configured
+threshold. It does not identify malware from timing, so a finding tops out at MEDIUM and
+its text reports where the strongest periodic component fell and what the rhythm score
+combines, rather than naming a threat. The first steps it suggests are local - the process
+on the source host, the DNS lookups that resolved to that destination, that destination's
+history in `conn.log` - because the evidence lives in your own logs. Each
 finding carries when the pattern started, when it was last seen, and how long it ran, so
 you can judge it without leaving the report.
 

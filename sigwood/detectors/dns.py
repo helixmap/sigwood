@@ -28,6 +28,7 @@ from __future__ import annotations
 from collections import Counter
 from dataclasses import dataclass
 import math
+from numbers import Real
 import shlex
 from datetime import datetime, timezone
 from typing import Any
@@ -37,6 +38,7 @@ import pandas as pd
 from sigwood.common.clustering import ACTIVE_BACKEND, fit_predict_interruptible
 from sklearn.preprocessing import StandardScaler
 
+from sigwood.common.display import plural
 from sigwood.common.finding import DetectorContext, Finding, MethodTag, Severity
 from sigwood.common.tld import TLD_EXTRACT as _TLD_EXTRACT
 
@@ -92,6 +94,96 @@ DEFAULT_CONFIG = {
         "min_samples": 10,
     },
 }
+
+
+def validate_config(cfg: dict) -> None:
+    """Validate DNS's overlaid tuning section without mutation."""
+    if not isinstance(cfg, dict):
+        raise ValueError("[detectors.dns] must be a table")
+
+    min_cluster_size = cfg.get(
+        "min_cluster_size", DEFAULT_CONFIG["min_cluster_size"]
+    )
+    if (
+        isinstance(min_cluster_size, bool)
+        or not isinstance(min_cluster_size, int)
+        or min_cluster_size < 2
+    ):
+        raise ValueError(
+            "[detectors.dns].min_cluster_size must be an integer greater than "
+            "or equal to 2"
+        )
+
+    for key in (
+        "min_samples",
+        "promote_min_subdomains",
+        "scan_min_cluster_members",
+        "scan_max_members_per_cluster",
+    ):
+        value = cfg.get(key, DEFAULT_CONFIG[key])
+        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+            raise ValueError(
+                f"[detectors.dns].{key} must be a positive integer"
+            )
+
+    for key in ("threshold", "thresh_high_entropy"):
+        value = cfg.get(key, DEFAULT_CONFIG[key])
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, Real)
+            or not math.isfinite(float(value))
+        ):
+            raise ValueError(f"[detectors.dns].{key} must be a finite number")
+
+    for key in ("promote_below_gate", "scan_dense_clusters"):
+        value = cfg.get(key, DEFAULT_CONFIG[key])
+        if not isinstance(value, bool):
+            raise ValueError(f"[detectors.dns].{key} must be a boolean")
+
+    for key in (
+        "promote_min_nxdomain_fraction",
+        "scan_min_high_entropy_fraction",
+        "scan_min_regdomain_share",
+    ):
+        value = cfg.get(key, DEFAULT_CONFIG[key])
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, Real)
+            or not math.isfinite(float(value))
+            or not 0 <= float(value) <= 1
+        ):
+            raise ValueError(
+                f"[detectors.dns].{key} must be a finite number from 0 through 1"
+            )
+
+    pihole = cfg.get("pihole", DEFAULT_CONFIG["pihole"])
+    if not isinstance(pihole, dict):
+        raise ValueError("[detectors.dns].pihole must be a table")
+
+    pihole_cluster_size = pihole.get(
+        "min_cluster_size", DEFAULT_CONFIG["pihole"]["min_cluster_size"]
+    )
+    if (
+        isinstance(pihole_cluster_size, bool)
+        or not isinstance(pihole_cluster_size, int)
+        or pihole_cluster_size < 2
+    ):
+        raise ValueError(
+            "[detectors.dns.pihole].min_cluster_size must be an integer greater "
+            "than or equal to 2"
+        )
+
+    pihole_min_samples = pihole.get(
+        "min_samples", DEFAULT_CONFIG["pihole"]["min_samples"]
+    )
+    if (
+        isinstance(pihole_min_samples, bool)
+        or not isinstance(pihole_min_samples, int)
+        or pihole_min_samples < 1
+    ):
+        raise ValueError(
+            "[detectors.dns.pihole].min_samples must be a positive integer"
+        )
 
 # Resolved at clustering import - accurate by read time. "fast-HDBSCAN" when
 # the accelerator extra is installed, "HDBSCAN" otherwise. Both glow named -
@@ -1160,15 +1252,18 @@ def _make_below_gate_group_findings(
                 1, f"Pivot on querier IPs: {', '.join(sources[:5])}"
             )
         has_public_suffix = bool(query_shapes["has_public_suffix"].all())
+        subdomain_count = int(len(query_shapes))
         if has_public_suffix:
             description = (
-                f"Registrable domain {parent} has a family of names that mostly "
-                "fail to resolve. This pattern may resemble automated name generation."
+                f"{subdomain_count} {plural(subdomain_count, 'distinct name')} under "
+                f"registrable domain {parent} failed to resolve in {fraction:.0%} of "
+                "lookups. This pattern may resemble automated name generation."
             )
         else:
             description = (
-                f"Private namespace {parent} has a family of names that mostly fail "
-                "to resolve. Names in a private namespace routinely fail to resolve "
+                f"{subdomain_count} {plural(subdomain_count, 'distinct name')} under "
+                f"private namespace {parent} failed to resolve in {fraction:.0%} of "
+                "lookups. Names in a private namespace routinely fail to resolve "
                 "outside their local zone."
             )
         findings.append(Finding(
@@ -1180,7 +1275,7 @@ def _make_below_gate_group_findings(
                 "tier": "below_gate_group",
                 "source": "zeek",
                 "registrable_domain": parent,
-                "subdomain_count": int(len(query_shapes)),
+                "subdomain_count": subdomain_count,
                 "max_label_score": round(float(label_scores.max()), 4),
                 "min_label_score": round(float(label_scores.min()), 4),
                 "total_queries": int(len(rows)),

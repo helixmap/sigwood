@@ -159,7 +159,7 @@ A single JSON object, not one object per line:
       "detector": "beacon",
       "severity": "medium",
       "title": "192.0.2.10 \u2192 192.0.2.20:443/tcp",
-      "description": "The regular cadence of an automated check-in.",
+      "description": "The strongest periodic component in these connections falls at 10.0m. The rhythm score combines that component's spectral share and prominence with the steadiness of the gaps between connections.",
       "next_steps": ["Check whether this destination is expected infrastructure"],
       "evidence": {"first_seen": "2026-08-01T00:03:00+00:00", "conn_count": 480},
       "ts_generated": "2026-08-01T06:00:01+00:00",

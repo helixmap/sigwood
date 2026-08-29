@@ -86,7 +86,7 @@ def test_shared_topology_migration_keeps_frozen_exfil_bytes_and_is_sensitivity_c
     ]
     frozen = _finding_snapshot(rows)
 
-    assert hashlib.sha256(frozen).hexdigest() == "905e022c089bd8de8453644629def7bc5e88ec22e15f30e5a085990b85e65b94"
+    assert hashlib.sha256(frozen).hexdigest() == "8989bc58a220374cd387ef7b83a159c24e8b7c6d593b6f97da411c557bd16316"
     assert _finding_snapshot(rows) == frozen
 
     with monkeypatch.context() as altered:

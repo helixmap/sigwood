@@ -1254,8 +1254,8 @@ def _collapse_families(
             ordered.itertuples(index=False)
         )
         description = (
-            "A set of rare log lines from a single program on this host, each "
-            "at or below the rarity threshold."
+            "A set of log lines from a single program on this host, each from a "
+            "template at or below this run's rarity threshold."
         )
         if privileged:
             description += " This program is in sigwood's privileged class."
@@ -1350,7 +1350,8 @@ def _burst_finding(
         # label and upgrades the description alongside it. An unlabeled burst
         # must not be narrated as a boot the detector never observed.
         description=(
-            "A cluster of rare log lines on this host within a short window."
+            "A cluster of log lines on this host, each from a template at or below "
+            "this run's rarity threshold."
         ),
         evidence={
             "tier":         "burst",
@@ -1393,7 +1394,7 @@ def _isolated_finding(
     program = getattr(row, "program", None)
     program = "unknown" if program is None or pd.isna(program) else str(program)
 
-    description = "Rare log template observed at or below the rarity threshold."
+    description = "Log template observed at or below this run's rarity threshold."
     if privileged:
         description += " This program is in sigwood's privileged class."
     evidence = {
@@ -1526,8 +1527,8 @@ def _reconcile(
             # The label and the prose move together: only a burst a boot event
             # actually claimed may be described as a reboot.
             target.description = (
-                "A cluster of rare log lines on this host within a short "
-                "window, coinciding with a reboot of this host."
+                "A cluster of log lines on this host, each from a template at or below "
+                "this run's rarity threshold, coinciding with a reboot of this host."
             )
             claimed.add(id(target))
         else:

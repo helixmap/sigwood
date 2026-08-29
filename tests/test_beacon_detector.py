@@ -499,13 +499,14 @@ class BeaconRunTests(unittest.TestCase):
         )
         self.assertEqual(
             finding.description,
-            "Connections recur on a near-fixed 10.0m period - the regular cadence "
-            "of an automated check-in.",
+            "The strongest periodic component in these connections falls at 10.0m. "
+            "The rhythm score combines that component's spectral share and prominence "
+            "with the steadiness of the gaps between connections.",
         )
         self.assertEqual(
             finding.next_steps,
             [
-                "Identify the process on 192.0.2.10 making connections every 10.0m",
+                "Identify the process on 192.0.2.10 behind these connections",
                 "Pivot to dns.log - search for lookups resolving to 198.51.100.20",
                 "Review the full connection history for 198.51.100.20 in conn.log",
                 "Check 198.51.100.20 on VirusTotal, Shodan, and ASN lookup",

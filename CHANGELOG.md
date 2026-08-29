@@ -37,6 +37,19 @@ All notable changes to sigwood are recorded here. The format follows
   bounded: ten further candidates and the per-detector mission lines were examined without
   reaching a verdict, and are unchanged.
 
+### Fixed
+
+- **A `dnsblock` run no longer crashes when the default window is turned off.** Setting
+  `default_window = "all"` (or an empty value) means "no implicit window", which is
+  documented and supported. But `dnsblock` then subtracted that absent span from a
+  timestamp and put a raw Python traceback in front of the operator, exit 1. It hit the
+  configuration file shipped in this repository, so
+  `sigwood hunt --config=demo/sigwood.toml --detect=dnsblock` reproduced it in one line.
+  The run now reports the whole selected archive, exactly as `--all` does. That is not a
+  new policy: the loader already resolves no load windows in both cases, so the selected
+  input population was already the full archive; the missing value was the report
+  interval. Runs with a configured window are unchanged.
+
 ## [0.6.0] - 2026-08-28
 
 ### Added

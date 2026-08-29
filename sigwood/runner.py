@@ -1940,7 +1940,11 @@ def _plan_and_load(
                 report_interval = (min(observed_start or until, until), until)
             else:
                 end = observed_end or captured_now
-                report_interval = (end - parse_window_span(default_spec), end)
+                span = parse_window_span(default_spec)
+                if span is None:
+                    report_interval = (observed_start or end, end)
+                else:
+                    report_interval = (end - span, end)
 
         explicit_file = any(
             path.is_file() for path in source_dirs.get("pihole_dir", ())

@@ -15,7 +15,7 @@ box, over logs at rest, and your logs never have to leave your machine.
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](#license)
 ![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)
 
-> **Status: early / pre-1.0 (`0.5.1`).** The nine detectors work and are covered by tests,
+> **Status: early / pre-1.0 (`0.6.0`).** The nine detectors work and are covered by tests,
 > but things may change before 1.0. Feedback is welcome.
 
 <p align="center">
@@ -315,7 +315,7 @@ job. A plain virtualenv also works (`python3 -m venv venv && venv/bin/pip
 install sigwood`; a minimal Debian may need `sudo apt install python3-venv`
 first).
 
-On macOS/arm64, a clean virtualenv install of sigwood 0.5.1 uses roughly half a gigabyte
+On macOS/arm64, a clean virtualenv install of sigwood 0.6.0 uses roughly half a gigabyte
 on disk; the `[all]` extra rounds to the same figure. Most of that footprint is the
 scientific-Python dependency stack. For run-time memory on large-window DNS runs, see
 **DNS clustering cost rises with the volume of unsuppressed queries** in

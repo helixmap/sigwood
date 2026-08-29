@@ -6,6 +6,8 @@ All notable changes to sigwood are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-08-28
+
 ### Added
 
 - **The dense-cluster tunnel scan now runs on Pi-hole data, not only Zeek.** A family of
@@ -21,6 +23,16 @@ All notable changes to sigwood are recorded here. The format follows
   Disabling the scan returns Pi-hole to its previous aggregate disclosure, which now says
   the scan was disabled rather than claiming a source limitation. The calibration record is
   published in the DNS evidence page.
+
+- **An evidence ledger: what has actually been measured, and what has not.**
+  [docs/EVIDENCE.md](https://github.com/helixmap/sigwood/blob/main/docs/EVIDENCE.md) carries one
+  row for **every** detector, not only the ones with results behind them: what was measured and
+  on what population, what that supports and does not, and what is still owed. Five detectors
+  now have published calibration conclusions under `docs/evidence/`; two are measured with the
+  write-up still owed; and two have no calibration campaign at all, which the ledger says
+  plainly. Nearly all of it rests on one estate, and each record says so itself. If you want to
+  help change that, [FIELDKIT.md](https://github.com/helixmap/sigwood/blob/main/docs/FIELDKIT.md)
+  is the door.
 
 ### Changed
 
@@ -88,18 +100,6 @@ All notable changes to sigwood are recorded here. The format follows
   now fixed in the detector. A configuration file still carrying the key keeps working: sigwood
   reports `config: ignoring unknown setting [detectors.beacon].bin_seconds` and continues with the
   calibrated value.
-
-### Added
-
-- **An evidence ledger: what has actually been measured, and what has not.**
-  [docs/EVIDENCE.md](https://github.com/helixmap/sigwood/blob/main/docs/EVIDENCE.md) carries one
-  row for **every** detector, not only the ones with results behind them: what was measured and
-  on what population, what that supports and does not, and what is still owed. Five detectors
-  now have published calibration conclusions under `docs/evidence/`; two are measured with the
-  write-up still owed; and two have no calibration campaign at all, which the ledger says
-  plainly. Nearly all of it rests on one estate, and each record says so itself. If you want to
-  help change that, [FIELDKIT.md](https://github.com/helixmap/sigwood/blob/main/docs/FIELDKIT.md)
-  is the door.
 
 ### Fixed
 
@@ -1455,7 +1455,8 @@ agent, no account.
 - Analysis-window controls (`--since`/`--until`/`--days`/`--all`), a per-source default
   lookback window, and local-or-UTC time rendering.
 
-[Unreleased]: https://github.com/helixmap/sigwood/compare/v0.5.1...HEAD
+[Unreleased]: https://github.com/helixmap/sigwood/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/helixmap/sigwood/compare/v0.5.1...v0.6.0
 [0.5.1]: https://github.com/helixmap/sigwood/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/helixmap/sigwood/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/helixmap/sigwood/compare/v0.3.0...v0.4.0

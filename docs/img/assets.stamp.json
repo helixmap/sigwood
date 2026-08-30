@@ -1,0 +1,12 @@
+{
+  "demo_svg": {
+    "hash": "94cf938db0d0772a7277e1329b1327c976b4a9d06af49763f323f04a2882dc32",
+    "oracle": "text-output/sha256"
+  },
+  "report_png": {
+    "hash": "025d3b63409690b06a0c98c5750b447d51c0260b60aa4522153ee870c6322105",
+    "oracle": "finding-rows/sha256"
+  },
+  "schema_version": 1,
+  "tz": "UTC"
+}

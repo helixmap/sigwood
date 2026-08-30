@@ -158,9 +158,33 @@ Two checks belong here as well, because no test covers either:
   ```
 
 - **Shipped images still match shipped output.** The report screenshot (`docs/img/report.png`)
-  and the terminal recording (`docs/img/demo.svg`) render on the project page *and* on PyPI. Any
-  release that changed what a report looks like needs them recaptured, or the front page
-  advertises older output than the release produces.
+  and the terminal recording (`docs/img/demo.svg`) render on the project page *and* on PyPI, so
+  a release that changed what a report looks like otherwise ships a front page advertising older
+  output than the release produces. Check it rather than judging it by eye:
+
+  ```bash
+  python tools/refresh_assets.py --check
+  ```
+
+  The check regenerates the report's finding rows and the terminal text from the demo corpus and
+  compares their semantic hashes with `docs/img/assets.stamp.json`. Fresh exits 0; drift exits
+  non-zero, names the stale asset, and prints the refresh command.
+
+  Read that as what it is. It catches a change in sigwood's OUTPUT since the images were built.
+  It does not inspect the image bytes, and the report oracle covers the finding rows rather than
+  the header, so run the refresh and LOOK at the regenerated images before continuing rather
+  than treating a green check as the whole answer.
+
+  The check itself needs no external tools. Refreshing needs Chrome for `report.png`, and
+  `asciinema` plus `termsvg` for `demo.svg`; a missing tool skips only the image that needs it.
+  Skipping this step is possible and is a choice to advertise stale output.
+
+  **This step covers two of the three shipped images. `docs/img/graph.gif` is NOT covered**, and
+  a green check says nothing about it. Its source is a real capture that is address-scrubbed
+  before rendering, so there is no reproducible input to hash and no honest stamp to compare
+  against. Refresh it deliberately when the graph's rendering changes; `demo/README.md` carries
+  the commands. Treating a green check as covering all three is the mistake this note exists to
+  prevent.
 
 The section is done when the working tree holds the intended release state, the suite is
 green, and both checks above have been made. It stays uncommitted.

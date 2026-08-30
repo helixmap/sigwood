@@ -639,7 +639,13 @@ def _styles(landscape: bool, *, ssl_reason_wrap: bool = False) -> str:
     ``landscape`` flips ONLY the print ``@page`` size - everything
     else, including the on-screen html, is inert to it (paged media only). The
     data-cell ``nowrap`` lives under ``@media screen`` so the PRINT page wraps
-    instead of clipping wide tables (the correctness floor)."""
+    instead of clipping wide tables (the correctness floor).
+
+    The screen block's ``td.data`` nowrap line is matched EXACTLY by the
+    ``ssl_reason_wrap`` replace below, which appends the reason-wrap rule after
+    it. Reformatting that line - spacing, a line break, a reordered declaration -
+    must update the replace in the same edit, or the ssl rule silently stops
+    being emitted."""
     page_size = "A4 landscape" if landscape else "A4"
     styles = ("""
 :root {
@@ -787,6 +793,13 @@ header { border-bottom: 2px solid var(--border); padding-bottom: 18px; margin-bo
 }
 """.strip().replace("__SIGWOOD_PAGE_SIZE__", page_size))
     if ssl_reason_wrap:
+        # The search string must match the stylesheet's screen-block nowrap line
+        # byte for byte, including leading indentation and the trailing newline.
+        # str.replace raises nothing on a miss, so the ssl wrap rule silently
+        # disappears and long addresses break one character per line. Appending
+        # here keeps the rule after nowrap while non-ssl reports stay byte-identical.
+        # tests/test_render_parity.py::test_ssl_projection_renders_the_three_reason_shapes
+        # asserts both the rule's presence and source order.
         styles = styles.replace(
             "  .findings-table td.data { white-space: nowrap; }\n",
             "  .findings-table td.data { white-space: nowrap; }\n"

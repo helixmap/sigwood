@@ -35,10 +35,18 @@ CLASS_B = {"needle", "member finding"}
 # Shipped era regression: internal decision identifiers must not reach output.
 D_PATTERN = re.compile(r"\bD\d{1,3}\b")
 
+# Voice rail: copy never characterizes the tool's own virtue - the work makes
+# the claim, so a rendered "honest"/"truthful" is the tool vouching for itself.
+# The public-docs half of the same rule is the token budget in
+# test_voice_consistency.py; this predicate holds the rendered surface.
+PLEADING_PATTERN = re.compile(
+    r"\bhonest(?:y|ly)?\b|\btruthful(?:ly|ness)?\b", re.IGNORECASE
+)
+
 _CLASS_B_PREDICATES = tuple(
     (token, re.compile(re.escape(token), re.IGNORECASE))
     for token in sorted(CLASS_B)
-)
+) + (("pleading", PLEADING_PATTERN),)
 _TEXT_PREDICATES = _CLASS_B_PREDICATES
 _ERA_PREDICATES = (("D-code", D_PATTERN),) + _CLASS_B_PREDICATES
 _DNSBLOCK_PREDICATES = _TEXT_PREDICATES + (
@@ -312,6 +320,14 @@ def test_era_seeded_tool_label_is_detected() -> None:
     rendered = render_text_report(seeded, family="zeek")
     assert rendered
     assert "needle" in scan(rendered, _ERA_PREDICATES)
+
+
+def test_seeded_pleading_token_is_detected() -> None:
+    """Positive control for the pleading predicate: tool copy that vouches for
+    itself is reported, across case and inflection."""
+    assert "pleading" in scan("an Honest disclosure", _CLASS_B_PREDICATES)
+    assert "pleading" in scan("rendered truthfully", _CLASS_B_PREDICATES)
+    assert "pleading" not in scan("a chestnut, dishonest input", _CLASS_B_PREDICATES)
 
 
 def test_real_syslog_transaction_text_is_clean_at_all_levels() -> None:

@@ -18,7 +18,7 @@ def _receipt(deck: str = "deck\n", *, cards: tuple[EraCard, ...] = ()) -> EraHar
     return EraHarnessReceipt(
         outcome="MEASURED", population_basis="raw_pre_allowlist",
         record_counts=(), consumed_span=None, missing_baseline_dates=(),
-        post_baseline_dates=(), collapsed_alias_dates=(), cards_present=(),
+        post_baseline_dates=(), cards_present=(),
         rendered_cards=deck, cards=cards,
     )
 

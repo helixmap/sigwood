@@ -608,10 +608,8 @@ load lights it up for free.
 
 Era's archive planner consumes loader-owned discovery and exposes typed planning
 facts; it is not a parser or a detector. Its source calendar consists of UTC
-date groups. The exact `YYYY-MM-DD-TSVPRE` directory spelling is a source
-directory alias for its one canonical `YYYY-MM-DD` group. This records both
-facts: the canonical date is available through the collapse, while the exact
-canonical directory name can still be absent. Other suffixes are not aliases.
+date groups: only a directory named exactly `YYYY-MM-DD` is a date group, and a
+suffixed name never becomes a date by prefix accident.
 
 The planner's work estimate is the sum of compressed on-disk file sizes from
 `stat()`. Gzip trailer sizes, decoded-byte probes, and row counts are not work
@@ -647,9 +645,10 @@ is exact only for classifiable, routable addresses outside the configured
 `home_net`; an address-cap or classification failure is displayed as an explicit
 non-measurement, never as a partial exact count.
 
-The canonical D19 report identity contains archive content identity, resolved
+The canonical report identity contains archive content identity, resolved
 configuration, CLI options, display timezone, partition zone, tldextract version,
 the effective PSL snapshot SHA-256, and sigwood version. Generated-at and output
-name are rendering metadata rather than identity inputs. D34 resource receipts
-are `PASS`, `COMPLETED_RSS_OVER_LIMIT`, or `NOT_MEASURED`; a non-measurement names
-whether the corpus, route, or measurement harness was unavailable.
+name are rendering metadata rather than identity inputs. Resource-measurement
+receipts are `PASS`, `COMPLETED_RSS_OVER_LIMIT`, or `NOT_MEASURED`; a
+non-measurement names whether the corpus, route, or measurement harness was
+unavailable.

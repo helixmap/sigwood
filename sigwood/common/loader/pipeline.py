@@ -87,6 +87,7 @@ from sigwood.common.loader.types import (
     DualWindow,
     MAX_CHUNK_DECODED_BYTES,
     MAX_CHUNK_ROWS,
+    MAX_LOGICAL_DOCUMENT_BYTES,
     LoadResult,
     PermissionSkipInfo,
     RotationSkipInfo,
@@ -225,6 +226,10 @@ class SourceLoader:
     records_directory_denials: bool = False
     # Total row-local eligibility for the RFC 3164 re-date diagnostic.
     wall_clock_row: Callable[[dict], bool] | None = None
+    # Document ceiling for a family whose legitimate shape is one large logical
+    # document (the reader's max_document_bytes). None keeps the per-line limit
+    # for everything - only cloudtrail declares one.
+    max_document_bytes: int | None = None
 
     def discover_paths(
         self,
@@ -842,7 +847,8 @@ def run_load(
                         ),
                         show_progress=show_progress,
                         unit=strategy.unit,
-                    )
+                    ),
+                    max_document_bytes=strategy.max_document_bytes,
                 )
                 if strategy.mode == "stream":
                     for row in strategy.parse(
@@ -924,7 +930,7 @@ def run_load(
                     _warnings.append(
                         f"{strip_control(path.name)}: skipped "
                         f"{line_iter.skipped_oversize} oversized logical {noun} "
-                        "(limit 1 MiB)"
+                        f"({line_iter.limit_note})"
                     )
         except PermissionError as exc:
             if strategy.read_error_factory is not None:
@@ -1060,7 +1066,9 @@ def _fold_stream_chunks(
 ) -> Iterator[DecodedChunk]:
     """Parse a stream strategy once and emit canonical bounded chunks."""
     with open_snapshot_text(item) as handle:
-        reader = BoundedLogicalRecordReader(handle)
+        reader = BoundedLogicalRecordReader(
+            handle, max_document_bytes=strategy.max_document_bytes
+        )
         parsed = iter(strategy.parse(reader, path=item.path, warnings=warnings))
         prior_bytes = 0
 
@@ -1092,7 +1100,8 @@ def _fold_stream_chunks(
             noun = "record" if reader.skipped_oversize == 1 else "records"
             warnings.append(
                 f"{strip_control(item.path.name)}: skipped "
-                f"{reader.skipped_oversize} oversized logical {noun} (limit 1 MiB)"
+                f"{reader.skipped_oversize} oversized logical {noun} "
+                f"({reader.limit_note})"
             )
         quality_out[item.path] = SourceFileQuality(
             decoded_records=reader.decoded_records,
@@ -1241,7 +1250,8 @@ def _fold_zeek_chunks(
             noun = "record" if reader.skipped_oversize == 1 else "records"
             warnings.append(
                 f"{strip_control(item.path.name)}: skipped "
-                f"{reader.skipped_oversize} oversized logical {noun} (limit 1 MiB)"
+                f"{reader.skipped_oversize} oversized logical {noun} "
+                f"({reader.limit_note})"
             )
         quality_out[item.path] = SourceFileQuality(
             decoded_records=reader.decoded_records,
@@ -1365,6 +1375,9 @@ _SOURCE_LOADERS: dict[str, SourceLoader] = {
         # (an explicit --since/--until still narrows it).
         default_window_eligible=False,
         records_directory_denials=True,
+        # A native delivery is ONE `{"Records":[...]}` line, routinely several
+        # MiB decoded - the per-line limit would skip it before the sniff.
+        max_document_bytes=MAX_LOGICAL_DOCUMENT_BYTES,
     ),
     "journal": SourceLoader(
         # The producer's lock-protected active-capture registry is the gate;

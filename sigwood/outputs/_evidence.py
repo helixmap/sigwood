@@ -265,24 +265,47 @@ def sample_bound_note(
     )
 
 
-def exfil_members_at_level(
+def _members_at_level(
     finding: Finding,
     level: int,
+    *,
+    detector: str,
+    tier: str,
+    noun: str,
 ) -> tuple[list[dict[str, Any]], str | None]:
-    """Return the shared human member slice for a destination-pool rollup."""
+    """The shared rollup member-slice policy: nothing at level 0, the ten
+    largest plus a truthful bound note at level 1, the complete list at 2."""
     if level < 1:
         return [], None
-    if (
-        finding.detector != "exfil"
-        or finding.evidence.get("tier") != "destination_pool"
-    ):
+    if finding.detector != detector or finding.evidence.get("tier") != tier:
         return [], None
     raw_members = finding.evidence.get("members")
     if not isinstance(raw_members, (list, tuple)):
         return [], None
     members = [member for member in raw_members if isinstance(member, dict)]
     shown = members if level >= 2 else members[:EXFIL_MEMBER_DISPLAY_CAP]
-    return shown, sample_bound_note(len(members), len(shown), "destination")
+    return shown, sample_bound_note(len(members), len(shown), noun)
+
+
+def exfil_members_at_level(
+    finding: Finding,
+    level: int,
+) -> tuple[list[dict[str, Any]], str | None]:
+    """Return the shared human member slice for a destination-pool rollup."""
+    return _members_at_level(
+        finding, level, detector="exfil", tier="destination_pool",
+        noun="destination",
+    )
+
+
+def scan_members_at_level(
+    finding: Finding,
+    level: int,
+) -> tuple[list[dict[str, Any]], str | None]:
+    """Return the shared human member slice for a scan (scan_type, src) rollup."""
+    return _members_at_level(
+        finding, level, detector="scan", tier="rollup", noun="member",
+    )
 
 
 # Per-detector curated-evidence subsets for level 1 - tolerant: omit absent
@@ -395,7 +418,13 @@ def curated_evidence(finding: Finding) -> dict[str, Any]:
             "window_spanning",
         )
     elif det == "scan":
-        keys = ("scan_state_ratio", "top_states", "direction", "pattern_tag")
+        if ev.get("tier") == "rollup":
+            keys = (
+                "member_count", "target_count", "total_conns",
+                "max_scan_state_ratio", "direction", "window_start",
+            )
+        else:
+            keys = ("scan_state_ratio", "top_states", "direction", "pattern_tag")
     elif det == "exfil":
         keys = (
             "destination_count",
@@ -511,6 +540,15 @@ def evidence_at_level(finding: Finding, level: int) -> dict[str, Any]:
         if (
             finding.detector == "exfil"
             and finding.evidence.get("tier") == "destination_pool"
+        ):
+            return {
+                key: value
+                for key, value in finding.evidence.items()
+                if key != "members"
+            }
+        if (
+            finding.detector == "scan"
+            and finding.evidence.get("tier") == "rollup"
         ):
             return {
                 key: value

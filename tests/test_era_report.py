@@ -197,7 +197,7 @@ def test_merge_is_deterministic_and_merges_aggregate_shards_only() -> None:
 
 def test_reducer_uses_planner_canonical_groups_and_discloses_empty_shards(tmp_path) -> None:
     (tmp_path / "2026-08-01").mkdir()
-    (tmp_path / "2026-08-02-TSVPRE").mkdir()
+    (tmp_path / "2026-08-02").mkdir()
     plan = ArchivePlanner(tmp_path, baseline_dates=()).plan()
     reducer = EraReducer.from_archive_plan(
         plan, ReportInterval(_instant(1), _instant(4)), home_net=["10.0.0.0/8"]

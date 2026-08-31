@@ -853,6 +853,80 @@ def test_loose_root_advisory_exact_shape(tmp_path: Path, capsys: pytest.CaptureF
 
 
 @_POSIX_ONLY
+def test_declared_empty_root_is_exempt_from_loose_advisory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """An explicit root = "" chooses CWD semantics - no sigwood home to advise on.
+
+    Runs through the real config load so the __user_set__ sidecar is the one
+    cfg.load attaches, not a hand-built stand-in: the demo config is exactly
+    this shape and a clean 0755 checkout must not warn on every advertised run.
+    """
+    cwd = tmp_path / "checkout"
+    cwd.mkdir()
+    cwd.chmod(0o755)
+    monkeypatch.chdir(cwd)
+    monkeypatch.delenv("SIGWOOD_ROOT", raising=False)
+    config_path = tmp_path / "sigwood.toml"
+    config_path.write_text('[sigwood]\nroot = ""\n', encoding="utf-8")
+
+    cli._load_config({"config": str(config_path)})
+
+    assert "group/world-accessible" not in capsys.readouterr().err
+
+
+@_POSIX_ONLY
+def test_undeclared_empty_root_keeps_loose_advisory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    cwd = tmp_path / "checkout"
+    cwd.mkdir()
+    cwd.chmod(0o755)
+    monkeypatch.chdir(cwd)
+    monkeypatch.delenv("SIGWOOD_ROOT", raising=False)
+
+    cli._advise_loose_root({"sigwood": {"root": ""}})
+
+    assert "group/world-accessible" in capsys.readouterr().err
+
+
+@_POSIX_ONLY
+def test_env_root_overrides_declared_empty_root_for_advisory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    loose = tmp_path / "env-home"
+    loose.mkdir()
+    loose.chmod(0o755)
+    monkeypatch.setenv("SIGWOOD_ROOT", str(loose))
+
+    cli._advise_loose_root(
+        {"sigwood": {"root": ""}, "__user_set__": {"sigwood": {"root"}}}
+    )
+
+    assert "group/world-accessible" in capsys.readouterr().err
+
+
+@_POSIX_ONLY
+def test_declared_nonempty_loose_root_keeps_advisory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    root = tmp_path / "home"
+    root.mkdir()
+    root.chmod(0o755)
+    monkeypatch.delenv("SIGWOOD_ROOT", raising=False)
+
+    cli._advise_loose_root(
+        {"sigwood": {"root": str(root)}, "__user_set__": {"sigwood": {"root"}}}
+    )
+
+    assert "group/world-accessible" in capsys.readouterr().err
+
+
+@_POSIX_ONLY
 @pytest.mark.parametrize("state", ["secure", "missing"])
 def test_secure_or_missing_root_is_silent(
     tmp_path: Path, capsys: pytest.CaptureFixture[str], state: str,

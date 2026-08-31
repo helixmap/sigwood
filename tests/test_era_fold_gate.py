@@ -12,8 +12,8 @@ import sigwood.common.loader as loader
 
 
 UTC = timezone.utc
-MODULE_PATH = Path(__file__).parents[1] / "tools" / "era_u1_fold_gate.py"
-SPEC = importlib.util.spec_from_file_location("era_u1_fold_gate", MODULE_PATH)
+MODULE_PATH = Path(__file__).parents[1] / "tools" / "era_fold_gate.py"
+SPEC = importlib.util.spec_from_file_location("era_fold_gate", MODULE_PATH)
 assert SPEC and SPEC.loader
 gate = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = gate

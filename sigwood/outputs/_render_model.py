@@ -511,6 +511,24 @@ def _project_dns(f: Finding) -> list[Cell]:
 def _project_scan(f: Finding) -> list[Cell]:
     ev = f.evidence
     scan_type = ev.get("scan_type", "")
+    if ev.get("tier") == "rollup":
+        # One (scan_type, src) sweep folded to one row. The outcome cell is a
+        # member-derived selection ("up to"), never a blended re-measurement.
+        target_count = int(ev.get("target_count", 0))
+        noun = "hosts" if scan_type == "vertical" else "ports"
+        max_ratio = ev.get("max_scan_state_ratio")
+        outcome = (
+            f"up to {float(max_ratio):.0%} no normal close seen"
+            if isinstance(max_ratio, (int, float)) and not isinstance(max_ratio, bool)
+            else ""
+        )
+        return [
+            Cell(None, ev.get("src", "")),
+            Cell("middle", "→ *"),
+            Cell("type", scan_type),
+            Cell("outcome", outcome),
+            Cell("metric", f"{target_count} {noun}", align="right"),
+        ]
     if scan_type == "vertical":
         middle = f"→ {ev.get('dst', '')}"
         metric = f"{ev.get('distinct_ports', 0)} ports"

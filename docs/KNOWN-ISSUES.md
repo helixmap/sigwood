@@ -1,6 +1,6 @@
 # Known issues
 
-sigwood is young, and this is the honest ledger of what it doesn't do well yet: the
+sigwood is young, and this is the ledger of what it doesn't do well yet: the
 rough edges worth knowing before you lean on it. Where sigwood can notice a gap at run
 time it says so in the run itself; where it can't yet, the entry below is the only
 disclosure, and if an entry says "silently," it means it. Found something that
@@ -11,45 +11,22 @@ twelve eligible weeks, not merely twelve calendar weeks. A shorter archive is st
 but the deck may abstain where the evidence is insufficient. Era intentionally counts raw
 pre-allowlist traffic, so its totals are not expected to match a hunt after suppression.
 
+**Contents:**
+[Detectors](#detectors)
+([beacon](#beacon) ·
+[dns](#dns) ·
+[syslog](#syslog) ·
+[exfil](#exfil) ·
+[aws](#aws) ·
+[dnsblock](#dnsblock) ·
+[auth](#auth) ·
+[ssl](#ssl)) ·
+[Ingestion and windows](#ingestion-and-windows) ·
+[Digest and output](#digest-and-output)
+
 ## Detectors
 
-**`ssl` certificate legs see only sessions that presented a certificate.** TLS 1.3
-encrypts the certificate message, so Zeek records no certificate for those sessions and
-the validation leg cannot evaluate them. On the estate the detector was calibrated
-against - 7,390,218 sessions over 130 days - 5,510,543 negotiated TLS 1.3 (74.6% of all
-sessions; 77.0% of the sessions that recorded a version) and **not one of them carried a
-visible certificate**. Of the 4,243,218 outbound sessions in that archive, 26.9%
-presented a certificate, so the validation leg saw about a quarter of them. Your own
-share is measured and disclosed in every run's summary rather than assumed. The no-server-name leg is unaffected: it reads only
-facts the handshake exposes in the clear.
-
-**`ssl` is calibrated against one estate.** Both legs and the fold below them were
-measured on a single archive. That is why the detector is opt-in rather than part of the
-default hunt, and why a different estate's numbers are a new measurement rather than a
-reason to retune. A benign recurring pair - a backup target, an appliance with a
-self-signed certificate - surfaces on every run until you allowlist it; there is no
-learned normal, because sigwood keeps no state between runs.
-
-**Cross-feed syslog arbitration keeps the local rows - two narrow edges remain.** The
-syslog detector reads up to two feeds in one run: local system logs (files or the
-journal) and Zeek's own `syslog.log`. A host present in the local feed keeps its
-local rows only; Zeek contributes just the hosts the local feed lacks, and the run
-summary discloses the arbitration in counts. Two edges to know: if the local feed has
-a coverage gap for an arbitrated host (say, a rotation hole), Zeek lines that would
-have filled it are set aside with the rest - the local feed is authoritative for its
-hosts; and the two feeds must agree on the host's name - if Zeek records a host by IP
-(a hostless line) while your files record its name, that host is treated as two and
-its events still count twice. Hostless (`unknown`) lines are never arbitrated.
-
-**A machine that changed its hostname is scored as two machines.** This one is about a
-single feed, not the two-feed case above: syslog rarity is counted per host and program,
-and the host is whatever the log line says. If a machine's name changed partway through
-the logs - renamed, or the short name replaced by the fully qualified one during setup -
-its earlier and later lines are counted separately. A line that is unremarkable under one
-name can look rare under the other because each name has its own, smaller history, and
-`sigwood digest` reports two hosts for the one box. sigwood has no way to know two names
-are the same machine. If you recognize the rename, read the two sets together; if the
-change was recent, a window that starts after it gives you one consistent name.
+### beacon
 
 **Beacon wants a week or more of data.** A jittered periodic beacon only clears the
 FFT score threshold intermittently over a single day, so a short window tends to
@@ -57,7 +34,7 @@ surface the most machine-regular flows - which are often benign infrastructure (
 monitoring agents, DNS) rather than C2. sigwood flags a short analysis span at run
 time; give it a week or more of `conn.log`, and use the allowlist to suppress the
 infrastructure you recognize. Reliability across diverse real-world networks is still
-being characterized, and this is the honest state of the flagship beacon detector today.
+being characterized.
 
 **Beacon only scores Zeek SF/S1 connection states.** The pre-filter looks
 at Zeek SF/S1 connections with observed originator bytes. Other state families are
@@ -67,10 +44,32 @@ at run time when most loaded connections fall outside SF/S1 and go unscored. Sco
 those families as separate tiers is planned; it needs threshold and false-positive
 calibration first.
 
+**A beacon that is silent most of each day scores much lower than a continuous one.**
+Hour-scale outages are genuinely absorbed by the binned grid: in seeded runs of a
+jittered 180-second beacon over seven days against the shipped scorer, one one-hour gap
+and even a nightly one-hour gap left the score essentially unchanged (about 0.60, ten
+of ten runs over threshold). A day-shaped duty cycle does not absorb: the same beacon
+active eight hours and silent sixteen hours each day averaged 0.44, with one of ten
+runs clearing the 0.5 threshold. The zero-count bins are no longer occasional gaps but
+two-thirds of the grid, and the day rhythm competes with the check-in rhythm. An
+off-hours-only beacon is therefore likely to be missed; a longer window does not fix
+this shape the way it fixes ordinary short-window intermittency.
+
+**Unrelated traffic on the same connection tuple dilutes the beacon score.** The
+detector scores each (source, destination, port, protocol) flow as one arrival series,
+so a beacon that shares its exact tuple with other traffic from the same host is scored
+on the blend. Measured with the same seeded seven-day setup: mixing in random arrivals
+at half the beacon's volume dropped the mean score from 0.60 to 0.39, at equal volume
+to 0.28, and at twice the volume to 0.20 - all below the 0.5 threshold. This matters
+most for a channel hiding behind a host the client also uses legitimately (a fronted
+domain on 443, for example): the DNS-side allowlist never touches connection scoring,
+but same-tuple blending can still keep the rhythm from surfacing. Traffic on a
+different port or protocol is a different flow and does not dilute.
+
 **A beacon faster than 60 seconds is reported with the wrong period.** The FFT runs
 over 30-second bins, so the fastest cadence it can represent is 60 seconds. A faster
 check-in is still detected, but its reported period aliases to a longer value (a true
-45-second beacon reads as roughly 90 seconds). Truthful sub-60s reporting needs finer
+45-second beacon reads as roughly 90 seconds). Accurate sub-60s reporting needs finer
 bins and a re-tune of the scoring constants.
 
 **A slow beacon can be reported at a fraction of its true period.** For longer cadences the
@@ -80,67 +79,7 @@ and a four-hour beacon as about eighty minutes (a third). The beacon is still de
 flagged - it is the reported period that is wrong, not a silent miss - so treat a reported
 period as approximate and confirm the real cadence against the raw connection timestamps.
 
-**`exfil`'s direction bar is the safe side of a boundary, not a finely tuned number.** The
-detector surfaces bulk outbound transfers by byte volume rather than connection length. Both
-thresholds - a floor of one gibibyte of outbound bytes to a single external endpoint, and a
-direction bar of at least 60% of a pair's measured bytes flowing outbound - have now been
-swept against 121 days of real traffic and hold up. The floor sits in a region where moving
-it by a factor of two either way barely changes what surfaces. The direction bar is doing real
-work, correctly excluding download-heavy and roughly symmetric transfers, but the difference
-between 60% and 50% was worth a single finding across four months: it sits safely above the
-transfers we observed near the boundary, and it is not precision-tuned. Both are adjustable
-under `[detectors.exfil]`.
-
-**Most of what `exfil` reports will be traffic you already know about.** It reports a fact -
-this much data left, to here - and never claims the transfer was theft. The value is that you
-can see what your largest uploads actually are; the one you do not recognise is the signal. On
-the one estate we swept in detail, every finding over 121 days was a cloud backup service or
-an API endpoint the operator ran deliberately. That is one network, and your mix will differ.
-
-**`exfil` reports nothing at all when a connection log carries no responder byte counts.**
-The direction bar needs both sides of each connection, so a `conn.log` without a
-`resp_bytes` column makes the detector abstain rather than guess - and sigwood says so in
-the run summary instead of reporting a quiet night. Individual connections missing either
-byte count leave the measurement entirely; they are never counted as zero. A finding's byte
-totals, direction share, and connection count therefore describe only the connections where
-both counts were recorded. Where those omissions could have changed the answer, the run
-summary reports how many pairs and how much outbound volume were affected.
-
-**A download can be reported as an upload when responder bytes go unrecorded.** The
-direction bar is computed from connections where both byte counts exist, and a missing
-responder count cannot be bounded from the outbound side: an omitted connection carrying a
-little outbound data could have carried a great deal inbound. A pair whose measured traffic
-looks strongly outbound may have been inbound-dominant in truth. sigwood never presents a
-measured share as the whole picture for this reason, but no arithmetic can rule the case
-out.
-
-**`exfil` groups a rotating destination pool by network block, which is a display choice
-that can be wrong at the edges.** Cloud services answer on pools of addresses, so one backup
-run can touch a hundred of them. Rather than print a finding per address, sigwood folds four
-or more surfaced destinations into a single finding when they share a network block **and the
-same sending host** - two different machines uploading into the same cloud stay two findings -
-and keeps every destination's own byte totals inside it: complete in JSON, and readable with
-`-v`. The block
-is a fixed size, not a lookup of who really owns those addresses, so two unrelated services
-that happen to be neighbours can be grouped together. Nothing is lost when that happens: the
-per-destination detail is still there, and the JSON output can always reconstruct the
-one-finding-per-destination view.
-
-**`exfil` misses transfers under its floor, spread across destinations, or outside the
-window.** A slow trickle below the byte floor is invisible to it, though `beacon` may still
-catch the cadence of the channel carrying it, and an upload split across many destinations
-can leave every individual pair under-floor - the grouping above helps you read a pool that
-does surface, but it cannot rescue destinations that never cleared the floor individually.
-The floor is window-relative, so a narrow `--hours` window can hide volume a full-archive run
-shows. And because sigwood is stateless,
-a legitimate recurring transfer - a nightly backup, a photo sync - surfaces on every run
-until you add that pair to the allowlist. That is the intended workflow rather than a
-defect.
-
-**`exfil` reports addresses in canonical form.** Addresses are normalized before grouping,
-so an IPv4-mapped IPv6 address and its plain IPv4 form are correctly treated as one host.
-The address shown in a finding is that canonical form, which for such inputs is not the
-literal text in the log - the suggested `grep` follow-up may need the raw form instead.
+### dns
 
 **High-volume DNS tunneling spread across many domains can slip the scan.** sigwood
 surfaces sustained tunneling that concentrates under a single registered domain, but a
@@ -241,6 +180,36 @@ not the next. We have never observed that happen, and we cannot promise it will 
 comparing two runs of the same capture and want certainty about a borderline domain, look at it
 directly rather than inferring from whether it was reported both times.
 
+**With both Zeek DNS and Pi-hole configured, Pi-hole is enrichment only.** In
+both-source mode Zeek is the clustering source and Pi-hole data enriches those
+findings with the block disposition; queries that appear only in the Pi-hole log
+(clients whose DNS never crosses the Zeek sensor's view) are not separately
+clustered on that run. Point sigwood at the Pi-hole log alone to cluster it in its
+own right.
+
+### syslog
+
+**Cross-feed syslog arbitration keeps the local rows - two narrow edges remain.** The
+syslog detector reads up to two feeds in one run: local system logs (files or the
+journal) and Zeek's own `syslog.log`. A host present in the local feed keeps its
+local rows only; Zeek contributes just the hosts the local feed lacks, and the run
+summary discloses the arbitration in counts. Two edges to know: if the local feed has
+a coverage gap for an arbitrated host (say, a rotation hole), Zeek lines that would
+have filled it are set aside with the rest - the local feed is authoritative for its
+hosts; and the two feeds must agree on the host's name - if Zeek records a host by IP
+(a hostless line) while your files record its name, that host is treated as two and
+its events still count twice. Hostless (`unknown`) lines are never arbitrated.
+
+**A machine that changed its hostname is scored as two machines.** This one is about a
+single feed, not the two-feed case above: syslog rarity is counted per host and program,
+and the host is whatever the log line says. If a machine's name changed partway through
+the logs - renamed, or the short name replaced by the fully qualified one during setup -
+its earlier and later lines are counted separately. A line that is unremarkable under one
+name can look rare under the other because each name has its own, smaller history, and
+`sigwood digest` reports two hosts for the one box. sigwood has no way to know two names
+are the same machine. If you recognize the rename, read the two sets together; if the
+change was recent, a window that starts after it gives you one consistent name.
+
 **A fast sequence of unprivileged rare events folds into one informational burst.** Four or
 more rare log lines outside the privileged program class within about a minute on one host
 collapse into a single INFO "burst" finding rather than individual LOW findings - that
@@ -251,11 +220,130 @@ findings as worth a skim rather than reading INFO as ignorable; the collapse is 
 (`burst_min_size`, `burst_gap_seconds` under `[detectors.syslog]`) if you'd rather see
 tight clusters as individual findings.
 
+**On a log where nearly every line is structurally unique, syslog rarity over-triggers.**
+The rarity signal is corpus-relative: a template seen at or below the rarity bar counts as
+rare. When templating cannot compress the input - highly variable application logs, debug
+streams, logs dominated by unique identifiers the shipped masks do not cover - most
+templates end up singletons, "rare" stops discriminating, and what keeps the report usable
+is the burst/family grouping plus the reading views' per-detector cap rather than the
+signal itself (`json` and `csv` still carry everything). If a report is dominated by one
+noisy file, `digest` it first to see whether volume is the story. A tighter behavior for
+this shape - for example, abstaining when templating barely compresses the log - is open
+work, not yet built.
+
 **Rare syslog lines with no usable host and no program can share one review unit.** The
 family grouping uses `unknown` when either field cannot be derived, so lines from different
 physical hosts can be grouped together when both identifiers are absent. The sampled raw
 lines and exact line count remain available in that family finding; review the samples as
 potentially unrelated events rather than assuming they came from one machine.
+
+**Repeated reboots are caught every time, with a few grouping edges.** sigwood detects
+reboot signals across the whole log regardless of how rare they are, so a machine that
+reboots repeatedly is flagged on every boot, not just its first. Three grouping edges are
+worth knowing: a host whose shutdown and subsequent boot are more than about ten minutes
+apart is reported as two reboots rather than one; reboots whose log lines carry no parseable
+timestamp are grouped into a single undated reboot per host; and when a reboot produces only
+one or two other rare lines, those lines are listed individually rather than folded into the
+reboot's summary. No data is lost in any of these cases.
+
+**A recognized admin session or update run groups the lines that fall inside it, related or
+not.** When sigwood recognizes a session or a package-update run, it claims the rare lines
+inside that window - which is what turns one administrator's work into a single row instead of
+nineteen, because the daemon noise their actions caused belongs in the same story. The same
+rule cannot tell that noise apart from something unrelated that merely happened at the same
+time, so an unrelated line inside the window is grouped too, and if it came from a privileged
+program the whole unit is reported at that higher severity. Nothing is hidden - every grouped
+line is listed under the unit with its own time and program - so read a unit as "these things
+happened together", not as "these things are the same event". Narrowing the rule by program was
+measured and rejected: it dissolved genuine sessions and dropped most of their content.
+
+### exfil
+
+**`exfil`'s direction bar is the safe side of a boundary, not a finely tuned number.** The
+detector surfaces bulk outbound transfers by byte volume rather than connection length. Both
+thresholds - a floor of one gibibyte of outbound bytes to a single external endpoint, and a
+direction bar of at least 60% of a pair's measured bytes flowing outbound - have now been
+swept against 121 days of real traffic and hold up. The floor sits in a region where moving
+it by a factor of two either way barely changes what surfaces. The direction bar is doing real
+work, correctly excluding download-heavy and roughly symmetric transfers, but the difference
+between 60% and 50% was worth a single finding across four months: it sits safely above the
+transfers we observed near the boundary, and it is not precision-tuned. Both are adjustable
+under `[detectors.exfil]`.
+
+**Most of what `exfil` reports will be traffic you already know about.** It reports a fact -
+this much data left, to here - and never claims the transfer was theft. The value is that you
+can see what your largest uploads actually are; the one you do not recognise is the signal. On
+the one estate we swept in detail, every finding over 121 days was a cloud backup service or
+an API endpoint the operator ran deliberately. That is one network, and your mix will differ.
+
+**`exfil` reports nothing at all when a connection log carries no responder byte counts.**
+The direction bar needs both sides of each connection, so a `conn.log` without a
+`resp_bytes` column makes the detector abstain rather than guess - and sigwood says so in
+the run summary instead of reporting a quiet night. Individual connections missing either
+byte count leave the measurement entirely; they are never counted as zero. A finding's byte
+totals, direction share, and connection count therefore describe only the connections where
+both counts were recorded. Where those omissions could have changed the answer, the run
+summary reports how many pairs and how much outbound volume were affected.
+
+**A download can be reported as an upload when responder bytes go unrecorded.** The
+direction bar is computed from connections where both byte counts exist, and a missing
+responder count cannot be bounded from the outbound side: an omitted connection carrying a
+little outbound data could have carried a great deal inbound. A pair whose measured traffic
+looks strongly outbound may have been inbound-dominant in truth. sigwood never presents a
+measured share as the whole picture for this reason, but no arithmetic can rule the case
+out.
+
+**`exfil` groups a rotating destination pool by network block, which is a display choice
+that can be wrong at the edges.** Cloud services answer on pools of addresses, so one backup
+run can touch a hundred of them. Rather than print a finding per address, sigwood folds four
+or more surfaced destinations into a single finding when they share a network block **and the
+same sending host** - two different machines uploading into the same cloud stay two findings -
+and keeps every destination's own byte totals inside it: complete in JSON, and readable with
+`-v`. The block
+is a fixed size, not a lookup of who really owns those addresses, so two unrelated services
+that happen to be neighbours can be grouped together. Nothing is lost when that happens: the
+per-destination detail is still there, and the JSON output can always reconstruct the
+one-finding-per-destination view.
+
+**`exfil` misses transfers under its floor, spread across destinations, or outside the
+window.** A slow trickle below the byte floor is invisible to it, though `beacon` may still
+catch the cadence of the channel carrying it, and an upload split across many destinations
+can leave every individual pair under-floor - the grouping above helps you read a pool that
+does surface, but it cannot rescue destinations that never cleared the floor individually.
+The floor is window-relative, so a narrow `--hours` window can hide volume a full-archive run
+shows. And because sigwood is stateless,
+a legitimate recurring transfer - a nightly backup, a photo sync - surfaces on every run
+until you add that pair to the allowlist. That is the intended workflow rather than a
+defect.
+
+**`exfil` reports addresses in canonical form.** Addresses are normalized before grouping,
+so an IPv4-mapped IPv6 address and its plain IPv4 form are correctly treated as one host.
+The address shown in a finding is that canonical form, which for such inputs is not the
+literal text in the log - the suggested `grep` follow-up may need the raw form instead.
+
+### aws
+
+**An AWS event can still exclude itself from analysis by naming a role exactly like a service
+role.** CloudTrail activity is split into automated service activity and interactive activity,
+and only the interactive side is scored. One of the signals for "service" is a role whose name
+begins with `AWSServiceRoleFor`, the convention AWS uses for roles its own services assume. A
+role created with a name that begins the same way is read the same way, and its events are set
+aside without being counted or mentioned. A name that merely contains that marker somewhere in
+the middle no longer qualifies, and neither does a different capitalisation. Closing the
+exact-name case too would mean also requiring the reserved role path AWS uses for these roles -
+but the records carry that path in only one of the two places the role name appears, and the
+handful of real examples available cannot establish that it is always present. If it is not,
+genuine automated activity would start being reported as ordinary user activity. That trade is
+not worth making without more evidence.
+
+### dnsblock
+
+**`dnsblock` can report a persistently blocked name again while its onset remains inside the
+lookback.** Each run states how much history it consulted, but it does not retain cross-run
+memory of an earlier report. After triage confirms the activity is expected, add only the exact
+name patterns you intend to suppress to the allowlist.
+
+### auth
 
 **Every auth finding caps at MEDIUM.** Concentrated failures, source volume, account volume,
 and multi-host spread each describe one category of authentication evidence, and none becomes
@@ -291,11 +379,6 @@ for this run, not proof that the activity began then. A finding can touch the be
 of the window, and its evidence says so, but sigwood cannot infer what happened before the
 observation cut. Widen the window before treating first-seen timing as history.
 
-**`dnsblock` can report a persistently blocked name again while its onset remains inside the
-lookback.** Each run states how much history it consulted, but it does not retain cross-run
-memory of an earlier report. After triage confirms the activity is expected, add only the exact
-name patterns you intend to suppress to the allowlist.
-
 **Remote source addresses in auth logs are not individually allowlist-suppressible.** The
 canonical system-log frame exposes the host that wrote each record, so the host allowlist can
 suppress that machine before analysis. A remote source address extracted from the message is
@@ -309,45 +392,25 @@ or validate HIGH against real traffic. The positive regression uses generated au
 traffic with known structure to pin the dormant rule. That proves the rule recognizes its
 declared shape; it is not a precision claim about real attacks.
 
-**With both Zeek DNS and Pi-hole configured, Pi-hole is enrichment only.** In
-both-source mode Zeek is the clustering source and Pi-hole data enriches those
-findings with the block disposition; queries that appear only in the Pi-hole log
-(clients whose DNS never crosses the Zeek sensor's view) are not separately
-clustered on that run. Point sigwood at the Pi-hole log alone to cluster it in its
-own right.
+### ssl
 
-**Repeated reboots are caught every time, with a few grouping edges.** sigwood detects
-reboot signals across the whole log regardless of how rare they are, so a machine that
-reboots repeatedly is flagged on every boot, not just its first. Three grouping edges are
-worth knowing: a host whose shutdown and subsequent boot are more than about ten minutes
-apart is reported as two reboots rather than one; reboots whose log lines carry no parseable
-timestamp are grouped into a single undated reboot per host; and when a reboot produces only
-one or two other rare lines, those lines are listed individually rather than folded into the
-reboot's summary. No data is lost in any of these cases.
 
-**A recognized admin session or update run groups the lines that fall inside it, related or
-not.** When sigwood recognizes a session or a package-update run, it claims the rare lines
-inside that window - which is what turns one administrator's work into a single row instead of
-nineteen, because the daemon noise their actions caused belongs in the same story. The same
-rule cannot tell that noise apart from something unrelated that merely happened at the same
-time, so an unrelated line inside the window is grouped too, and if it came from a privileged
-program the whole unit is reported at that higher severity. Nothing is hidden - every grouped
-line is listed under the unit with its own time and program - so read a unit as "these things
-happened together", not as "these things are the same event". Narrowing the rule by program was
-measured and rejected: it dissolved genuine sessions and dropped most of their content.
+**`ssl` certificate legs see only sessions that presented a certificate.** TLS 1.3
+encrypts the certificate message, so Zeek records no certificate for those sessions and
+the validation leg cannot evaluate them. On the estate the detector was calibrated
+against - 7,390,218 sessions over 130 days - 5,510,543 negotiated TLS 1.3 (74.6% of all
+sessions; 77.0% of the sessions that recorded a version) and **not one of them carried a
+visible certificate**. Of the 4,243,218 outbound sessions in that archive, 26.9%
+presented a certificate, so the validation leg saw about a quarter of them. Your own
+share is measured and disclosed in every run's summary rather than assumed. The no-server-name leg is unaffected: it reads only
+facts the handshake exposes in the clear.
 
-**An AWS event can still exclude itself from analysis by naming a role exactly like a service
-role.** CloudTrail activity is split into automated service activity and interactive activity,
-and only the interactive side is scored. One of the signals for "service" is a role whose name
-begins with `AWSServiceRoleFor`, the convention AWS uses for roles its own services assume. A
-role created with a name that begins the same way is read the same way, and its events are set
-aside without being counted or mentioned. A name that merely contains that marker somewhere in
-the middle no longer qualifies, and neither does a different capitalisation. Closing the
-exact-name case too would mean also requiring the reserved role path AWS uses for these roles -
-but the records carry that path in only one of the two places the role name appears, and the
-handful of real examples available cannot establish that it is always present. If it is not,
-genuine automated activity would start being reported as ordinary user activity. That trade is
-not worth making without more evidence.
+**`ssl` is calibrated against one estate.** Both legs and the fold below them were
+measured on a single archive. That is why the detector is opt-in rather than part of the
+default hunt, and why a different estate's numbers are a new measurement rather than a
+reason to retune. A benign recurring pair - a backup target, an appliance with a
+self-signed certificate - surfaces on every run until you allowlist it; there is no
+learned normal, because sigwood keeps no state between runs.
 
 ## Ingestion and windows
 
@@ -368,6 +431,14 @@ problem on a folder *below* the one you configured produces no error and no note
 are simply missing, and the run looks normal. The permission check covers the directory you
 configured, not the folders beneath it. If your CloudTrail results seem short, check that every
 folder under the configured directory is readable by the user running sigwood.
+
+**A single CloudTrail document over 64 MiB decoded is skipped whole.** A CloudTrail
+delivery file is one JSON document, and sigwood admits a document up to 64 MiB after
+decompression - a safety ceiling on how much of one file it will hold as a single unit.
+A larger document is skipped with a warning naming the limits, and its events do not
+load; line-per-event NDJSON files have no document to hit the ceiling and are limited
+per line (1 MiB) instead. If a real archive carries documents over the ceiling, split
+them into an NDJSON file or open an issue with the sizes you see.
 
 **A deliberately malformed log file can still stop a single run.** sigwood reads whatever
 you point it at, and a file crafted to be hostile rather than merely broken can exhaust

@@ -1,9 +1,9 @@
 # Contributing to sigwood
 
-sigwood is a small, single-maintainer tool for hunting through your own logs. If
-you've been running it and want to fix something, teach it a log format it doesn't
-handle yet, or send along a pile of logs it should read better, this is the lay of
-the land.
+Thanks for your interest. sigwood is a small, single-maintainer tool for hunting
+through your own logs. If you've been running it and want to fix something,
+teach it a log format it doesn't handle yet, or send along a pile of logs it
+should read better, this is the lay of the land.
 
 One very useful thing you can send even if you don't do Python is data.
 The detectors are built against real logs, and a scrubbed sample of a format or
@@ -30,8 +30,7 @@ handlers** only render. The **CLI** is the one place an error becomes an actiona
 message, and the one place the process exits.
 
 That separation is why a detector is a plain function you can call from a notebook,
-why a new log format doesn't touch detector code, and why the tool stays honest
-about what it is. Keep a change on the right side of those lines and most of the
+and why a new log format doesn't touch detector code. Keep a change on the right side of those lines and most of the
 review takes care of itself. The column contract between parsers and detectors is in
 [docs/SCHEMA.md](docs/SCHEMA.md); the detectors and the reasoning behind their
 methods are in [docs/FAQ.md](docs/FAQ.md).
@@ -51,8 +50,9 @@ ready; flip it the moment `run()` returns real findings.
 
 There are three contribution tiers:
 
-- A **basic detector** is one module plus tests. It uses the generic renderer and
-  is first-class under be-like-water.
+- A **basic detector** is one module plus tests. It uses the generic renderer, and
+  that is a first-class shape, not a degraded mode: a finding carrying only a title
+  renders cleanly on every output surface at every verbosity level.
 - A **polished detector** also registers a projector, a text group renderer and
   its `_render_group` dispatch, a curated-evidence entry, and a parity variant.
 - A **new source family** is cross-cutting. Open an issue before building one.
@@ -96,7 +96,7 @@ notebook with a hand-built context, which is how you'll want to develop it.
 
 If your detector uses a real, named technique, say so with an optional
 `DETECTOR_METHOD = MethodTag("FFT", named=True)`. Named published algorithms get the
-parens and a glow on the run banner; honest house methods get
+parens and a glow on the run banner; house methods get
 `MethodTag("heuristics", named=False)` and plain brackets. A heuristic labeled as a
 heuristic is worth more than one dressed up as an algorithm. No constant at all just
 prints the bare name.
@@ -134,7 +134,7 @@ run it yourself.
 
 They aren't polished, and that's the point. They're the actual working-out, left in
 because the method matters as much as the result - if you want to know why a detector
-scores the way it does, the notebook that grew it is the most honest answer.
+scores the way it does, the notebook that grew it is the simplest answer.
 
 A notebook is also a good way to contribute. Prototyping a method against real logs -
 showing where it fires and where it doesn't - is worth something on its own, well

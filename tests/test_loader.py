@@ -1313,10 +1313,10 @@ def test_load_logs_dated_suffix_dir_treated_as_date(tmp_path: Path) -> None:
     """A YYYY-MM-DD-SUFFIX dir is treated as the date prefix, suffix ignored."""
     zeek_dir = tmp_path / "zeek"
     zeek_dir.mkdir()
-    (zeek_dir / "2026-01-02-TSVPRE").mkdir()
+    (zeek_dir / "2026-01-02-archived").mkdir()
     (zeek_dir / "2026-01-04").mkdir()
     _write_ndjson(
-        zeek_dir / "2026-01-02-TSVPRE" / "conn.log",
+        zeek_dir / "2026-01-02-archived" / "conn.log",
         [{"ts": _TS_JAN2, "id.orig_h": "192.0.2.30", "id.resp_h": "198.51.100.30",
           "id.resp_p": 443, "proto": "tcp"},
          {"ts": _TS_JAN2 + 1, "id.orig_h": "192.0.2.30", "id.resp_h": "198.51.100.30",
@@ -1330,12 +1330,12 @@ def test_load_logs_dated_suffix_dir_treated_as_date(tmp_path: Path) -> None:
           "id.resp_p": 80, "proto": "tcp"}],
     )
 
-    # Window Jan 2-3: TSVPRE dir included, Jan 4 excluded.
+    # Window Jan 2-3: suffixed dir included, Jan 4 excluded.
     df = load_logs(zeek_dir, "conn*.log*", since=_JAN2, until=_JAN3)
     assert len(df) == 2
     assert set(df["src"].tolist()) == {"192.0.2.30"}
 
-    # Window Jan 4-5: Jan 4 included, TSVPRE dir excluded.
+    # Window Jan 4-5: Jan 4 included, suffixed dir excluded.
     df = load_logs(zeek_dir, "conn*.log*", since=_JAN4, until=_JAN5)
     assert len(df) == 2
     assert set(df["src"].tolist()) == {"192.0.2.31"}
@@ -2446,6 +2446,97 @@ def test_load_cloudtrail_pretty_printed_multiline_envelope_loads(tmp_path: Path)
 
     assert len(df) == 2
     assert set(df["event_id"]) == {"pretty-1", "pretty-2"}
+
+
+def _ct_events_over_line_limit() -> list[dict]:
+    """Events whose one-line envelope exceeds the per-line admission limit.
+
+    Sized from the production constant so a retune cannot silently stop
+    exercising the boundary: each event carries a filler field, and the count
+    guarantees the serialized envelope tops MAX_LOGICAL_RECORD_BYTES.
+    """
+    from sigwood.common.loader import MAX_LOGICAL_RECORD_BYTES
+
+    filler = "f" * 4096
+    per_event = len(json.dumps(_ct_event(requestParameters={"filler": filler})))
+    count = MAX_LOGICAL_RECORD_BYTES // per_event + 2
+    return [
+        _ct_event(
+            eventID=f"big-{index}", requestParameters={"filler": filler}
+        )
+        for index in range(count)
+    ]
+
+
+def test_load_cloudtrail_single_line_envelope_over_line_limit_loads(
+    tmp_path: Path,
+) -> None:
+    """The native delivery shape: ONE `{"Records":[...]}` line larger than the
+    per-line record limit must still load its events - the document ceiling,
+    not the line limit, governs a document family's one-line document."""
+    cloudtrail_dir = tmp_path / "ct"
+    cloudtrail_dir.mkdir()
+    events = _ct_events_over_line_limit()
+    (cloudtrail_dir / "delivery.json").write_text(
+        json.dumps({"Records": events}), encoding="utf-8"
+    )
+
+    df = load_cloudtrail(cloudtrail_dir)
+
+    assert len(df) == len(events)
+    assert set(df["event_id"]) == {e["eventID"] for e in events}
+
+
+def test_load_cloudtrail_pretty_envelope_over_line_limit_loads(
+    tmp_path: Path,
+) -> None:
+    """A pretty-printed envelope whose TOTAL exceeds the per-line limit is one
+    logical document under the document ceiling, not an oversize record."""
+    cloudtrail_dir = tmp_path / "ct"
+    cloudtrail_dir.mkdir()
+    events = _ct_events_over_line_limit()
+    (cloudtrail_dir / "pretty.json").write_text(
+        json.dumps({"Records": events}, indent=1), encoding="utf-8"
+    )
+
+    df = load_cloudtrail(cloudtrail_dir)
+
+    assert len(df) == len(events)
+
+
+def test_load_cloudtrail_document_over_ceiling_skips_and_names_both_limits(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Over the DOCUMENT ceiling the file skips with a disclosure naming the
+    limits actually in force - never a false `limit 1 MiB` claim. The ceiling
+    is lowered via the strategy seam so no giant object is allocated."""
+    import dataclasses
+
+    from sigwood.common.loader import pipeline as _pipeline
+
+    strategy = _pipeline._SOURCE_LOADERS["cloudtrail_dir"]
+    monkeypatch.setitem(
+        _pipeline._SOURCE_LOADERS,
+        "cloudtrail_dir",
+        dataclasses.replace(strategy, max_document_bytes=1024),
+    )
+    cloudtrail_dir = tmp_path / "ct"
+    cloudtrail_dir.mkdir()
+    events = [
+        _ct_event(eventID=f"c-{i}", requestParameters={"filler": "f" * 256})
+        for i in range(8)
+    ]
+    (cloudtrail_dir / "big.json").write_text(
+        json.dumps({"Records": events}), encoding="utf-8"
+    )
+
+    warnings: list[str] = []
+    df = load_cloudtrail(cloudtrail_dir, _warnings=warnings)
+
+    assert df.empty
+    assert any(
+        "oversized logical record" in w and "per document" in w for w in warnings
+    )
 
 
 def test_load_cloudtrail_mixed_formats_in_one_directory_loads_union(

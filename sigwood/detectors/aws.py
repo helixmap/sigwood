@@ -83,20 +83,25 @@ DEFAULT_CONFIG = {
     # Valid: seconds, int > 0.
     "burst_gap_seconds": 300,
 
-    # Opening-window safety margin: service-spread-only bursts whose first
-    # first-seen action falls this close to the loaded window start stay MEDIUM.
-    # Valid: seconds, int >= 0.
+    # Accepted for compatibility; no longer read by any signal. Service-spread
+    # escalation is retired, so the edge margin that suppressed it has nothing
+    # to suppress. Valid: seconds, int >= 0.
     "burst_window_edge_margin_seconds": 300,
 
     # A burst must contain at least this many first-seen actions to be a Finding.
     # Valid: int >= 2.
     "burst_min_firsts": 3,
 
-    # Severity escalation gates for bursts. A burst at-or-above EITHER gate
-    # promotes from MEDIUM to HIGH. Never auto-HIGH on size alone - that would
-    # manufacture verdicts a noisy-but-benign sweep does not deserve.
-    # Valid: error_rate in [0,1], service_count int >= 1.
+    # Severity escalation gate for bursts. A burst at-or-above the error-rate
+    # gate promotes from MEDIUM to HIGH. Never auto-HIGH on size alone - and a
+    # spread across many services is size wearing a different unit, so it never
+    # escalates either: a person exploring the console touches many services in
+    # one benign sitting. Valid: error_rate in [0,1].
     "burst_high_error_rate": 0.5,
+
+    # Accepted for compatibility; no longer read by any signal. Service spread
+    # stays visible as burst evidence and sort order, never as severity.
+    # Valid: int >= 1.
     "burst_high_service_count": 3,
 
     # Absolute composite-z bands for ranked-principal severity. NOT rank
@@ -518,22 +523,19 @@ def _summarize_burst(principal: str, records: list[dict]) -> dict:
 def _make_burst_finding(
     burst: dict,
     burst_high_error_rate: float,
-    burst_high_service_count: int,
-    burst_window_edge_margin_seconds: int,
     now: datetime,
     data_window: tuple[datetime, datetime],
 ) -> Finding:
-    """One burst → one Finding. Severity structural by signal kind."""
+    """One burst → one Finding. Severity structural by signal kind.
+
+    Only the error-rate gate escalates: errors are an evidence category
+    independent of the first-seen grouping itself. A spread across many new
+    services is not - it is the size of the sweep in service units, and a
+    benign console session produces it - so service count stays evidence and
+    sort order, never severity.
+    """
     err_gate_hit = burst["error_rate"] >= burst_high_error_rate
-    svc_gate_hit = burst["new_service_count"] >= burst_high_service_count
-    at_edge = (
-        burst["start_ts"] - data_window[0].timestamp()
-    ) < burst_window_edge_margin_seconds
-    severity = (
-        Severity.HIGH
-        if (err_gate_hit or (svc_gate_hit and not at_edge))
-        else Severity.MEDIUM
-    )
+    severity = Severity.HIGH if err_gate_hit else Severity.MEDIUM
 
     title = str(burst["principal"])
     description = (
@@ -726,12 +728,6 @@ def run(context: DetectorContext) -> list[Finding]:
     burst_min_firsts:  int   = cfg.get("burst_min_firsts",  DEFAULT_CONFIG["burst_min_firsts"])
     burst_high_err:    float = cfg.get("burst_high_error_rate",
                                        DEFAULT_CONFIG["burst_high_error_rate"])
-    burst_high_svcs:   int   = cfg.get("burst_high_service_count",
-                                       DEFAULT_CONFIG["burst_high_service_count"])
-    burst_edge_margin: int   = cfg.get(
-        "burst_window_edge_margin_seconds",
-        DEFAULT_CONFIG["burst_window_edge_margin_seconds"],
-    )
     medium_threshold:  float = cfg.get("composite_medium_threshold",
                                        DEFAULT_CONFIG["composite_medium_threshold"])
     low_threshold:     float = cfg.get("composite_low_threshold",
@@ -758,10 +754,7 @@ def run(context: DetectorContext) -> list[Finding]:
 
     # Burst findings: bursts first, sorted by service spread then action count.
     burst_findings = [
-        _make_burst_finding(
-            b, burst_high_err, burst_high_svcs, burst_edge_margin,
-            now, context.data_window,
-        )
+        _make_burst_finding(b, burst_high_err, now, context.data_window)
         for b in burst_dicts
     ]
     burst_findings.sort(

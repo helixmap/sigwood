@@ -5,8 +5,8 @@ some of it is committed, some is ideas worth chasing. sigwood is a single-mainta
 project, so it moves as time allows.
 
 The middle section maps what sigwood can and cannot see onto the
-[MITRE ATT&CK](https://attack.mitre.org/) matrix, because that is the honest way to
-answer "what does this actually catch?" - including the parts of the answer that are
+[MITRE ATT&CK](https://attack.mitre.org/) matrix, to answer
+"what does this actually catch?" - including the parts of the answer that are
 "nothing, and here is why."
 
 ## Shipped
@@ -25,7 +25,7 @@ What sigwood does today:
   detector remains runnable by name; `--detect=all` still runs everything available.
   The run discloses which available detectors were held out of the default hunt, so an
   opt-in detector is never silently absent.
-- **A `digest` verb** to orient before you hunt - a fast, honest profile of conn, DNS,
+- **A `digest` verb** to orient before you hunt - a fast profile of conn, DNS,
   syslog, or CloudTrail data, with a bytes-only fallback for anything it doesn't
   recognize.
 - **A `graph` verb** to see a log move - a self-contained HTML artifact that replays
@@ -166,7 +166,7 @@ grow into any of these:
   names that way - but the question comes first and the vocabulary stays small. What
   sigwood rejects is signature-pack sprawl, not the use of semantic fields.
 
-Some things are left out for a plainer reason - there is no honest way to test them yet.
+Some things are left out for a plainer reason - there is no way to test them yet.
 Detections for Windows event logs, or for Active Directory protocols like Kerberos, are
 not ruled out on principle, but sigwood's current telemetry and measured corpora are
 Linux-heavy, and without real logs of that kind there is no way to measure whether a

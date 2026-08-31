@@ -1,4 +1,4 @@
-"""Honest D34 memory-measurement receipts for the U3 reducer route.
+"""Honest memory-measurement receipts for the era reducer route.
 
 The measurement runner is deliberately separate from card rendering.  A route
 that is not available records ``NOT_MEASURED`` with its precise precondition;
@@ -12,10 +12,10 @@ from dataclasses import dataclass
 from enum import Enum
 
 
-D34_RSS_LIMIT_BYTES = 4 * 1024**3
+ERA_RSS_LIMIT_BYTES = 4 * 1024**3
 
 
-class D34Outcome(str, Enum):
+class EraMeasurementOutcome(str, Enum):
     PASS = "PASS"
     COMPLETED_RSS_OVER_LIMIT = "COMPLETED_RSS_OVER_LIMIT"
     NOT_MEASURED = "NOT_MEASURED"
@@ -36,10 +36,10 @@ def normalized_maxrss_bytes(raw_maxrss: int, *, system: str | None = None) -> in
 
 
 @dataclass(frozen=True)
-class D34Receipt:
-    """Aggregate/provenance-only D34 result; no source path or raw row survives."""
+class EraResourceReceipt:
+    """Aggregate/provenance-only measurement result; no source path or raw row survives."""
 
-    outcome: D34Outcome
+    outcome: EraMeasurementOutcome
     route_identity: str
     archive_content_identity: str
     candidate_cap: int
@@ -52,33 +52,33 @@ class D34Receipt:
     code_identity: str = "unavailable"
 
     def __post_init__(self) -> None:
-        if self.outcome is D34Outcome.NOT_MEASURED:
+        if self.outcome is EraMeasurementOutcome.NOT_MEASURED:
             if self.missing_precondition not in _MISSING_PRECONDITIONS:
                 raise ValueError("NOT_MEASURED requires a named missing precondition")
             if self.raw_maxrss is not None or self.normalized_maxrss_bytes is not None:
                 raise ValueError("NOT_MEASURED cannot carry a measured RSS value")
         elif self.missing_precondition is not None:
-            raise ValueError("measured D34 receipts cannot carry a missing precondition")
+            raise ValueError("measured receipts cannot carry a missing precondition")
 
 
-def not_measured_d34(
+def not_measured_receipt(
     *,
     route_identity: str,
     archive_content_identity: str,
     candidate_cap: int,
     missing_precondition: str,
     code_identity: str = "unavailable",
-) -> D34Receipt:
+) -> EraResourceReceipt:
     """Create an explicit non-ratification receipt for an unavailable route."""
-    return D34Receipt(
-        outcome=D34Outcome.NOT_MEASURED,
+    return EraResourceReceipt(
+        outcome=EraMeasurementOutcome.NOT_MEASURED,
         route_identity=route_identity,
         archive_content_identity=archive_content_identity,
         candidate_cap=candidate_cap,
         platform=platform.platform(),
         raw_maxrss=None,
         normalized_maxrss_bytes=None,
-        rss_limit_bytes=D34_RSS_LIMIT_BYTES,
+        rss_limit_bytes=ERA_RSS_LIMIT_BYTES,
         elapsed_seconds=None,
         missing_precondition=missing_precondition,
         code_identity=code_identity,

@@ -215,9 +215,9 @@ allowlist_dir    = "allowlist.d/"
 # min_events                 = 50    # interactive principals below this are set aside
 # min_scorable_principals    = 5     # below this floor the ranked tier abstains
 # burst_gap_seconds          = 300   # first-seen actions closer than this = one burst
-# burst_window_edge_margin_seconds = 300   # window-edge service spread stays MEDIUM
+# burst_window_edge_margin_seconds = 300   # accepted for compatibility; unused
 # burst_min_firsts           = 3     # min first-seen actions to form a burst
-# burst_high_error_rate      = 0.5   # burst → HIGH escalation gate
-# burst_high_service_count   = 3     # burst → HIGH escalation gate
+# burst_high_error_rate      = 0.5   # the one burst → HIGH escalation gate
+# burst_high_service_count   = 3     # accepted for compatibility; unused
 # composite_medium_threshold = 2.0   # ranked-principal severity bands (absolute
 # composite_low_threshold    = 1.0   # z, never rank position)

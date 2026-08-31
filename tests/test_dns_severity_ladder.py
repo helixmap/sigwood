@@ -1,4 +1,4 @@
-"""DNS R14: behavior-corroborated severity and additive evidence.
+"""DNS behavior-corroborated severity ladder and its additive evidence.
 
 The end-to-end cases keep the lexical score below the shipped 1.8 high bar so
 the former score-only ladder cannot make a resolution-positive case pass.
@@ -269,7 +269,7 @@ def _summary() -> RunSummary:
     )
 
 
-def test_r14_evidence_survives_every_sink_without_new_unsafe_bytes(
+def test_ladder_evidence_survives_every_sink_without_new_unsafe_bytes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     finding = _zeek_findings(_singleton_rows([3, 3, 0, 0]))[0]
@@ -297,7 +297,7 @@ def test_r14_evidence_survives_every_sink_without_new_unsafe_bytes(
 
     def _fake_pdf_bytes(html_str: str) -> bytes:
         rendered["html"] = html_str
-        return b"%PDF-r14"
+        return b"%PDF-ladder"
 
     monkeypatch.setattr(pdf_mod, "_render_pdf_bytes", _fake_pdf_bytes)
     pdf_stream = io.BytesIO()
@@ -316,7 +316,7 @@ def test_r14_evidence_survives_every_sink_without_new_unsafe_bytes(
     assert "severity_basis" in html_stdlib.unescape(html)
     assert "resolution<&-outcome" in html_stdlib.unescape(html)
     assert rendered["html"] == html
-    assert pdf_stream.getvalue() == b"%PDF-r14"
+    assert pdf_stream.getvalue() == b"%PDF-ladder"
 
     for human_output in (
         text_stream.getvalue(),

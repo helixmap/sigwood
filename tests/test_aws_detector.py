@@ -319,58 +319,43 @@ def test_burst_escalates_to_high_on_error_rate() -> None:
     findings = run(_ctx(_df(events), config={
         "min_events": 1000,
         "burst_high_error_rate": 0.5,
-        "burst_high_service_count": 10,   # disable the service gate
     }))
     bursts = [f for f in findings if f.evidence.get("tier") == "burst"]
     assert bursts[0].severity == Severity.HIGH
 
 
-def test_burst_escalates_to_high_on_service_spread() -> None:
-    """new_service_count >= burst_high_service_count → HIGH."""
+def test_service_spread_alone_never_escalates() -> None:
+    """A clean many-service burst stays MEDIUM anywhere in the window.
+
+    A person exploring the console touches many services in one benign
+    sitting, so service spread is the sweep's size in service units, never an
+    independent evidence category. The recognized-for-compatibility
+    burst_high_service_count key is set to its most aggressive value to pin
+    that it no longer reaches severity.
+    """
     events = _enum_sweep("attacker", n_firsts=10, gap=30.0, start_ts=_BASE_TS,
                          error_rate=0.0, n_services=5)
-    findings = run(_ctx(_df(events), config={
+    config = {
         "min_events": 1000,
         "burst_high_error_rate": 1.5,    # disable the error gate
-        "burst_high_service_count": 3,
-    }))
-    bursts = [f for f in findings if f.evidence.get("tier") == "burst"]
-    assert bursts[0].severity == Severity.HIGH
+        "burst_high_service_count": 1,   # inert: accepted, never escalates
+    }
 
-
-def test_window_edge_service_spread_stays_medium() -> None:
-    """Service spread at the loaded window edge is not enough to promote to HIGH."""
-    events = _enum_sweep("attacker", n_firsts=10, gap=30.0, start_ts=_BASE_TS,
-                         error_rate=0.0, n_services=5)
+    mid_window = run(_ctx(_df(events), config=config))
     edge_window = (
         datetime.fromtimestamp(_BASE_TS + 30.0, tz=timezone.utc),
         _WINDOW[1],
     )
-    findings = run(_ctx(_df(events), config={
-        "min_events": 1000,
-        "burst_high_error_rate": 1.5,
-        "burst_high_service_count": 3,
-    }, data_window=edge_window))
-    bursts = [f for f in findings if f.evidence.get("tier") == "burst"]
-    assert bursts[0].evidence["new_service_count"] >= 3
-    assert bursts[0].severity == Severity.MEDIUM
+    at_edge = run(_ctx(_df(events), config=config, data_window=edge_window))
 
-
-def test_mid_window_service_spread_still_escalates_to_high() -> None:
-    """Service spread away from the loaded window edge remains a HIGH signal."""
-    events = _enum_sweep("attacker", n_firsts=10, gap=30.0, start_ts=_BASE_TS,
-                         error_rate=0.0, n_services=5)
-    findings = run(_ctx(_df(events), config={
-        "min_events": 1000,
-        "burst_high_error_rate": 1.5,
-        "burst_high_service_count": 3,
-    }))
-    bursts = [f for f in findings if f.evidence.get("tier") == "burst"]
-    assert bursts[0].severity == Severity.HIGH
+    for findings in (mid_window, at_edge):
+        bursts = [f for f in findings if f.evidence.get("tier") == "burst"]
+        assert bursts[0].evidence["new_service_count"] >= 3
+        assert bursts[0].severity == Severity.MEDIUM
 
 
 def test_window_edge_error_burst_still_escalates_to_high() -> None:
-    """Error-heavy bursts still promote at the loaded window edge."""
+    """Error-heavy bursts promote at the loaded window edge too."""
     events = _enum_sweep("attacker", n_firsts=10, gap=30.0, start_ts=_BASE_TS,
                          error_rate=1.0, n_services=1)
     edge_window = (
@@ -380,7 +365,6 @@ def test_window_edge_error_burst_still_escalates_to_high() -> None:
     findings = run(_ctx(_df(events), config={
         "min_events": 1000,
         "burst_high_error_rate": 0.5,
-        "burst_high_service_count": 10,
     }, data_window=edge_window))
     bursts = [f for f in findings if f.evidence.get("tier") == "burst"]
     assert bursts[0].severity == Severity.HIGH
@@ -393,7 +377,6 @@ def test_burst_never_auto_high_on_size_alone() -> None:
     findings = run(_ctx(_df(events), config={
         "min_events": 1000,
         "burst_high_error_rate": 0.5,
-        "burst_high_service_count": 3,
     }))
     bursts = [f for f in findings if f.evidence.get("tier") == "burst"]
     assert bursts[0].severity == Severity.MEDIUM

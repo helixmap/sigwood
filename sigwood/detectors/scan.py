@@ -39,6 +39,14 @@ DEFAULT_CONFIG = {
     "slow_min_buckets": 4,
 }
 
+# Findings sharing one (scan_type, src) fold into a single rollup at this many
+# members: one nmap run is one story per scan type, not one row per pair. The
+# fold is a DISPLAY grouping - members are measured exactly as before and ride
+# the rollup's evidence verbatim. Frozen calibration (the rollup breakeven the
+# syslog and exfil folds share), never config. Only vertical and horizontal
+# groups can reach it: block and slow already emit at most one row per source.
+_SCAN_FOLD_COUNT = 4
+
 
 def validate_config(cfg: dict) -> None:
     """Validate Scan's overlaid tuning section without mutation."""
@@ -653,6 +661,28 @@ def _to_severity(row: dict) -> Severity:
     return Severity.LOW
 
 
+def _public_lookup_ok(src: object) -> bool:
+    """Whether a public-registry lookup of this source can possibly answer.
+
+    A Shodan pivot is only a next step for an address the public internet can
+    see: private, loopback, link-local, multicast, reserved, and unspecified
+    addresses - and values that do not parse at all - omit the suggestion
+    rather than send the reader to a lookup that cannot answer.
+    """
+    try:
+        addr = ipaddress.ip_address(str(src))
+    except ValueError:
+        return False
+    return not (
+        addr.is_private
+        or addr.is_loopback
+        or addr.is_link_local
+        or addr.is_multicast
+        or addr.is_reserved
+        or addr.is_unspecified
+    )
+
+
 def _make_finding(row: dict, data_window: tuple) -> Finding:
     """Construct a Finding from a classified result dict."""
     scan_type      = row['scan_type']
@@ -715,8 +745,11 @@ def _make_finding(row: dict, data_window: tuple) -> Finding:
         next_steps = [
             "Pivot to conn.log to review full connection history for this source",
             "Check reverse DNS for the source host",
-            "Look up source IP on Shodan for open services and prior reports",
         ]
+        if _public_lookup_ok(src):
+            next_steps.append(
+                "Look up source IP on Shodan for open services and prior reports"
+            )
     elif pattern_tag == 'bittorrent':
         next_steps = [
             f"Confirm whether {src} runs BitTorrent (expected P2P swarm behavior)",
@@ -735,9 +768,12 @@ def _make_finding(row: dict, data_window: tuple) -> Finding:
         next_steps = [
             "Pivot to conn.log to review full connection history for this source",
             "Check reverse DNS for the source host",
-            "Look up source IP on Shodan",
-            f"Review the temporal spread - activity paced across {active_buckets} time windows",
         ]
+        if _public_lookup_ok(src):
+            next_steps.append("Look up source IP on Shodan")
+        next_steps.append(
+            f"Review the temporal spread - activity paced across {active_buckets} time windows"
+        )
     else:
         next_steps = [f"Review conn.log for {src} to assess scan intent"]
 
@@ -751,6 +787,121 @@ def _make_finding(row: dict, data_window: tuple) -> Finding:
         ts_generated=datetime.now(tz=timezone.utc),
         data_window=data_window,
     )
+
+
+_SEVERITY_RANK = {
+    Severity.HIGH: 0, Severity.MEDIUM: 1, Severity.LOW: 2, Severity.INFO: 3,
+}
+
+
+def _make_rollup_finding(members: list[Finding], data_window: tuple) -> Finding:
+    """Fold one (scan_type, src) group of findings into a single rollup.
+
+    A presentation grouping only: every member was measured exactly as it
+    would have been emitted, and its evidence rides the rollup verbatim.
+    Severity is the MAX member severity - a fold must never demote what was
+    measured. The aggregates are member-derived (a sum, a distinct count, a
+    selection), never a re-measurement of the source rows.
+    """
+    scan_type = members[0].evidence.get("scan_type", "")
+    src = members[0].evidence.get("src", "")
+    severity = min(members, key=lambda m: _SEVERITY_RANK[m.severity]).severity
+
+    dst_values = {m.evidence.get("dst") for m in members} - {None}
+    port_values = {m.evidence.get("port") for m in members} - {None}
+    if dst_values:
+        target_count, target_noun = len(dst_values), "host"
+    else:
+        target_count, target_noun = len(port_values), "port"
+
+    total_conns = sum(
+        m.evidence["total_conns"]
+        for m in members
+        if isinstance(m.evidence.get("total_conns"), int)
+        and not isinstance(m.evidence.get("total_conns"), bool)
+    )
+    ratios = [
+        m.evidence["scan_state_ratio"]
+        for m in members
+        if isinstance(m.evidence.get("scan_state_ratio"), (int, float))
+        and not isinstance(m.evidence.get("scan_state_ratio"), bool)
+    ]
+    window_starts = sorted(
+        m.evidence["window_start"]
+        for m in members
+        if isinstance(m.evidence.get("window_start"), str)
+    )
+
+    evidence: dict = {
+        "tier": "rollup",
+        "scan_type": scan_type,
+        "src": src,
+        "member_count": len(members),
+        "target_count": target_count,
+        "total_conns": total_conns,
+        "max_scan_state_ratio": max(ratios) if ratios else None,
+        "direction": members[0].evidence.get("direction"),
+        "window_start": window_starts[0] if window_starts else None,
+        "window_secs": members[0].evidence.get("window_secs"),
+        "members": [m.evidence for m in members],
+    }
+
+    description = (
+        f"One source probed {target_count} distinct "
+        f"{plural(target_count, target_noun)} in a {scan_type} scan pattern, "
+        "consistent with port or host enumeration."
+    )
+    next_steps = [
+        "Pivot to conn.log to review full connection history for this source",
+        "Check reverse DNS for the source host",
+    ]
+    if _public_lookup_ok(src):
+        next_steps.append(
+            "Look up source IP on Shodan for open services and prior reports"
+        )
+
+    return Finding(
+        detector=DETECTOR_NAME,
+        severity=severity,
+        title=f"{src} → *",
+        description=description,
+        evidence=evidence,
+        next_steps=next_steps,
+        ts_generated=datetime.now(tz=timezone.utc),
+        data_window=data_window,
+    )
+
+
+def _fold_findings(findings: list[Finding]) -> list[Finding]:
+    """Replace each >= _SCAN_FOLD_COUNT (scan_type, src) group with one rollup.
+
+    The rollup takes the FIRST member's position; the input arrives
+    severity-sorted, so that position is the group's most severe member and
+    the global ordering stays coherent. Sub-threshold groups pass through
+    untouched, so a run with no foldable group is byte-identical to a run
+    without the fold.
+    """
+    groups: dict[tuple, list[Finding]] = {}
+    for finding in findings:
+        key = (finding.evidence.get("scan_type"), finding.evidence.get("src"))
+        groups.setdefault(key, []).append(finding)
+
+    folded_keys = {
+        key for key, members in groups.items() if len(members) >= _SCAN_FOLD_COUNT
+    }
+    if not folded_keys:
+        return findings
+
+    out: list[Finding] = []
+    emitted: set = set()
+    for finding in findings:
+        key = (finding.evidence.get("scan_type"), finding.evidence.get("src"))
+        if key not in folded_keys:
+            out.append(finding)
+        elif key not in emitted:
+            emitted.add(key)
+            out.append(_make_rollup_finding(groups[key], finding.data_window))
+    return out
 
 
 # ── Detector entry point ──────────────────────────────────────────────────────
@@ -800,4 +951,6 @@ def run(context: DetectorContext) -> list[Finding]:
         key=lambda r: (sev_order[r['_severity']], -r.get('scan_state_ratio', 0))
     )
 
-    return [_make_finding(row, context.data_window) for row in deduped]
+    return _fold_findings(
+        [_make_finding(row, context.data_window) for row in deduped]
+    )

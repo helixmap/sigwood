@@ -53,7 +53,105 @@ All notable changes to sigwood are recorded here. The format follows
   the `ssl` mission is excluded pending a separate question about what its checks
   actually compare.
 
+### Changed (era)
+
+- The era planner no longer recognizes a `-TSVPRE` date-directory alias and no
+  longer ships a built-in baseline calendar. A suffixed directory name now never
+  becomes an era date group (exact `YYYY-MM-DD` only - the hunt/graph loader's
+  tolerant date-prefix discovery is unchanged). The planner's baseline
+  comparison is now caller-supplied: with no baseline given, which is the public
+  `sigwood era` path, the reconciliation fields are empty rather than measured
+  against a calendar describing one specific archive. Rendered decks and cards
+  are unchanged; the private measurement receipts lose their collapsed-alias
+  field.
+
+- The era measurement helpers now carry plain names: `EraResourceReceipt`,
+  `EraMeasurementOutcome`, `ERA_RSS_LIMIT_BYTES` and `not_measured_receipt` replace the
+  former internal shorthand exported from `sigwood.era`. Receipt fields, outcomes and
+  the `era` verb's behavior are unchanged; only the identifiers moved. These symbols
+  are outside the published 1.x contract, which covers the CLI surface and the json
+  report.
+
+### Changed (aws)
+
+- A burst spread across many first-seen services no longer escalates to HIGH on the
+  spread alone. Service spread is the size of the sweep counted in service units, and a
+  person exploring the console produces it in one benign sitting - so it now behaves
+  like every other size measure: visible in the finding's evidence and sort order,
+  never a severity input. The error-rate gate keeps its HIGH path unchanged. The
+  `burst_high_service_count` and `burst_window_edge_margin_seconds` settings stay
+  recognized as the contract promises, but no longer change behavior; a config that
+  set them keeps loading cleanly.
+
+### Changed (scan)
+
+- One scan now reads as one story per scan type. A single nmap run against a subnet used
+  to produce one finding per (source, host) pair and one per (source, port) pair - over a
+  hundred rows for one event, most of them HIGH. Findings that share a scan type and
+  source now fold into a single rollup once four or more would have printed: the report
+  shows `source → *` with the target count, total connection attempts, and the worst
+  member's failed-close share; `-v` lists the largest members, `-vv` and `json` carry
+  every per-target measurement verbatim. Nothing is measured differently - groups below
+  four print exactly as before, and severity is the highest any member earned.
+
+- The "look up the source on Shodan" suggestion now appears only for sources a public
+  lookup can actually answer for: private, loopback, link-local, multicast, and
+  unparseable source addresses omit it.
+
+### Changed (graph)
+
+- Two small player layout fixes: the "copy hunt" button now sits directly beneath the
+  window dates in the header instead of floating alone below the whole readout, and the
+  transport controls are laid out as two fixed rows instead of one long line that
+  re-wrapped noisily as the window width changed.
+
+- The README's graph replay recording is regenerated. The previous recording was captured
+  before the connection-log scrubber existed and showed real routable addresses; the new
+  one replays a scrubbed capture (consistently remapped addresses and timestamps, no
+  private paths), shows the current player, runs at nearly twice the frame rate, and is
+  still about a third smaller.
+
+### Fixed (cloudtrail)
+
+- Native CloudTrail deliveries larger than 1 MiB now load. A delivery object is one
+  `{"Records":[...]}` JSON line, routinely several megabytes once decompressed, and the
+  loader's per-line safety limit skipped that line before the format sniff could treat
+  it as a document - the file loaded zero events with only a generic oversize warning.
+  Single-document files (one-line and pretty-printed alike) now load under a 64 MiB
+  per-document ceiling; per-line limits on NDJSON-shaped files are unchanged, and a
+  document over the ceiling still skips with a warning that names the actual limits.
+
+### Fixed (advisory)
+
+- An explicitly configured `root = ""` no longer trips the loose-home advisory. That
+  setting chooses working-directory semantics - the shipped demo config uses it - so
+  every demo run from an ordinary `0755` checkout warned about running `chmod 700` on a
+  directory sigwood does not own. The advisory now stays silent only for a root the
+  operator explicitly declared empty; a defaulted root, an `SIGWOOD_ROOT` environment
+  override, and an explicitly declared non-empty root all keep the advisory exactly as
+  before.
+
+### Removed
+
+- The maintainer-side measurement instruments left the repository: the dnsblock
+  calibration harness and sweep (`tools/dnsblock_c1_harness.py`,
+  `tools/dnsblock_c1_sweep.py`) and the bench scheduler (`tools/bench_mouth.py`), with
+  their dedicated tests. They ran only against the maintainer's own archives and never
+  shipped in the package. The one product property they enforced - dnsblock's runner
+  notes carry no address, name, or path - now lives with the test suite
+  (`tests/dnsblock_contract.py`) and is still exercised on every run of the tests.
+
 ### Fixed
+
+- **A closed downstream pipe now exits 141 for every report size, as documented.** The
+  exit-code contract promises a quiet 141 when a reader closes the pipe early
+  (`sigwood hunt | head`), and the boundary honored it only when the report was large
+  enough to hit the closed pipe mid-run. A report smaller than the output buffer reached
+  the pipe at interpreter shutdown instead - outside the boundary - so the run ended with
+  an `Exception ignored ... BrokenPipeError` line on stderr and a wrong exit code
+  (observed 0 or 120, varying by interpreter version). The output streams are now flushed
+  inside the boundary, so an early-closed pipe takes the documented quiet 141 regardless
+  of report size.
 
 - **The default text report no longer prints Python syntax in its evidence block.** At `-v` and
   `-vv`, a list or mapping evidence value was rendered with its Python `repr`, so a report read
@@ -296,7 +394,7 @@ All notable changes to sigwood are recorded here. The format follows
 
 - **The shared exfil evidence slicer now enforces the quiet default reading level itself.** Level
   zero returns no destination-pool members even when the slicer is called directly, while level one
-  remains capped at ten with a truthful remainder note and level two remains complete. Existing
+  remains capped at ten with a remainder note and level two remains complete. Existing
   text, HTML, PDF, JSON, and CSV output is unchanged.
 
 - **A single malformed log file no longer ends a whole hunt or export.** Four containment sites
@@ -471,7 +569,7 @@ All notable changes to sigwood are recorded here. The format follows
   `--format=pdf` presents the same measured cards as a self-contained page for reading in a
   browser or handing to someone - the page fetches nothing from the network and carries no
   scripts, and a PDF aimed at a terminal is refused rather than written as binary. Short or gappy archives still
-  produce an honest short report: cards that lack enough usable history abstain and explain
+  produce a short report: cards that lack enough usable history abstain and explain
   why, while an archive with no usable dated data is refused. Large archives ask for
   confirmation before a long run.
 - **A bounded streaming foundation in the loader** for detectors that need to analyze a
@@ -564,7 +662,7 @@ All notable changes to sigwood are recorded here. The format follows
   account volume, multi-host failures, and failures followed by a success. Each single category
   caps at MEDIUM; the only HIGH path combines exact multi-host spread with a matching landing.
   Text and HTML share a designed severity-first row grammar, `-v` keeps untrusted identities out
-  of ordinary evidence, and every run reports count-only extraction magnitudes plus honest
+  of ordinary evidence, and every run reports count-only extraction magnitudes plus
   evaluated-versus-abstained notes. The known-issues page also records four pre-existing
   limitations: the corroboration requirement, window-relative first-seen time, whole-host-only
   allowlist coverage for this lane, and the synthetic-only HIGH witness.
@@ -1063,7 +1161,7 @@ All notable changes to sigwood are recorded here. The format follows
   responder-byte share (Zeek's `resp_bytes`, newly carried in the canonical
   connection schema). Ratios are exact at every aggregation tier - server
   folds and in-player rollups both sum bytes before dividing - so a
-  download-heavy flow honestly shows mostly reverse grain. Ribbon shapes,
+  download-heavy flow shows mostly reverse grain. Ribbon shapes,
   counts, and saved-artifact geometry are unchanged; the optional direction
   ratio travels with clips, and graphs without responder data simply show
   forward grain as before.
@@ -1094,7 +1192,7 @@ All notable changes to sigwood are recorded here. The format follows
   two-pair text (dates, `port 22 80`) are never masked; raw log lines are
   displayed byte-for-byte as always.
 - **Syslog rows share one grammar.** Burst spans render through the same compact form
-  as family and transaction rows (with a new honest seconds tier below one minute -
+  as family and transaction rows (with a new seconds tier below one minute -
   `45s`, not `0m`), burst counts pluralize properly, and a transaction row now leads
   with its rare-line magnitude (`19 rare lines`) instead of the internal
   "member findings" phrase; the member count remains in evidence and JSON. Program
@@ -1472,8 +1570,15 @@ All notable changes to sigwood are recorded here. The format follows
   is now disclosed everywhere a scheduled run looks: the process exits nonzero, the JSON
   feed carries it under `run_summary.detectors_failed` (name → reason; empty `{}` on a
   clean run), the HTML/PDF report header shows a failure row, and the text report ends
-  with a `failed:` line so a saved report is honest too. The FAQ's cron alerting recipe
+  with a `failed:` line so a saved report carries it too. The FAQ's cron alerting recipe
   now pages on failed detectors as well as findings.
+
+## [0.2.0] - 2026-07-13 [YANKED]
+
+Yanked from PyPI the day it was published: it was cut out of process from a commit whose
+CI was failing. Superseded the same day by 0.2.1, which carries its intended content;
+nothing in 0.2.0 was found unsafe, and the yank exists so nobody pins a release that
+never passed its own gates.
 
 ## [0.1.1] - 2026-07-11
 

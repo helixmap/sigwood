@@ -175,9 +175,12 @@ header .mark .wm {
 #timeline { height: 78px; margin: 0 18px; position: relative; }
 #tl { width: 100%; height: 100%; display: block; cursor: ew-resize; }
 #controls {
-  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  display: flex; flex-direction: column; gap: 5px;
   padding: 8px 18px; font-size: 12.5px; color: var(--muted);
 }
+/* Two fixed rows: one long flex line re-wraps noisily as the width moves;
+   the split keeps each row short enough that wrapping is the rare fallback. */
+#controls .crow { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 #controls .grp { display: flex; align-items: center; gap: 6px; }
 #controls .sep { width: 1px; height: 18px; background: var(--border); }
 button, select {
@@ -226,15 +229,14 @@ input[type=range] { accent-color: var(--accent); width: 110px; }
   </div>
   <div class="readout">
     <div class="readout-grid">
-      <div class="readout-cell window"><span class="readout-label" id="meta-window-label">window</span><span class="readout-value window-stack mono"><span id="meta-window-start"></span><span id="meta-window-end"></span></span></div>
+      <div class="readout-cell window"><span class="readout-label" id="meta-window-label">window</span><span class="readout-value window-stack mono"><span id="meta-window-start"></span><span id="meta-window-end"></span></span><div class="readout-foot" id="meta-hunt-foot">
+      <button class="copy-hunt" id="copy-hunt" type="button" title="copy exact hunt command">copy hunt</button>
+    </div></div>
       <div class="readout-cell source"><span class="readout-label">source</span><span class="readout-value readout-clip mono" id="meta-source"></span><span class="readout-sub mono" id="meta-source-dir"></span></div>
       <div class="readout-cell"><span class="readout-label">records</span><span class="readout-value mono" id="meta-count"></span></div>
       <div class="readout-cell" id="meta-entities-cell"><span class="readout-label">entities</span><span class="readout-value mono" id="meta-entities"></span></div>
       <div class="readout-cell"><span class="readout-label">bin</span><span class="readout-value mono" id="meta-bin"></span></div>
       <div class="readout-cell" id="meta-derivation-cell"><span class="readout-label" id="meta-derivation-label">derivation</span><span class="readout-value" id="meta-derivation"></span><span class="readout-sub" id="meta-degrade"></span><span class="readout-sub" id="meta-band-loss"></span><span class="readout-sub" id="meta-straddler"></span><span class="readout-sub" id="meta-clip-loss"></span></div>
-    </div>
-    <div class="readout-foot" id="meta-hunt-foot">
-      <button class="copy-hunt" id="copy-hunt" type="button" title="copy exact hunt command">copy hunt</button>
     </div>
   </div>
 </header>
@@ -257,60 +259,64 @@ input[type=range] { accent-color: var(--accent); width: 110px; }
 <div id="timeline" title="drag: scrub · shift-drag: loop range · double-click: clear range"><canvas id="tl"></canvas></div>
 
 <div id="controls">
-  <div class="grp">
-    <button id="play" class="play" title="space">▶</button>
-    <select id="speed" title="playback speed (data time per second)"></select>
-    <label><input type="checkbox" id="loop" checked> loop</label>
-    <button id="clipbtn" title="download the current view (time range + filters) as a standalone clip">⬇ clip</button>
+  <div class="crow">
+    <div class="grp">
+      <button id="play" class="play" title="space">▶</button>
+      <select id="speed" title="playback speed (data time per second)"></select>
+      <label><input type="checkbox" id="loop" checked> loop</label>
+      <button id="clipbtn" title="download the current view (time range + filters) as a standalone clip">⬇ clip</button>
+    </div>
+    <div class="sep"></div>
+    <div class="grp"><span>window</span>
+      <input type="range" id="win" min="1" max="40" step="1">
+      <span class="mono" id="winlabel"></span>
+    </div>
+    <div class="sep"></div>
+    <div class="grp" id="metricgrp"><span>metric</span>
+      <span class="seg" id="metric">
+        <button data-m="b" class="on">bytes</button><button data-m="c">conns</button>
+      </span>
+    </div>
+    <div class="grp"><span>view</span>
+      <span class="seg" id="mode">
+        <button data-mode="2">hosts</button><button data-mode="3" class="on" id="modemid">services</button>
+      </span>
+    </div>
+    <div class="spacer" style="flex:1"></div>
+    <div class="grp"><span id="filterbadge">filtered</span></div>
   </div>
-  <div class="sep"></div>
-  <div class="grp"><span>window</span>
-    <input type="range" id="win" min="1" max="40" step="1">
-    <span class="mono" id="winlabel"></span>
+  <div class="crow">
+    <div class="grp"><span>group</span>
+      <span class="seg" id="group">
+        <button data-g="32" class="on">host</button><button data-g="24">/24</button>
+        <button data-g="16">/16</button><button data-g="8">/8</button>
+      </span>
+    </div>
+    <div class="grp"><span>y</span>
+      <span class="seg" id="yscale">
+        <button data-y="lin">lin</button><button data-y="log">log</button>
+      </span>
+    </div>
+    <div class="grp"><span>ribbons</span>
+      <span class="seg" id="fill">
+        <button data-f="blend" class="on">blend</button><button data-f="split">split</button>
+        <button data-f="src">src</button><button data-f="dst">dst</button>
+      </span>
+    </div>
+    <div class="grp"><span>scale</span>
+      <span class="seg" id="breathe">
+        <button data-breathe="0" class="on">fill</button><button data-breathe="0.5">breathe</button>
+        <button data-breathe="1">absolute</button>
+      </span>
+    </div>
+    <div class="grp"><span>flow</span>
+      <span class="seg" id="flow">
+        <button data-flow="on">on</button><button data-flow="off">off</button>
+      </span>
+    </div>
+    <div class="sep"></div>
+    <div class="grp"><button id="theme" title="theme">◐</button></div>
   </div>
-  <div class="sep"></div>
-  <div class="grp" id="metricgrp"><span>metric</span>
-    <span class="seg" id="metric">
-      <button data-m="b" class="on">bytes</button><button data-m="c">conns</button>
-    </span>
-  </div>
-  <div class="grp"><span>view</span>
-    <span class="seg" id="mode">
-      <button data-mode="2">hosts</button><button data-mode="3" class="on" id="modemid">services</button>
-    </span>
-  </div>
-  <div class="grp"><span>group</span>
-    <span class="seg" id="group">
-      <button data-g="32" class="on">host</button><button data-g="24">/24</button>
-      <button data-g="16">/16</button><button data-g="8">/8</button>
-    </span>
-  </div>
-  <div class="grp"><span>y</span>
-    <span class="seg" id="yscale">
-      <button data-y="lin">lin</button><button data-y="log">log</button>
-    </span>
-  </div>
-  <div class="grp"><span>ribbons</span>
-    <span class="seg" id="fill">
-      <button data-f="blend" class="on">blend</button><button data-f="split">split</button>
-      <button data-f="src">src</button><button data-f="dst">dst</button>
-    </span>
-  </div>
-  <div class="grp"><span>scale</span>
-    <span class="seg" id="breathe">
-      <button data-breathe="0" class="on">fill</button><button data-breathe="0.5">breathe</button>
-      <button data-breathe="1">absolute</button>
-    </span>
-  </div>
-  <div class="grp"><span>flow</span>
-    <span class="seg" id="flow">
-      <button data-flow="on">on</button><button data-flow="off">off</button>
-    </span>
-  </div>
-  <div class="sep"></div>
-  <div class="grp"><button id="theme" title="theme">◐</button></div>
-  <div class="spacer" style="flex:1"></div>
-  <div class="grp"><span id="filterbadge">filtered</span></div>
 </div>
 
 <div id="stats">

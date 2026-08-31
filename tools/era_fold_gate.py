@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
-"""Run era U1's bounded-fold calibration gate over Zeek connection input.
+"""Run era's bounded-fold calibration gate over Zeek connection input.
 
-This is a U1 gate instrument, deliberately outside ``sigwood.era``.  The
-eventual package and report model belong to U2; this tool measures whether the
-already-landed neutral fold foundation carries a deliberately heavy, fixed-width
+This is a gate instrument, deliberately outside ``sigwood.era``: it measures
+whether the neutral fold foundation carries a deliberately heavy, fixed-width
 per-record state without retaining a frame.
 """
 
@@ -24,7 +23,7 @@ import sigwood.common.loader as loader
 
 
 UTC = timezone.utc
-CHANNEL = "era_u1_calibration"
+CHANNEL = "era_calibration"
 # Three unsigned 64-bit slots per observed row: an intentionally per-record,
 # fixed-width ledger.  Real era reducers aggregate into periods or capped entity
 # sets; retaining every observed row is the plausible cardinality-dominant shape.
@@ -32,7 +31,7 @@ SLOTS_PER_RECORD = 3
 SLOT_BYTES = 8
 BYTES_PER_RECORD = SLOTS_PER_RECORD * SLOT_BYTES
 MAX_CALIBRATION_RECORDS = loader.MAX_FILE_DELTA_BYTES // BYTES_PER_RECORD
-D34_RSS_BYTES = 4 * 1024**3
+RSS_LIMIT_BYTES = 4 * 1024**3
 
 
 @dataclass(frozen=True)
@@ -95,7 +94,7 @@ def _mask(frame: Any) -> loader.PositionalMask:
 
 
 def calibration_sink() -> loader.FoldSink:
-    """Build the pure, frame-free U1 calibration sink."""
+    """Build the pure, frame-free calibration sink."""
     return loader.FoldSink(
         channel=CHANNEL,
         seed_file=lambda: loader.FoldDelta(CalibrationState(), 0),
@@ -140,22 +139,22 @@ def run_gate(corpus: Path, *, day: str) -> dict[str, Any]:
         result, CalibrationResult
     )
     peak_rss = _rss_bytes()
-    if completed and peak_rss <= D34_RSS_BYTES:
-        gate_b = "PASS"
+    if completed and peak_rss <= RSS_LIMIT_BYTES:
+        determination = "PASS"
     elif completed:
-        gate_b = "COMPLETED_RSS_OVER_LIMIT"
+        determination = "COMPLETED_RSS_OVER_LIMIT"
     elif status.state is loader.PreparedState.ABSTAINED:
-        gate_b = "NOT_REACHED_CAP_ABSTAINED"
+        determination = "NOT_REACHED_CAP_ABSTAINED"
     else:
-        gate_b = "NOT_REACHED_OR_FAILED"
+        determination = "NOT_REACHED_OR_FAILED"
     quality = loaded.quality[pattern]
     return {
         "schema_version": 1,
-        "gate": "era_u1_gate_b",
-        "gate_b_determination": gate_b,
+        "gate": "era_fold_gate",
+        "determination": determination,
         "completed": completed,
         "status": {"state": status.state.value, "cause": status.cause},
-        "d34_rss_limit_bytes": D34_RSS_BYTES,
+        "rss_limit_bytes": RSS_LIMIT_BYTES,
         "peak_rss_bytes": peak_rss,
         "elapsed_seconds": time.monotonic() - started,
         "input": {"path": str(corpus), "compressed_bytes": corpus.stat().st_size},
@@ -189,7 +188,7 @@ def main(argv: list[str] | None = None) -> int:
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(receipt, sort_keys=True) + "\n", encoding="utf-8")
     print(json.dumps(receipt, sort_keys=True))
-    return 0 if receipt["gate_b_determination"] == "PASS" else 1
+    return 0 if receipt["determination"] == "PASS" else 1
 
 
 if __name__ == "__main__":

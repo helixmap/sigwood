@@ -232,6 +232,13 @@ def main(argv: list[str] | None = None) -> None:
     """Parse arguments and dispatch to the appropriate subcommand or runner."""
     try:
         rc = _main(argv) or 0
+        # Flush inside the boundary: a report smaller than the stdio buffer
+        # reaches a closed downstream pipe only at flush time, and the
+        # interpreter-shutdown flush sits outside every arm - its EPIPE
+        # surfaces as an "Exception ignored" traceback with the wrong exit
+        # code instead of the quiet 141 the BrokenPipeError arm owns.
+        sys.stdout.flush()
+        sys.stderr.flush()
     except KeyboardInterrupt:
         # Most terminals echo Ctrl-C as "^C" with no trailing newline before
         # Python sees the signal. Without a leading blank line on TTY stderr,
@@ -1134,7 +1141,19 @@ def _leading_flag_verb_hint(paths: list[str], args: list[str]) -> None:
 
 
 def _advise_loose_root(config: dict[str, Any]) -> None:
-    """Advise when the existing effective root is group/world-accessible."""
+    """Advise when the existing effective root is group/world-accessible.
+
+    An operator who explicitly declares ``root = ""`` has chosen
+    working-directory semantics rather than a sigwood home, so there is no
+    sigwood-owned directory for the chmod advice to apply to and the advisory
+    stays silent. The exemption reads the ``__user_set__`` provenance sidecar
+    (a defaulted or programmatic empty root is not a declaration), and an env
+    ``SIGWOOD_ROOT`` still selects a real root and keeps the advisory.
+    """
+    if not os.environ.get("SIGWOOD_ROOT"):
+        declared = config.get("__user_set__", {}).get("sigwood", set())
+        if "root" in declared and config.get("sigwood", {}).get("root") == "":
+            return
     try:
         root = Path(effective_root(config)).expanduser().absolute()
         root_stat = root.stat()

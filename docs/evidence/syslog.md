@@ -78,10 +78,10 @@ chains, so density points the wrong way). Splitting an over-long chain instead o
 declining it was rejected as strictly worse: it mints dozens of meaningless units
 instead of one.
 
-The bounding change **releases content, and that is the honest cost**: the rows an
+The bounding change **releases content, and that is the cost**: the rows an
 over-wide unit had absorbed reappear as their own findings. Some re-compress naturally.
-A small increase in the more-severe count is an honesty improvement, not manufacture.
-One capsule had been hiding privileged lines at their own severity.
+The more-severe count rises slightly because one capsule had been hiding privileged
+lines at their own severity.
 
 ## what is frozen as a result
 

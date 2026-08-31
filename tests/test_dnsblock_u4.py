@@ -18,7 +18,7 @@ from sigwood.common.loader import (
     PreparedStatus,
 )
 from sigwood.detectors import dnsblock
-from tools import dnsblock_c1_harness, dnsblock_c1_sweep
+from tests.dnsblock_contract import GridSurvivorAccumulator, validate_summary_notes
 
 
 UTC = timezone.utc
@@ -200,12 +200,12 @@ def test_private_burst_vector_and_arrival_only_arm_keep_complete_grid(tmp_path):
         0 < mask < (1 << 75)
         for _identity, mask in strict.calibration_survivors.burst_memberships
     )
-    arrival_union = dnsblock_c1_sweep.GridSurvivorAccumulator(12)
+    arrival_union = GridSurvivorAccumulator(12)
     arrival_union.ingest(strict.calibration_survivors.arrival_memberships)
     assert [row["identity_digest"] for row in arrival_union.aggregate()] == [
         cell.identity_digest for cell in strict.preflight.grids
     ]
-    burst_union = dnsblock_c1_sweep.GridSurvivorAccumulator(75)
+    burst_union = GridSurvivorAccumulator(75)
     burst_union.ingest(strict.calibration_survivors.burst_memberships)
     assert [row["identity_digest"] for row in burst_union.aggregate()] == [
         cell.identity_digest for cell in strict.analysis.burst_grids
@@ -411,12 +411,12 @@ def test_short_report_span_keeps_silent_typed_recurring_abstention():
     )
 
 
-def test_harness_note_guard_rejects_identity_or_non_template_prose():
+def test_note_grammar_rejects_identity_or_non_template_prose():
     with pytest.raises(ValueError, match="non-template"):
-        dnsblock_c1_harness._validate_summary_notes(
+        validate_summary_notes(
             {"summary_notes": ["dnsblock: 192.0.2.7 was noisy"]}
         )
-    dnsblock_c1_harness._validate_summary_notes(
+    validate_summary_notes(
         {
             "summary_notes": [
                 "dnsblock: burst reporting needs 3 covered days and this window has 2",
@@ -429,42 +429,9 @@ def test_harness_note_guard_rejects_identity_or_non_template_prose():
         "dnsblock: burst reporting needs x.example covered days and this window has 2",
     ):
         with pytest.raises(ValueError, match="non-template"):
-            dnsblock_c1_harness._validate_summary_notes(
+            validate_summary_notes(
                 {"summary_notes": [seeded]}
             )
-
-
-def test_harness_rejects_unsafe_provisional_note_before_final_artifact(
-    tmp_path, monkeypatch,
-):
-    source = tmp_path / "pihole.log"
-    source.write_text("", encoding="utf-8")
-    final = tmp_path / "final.json"
-
-    def unsafe_runner(**kwargs):
-        kwargs["_dnsblock_preflight_path"].write_text(
-            '{"preflight":{"coverage_lane":"weak","state":"READY"},'
-            '"summary_notes":["dnsblock: 192.0.2.7 was noisy"]}\n',
-            encoding="utf-8",
-        )
-        return 0
-
-    monkeypatch.setattr(dnsblock_c1_harness.runner, "run", unsafe_runner)
-    with pytest.raises(ValueError, match="non-template"):
-        dnsblock_c1_harness.main(
-            [
-                "--pihole-dir",
-                str(source),
-                "--artifact",
-                str(final),
-                "--since",
-                "2026-01-01T00:00:00Z",
-                "--until",
-                "2026-01-02T00:00:00Z",
-                "--internal-legacy",
-            ]
-        )
-    assert not final.exists()
 
 
 def test_recurring_typed_state_is_constructed_without_entity_for_u5_projection():

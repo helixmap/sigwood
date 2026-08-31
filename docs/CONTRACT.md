@@ -282,7 +282,10 @@ listed here do not disappear.
   - `aws`: `min_events`, `min_scorable_principals`, `burst_gap_seconds`,
     `burst_window_edge_margin_seconds`, `burst_min_firsts`, `burst_high_error_rate`,
     `burst_high_service_count`, `composite_medium_threshold`,
-    `composite_low_threshold`
+    `composite_low_threshold`. Two of these are accepted for compatibility but no
+    longer change behavior: `burst_high_service_count` and
+    `burst_window_edge_margin_seconds` (service spread never escalates a burst's
+    severity; the error-rate gate is the one escalation).
   - `beacon`: `min_connections`, `threshold`
   - `dns`: `min_cluster_size`, `min_samples`, `threshold`, `thresh_high_entropy`,
     `scan_dense_clusters`, `scan_min_high_entropy_fraction`,

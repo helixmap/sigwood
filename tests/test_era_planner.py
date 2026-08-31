@@ -29,35 +29,41 @@ def _source_dir(root: Path, name: str, *, files: tuple[str, ...] = ()) -> Path:
     return directory
 
 
-def test_tsvpre_collapses_to_one_canonical_day_and_uses_stat_bytes(tmp_path: Path) -> None:
+def test_suffixed_date_directory_never_joins_a_date_group(tmp_path: Path) -> None:
     primary = _source_dir(tmp_path, "2026-04-12", files=("conn.1.log.gz",))
-    renamed = _source_dir(tmp_path, "2026-04-12-TSVPRE", files=("dns.1.log.gz",))
+    _source_dir(tmp_path, "2026-04-12-notes", files=("dns.1.log.gz",))
     plan = ArchivePlanner(tmp_path, baseline_dates={date(2026, 4, 12)}).plan()
 
     assert [group.canonical_date for group in plan.groups] == [date(2026, 4, 12)]
-    assert plan.groups[0].directories == (primary, renamed)
-    assert plan.groups[0].tsvpre_collapsed is True
-    assert plan.work_estimate.compressed_bytes == 14
-    assert plan.reconciliation.collapsed_tsvpre_dates == (date(2026, 4, 12),)
+    assert plan.groups[0].directories == (primary,)
+    assert plan.work_estimate.compressed_bytes == 7
     assert plan.reconciliation.missing_dates == ()
 
 
-def test_only_exact_tsvpre_is_a_date_alias(tmp_path: Path) -> None:
+def test_only_an_exact_date_name_is_a_date(tmp_path: Path) -> None:
     _source_dir(tmp_path, "2026-04-12-OTHER")
     assert canonical_date_group(tmp_path / "2026-04-12-OTHER") is None
-    assert canonical_date_group(tmp_path / "2026-04-12-TSVPRE") == (date(2026, 4, 12), True)
+    assert canonical_date_group(tmp_path / "2026-04-12") == date(2026, 4, 12)
     assert ArchivePlanner(tmp_path).plan().groups == ()
 
 
 def test_empty_family_and_post_baseline_drift_remain_visible(tmp_path: Path) -> None:
-    _source_dir(tmp_path, "2026-04-12-TSVPRE", files=("conn.1.log.gz",))
+    _source_dir(tmp_path, "2026-04-12", files=("conn.1.log.gz",))
     _source_dir(tmp_path, "2026-04-13", files=("conn.1.log.gz",))
     plan = ArchivePlanner(tmp_path, baseline_dates={date(2026, 4, 12)}).plan()
 
-    assert plan.reconciliation.baseline_source_directory_absent == (date(2026, 4, 12),)
     assert plan.reconciliation.post_baseline_dates == (date(2026, 4, 13),)
     apr12 = dict(plan.inventory)[date(2026, 4, 12)]
     assert next(item for item in apr12 if item.family == "dns").state is InventoryState.EMPTY
+
+
+def test_no_baseline_supplied_means_empty_reconciliation_fields(tmp_path: Path) -> None:
+    _source_dir(tmp_path, "2026-04-13", files=("conn.1.log.gz",))
+    plan = ArchivePlanner(tmp_path).plan()
+
+    assert plan.reconciliation.expected_dates == frozenset()
+    assert plan.reconciliation.missing_dates == ()
+    assert plan.reconciliation.post_baseline_dates == ()
 
 
 def test_denied_directory_is_a_typed_inventory_fact(tmp_path: Path, monkeypatch) -> None:

@@ -1551,7 +1551,7 @@ def test_graph_date_dir_window_uses_exact_name_and_display_timezone(
 def test_graph_date_dir_window_rejects_lookalikes_parent_layouts_and_probe_errors(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    suffixed = tmp_path / "2026-05-25-TSVPRE"
+    suffixed = tmp_path / "2026-05-25-archived"
     suffixed.mkdir()
     exact_parent = tmp_path / "2026-05-26"
     exact_parent.mkdir()

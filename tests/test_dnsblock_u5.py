@@ -29,7 +29,6 @@ from sigwood.outputs.html import HtmlHandler
 from sigwood.outputs.json import JsonHandler
 from sigwood.outputs.pdf import PdfHandler
 from sigwood.outputs.text import TextHandler
-from tools.dnsblock_c1_harness import semantic_digest
 
 
 _W = (
@@ -405,68 +404,3 @@ def test_all_five_handlers_receive_dnsblock_and_keep_machine_surfaces_uncapped(
     assert "over 1d" in captured["html"]
     assert "&lt;script&gt;" in captured["html"]
     assert "href" not in captured["html"]
-
-
-def _json_payload() -> dict:
-    return {
-        "sigwood_version": "0.0.dev1",
-        "schema_version": 1,
-        "run_summary": {
-            "data_window": ["2026-01-01T00:00:00+00:00", "2026-01-08T00:00:00+00:00"],
-            "record_counts": {"pihole": 3},
-            "record_labels": {"pihole": "Pi-hole DNS"},
-            "data_size_bytes": 42,
-            "detectors_run": ["dnsblock"],
-            "detectors_skipped": {},
-            "detectors_failed": {},
-            "notes": [],
-            "data_sources": ["dnsmasq_dns"],
-            "detector_methods": {"dnsblock": {"label": "pattern", "named": False}},
-            "requested_span": 604800.0,
-            "suppression": None,
-            "generated_at": "2026-01-08T01:00:00+00:00",
-            "invocation": "sigwood --private-path /tmp/a",
-        },
-        "findings": [{
-            "detector": "dnsblock",
-            "severity": "info",
-            "title": "recurring blocked-name activity",
-            "description": "measured",
-            "next_steps": [],
-            "evidence": {"kind": "recurring_activity", "pair_count": 2},
-            "ts_generated": "2026-01-08T01:00:00+00:00",
-            "data_window": ["2026-01-01T00:00:00+00:00", "2026-01-08T00:00:00+00:00"],
-        }],
-    }
-
-
-def test_semantic_digest_ignores_volatile_fields_and_moves_on_meaning() -> None:
-    first = _json_payload()
-    volatile = copy.deepcopy(first)
-    volatile["sigwood_version"] = "99.0"
-    volatile["run_summary"]["generated_at"] = "2030-01-01T00:00:00+00:00"
-    volatile["run_summary"]["invocation"] = "sigwood --private-path /tmp/b"
-    volatile["findings"][0]["ts_generated"] = "2030-01-01T00:00:00+00:00"
-    assert semantic_digest(first) == semantic_digest(volatile)
-
-    path_a = copy.deepcopy(first)
-    path_b = copy.deepcopy(first)
-    path_a["run_summary"]["notes"] = ["could not read /private/tmp/a.log"]
-    path_b["run_summary"]["notes"] = ["could not read /private/tmp/b.log"]
-    assert semantic_digest(path_a) == semantic_digest(path_b)
-
-    permuted = copy.deepcopy(first)
-    permuted["findings"][0]["evidence"] = dict(
-        reversed(list(permuted["findings"][0]["evidence"].items()))
-    )
-    permuted["run_summary"]["record_counts"] = dict(
-        reversed(list(permuted["run_summary"]["record_counts"].items()))
-    )
-    assert semantic_digest(first) == semantic_digest(permuted)
-
-    changed = copy.deepcopy(first)
-    changed["findings"][0]["evidence"]["pair_count"] = 3
-    assert semantic_digest(first)["sha256"] != semantic_digest(changed)["sha256"]
-    assert set(semantic_digest(first)) == {
-        "schema", "version", "sha256", "finding_count", "format"
-    }

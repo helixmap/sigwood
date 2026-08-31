@@ -181,7 +181,7 @@ Two checks belong here as well, because no test covers either:
 
   **This step covers two of the three shipped images. `docs/img/graph.gif` is NOT covered**, and
   a green check says nothing about it. Its source is a real capture that is address-scrubbed
-  before rendering, so there is no reproducible input to hash and no honest stamp to compare
+  before rendering, so there is no reproducible input to hash and no stamp to compare
   against. Refresh it deliberately when the graph's rendering changes; `demo/README.md` carries
   the commands. Treating a green check as covering all three is the mistake this note exists to
   prevent.

@@ -460,7 +460,7 @@ def test_rtt_missing_is_conditional_and_unscaled() -> None:
 # Noise group: a3f7bc19.malware.example + m8x2q9n.malware.example → malware.example group finding.
 # Noise singleton: k8x2m5q7n1p.suspect.example → singleton finding.
 #
-# R14 adds source="zeek" and severity_basis while preserving the earlier
+# The severity ladder adds source="zeek" and severity_basis while preserving the earlier
 # evidence values. Assert exact final order and the bounded additive key set.
 
 _REGRESSION_DF = pd.DataFrame([
@@ -504,7 +504,7 @@ class _FakeHDBSCAN:
 def test_zeek_path_regression(monkeypatch) -> None:
     """Golden: Zeek path produces a group + singleton finding in exact order.
 
-    The zeek path adds the frozen R14 severity basis to each finding's evidence.
+    The zeek path adds the frozen severity basis to each finding's evidence.
     Every pre-existing key and value must remain identical.
     """
     import sigwood.detectors.dns as dns_mod
@@ -559,7 +559,7 @@ def test_zeek_path_regression(monkeypatch) -> None:
             f"group evidence[{key!r}]: got {grp_f.evidence[key]!r}, expected {expected_val!r}"
         )
 
-    # R14 adds source plus the explicit, empty basis for an uncorroborated group.
+    # The ladder adds source plus the explicit, empty basis for an uncorroborated group.
     assert grp_f.evidence.get("source") == "zeek", (
         f"expected source='zeek', got {grp_f.evidence.get('source')!r}"
     )

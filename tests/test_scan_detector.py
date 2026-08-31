@@ -22,6 +22,7 @@ import pytest
 from sigwood import cli
 from sigwood.common import config as cfg
 from sigwood.common.finding import DetectorContext, Finding, RunSummary, Severity
+from sigwood.detectors import scan as scan_module
 from sigwood.detectors.scan import (
     DETECTOR_NAME,
     STATUS,
@@ -830,3 +831,163 @@ def test_run_falls_back_to_default_home_net_when_context_empty() -> None:
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ── (scan_type, src) fold regressions ────────────────────────────────────────
+
+
+def _sweep_df(n_dsts: int = 40, n_ports: int = 60) -> pd.DataFrame:
+    """One source probing n_dsts hosts x n_ports ports - the one-nmap shape."""
+    rows = []
+    ts = 1_748_563_200.0
+    for d in range(n_dsts):
+        for p in range(n_ports):
+            rows.append({
+                "src": "192.0.2.9", "dst": f"198.51.100.{d + 2}",
+                "port": 1000 + p, "proto": "tcp", "ts": ts,
+                "conn_state": "S0", "bytes": 0, "resp_bytes": 0,
+                "duration": 0.0, "local_orig": True,
+            })
+            ts += 0.5
+    return pd.DataFrame(rows)
+
+
+def test_one_sweep_folds_to_one_story_per_scan_type() -> None:
+    """40 hosts x 60 ports from one source reads as three rows, not 101.
+
+    The fold is presentation: every per-pair measurement rides the rollup's
+    members verbatim, exactly once (conservation over member identities).
+    """
+    findings = run(_ctx(_sweep_df()))
+
+    assert len(findings) == 3
+    by_type = {f.evidence.get("scan_type"): f for f in findings}
+    vertical = by_type["vertical"]
+    horizontal = by_type["horizontal"]
+    assert vertical.evidence["tier"] == "rollup"
+    assert vertical.title == "192.0.2.9 → *"
+    assert vertical.evidence["member_count"] == 40
+    assert vertical.evidence["target_count"] == 40
+    assert horizontal.evidence["tier"] == "rollup"
+    assert horizontal.evidence["member_count"] == 60
+    assert horizontal.evidence["target_count"] == 60
+    assert by_type["block"].evidence.get("tier") is None
+
+    member_dsts = [m["dst"] for m in vertical.evidence["members"]]
+    assert sorted(set(member_dsts)) == sorted(member_dsts)
+    assert set(member_dsts) == {f"198.51.100.{d + 2}" for d in range(40)}
+    member_ports = [m["port"] for m in horizontal.evidence["members"]]
+    assert sorted(set(member_ports)) == sorted(member_ports)
+    assert set(member_ports) == {1000 + p for p in range(60)}
+
+
+def test_subthreshold_groups_match_the_unfolded_build(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Below the fold count, findings are identical to a build with no fold."""
+    df = _sweep_df(n_dsts=3, n_ports=60)
+
+    folded = run(_ctx(df))
+    monkeypatch.setattr(scan_module, "_SCAN_FOLD_COUNT", 10_000)
+    unfolded = run(_ctx(df))
+
+    vertical_folded = [
+        f for f in folded if f.evidence.get("scan_type") == "vertical"
+    ]
+    vertical_unfolded = [
+        f for f in unfolded if f.evidence.get("scan_type") == "vertical"
+    ]
+    assert len(vertical_folded) == 3
+    for a, b in zip(vertical_folded, vertical_unfolded):
+        assert a.title == b.title
+        assert a.severity == b.severity
+        assert a.description == b.description
+        assert a.evidence == b.evidence
+        assert a.next_steps == b.next_steps
+
+
+def test_rollup_severity_is_max_member_severity() -> None:
+    members = []
+    for index, severity in enumerate(
+        (Severity.MEDIUM, Severity.HIGH, Severity.MEDIUM, Severity.LOW)
+    ):
+        row = _base_row("vertical")
+        row["dst"] = f"198.51.100.{index + 50}"
+        row["_severity"] = severity
+        members.append(_make_finding(row, _WINDOW))
+
+    out = scan_module._fold_findings(members)
+
+    assert len(out) == 1
+    assert out[0].evidence["tier"] == "rollup"
+    assert out[0].severity == Severity.HIGH
+    assert out[0].evidence["member_count"] == 4
+
+
+def test_public_lookup_gate_omits_shodan_for_unreachable_sources(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No Shodan pivot for an address the public registry cannot answer for."""
+    for value in (
+        "10.1.2.3", "192.168.1.9", "192.0.2.9", "127.0.0.1",
+        "169.254.9.9", "224.0.0.1", "not-an-address", None,
+    ):
+        assert scan_module._public_lookup_ok(value) is False, value
+
+    class _PublicStub:
+        is_private = False
+        is_loopback = False
+        is_link_local = False
+        is_multicast = False
+        is_reserved = False
+        is_unspecified = False
+
+    monkeypatch.setattr(
+        scan_module.ipaddress, "ip_address", lambda _v: _PublicStub()
+    )
+    assert scan_module._public_lookup_ok("witness") is True
+
+    row = _base_row("vertical")
+    finding = _make_finding(row, _WINDOW)
+    assert any("Shodan" in step for step in finding.next_steps)
+
+
+def test_rollup_omits_shodan_for_reserved_source() -> None:
+    findings = run(_ctx(_sweep_df()))
+    for finding in findings:
+        assert not any("Shodan" in step for step in finding.next_steps)
+
+
+def test_rollup_renders_at_level_zero_with_member_slice_at_verbose() -> None:
+    """The concise row carries the fold facts; -v adds the member slice."""
+    findings = run(_ctx(_sweep_df()))
+    summary = RunSummary(
+        data_window=_WINDOW,
+        record_counts={},
+        data_size_bytes=0,
+        detectors_run=["scan"],
+        detectors_skipped={},
+    )
+
+    stream = io.StringIO()
+    handler = TextHandler(stream=stream, verbose_level=0)
+    handler.begin(summary)
+    handler.write(findings)
+    handler.end()
+    level0 = stream.getvalue()
+    assert "192.0.2.9" in level0
+    assert "→ *" in level0
+    assert "40 hosts" in level0
+    assert "60 ports" in level0
+    assert "up to 100% no normal close seen" in level0
+    assert "members:" not in level0
+
+    stream = io.StringIO()
+    handler = TextHandler(stream=stream, verbose_level=1)
+    handler.begin(summary)
+    handler.write(findings)
+    handler.end()
+    verbose = stream.getvalue()
+    assert "members:" in verbose
+    assert "showing 10 of 40 members" in verbose
+    assert "showing 10 of 60 members" in verbose

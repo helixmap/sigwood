@@ -682,8 +682,6 @@ def test_event_time_contract_uses_current_finding_producers() -> None:
             "sample_event_ids": ["example-event"],
         },
         0.5,
-        3,
-        300,
         _NOW,
         _WINDOW,
     )

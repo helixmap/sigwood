@@ -472,6 +472,62 @@ def test_range_flag_tripwire_catches_single_value() -> None:
     assert clean == []
 
 
+# Public prose states what the tool does and does not do; it never characterizes
+# the tool's own virtue. A virtue-word whose deletion leaves the sentence's facts
+# intact ("the honest ledger", "stated plainly") reads as a plea to be believed,
+# and a reader told twice that the tool is honest starts asking why it insists.
+# The budget below holds the SYMPTOMATIC token family at its floor: the remaining
+# uses define a contributor value, bound a method claim, or name a change whose
+# whole point was a disclosure's truthfulness (CHANGELOG's beacon excluded-
+# connections entry - the word is the subject there, not seasoning). Exact both
+# ways so the table drains - a new use argues with this comment, a removed use
+# shrinks its row in the same change. Whether a sentence pleads in OTHER words is
+# a prose judgment no scan decides; that half is review-enforced.
+_PLEADING_TOKEN_RE = re.compile(
+    r"\bhonest(?:y|ly)?\b|\btruthful(?:ly|ness)?\b", re.IGNORECASE
+)
+_PLEADING_BUDGET = {
+    "CHANGELOG.md": 1,
+    "CONTRIBUTING.md": 2,
+    "docs/ROADMAP.md": 1,
+}
+# Root pages are enumerated, never globbed - a root glob follows local agent
+# symlinks into untracked space; docs/ is walked recursively so subdirectories
+# (docs/evidence/) stay covered.
+_PLEADING_ROOT_DOCS = (
+    "README.md",
+    "CHANGELOG.md",
+    "CONTRIBUTING.md",
+    "SECURITY.md",
+    "demo/README.md",
+)
+
+
+def _pleading_token_counts() -> dict[str, int]:
+    files = [_SRC_ROOT / rel for rel in _PLEADING_ROOT_DOCS]
+    files += sorted((_SRC_ROOT / "docs").rglob("*.md"))
+    counts: dict[str, int] = {}
+    for path in files:
+        n = len(_PLEADING_TOKEN_RE.findall(path.read_text(encoding="utf-8")))
+        if n:
+            counts[path.relative_to(_SRC_ROOT).as_posix()] = n
+    return counts
+
+
+def test_public_prose_holds_the_pleading_token_budget() -> None:
+    """Public docs carry the honest/truthful token family at exactly the budgeted
+    floor - a new use fails here and argues with the budget's comment, and a
+    removed use shrinks the table in the same change so it cannot re-permit."""
+    assert _pleading_token_counts() == _PLEADING_BUDGET
+
+
+def test_pleading_token_scan_counts_a_seeded_use() -> None:
+    """Positive control: the scanner counts the token family it exists to hold,
+    across case and inflection, and ignores mid-word collisions."""
+    seeded = "an Honest ledger, honestly truthful, dishonest but a chestnut"
+    assert len(_PLEADING_TOKEN_RE.findall(seeded)) == 3
+
+
 # This test is the one tracked file that names the private token-file path; the
 # residue scan below excludes this file from itself, so the literal is sanctioned here.
 _RESIDUE_TOKEN_FILE = _SRC_ROOT / "private" / "residue_tokens.txt"
@@ -703,6 +759,7 @@ def test_residue_campaign_patterns_keep_legitimate_controls() -> None:
         r"\b[BDRU]\d{2}\b",
         "re-decision",
         r"\bsealed\s+C\d\b",
+        r"era[-_]u\d",
     ]
     for expected in campaign_patterns:
         assert expected in patterns

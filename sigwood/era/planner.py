@@ -17,7 +17,7 @@ from typing import Iterable
 from sigwood.common.loader import discover_for_source_key
 
 
-_DATE_DIRECTORY = re.compile(r"^(?P<date>\d{4}-\d{2}-\d{2})(?P<suffix>-TSVPRE)?$")
+_DATE_DIRECTORY = re.compile(r"^(?P<date>\d{4}-\d{2}-\d{2})$")
 UTC = timezone.utc
 
 # These are loader-family patterns, not an era-local glob vocabulary.  Their
@@ -28,15 +28,6 @@ ERA_FAMILIES: tuple[tuple[str, str], ...] = (
     ("stats", "stats*.log*"),
     ("capture_loss", "capture_loss*.log*"),
 )
-
-
-def _baseline_dates() -> frozenset[date]:
-    start = date(2026, 4, 8)
-    end = date(2026, 8, 7)
-    return frozenset(start + timedelta(days=index) for index in range((end - start).days + 1))
-
-
-RATIFIED_BASELINE_DATES = _baseline_dates()
 
 
 class InventoryState(str, Enum):
@@ -54,7 +45,6 @@ class ArchiveDateGroup:
 
     canonical_date: date
     directories: tuple[Path, ...]
-    tsvpre_collapsed: bool
 
     @property
     def interval(self) -> tuple[datetime, datetime]:
@@ -93,14 +83,17 @@ class WorkEstimate:
 
 @dataclass(frozen=True)
 class BaselineReconciliation:
-    """Comparison with §6's fixed baseline; it never refreshes that baseline."""
+    """Comparison with a caller-supplied baseline calendar.
+
+    The planner never refreshes or invents a baseline. With no baseline
+    supplied, every comparison field is empty: an archive planned as found has
+    nothing to be missing from.
+    """
 
     expected_dates: frozenset[date]
     present_dates: frozenset[date]
     missing_dates: tuple[date, ...]
     post_baseline_dates: tuple[date, ...]
-    collapsed_tsvpre_dates: tuple[date, ...]
-    baseline_source_directory_absent: tuple[date, ...]
 
 
 @dataclass(frozen=True)
@@ -123,17 +116,17 @@ class ArchivePlan:
         return tuple(name for name, _ in ERA_FAMILIES)
 
 
-def canonical_date_group(directory: Path) -> tuple[date, bool] | None:
-    """Return a canonical date and TSVPRE flag for one exact archive directory.
+def canonical_date_group(directory: Path) -> date | None:
+    """Return the canonical date for one exactly date-named archive directory.
 
-    Only the explicit ``-TSVPRE`` spelling is an alias.  Other suffixed names
-    do not become dates by prefix accident.
+    Only an exact ``YYYY-MM-DD`` name is a date group; suffixed names do not
+    become dates by prefix accident.
     """
     match = _DATE_DIRECTORY.fullmatch(directory.name)
     if match is None:
         return None
     try:
-        return date.fromisoformat(match.group("date")), bool(match.group("suffix"))
+        return date.fromisoformat(match.group("date"))
     except ValueError:
         return None
 
@@ -141,12 +134,12 @@ def canonical_date_group(directory: Path) -> tuple[date, bool] | None:
 class ArchivePlanner:
     """Build an era archive plan from a root containing dated source directories."""
 
-    def __init__(self, root: Path, *, baseline_dates: Iterable[date] = RATIFIED_BASELINE_DATES):
+    def __init__(self, root: Path, *, baseline_dates: Iterable[date] = ()):
         self.root = Path(root)
         self.baseline_dates = frozenset(baseline_dates)
 
     def _groups(self) -> tuple[ArchiveDateGroup, ...]:
-        candidates: dict[date, list[tuple[Path, bool]]] = {}
+        candidates: dict[date, list[Path]] = {}
         try:
             children = sorted(self.root.iterdir(), key=lambda child: child.name)
         except PermissionError:
@@ -159,16 +152,14 @@ class ArchivePlanner:
                     continue
             except OSError:
                 continue
-            parsed = canonical_date_group(child)
-            if parsed is None:
+            canonical = canonical_date_group(child)
+            if canonical is None:
                 continue
-            canonical, is_tsvpre = parsed
-            candidates.setdefault(canonical, []).append((child, is_tsvpre))
+            candidates.setdefault(canonical, []).append(child)
         return tuple(
             ArchiveDateGroup(
                 canonical_date=canonical,
-                directories=tuple(path for path, _ in entries),
-                tsvpre_collapsed=any(is_tsvpre for _, is_tsvpre in entries),
+                directories=tuple(entries),
             )
             for canonical, entries in sorted(candidates.items())
         )
@@ -229,17 +220,12 @@ class ArchivePlanner:
             family.compressed_bytes for _, families in inventory for family in families
         )
         present = frozenset(group.canonical_date for group in groups)
-        collapsed = tuple(group.canonical_date for group in groups if group.tsvpre_collapsed)
         reconciled = BaselineReconciliation(
             expected_dates=self.baseline_dates,
             present_dates=present,
             missing_dates=tuple(sorted(self.baseline_dates - present)),
-            post_baseline_dates=tuple(sorted(present - self.baseline_dates)),
-            collapsed_tsvpre_dates=collapsed,
-            baseline_source_directory_absent=tuple(
-                group.canonical_date
-                for group in groups
-                if group.tsvpre_collapsed and group.canonical_date in self.baseline_dates
+            post_baseline_dates=(
+                tuple(sorted(present - self.baseline_dates)) if self.baseline_dates else ()
             ),
         )
         return ArchivePlan(groups, inventory, WorkEstimate(compressed_bytes, files), reconciled)

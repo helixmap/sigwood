@@ -120,6 +120,62 @@ def test_multiline_document_uses_same_common_record_limit():
     assert reader.skipped_oversize == 1
 
 
+def test_document_ceiling_admits_first_record_then_reverts_to_line_limit():
+    """A one-line document is admitted at the document ceiling; the line limit
+    resumes after the first non-blank record so NDJSON tails stay bounded."""
+    doc = "d" * 32
+    tail_over = "x" * 9
+    tail_ok = "y" * 8
+    reader = loader.BoundedLogicalRecordReader(
+        [doc, tail_over, tail_ok], max_record_bytes=8, max_document_bytes=32
+    )
+    assert list(reader) == [doc, tail_ok]
+    assert reader.skipped_oversize == 1
+
+
+def test_document_ceiling_one_over_skips_and_blank_prefix_keeps_allowance():
+    over = "d" * 33
+    reader = loader.BoundedLogicalRecordReader(
+        [over], max_record_bytes=8, max_document_bytes=32
+    )
+    assert list(reader) == []
+    assert reader.skipped_oversize == 1
+
+    doc = "d" * 32
+    reader = loader.BoundedLogicalRecordReader(
+        ["\n", doc], max_record_bytes=8, max_document_bytes=32
+    )
+    assert list(reader) == ["\n", doc]
+    assert reader.skipped_oversize == 0
+
+
+def test_collect_document_bounds_at_document_ceiling():
+    first = "a" * 16
+    reader = loader.BoundedLogicalRecordReader(
+        [first, "b" * 16], max_record_bytes=8, max_document_bytes=32
+    )
+    assert next(reader) == first
+    assert reader.collect_document(first) == first + "b" * 16
+
+    first = "a" * 16
+    reader = loader.BoundedLogicalRecordReader(
+        [first, "b" * 17], max_record_bytes=8, max_document_bytes=32
+    )
+    assert next(reader) == first
+    assert reader.collect_document(first) is None
+    assert reader.skipped_oversize == 1
+
+
+def test_only_cloudtrail_declares_the_document_ceiling():
+    from sigwood.common.loader.pipeline import _SOURCE_LOADERS
+
+    for key, strategy in _SOURCE_LOADERS.items():
+        if key == "cloudtrail_dir":
+            assert strategy.max_document_bytes == loader.MAX_LOGICAL_DOCUMENT_BYTES
+        else:
+            assert strategy.max_document_bytes is None
+
+
 def test_chunk_caps_exact_and_one_over_without_giant_allocation():
     class SizedFrame:
         def __init__(self, rows):

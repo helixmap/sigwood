@@ -346,7 +346,6 @@ class EraHarnessReceipt:
     consumed_span: tuple[datetime, datetime] | None
     missing_baseline_dates: tuple[date, ...]
     post_baseline_dates: tuple[date, ...]
-    collapsed_alias_dates: tuple[date, ...]
     cards_present: tuple[int, ...]
     rendered_cards: str | None
     peak_minute: datetime | None = None
@@ -399,7 +398,6 @@ class EraOracleReceipt:
     cards_present: tuple[int, ...]
     missing_baseline_dates: tuple[date, ...]
     post_baseline_dates: tuple[date, ...]
-    collapsed_alias_dates: tuple[date, ...]
     warning_census: tuple[tuple[str, int], ...]
     rendered_deck_sha256: str | None
     rendered_deck_byte_length: int | None
@@ -427,11 +425,11 @@ def _era_warning_class(warning: object) -> str:
 
 
 def _era_closure_config(config: Mapping[str, Any]) -> dict[str, Any]:
-    """Drop loader-only provenance sidecars from D19's resolved config input."""
+    """Drop loader-only provenance sidecars from the closure's resolved config input."""
     return {key: value for key, value in config.items() if key != "__user_set__"}
 
 
-def _run_era_u7_oracle(
+def _run_era_identity_oracle(
     config: Mapping[str, Any],
     *,
     archive_root_candidates: Sequence[Path],
@@ -442,7 +440,7 @@ def _run_era_u7_oracle(
     effective_psl_snapshot: bytes,
     _planner_factory: Any = None,
 ) -> EraOracleReceipt:
-    """Measure the complete private Era route and bind it to D19's identity.
+    """Measure the complete private Era route and bind it to the closure identity.
 
     This wrapper deliberately delegates every source operation to the harness;
     it neither scans archive paths nor calls the reducer directly.  Its receipt
@@ -468,7 +466,6 @@ def _run_era_u7_oracle(
             cards_present=harness.cards_present,
             missing_baseline_dates=harness.missing_baseline_dates,
             post_baseline_dates=harness.post_baseline_dates,
-            collapsed_alias_dates=harness.collapsed_alias_dates,
             warning_census=harness.warning_census,
             rendered_deck_sha256=None,
             rendered_deck_byte_length=None,
@@ -491,7 +488,6 @@ def _run_era_u7_oracle(
         cards_present=harness.cards_present,
         missing_baseline_dates=harness.missing_baseline_dates,
         post_baseline_dates=harness.post_baseline_dates,
-        collapsed_alias_dates=harness.collapsed_alias_dates,
         warning_census=harness.warning_census,
         rendered_deck_sha256=hashlib.sha256(deck).hexdigest(),
         rendered_deck_byte_length=len(deck),
@@ -539,7 +535,7 @@ def _run_era_harness(
         FamilyDayObservation,
         ParseUsability,
     )
-    from sigwood.era.planner import ERA_FAMILIES, RATIFIED_BASELINE_DATES, ArchivePlanner
+    from sigwood.era.planner import ERA_FAMILIES, ArchivePlanner
     from sigwood.era.report import (
         EraReducer,
         FootprintFact,
@@ -562,7 +558,7 @@ def _run_era_harness(
 
     planner_factory = _planner_factory or ArchivePlanner
     candidates = ([] if _archive_plan is not None else [
-        planner_factory(Path(root), baseline_dates=RATIFIED_BASELINE_DATES).plan()
+        planner_factory(Path(root)).plan()
         for root in archive_root_candidates
     ])
     archive_plan = _archive_plan or next(
@@ -576,17 +572,14 @@ def _run_era_harness(
             record_counts=(),
             consumed_span=None,
             missing_baseline_dates=(
-                reconciliation.missing_dates if reconciliation is not None else tuple(sorted(RATIFIED_BASELINE_DATES))
+                reconciliation.missing_dates if reconciliation is not None else ()
             ),
             post_baseline_dates=(
                 reconciliation.post_baseline_dates if reconciliation is not None else ()
             ),
-            collapsed_alias_dates=(
-                reconciliation.collapsed_tsvpre_dates if reconciliation is not None else ()
-            ),
             cards_present=(),
             rendered_cards=None,
-            missing_precondition="ratified-archive-root-unreachable",
+            missing_precondition="archive-root-unreachable",
         )
 
     interval = ReportInterval(*archive_plan.span)
@@ -738,14 +731,12 @@ def _run_era_harness(
     peak_minute, peak_neighborhood, duration_tails, duration_winner = (
         reducer.aggregate_review_evidence()
     )
-    if peak_minute is None:
+    if peak_minute is None or not reconciliation.expected_dates:
         peak_relation = None
     elif peak_minute.date() in reconciliation.post_baseline_dates:
         peak_relation = "post-baseline-date"
-    elif peak_minute.date() in reconciliation.collapsed_tsvpre_dates:
-        peak_relation = "collapsed-alias-date"
     else:
-        peak_relation = "ratified-baseline-date"
+        peak_relation = "baseline-date"
     duration_start = duration_winner[1] if duration_winner is not None else None
     duration_end = (
         duration_start + timedelta(seconds=duration_winner[0])
@@ -769,7 +760,6 @@ def _run_era_harness(
         consumed_span=(earliest, latest) if earliest is not None and latest is not None else None,
         missing_baseline_dates=reconciliation.missing_dates,
         post_baseline_dates=reconciliation.post_baseline_dates,
-        collapsed_alias_dates=reconciliation.collapsed_tsvpre_dates,
         cards_present=tuple(int(card.title.split(".", 1)[0]) for card in cards),
         rendered_cards=render_text_report(cards, family=family, span_honesty=span_honesty),
         peak_minute=peak_minute,
@@ -842,15 +832,13 @@ def run_era(
     inventory is reused by the fold.  No matcher is built and no loaded frame
     is suppressed: Era intentionally measures raw pre-allowlist traffic.
     """
-    from sigwood.era.planner import ArchivePlanner, RATIFIED_BASELINE_DATES
+    from sigwood.era.planner import ArchivePlanner
     from sigwood.era.report import compose_text_presentation
 
     if dry_run and stream is None:
         raise ValueError("era dry run needs an output stream")
 
-    archive_plan = ArchivePlanner(
-        archive_root, baseline_dates=RATIFIED_BASELINE_DATES
-    ).plan()
+    archive_plan = ArchivePlanner(archive_root).plan()
     calendar_days = len(archive_plan.groups)
     if archive_plan.span is None:
         raise ValueError(f"no usable dated archive at {archive_root}")
@@ -890,7 +878,7 @@ def run_era(
     return receipt
 
 
-def _run_era_u6_d34(
+def _run_era_resource_measurement(
     config: Mapping[str, Any],
     *,
     archive_root_candidates: Sequence[Path],
@@ -905,14 +893,14 @@ def _run_era_u6_d34(
     """
     from sigwood.era.domains import DOMAIN_CAP
     from sigwood.era.measurement import (
-        D34Outcome,
-        D34Receipt,
-        D34_RSS_LIMIT_BYTES,
-        not_measured_d34,
+        ERA_RSS_LIMIT_BYTES,
+        EraMeasurementOutcome,
+        EraResourceReceipt,
         normalized_maxrss_bytes,
+        not_measured_receipt,
     )
 
-    route_identity = "era-u6-planner-loader-domain-ledger"
+    route_identity = "era-planner-loader-domain-ledger"
     code_hasher = hashlib.sha256()
     for module in (
         Path(__file__),
@@ -930,7 +918,7 @@ def _run_era_u6_d34(
             _planner_factory=_planner_factory,
         )
     except Exception:
-        return not_measured_d34(
+        return not_measured_receipt(
             route_identity=route_identity,
             archive_content_identity="unavailable",
             candidate_cap=DOMAIN_CAP,
@@ -938,7 +926,7 @@ def _run_era_u6_d34(
             code_identity=code_identity,
         )
     if receipt.outcome != "MEASURED" or receipt.frozen_input_identity is None:
-        return not_measured_d34(
+        return not_measured_receipt(
             route_identity=route_identity,
             archive_content_identity="unavailable",
             candidate_cap=DOMAIN_CAP,
@@ -947,21 +935,25 @@ def _run_era_u6_d34(
         )
     raw = int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
     normalized = normalized_maxrss_bytes(raw)
-    return D34Receipt(
-        outcome=(D34Outcome.PASS if normalized <= D34_RSS_LIMIT_BYTES else D34Outcome.COMPLETED_RSS_OVER_LIMIT),
+    return EraResourceReceipt(
+        outcome=(
+            EraMeasurementOutcome.PASS
+            if normalized <= ERA_RSS_LIMIT_BYTES
+            else EraMeasurementOutcome.COMPLETED_RSS_OVER_LIMIT
+        ),
         route_identity=route_identity,
         archive_content_identity=receipt.frozen_input_identity,
         candidate_cap=DOMAIN_CAP,
         platform=sys.platform,
         raw_maxrss=raw,
         normalized_maxrss_bytes=normalized,
-        rss_limit_bytes=D34_RSS_LIMIT_BYTES,
+        rss_limit_bytes=ERA_RSS_LIMIT_BYTES,
         elapsed_seconds=time.monotonic() - started,
         code_identity=code_identity,
     )
 
 
-def _run_era_u7_d34(
+def _run_era_oracle_measurement(
     config: Mapping[str, Any],
     *,
     archive_root_candidates: Sequence[Path],
@@ -973,17 +965,17 @@ def _run_era_u7_d34(
     _planner_factory: Any = None,
     _oracle_receipt: EraOracleReceipt | None = None,
 ) -> Any:
-    """Measure U7's whole product consumer, never reuse U6's ledger receipt."""
+    """Measure the whole-product oracle route, never reusing the ledger receipt."""
     from sigwood.era.domains import DOMAIN_CAP
     from sigwood.era.measurement import (
-        D34Outcome,
-        D34Receipt,
-        D34_RSS_LIMIT_BYTES,
-        not_measured_d34,
+        ERA_RSS_LIMIT_BYTES,
+        EraMeasurementOutcome,
+        EraResourceReceipt,
         normalized_maxrss_bytes,
+        not_measured_receipt,
     )
 
-    route_identity = "era-u7-planner-loader-fold-render-oracle"
+    route_identity = "era-planner-loader-fold-render-oracle"
     code_hasher = hashlib.sha256()
     for module in (
         Path(__file__),
@@ -995,7 +987,7 @@ def _run_era_u7_d34(
     code_identity = code_hasher.hexdigest()
     started = time.monotonic()
     try:
-        oracle = _oracle_receipt or _run_era_u7_oracle(
+        oracle = _oracle_receipt or _run_era_identity_oracle(
             config,
             archive_root_candidates=archive_root_candidates,
             cli_options=cli_options,
@@ -1006,7 +998,7 @@ def _run_era_u7_d34(
             _planner_factory=_planner_factory,
         )
     except Exception:
-        return not_measured_d34(
+        return not_measured_receipt(
             route_identity=route_identity,
             archive_content_identity="unavailable",
             candidate_cap=DOMAIN_CAP,
@@ -1014,7 +1006,7 @@ def _run_era_u7_d34(
             code_identity=code_identity,
         )
     if oracle.outcome != "MEASURED" or oracle.archive_content_identity is None:
-        return not_measured_d34(
+        return not_measured_receipt(
             route_identity=route_identity,
             archive_content_identity="unavailable",
             candidate_cap=DOMAIN_CAP,
@@ -1023,15 +1015,19 @@ def _run_era_u7_d34(
         )
     raw = int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
     normalized = normalized_maxrss_bytes(raw)
-    return D34Receipt(
-        outcome=(D34Outcome.PASS if normalized <= D34_RSS_LIMIT_BYTES else D34Outcome.COMPLETED_RSS_OVER_LIMIT),
+    return EraResourceReceipt(
+        outcome=(
+            EraMeasurementOutcome.PASS
+            if normalized <= ERA_RSS_LIMIT_BYTES
+            else EraMeasurementOutcome.COMPLETED_RSS_OVER_LIMIT
+        ),
         route_identity=route_identity,
         archive_content_identity=oracle.archive_content_identity,
         candidate_cap=DOMAIN_CAP,
         platform=sys.platform,
         raw_maxrss=raw,
         normalized_maxrss_bytes=normalized,
-        rss_limit_bytes=D34_RSS_LIMIT_BYTES,
+        rss_limit_bytes=ERA_RSS_LIMIT_BYTES,
         elapsed_seconds=time.monotonic() - started,
         code_identity=code_identity,
     )

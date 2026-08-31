@@ -1789,6 +1789,44 @@ def test_merged_broken_pipe_exits_141_for_early_reader(
     assert proc.wait() == 141
 
 
+def test_broken_pipe_small_buffered_report_exits_141_silently() -> None:
+    """A sub-buffer report to a closed pipe exits 141 with clean stderr.
+
+    A report smaller than the stdio buffer performs no pipe write while the
+    dispatcher runs, so its EPIPE can only surface at a flush. Without a flush
+    inside the boundary try, that happens at interpreter shutdown - outside
+    every arm - as an "Exception ignored" traceback with the wrong exit code
+    (observed 0 on 3.14, 120 on older runtimes; both breach the documented
+    141).
+    """
+    script = textwrap.dedent(
+        """
+        import sys
+        import sigwood.cli as c
+
+        def fake_main(argv=None):
+            sys.stdout.write("finding line\\n" * 20)
+            return 0
+
+        c._main = fake_main
+        c.main([])
+        """
+    )
+    proc = subprocess.Popen(
+        [sys.executable, "-c", script],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    assert proc.stdout is not None
+    proc.stdout.close()
+    rc = proc.wait()
+    assert proc.stderr is not None
+    err = proc.stderr.read()
+
+    assert rc == 141
+    assert err == b""
+
+
 def test_broken_pipe_redirects_stderr_when_stdout_has_no_fileno(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

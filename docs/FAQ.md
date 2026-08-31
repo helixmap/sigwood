@@ -17,6 +17,12 @@ A local-first command-line workbench for hunting through the logs you already ha
 Pi-hole/dnsmasq, syslog, CloudTrail - using transparent, named methods rather than a black
 box, enumerated badness, or a rulebook.
 
+### Why "sigwood"?
+
+Signals in logs. That's the whole tweet. The name is short, memorable, and
+sounds a bit chipper, which suits the tool. The namespace around "log" is
+impossibly overcrowded, so it's off to the forest.
+
 ### Is any of my data sent anywhere?
 
 No. sigwood runs on your box, over files on your disk, and talks to no one. There is no
@@ -79,6 +85,29 @@ the Pi-hole log saw aren't separately clustered on that run (run the Pi-hole log
 on its own to cluster it directly; details in
 [KNOWN-ISSUES.md](KNOWN-ISSUES.md)). Pi-hole is a great project and is worth a look: https://pi-hole.net/
 
+### I'm on Pi-hole v6 - where is the log sigwood reads?
+
+Same place as v5: the flat query log at `/var/log/pihole/pihole.log`, plus its rotated
+siblings (`pihole.log.1`, `.gz`, ...), which sigwood picks up automatically. Point it at
+the directory:
+
+```bash
+sigwood dns /var/log/pihole/
+```
+
+In v6 that log is controlled by the `dns.queryLogging` setting (on by default). If your
+`pihole.log` is missing or empty, turn it on:
+
+```bash
+sudo pihole-FTL --config dns.queryLogging true
+```
+
+or flip `queryLogging` under `[dns]` in `/etc/pihole/pihole.toml`, or use the web
+interface (Settings, Expert mode, All settings). sigwood reads only this flat log - not
+FTL's long-term database - so query logging is the one switch that matters to it. Note
+the log usually needs root to read, so either run sigwood with appropriate privileges
+for the read or export the log to where your user can reach it.
+
 ### How is this different from a SIEM? From an IDS?
 
 sigwood sits between grep and a SIEM - more structure than grep, none of the platform.
@@ -90,6 +119,22 @@ No database, no daemon. This is the sigwood promise.
 It's also not an IDS. It doesn't sit inline, it doesn't match signatures, and it doesn't
 block anything. It *surfaces behavior* for a human to triage. Think of it as the tool you
 reach for to go hunting through a few days of logs, not the tool that watches the wire.
+
+### How does it relate to RITA, Security Onion, Malcolm, Suricata, or Slips?
+
+All good projects, and if one of them already fits your stack, use it. Roughly: **Suricata**
+is a rule-driven IDS engine that watches traffic and matches signatures in real time.
+**Security Onion** and **Malcolm** are full monitoring platforms - they bundle sensors,
+storage, and dashboards into something you deploy and operate. **Slips** is a behavioral
+analysis engine with a machine-learning module set, run over flows or captures.
+**RITA** is the closest relative in spirit: batch beacon-and-threat-hunting analysis over
+Zeek logs.
+
+sigwood's lane is the stack that has logs but no pipeline: a box with Zeek output, a
+Pi-hole, a pile of syslog, or a CloudTrail export, and nobody running a platform over it.
+One command over the files at rest, several detector families in one pass, a report, and
+nothing left resident. It also runs happily as a batch second opinion *beside* any of the
+above, since it only reads logs the sensors already wrote.
 
 ### What's the difference between the hunt and `digest`?
 
@@ -136,7 +181,7 @@ to look at instead of an error.
 `era` measures a complete dated Zeek archive as one ten-card historical deck. It is not a
 hunt and intentionally does not apply the allowlist, so its traffic counts include known
 infrastructure that a hunt suppresses. Long-horizon cards need at least twelve eligible weeks;
-a short archive still runs, but those cards may honestly abstain. `sigwood era --dry-run` shows
+a short archive still runs, but those cards may abstain. `sigwood era --dry-run` shows
 the planner calendar and work estimate without loading the archive.
 
 ### What does the `ssl` detector actually claim?
@@ -262,7 +307,9 @@ a channel that fronts through an allowlisted CDN, or hosts its payload on a big 
 provider's domain, gets its DNS name quieted along with the legitimate traffic. Two things keep
 that from being a silent hole. First, the shipped lists are **domain-only**: connection
 analysis (`beacon`, `scan`, `exfil`, all reading `conn.log` by IP) never consults them, so a
-periodic beacon to a fronted host is still scored on its *timing*, whatever name it used.
+periodic beacon to a fronted host is still scored on its *timing*, whatever name it used -
+though if the same client also talks to that host legitimately on the same port, the blended
+flow scores lower than the beacon alone (measured; see KNOWN-ISSUES).
 Second, every run prints how much it suppressed (the `allowlist:` line), and `--no-allowlist`
 turns suppression off entirely for one run. Numeric IP/CIDR suppression never ships - that's
 yours to set, locally. When a destination matters, read the connection findings and the
@@ -274,8 +321,8 @@ Two things are usually going on. First, real noise you haven't allowlisted yet -
 there. Second, on very high-volume host logs the syslog templating can over-trigger
 (when almost every line looks structurally unique, "rare" stops meaning much); the reading
 views (`text`/`html`/`pdf`) cap how many findings they show per detector and tell you they
-did, while `json` and `csv` keep everything. Tightening that high-volume behavior is an honest
-area of ongoing work - see [KNOWN-ISSUES.md](KNOWN-ISSUES.md). When in doubt, `digest` the file first to see
+did, while `json` and `csv` keep everything. Tightening that high-volume behavior is
+ongoing work - see [KNOWN-ISSUES.md](KNOWN-ISSUES.md). When in doubt, `digest` the file first to see
 whether the volume is the story.
 
 ### How much data can it handle?
@@ -379,8 +426,12 @@ beacon shows up as a sharp spike at its check-in frequency - even when jitter an
 check-ins smear it out in the raw timeline.
 
 A couple of choices matter. The timestamps are binned into **30-second buckets** and the FFT
-runs over the bucket counts, which is resilient to gaps - a host that sleeps for an hour
-breaks a raw inter-arrival series but barely dents a binned grid. The bin size also sets the
+runs over the bucket counts, which is resilient to hour-scale gaps - a host that sleeps for an
+hour breaks a raw inter-arrival series but barely dents a binned grid (measured: a nightly
+one-hour outage leaves a week-long beacon's score essentially unchanged). That resilience has
+limits: a beacon silent for most of each day, or one sharing its exact connection tuple with
+comparable unrelated traffic, scores well below a clean continuous one - the measured numbers
+are in KNOWN-ISSUES. The bin size also sets the
 detector's floor: the fastest representable cadence is twice the bin (60 seconds), anything
 faster shows up aliased as a slower period, and a beacon sitting exactly at that edge scores
 less reliably than one comfortably above it - the sweet spot is the minutes-to-hours range
@@ -427,14 +478,14 @@ history in `conn.log` - because the evidence lives in your own logs. Each
 finding carries when the pattern started, when it was last seen, and how long it ran, so
 you can judge it without leaving the report.
 
-What it does not see is stated plainly rather than left for you to discover: cadences
+What it does not see: cadences
 faster than 60 seconds are reported at the wrong period; only Zeek `SF`/`S1` connections
 with observed originator bytes are scored, so retries to a host that never answers are
 not analyzed; a jittered beacon needs about a week of span to resolve reliably; and a
 callback that rotates destinations or changes its rhythm can stay under the bar. sigwood
 discloses these at run time when they apply, in known-issues, and here.
 
-Two honest caveats about the evidence behind all that. Its effect has been measured on
+Two caveats about the evidence behind all that. Its effect has been measured on
 one home network, on synthetic cases, and against published method literature - not
 across many real deployments, so it carries no precision claim. And the allowlist is
 yours to set your own infrastructure aside; it is operator policy, not a substitute for
@@ -494,7 +545,7 @@ generated, nothing more. HIGH additionally requires corroboration of a different
 the name's lookups mostly failed to resolve (a name that looks generated *and* does not
 exist), or it sits in a dense, concentrated cluster of similar names. A name that merely
 scores high is never crowned on that alone, which is why a clean capture can produce a page of
-MEDIUMs and no HIGH at all. That is the tool being honest, not missing something.
+MEDIUMs and no HIGH at all.
 
 That division of labor is why the measured catch rates above are one leg's recall, not the
 detector's. A DGA family rarely appears as one name: at typical lengths a fifty-name family
@@ -678,7 +729,9 @@ disclosed up front, not hidden.
 
 Because that's what they are. `scan` counts distinct destination ports and hosts against thresholds
 to separate vertical (one host, many ports), horizontal (one port, many hosts), block (many of both),
-and slow (the same spread out over time) scanning. `exfil` sums the bytes each internal host sent to
+and slow (the same spread out over time) scanning; findings from one source fold into one row per
+scan type, so a single sweep reads as one story instead of a hundred rows, with every per-target
+measurement kept in the row's evidence. `exfil` sums the bytes each internal host sent to
 each external destination and reports the pairs that clear a volume floor while running strongly
 outbound. Both are arithmetic against thresholds you can read off the page - no model, nothing
 learned, no published algorithm underneath - and the bracketed label says so instead of dressing

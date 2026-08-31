@@ -1,29 +1,39 @@
-"""D34 receipt contracts."""
+"""Era measurement-receipt contracts."""
 
 from __future__ import annotations
 
 import pytest
 
-from sigwood.era import D34Outcome, D34Receipt, not_measured_d34, normalized_maxrss_bytes
-from sigwood.runner import EraHarnessReceipt, EraOracleReceipt, _run_era_u6_d34, _run_era_u7_d34
+from sigwood.era import (
+    EraMeasurementOutcome,
+    EraResourceReceipt,
+    normalized_maxrss_bytes,
+    not_measured_receipt,
+)
+from sigwood.runner import (
+    EraHarnessReceipt,
+    EraOracleReceipt,
+    _run_era_oracle_measurement,
+    _run_era_resource_measurement,
+)
 
 
-def test_d34_not_measured_names_the_missing_route_precondition() -> None:
-    receipt = not_measured_d34(
-        route_identity="era-u3-planner-loader-reducer",
+def test_not_measured_names_the_missing_route_precondition() -> None:
+    receipt = not_measured_receipt(
+        route_identity="era-planner-loader-reducer",
         archive_content_identity="fixture",
         candidate_cap=2_000_000,
         missing_precondition="route-unavailable",
     )
-    assert receipt.outcome is D34Outcome.NOT_MEASURED
+    assert receipt.outcome is EraMeasurementOutcome.NOT_MEASURED
     assert receipt.missing_precondition == "route-unavailable"
     assert receipt.raw_maxrss is None
 
 
-def test_d34_rejects_an_unbounded_not_measured_claim() -> None:
+def test_receipt_rejects_an_unbounded_not_measured_claim() -> None:
     with pytest.raises(ValueError, match="named missing precondition"):
-        D34Receipt(
-            outcome=D34Outcome.NOT_MEASURED,
+        EraResourceReceipt(
+            outcome=EraMeasurementOutcome.NOT_MEASURED,
             route_identity="route",
             archive_content_identity="content",
             candidate_cap=2_000_000,
@@ -35,20 +45,20 @@ def test_d34_rejects_an_unbounded_not_measured_claim() -> None:
         )
 
 
-def test_d34_normalizes_darwin_and_linux_maxrss_units() -> None:
+def test_normalizes_darwin_and_linux_maxrss_units() -> None:
     assert normalized_maxrss_bytes(12, system="Darwin") == 12
     assert normalized_maxrss_bytes(12, system="Linux") == 12 * 1024
 
 
-def test_u6_d34_names_an_unreachable_real_consumer_route() -> None:
-    receipt = _run_era_u6_d34({"sigwood": {}}, archive_root_candidates=[])
+def test_ledger_measurement_names_an_unreachable_real_consumer_route() -> None:
+    receipt = _run_era_resource_measurement({"sigwood": {}}, archive_root_candidates=[])
 
-    assert receipt.outcome is D34Outcome.NOT_MEASURED
-    assert receipt.route_identity == "era-u6-planner-loader-domain-ledger"
+    assert receipt.outcome is EraMeasurementOutcome.NOT_MEASURED
+    assert receipt.route_identity == "era-planner-loader-domain-ledger"
     assert receipt.missing_precondition == "corpus-unreachable"
 
 
-def test_u7_d34_has_a_distinct_whole_product_route() -> None:
+def test_oracle_measurement_has_a_distinct_whole_product_route() -> None:
     harness = EraHarnessReceipt(
         outcome="MEASURED",
         population_basis="raw_pre_allowlist",
@@ -56,7 +66,6 @@ def test_u7_d34_has_a_distinct_whole_product_route() -> None:
         consumed_span=None,
         missing_baseline_dates=(),
         post_baseline_dates=(),
-        collapsed_alias_dates=(),
         cards_present=(1,),
         rendered_cards="era / zeek",
         frozen_input_identity="fixture-identity",
@@ -68,14 +77,13 @@ def test_u7_d34_has_a_distinct_whole_product_route() -> None:
         cards_present=harness.cards_present,
         missing_baseline_dates=(),
         post_baseline_dates=(),
-        collapsed_alias_dates=(),
         warning_census=(),
         rendered_deck_sha256="a" * 64,
         rendered_deck_byte_length=10,
         closure_payload_sha256="b" * 64,
     )
 
-    receipt = _run_era_u7_d34(
+    receipt = _run_era_oracle_measurement(
         {"sigwood": {}},
         archive_root_candidates=[],
         cli_options={"private": True},
@@ -86,7 +94,10 @@ def test_u7_d34_has_a_distinct_whole_product_route() -> None:
         _oracle_receipt=oracle,
     )
 
-    assert receipt.outcome in {D34Outcome.PASS, D34Outcome.COMPLETED_RSS_OVER_LIMIT}
-    assert receipt.route_identity == "era-u7-planner-loader-fold-render-oracle"
+    assert receipt.outcome in {
+        EraMeasurementOutcome.PASS,
+        EraMeasurementOutcome.COMPLETED_RSS_OVER_LIMIT,
+    }
+    assert receipt.route_identity == "era-planner-loader-fold-render-oracle"
     assert receipt.archive_content_identity == "fixture-identity"
-    assert receipt.route_identity != "era-u6-planner-loader-domain-ledger"
+    assert receipt.route_identity != "era-planner-loader-domain-ledger"

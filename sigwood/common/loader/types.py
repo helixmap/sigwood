@@ -21,6 +21,7 @@ from sigwood.common.loader.limits import (
     MAX_CHUNK_DECODED_BYTES,
     MAX_CHUNK_ROWS,
     MAX_FILE_DELTA_BYTES,
+    MAX_LOGICAL_DOCUMENT_BYTES,
     MAX_LOGICAL_RECORD_BYTES,
 )
 

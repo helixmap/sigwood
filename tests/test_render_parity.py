@@ -128,6 +128,14 @@ _VARIANTS: dict[str, Finding] = {
     "scan_slow": _f("scan", Severity.LOW, "x", {
         "scan_type": "slow", "src": "192.0.2.234", "scan_state_ratio": 0.6447,
         "distinct_ports": 317, "active_buckets": 177}),
+    "scan_rollup": _f("scan", Severity.HIGH, "192.0.2.235 → *", {
+        "tier": "rollup", "scan_type": "vertical", "src": "192.0.2.235",
+        "member_count": 5, "target_count": 5, "total_conns": 1517,
+        "max_scan_state_ratio": 0.9557,
+        "members": [{
+            "scan_type": "vertical", "src": "192.0.2.235",
+            "dst": "198.51.100.245", "distinct_ports": 61, "distinct_hosts": 1,
+            "total_conns": 307, "scan_state_ratio": 0.9557}]}),
     "syslog_event": _f("syslog", Severity.LOW, "kernel: sentinel-evt-717117", {
         "host": "host-sentinel-9", "template_str": "kernel: <*>", "count": 2, "threshold": 9}),
     "syslog_stamped_event": _f(

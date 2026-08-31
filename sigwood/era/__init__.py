@@ -16,11 +16,11 @@ from sigwood.era.observation import (
     summarize_capture_loss,
 )
 from sigwood.era.measurement import (
-    D34_RSS_LIMIT_BYTES,
-    D34Outcome,
-    D34Receipt,
+    ERA_RSS_LIMIT_BYTES,
+    EraMeasurementOutcome,
+    EraResourceReceipt,
     normalized_maxrss_bytes,
-    not_measured_d34,
+    not_measured_receipt,
 )
 from sigwood.era.domains import DOMAIN_CAP, DomainLedger, DomainLedgerFacts, registrable_domain
 from sigwood.era.planner import (
@@ -65,16 +65,16 @@ __all__ = [
     "BaselineReconciliation",
     "CaptureLossInterval",
     "Completeness",
-    "D34Outcome",
-    "D34Receipt",
-    "D34_RSS_LIMIT_BYTES",
     "DOMAIN_CAP",
     "DomainLedger",
     "DomainLedgerFacts",
     "DisplayDayEligibility",
+    "ERA_RSS_LIMIT_BYTES",
     "EXTERNAL_ADDRESS_CAP",
     "EraCard",
+    "EraMeasurementOutcome",
     "EraReducer",
+    "EraResourceReceipt",
     "EraShard",
     "EraSlot",
     "SelectionEvidence",
@@ -106,7 +106,7 @@ __all__ = [
     "registrable_domain",
     "transport_share_card",
     "normalized_maxrss_bytes",
-    "not_measured_d34",
+    "not_measured_receipt",
     "summarize_capture_loss",
     "utc_shard_label",
 ]

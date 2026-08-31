@@ -37,7 +37,8 @@ def discover_files(directory: Path, pattern: str) -> list[Path]:
 
 
 # Matches YYYY-MM-DD at the start of a Zeek log-rotation directory name.
-# Suffix (e.g. -TSVPRE) is ignored for date extraction; see discover_zeek_files.
+# A trailing suffix (e.g. -archived) is ignored for date extraction; see
+# discover_zeek_files.
 _DATE_DIR_RE = re.compile(r"^\d{4}-\d{2}-\d{2}")
 
 

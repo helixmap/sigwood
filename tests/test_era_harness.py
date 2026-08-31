@@ -20,7 +20,7 @@ from sigwood.era.planner import (
 )
 from sigwood.era.report import EraReducer, ReportInterval
 import sigwood.runner as runner
-from sigwood.runner import EraHarnessReceipt, _run_era_harness, _run_era_u7_oracle
+from sigwood.runner import EraHarnessReceipt, _run_era_harness, _run_era_identity_oracle
 
 
 UTC = timezone.utc
@@ -143,12 +143,12 @@ def test_era_review_evidence_is_aggregate_only_and_merges_duration_tails() -> No
     assert winner == (1_209_600.0, peak)
 
 
-def test_era_harness_names_the_missing_ratified_root_precondition() -> None:
+def test_era_harness_names_the_missing_root_precondition() -> None:
     receipt = _run_era_harness({"sigwood": {}}, archive_root_candidates=[])
 
     assert receipt.outcome == "NOT_MEASURED"
     assert receipt.population_basis == "raw_pre_allowlist"
-    assert receipt.missing_precondition == "ratified-archive-root-unreachable"
+    assert receipt.missing_precondition == "archive-root-unreachable"
     assert receipt.rendered_cards is None
 
 
@@ -157,7 +157,7 @@ def test_home_net_red_gate_era_rejects_programmatic_scalar(
     tmp_path,
 ) -> None:
     """The era consumer must reject before constructing a reducer."""
-    group = ArchiveDateGroup(_instant(1).date(), (tmp_path,), False)
+    group = ArchiveDateGroup(_instant(1).date(), (tmp_path,))
     plan = ArchivePlan(
         groups=(group,),
         inventory=(),
@@ -167,8 +167,6 @@ def test_home_net_red_gate_era_rejects_programmatic_scalar(
             present_dates=frozenset({group.canonical_date}),
             missing_dates=(),
             post_baseline_dates=(),
-            collapsed_tsvpre_dates=(),
-            baseline_source_directory_absent=(),
         ),
     )
 
@@ -198,7 +196,7 @@ def test_home_net_red_gate_era_rejects_programmatic_scalar(
         )
 
 
-def test_u7_oracle_receipt_hashes_rendered_deck_without_retaining_paths(monkeypatch) -> None:
+def test_identity_oracle_receipt_hashes_rendered_deck_without_retaining_paths(monkeypatch) -> None:
     deck = "era / zeek\n  inspect: /private/operator-path"
     harness = EraHarnessReceipt(
         outcome="MEASURED",
@@ -207,14 +205,13 @@ def test_u7_oracle_receipt_hashes_rendered_deck_without_retaining_paths(monkeypa
         consumed_span=None,
         missing_baseline_dates=(),
         post_baseline_dates=(),
-        collapsed_alias_dates=(),
         cards_present=(1,),
         rendered_cards=deck,
         frozen_input_identity="fixture-identity",
     )
     monkeypatch.setattr(runner, "_run_era_harness", lambda *_args, **_kwargs: harness)
 
-    receipt = _run_era_u7_oracle(
+    receipt = _run_era_identity_oracle(
         {"sigwood": {}},
         archive_root_candidates=[],
         cli_options={"private": True},
@@ -229,7 +226,7 @@ def test_u7_oracle_receipt_hashes_rendered_deck_without_retaining_paths(monkeypa
     assert not hasattr(receipt, "rendered_cards")
     assert "/private/operator-path" not in repr(receipt)
 
-    presentation_variant = _run_era_u7_oracle(
+    presentation_variant = _run_era_identity_oracle(
         {"sigwood": {}},
         archive_root_candidates=[],
         cli_options={"format": "pdf", "unknown_presentation_switch": "ignored"},
@@ -241,13 +238,13 @@ def test_u7_oracle_receipt_hashes_rendered_deck_without_retaining_paths(monkeypa
     assert presentation_variant.closure_payload_sha256 == receipt.closure_payload_sha256
 
 
-def test_u7_warning_census_uses_path_free_cause_classes() -> None:
+def test_oracle_warning_census_uses_path_free_cause_classes() -> None:
     assert runner._era_warning_class("/private/archive: unexpected end of file") == "read-corruption"
     assert runner._era_warning_class("/private/archive: permission denied") == "permission-denied"
     assert runner._era_warning_class("/private/archive: malformed rows") == "parse-contained"
 
 
-def test_u7_closure_omits_only_loader_provenance_sidecar() -> None:
+def test_closure_omits_only_loader_provenance_sidecar() -> None:
     config = {"sigwood": {"home_net": []}, "__user_set__": {"sigwood"}}
 
     assert runner._era_closure_config(config) == {"sigwood": {"home_net": []}}
@@ -263,7 +260,7 @@ def test_masthead_derives_only_card_nine_and_ten_span_abstentions() -> None:
 
 
 def test_private_runner_route_owns_sink_plan_and_bypasses_confirmation(monkeypatch, tmp_path) -> None:
-    group = ArchiveDateGroup(_instant(1).date(), (tmp_path,), False)
+    group = ArchiveDateGroup(_instant(1).date(), (tmp_path,))
     plan = ArchivePlan(
         groups=(group,),
         inventory=(
@@ -281,16 +278,14 @@ def test_private_runner_route_owns_sink_plan_and_bypasses_confirmation(monkeypat
             present_dates=frozenset({_instant(1).date()}),
             missing_dates=(),
             post_baseline_dates=(),
-            collapsed_tsvpre_dates=(),
-            baseline_source_directory_absent=(),
         ),
     )
     calls: list[tuple[object, object]] = []
     confirms: list[tuple[int, bool]] = []
 
     class FakePlanner:
-        def __init__(self, _root, *, baseline_dates) -> None:
-            assert baseline_dates
+        def __init__(self, _root) -> None:
+            pass
 
         def plan(self):
             return plan

@@ -48,6 +48,7 @@ from sigwood.outputs._evidence import (
     evidence_at_level,
     description_for_reading,
     exfil_members_at_level,
+    scan_members_at_level,
     format_evidence_for_reading,
     sample_bound_note,
 )
@@ -455,9 +456,11 @@ def _level_tail(finding: Finding, indent: str, verbose_level: int) -> list[str]:
         else _verbose_tail(finding, indent, evidence_at_level(finding, 1))
     )
     member_lines = _exfil_member_lines(finding, indent, verbose_level)
+    if not member_lines:
+        member_lines = _scan_member_lines(finding, indent, verbose_level)
     if not member_lines or not tail:
         return tail
-    # Positional dependency: data window is the tail's last element, so exfil
+    # Positional dependency: data window is the tail's last element, so rollup
     # members stay immediately before that final metadata line.
     return [*tail[:-1], *member_lines, tail[-1]]
 
@@ -497,6 +500,39 @@ def _exfil_member_lines(
         lines.append(
             f"{indent}  · {_sanitize(member.get('dst', ''))} "
             f"· out={out} · share={share} · conns={conns}"
+        )
+    if note is not None:
+        lines.append(f"{indent}  {_sanitize(note)}")
+    return lines if len(lines) > 1 else []
+
+
+def _scan_member_lines(
+    finding: Finding,
+    indent: str,
+    verbose_level: int,
+) -> list[str]:
+    """Render a scan rollup's member slice without exposing a dict repr."""
+    members, note = scan_members_at_level(finding, verbose_level)
+    if not members:
+        return []
+    lines = [f"{indent}members:"]
+    for member in members:
+        dst = member.get("dst")
+        port = member.get("port")
+        target = str(dst) if dst is not None else f"*:{port}"
+        try:
+            breadth = max(
+                int(member.get("distinct_ports") or 0),
+                int(member.get("distinct_hosts") or 0),
+            )
+            conns = f"{int(member.get('total_conns', 0)):,}"
+            ratio = f"{float(member.get('scan_state_ratio', 0)):.0%}"
+        except (TypeError, ValueError):
+            continue
+        noun = "ports" if member.get("scan_type") == "vertical" else "hosts"
+        lines.append(
+            f"{indent}  · {_sanitize(target)} · {breadth} {noun} "
+            f"· conns={conns} · {ratio} no normal close"
         )
     if note is not None:
         lines.append(f"{indent}  {_sanitize(note)}")

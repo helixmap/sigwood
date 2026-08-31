@@ -1,22 +1,32 @@
+<img src="https://raw.githubusercontent.com/helixmap/sigwood/main/docs/img/sigwood-logo.png"
+     align="left" width="130" hspace="14" vspace="6"
+     alt="sigwood - a cut log whose tree rings form a fingerprint">
+
 *between grep and a SIEM*
 
 [![CI](https://github.com/helixmap/sigwood/actions/workflows/ci.yml/badge.svg)](https://github.com/helixmap/sigwood/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/sigwood)](https://pypi.org/project/sigwood/) <br>
+![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](#license)
 
-sigwood is a local-first, command-line threat-hunting tool for self-hosters. Point it at
+<br><br clear="all">
+
+**`sigwood`** is a local-first, command-line threat-hunting tool for self-hosters. Point it at
 logs you already have - Zeek, Pi-hole/dnsmasq, syslog, or CloudTrail - and it profiles
 what's in them, then runs a handful of detectors over them: beaconing, suspicious DNS, port
-scans, authentication structure, rare syslog events, over-long connections, unusual
-CloudTrail activity, and behavioral patterns in names your Pi-hole already blocked.
+scans, bulk outbound transfers, out-of-character TLS setups, authentication structure, rare
+syslog events, unusual CloudTrail activity, and behavioral patterns in names your Pi-hole
+already blocked.
 
 **Not a SIEM. Not an agent. Not magic.** Nothing to deploy - no database, no daemon, no network, 
 no account. Install it, point it at a directory of logs, read the output. It runs on your own
 box, over logs at rest, and your logs never have to leave your machine.
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](#license)
-![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)
-
 > **Status: early / pre-1.0 (`0.6.0`).** The nine detectors work and are covered by tests,
-> but things may change before 1.0. Feedback is welcome.
+> but things may change before 1.0. Built with heavy AI assistance under human review;
+> the [FAQ says how](https://github.com/helixmap/sigwood/blob/main/docs/FAQ.md#a-brand-new-repo-a-short-history-tidy-docs---was-this-written-by-ai),
+> and the [evidence ledger](https://github.com/helixmap/sigwood/blob/main/docs/EVIDENCE.md)
+> records what has and has not been measured. Feedback is welcome.
 
 <p align="center">
   <b><a href="#quick-start">Install</a></b> ·
@@ -42,10 +52,10 @@ output, not real network data):
 
 ```
 dns - 1 finding · 1 high
-Finds domain names and query patterns that stand apart from the rest, including
-generated-looking names (scored by entropy) of the sort malware uses for
-disposable command domains, and dense groups that can accompany automated
-traffic.
+Finds domain names that stand apart from the rest, including
+machine-generated-looking names of the sort malware uses for disposable
+command domains, and large batches of related lookups. You decide how
+machine-generated a name must look, and how large a batch of lookups counts.
 ────────────────────────────────────────────────────────────────────────────────
 groups (1)
           names  entropy score  queries  clients
@@ -53,14 +63,16 @@ groups (1)
 
 beacon - 2 findings · 2 medium
 Finds outbound connections that keep a regular rhythm, a pattern worth checking
-for automated check-ins.
+for automated check-ins. You decide how strict the rhythm has to be before it
+surfaces.
 ────────────────────────────────────────────────────────────────────────────────
 medium  192.168.1.37  →  198.51.100.20:443/tcp    period=3.0m    rhythm=0.624   480 conns
 medium  192.168.1.37  →  203.0.113.50:8443/tcp    period=10.0m   rhythm=0.606   144 conns
 
 syslog - 1 finding · 1 medium
 Finds rare log patterns and recorded reboots or administrative runs, so changes
-on a machine do not disappear into routine logs.
+on a machine do not disappear into routine logs. You decide how seldom a
+pattern must appear to count as rare.
 ────────────────────────────────────────────────────────────────────────────────
 privileged (1)
   medium  Accepted password for root from 198.51.100.20 port 51900 ssh2
@@ -73,6 +85,14 @@ throwaway domain, calling out to two external IPs on a fixed schedule, and a roo
 from one of those same IPs. A finding means "unusual for **your** network," not "known-bad" -
 it is a lead to look at, not a verdict. Add `-v` for the evidence behind each score and the
 next steps to run it down.
+
+**Only have a Pi-hole?** That is a complete setup on its own:
+
+```bash
+sigwood digest /var/log/pihole/pihole.log   # orient: what's in the log
+sigwood /var/log/pihole/                    # hunt: DNS clustering over your queries
+sigwood dnsblock /var/log/pihole/           # opt-in: behavior in names Pi-hole blocked
+```
 
 The usual invocations:
 
@@ -139,20 +159,21 @@ full run against that corpus, and the same findings as an HTML report:
 |-----------|-----------------------------------------------------|------------------------------|--------------------------------|
 | `beacon`  | periodic C2-style callbacks                         | FFT over connection timing   | Zeek `conn.log`                |
 | `dns`     | DGA / tunneling / anomalous lookups                 | HDBSCAN clustering           | Zeek `dns.log` **or** Pi-hole  |
-| `dnsblock`| first activity, bursts & recurrence in blocked names | pattern (bounded behavioral) | Pi-hole                        |
+| `dnsblock` \* | first activity, bursts & recurrence in blocked names | pattern (bounded behavioral) | Pi-hole                        |
 | `syslog`  | rare events & reboots                               | drain3 templating + rarity   | systemd journal, flat syslog, **or** Zeek `syslog.log` |
-| `auth`    | failure concentration, volume, spread & landings    | heuristics                   | systemd journal, flat syslog, **or** Zeek `syslog.log` |
+| `auth` \* | failure concentration, volume, spread & landings    | heuristics                   | systemd journal, flat syslog, **or** Zeek `syslog.log` |
 | `scan`    | vertical / horizontal / block / slow port scans     | pattern (heuristic)          | Zeek `conn.log`                |
 | `exfil`   | bulk outbound byte transfer                        | heuristics                   | Zeek `conn.log`                |
-| `ssl`     | outbound TLS setup unlike your estate's norm         | heuristics                   | Zeek `ssl.log` (+ `x509.log`)  |
+| `ssl` \*  | outbound TLS setup unlike your estate's norm         | heuristics                   | Zeek `ssl.log` (+ `x509.log`)  |
 | `aws`     | per-principal anomalous CloudTrail behavior         | statistical (z-score composite) | CloudTrail `*.json*` (incl. `.gz`) |
+
+\* opt-in: `dnsblock`, `auth`, and `ssl` are not in the curated default hunt. Run one by
+name (`sigwood auth PATH`), select it with `--detect`, or run everything with `--detect=all`.
 
 `dns` and `syslog` each answer **one** question across several source families - Zeek and
 Pi-hole for DNS; the live systemd journal, flat rsyslog, and Zeek's own `syslog.log` for syslog -
 and adapt to whichever fidelity they're handed. On a systemd host `syslog` prefers the live
 journal by default (`--syslog-source=auto`); `--syslog-source=files` keeps the flat-file behavior.
-`auth` stays opt-in: run `sigwood auth PATH`, select it by name, or use `--detect=all`.
-It does not join the curated default hunt automatically.
 
 Run the curated default hunt (`sigwood hunt`), run everything available
 (`sigwood hunt --detect=all`), select some (`sigwood hunt --detect=beacon,dns`), or exclude
@@ -191,8 +212,9 @@ For blocked-name behavior behind that same Pi-hole view, run the opt-in detector
 sigwood dnsblock /var/log/pihole/
 ```
 
-The curated default hunt takes only detectors with a measured case for routine use;
-`dnsblock` stays opt-in at 1.0.
+The curated default hunt is a deliberately short, reviewed list, and the
+[evidence ledger](https://github.com/helixmap/sigwood/blob/main/docs/EVIDENCE.md) records what
+each detector has and has not been measured on; `dnsblock` stays opt-in at 1.0.
 
 `digest` content-sniffs each file, routes it to the right summarizer (conn, dns, syslog,
 weird, cloudtrail), and falls back to a fast byte-profiler - **blob** - for anything it doesn't
@@ -222,7 +244,7 @@ on in the data.
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/helixmap/sigwood/main/docs/img/graph.gif"
-       width="760" alt="sigwood graph replaying conn.log flows as an animated Sankey - hosts, the services they reach, and destination hosts over a two-day window; scrambled sample data">
+       width="760" alt="sigwood graph replaying conn.log flows as an animated Sankey - hosts, the services they reach, and destination hosts across a morning of traffic; scrambled sample data">
 </p>
 
 Pointed at a directory, `graph` windows like the hunt does: the last
@@ -373,6 +395,27 @@ disk after that); every run after is fast.
 `[pdf]` is separate from `[all]` because PDF also needs native text libraries `pip` can't
 install - `brew install pango` on macOS, `apt install libpango-1.0-0` (or `dnf install pango`)
 on Linux. Every other format works with no extra setup.
+
+**Platforms.** sigwood is developed and used on macOS and Linux, including Raspberry Pi;
+CI runs the full test suite on Linux across Python 3.11 through 3.14. Windows is untested,
+and some of the safety machinery (file locking, permission tightening) is POSIX-specific -
+on Windows, run it under WSL.
+
+**Uninstall.** sigwood installs no services, daemons, or scheduled jobs, so removal is the
+package plus, if you want it gone, its one data directory:
+
+```bash
+pipx uninstall sigwood
+```
+
+```bash
+uv tool uninstall sigwood
+```
+
+Everything sigwood writes lives under `~/.sigwood/` (configuration, allowlist drop-ins,
+exports, reports) - delete that directory too for a clean slate, after saving any reports
+or exported logs you still want. A system-wide config, if you created one, is
+`/etc/sigwood/`.
 
 From source:
 

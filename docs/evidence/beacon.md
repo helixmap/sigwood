@@ -77,7 +77,7 @@ corroboration from an independent category the detector cannot supply on its own
 
 - **A sub-60-second cadence is misreported, not missed.** It aliases to a longer
   period; the reported figure is wrong in a specific, documented direction. Only finer
-  bins would fix truthful sub-60 reporting.
+  bins would make sub-60 reporting accurate.
 - **A cadence sitting exactly on the floor scores by luck.** Identical 60-second
   beacons can score across a wide band depending on jitter realization.
 - **The evidence is one home network, synthetics, and published method literature.**

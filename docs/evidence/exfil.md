@@ -50,7 +50,7 @@ not transfer to another environment.
 - **The share gate does real work at scale.** At the shipped floor it removes a handful
   of pairs carrying tens of gigabytes, correctly excluding genuine download-heavy
   transfers and near-symmetric ones, and it sits safely above the observed
-  near-symmetric cluster. Honest bound on that verdict: the shipped value versus the
+  near-symmetric cluster. The bound on that verdict: the shipped value versus the
   next value down is worth exactly one pair in 121 days. It is defensible and on the
   safer side of an observed cluster; it is **not** finely calibrated, and no surface
   should imply that it is.

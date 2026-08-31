@@ -1141,7 +1141,7 @@ def canonical_identity_payload(
     tldextract_version: str,
     effective_psl_snapshot: bytes,
 ) -> bytes:
-    """Return D19's canonical closure payload, excluding volatile render fields."""
+    """Return the canonical identity-closure payload, excluding volatile render fields."""
     payload = {
         "archive_content_identity": dict(archive_content_identity),
         "cli_options": dict(cli_options),
@@ -1223,7 +1223,7 @@ _ERA_IDENTITY_OPTION_KEYS: frozenset[str] = frozenset()
 
 
 def era_identity_cli_options(options: Mapping[str, Any]) -> Mapping[str, Any]:
-    """Project only explicitly identity-bearing Era options into D19."""
+    """Project only explicitly identity-bearing Era options into the closure."""
     # Era presently has no CLI option whose value belongs in the closure.  The
     # named allow-list makes a future identity-bearing option an explicit,
     # reviewable addition rather than an accidental parsed-dict pass-through.

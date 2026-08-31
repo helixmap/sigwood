@@ -764,9 +764,10 @@ reproduced.
 
 ### A brand-new repo, a short history, tidy docs - was this written by AI?
 
-Yes: development was AI-assisted, and the repository's public history begins with a single
-squashed commit because earlier work contained private homelab identifiers that were removed
-before publication.
+Yes: development was AI-assisted (Claude & Codex working together in a harness
+built for the purpose), and the repository's public history begins with a single
+squashed commit because earlier work contained private homelab identifiers that
+were removed before publication.
 
 Judge the result in the repository: the detection methods and their sources are named above,
 the code is open, the test suite is deterministic,

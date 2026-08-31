@@ -26,7 +26,7 @@ _SURFACE = [
     "LoadResult", "CoverageTracker", "SourceCoverage", "RotationSkipInfo",
     "_data_window", "_PIHOLE_COLUMNS", "_CLOUDTRAIL_COLUMNS", "_SYSLOG_COLUMNS",
     "_LOG_SUFFIXES",
-    # U1 neutral fold foundation
+    # neutral fold foundation
     "MAX_CHUNK_ROWS", "MAX_CHUNK_DECODED_BYTES", "MAX_LOGICAL_RECORD_BYTES",
     "MAX_FILE_DELTA_BYTES", "SnapshotFile", "SourceSnapshot", "DualWindow",
     "DecodedChunk", "PositionalMask", "FoldDelta", "FoldSink", "SinkPlan",

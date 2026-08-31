@@ -1,4 +1,4 @@
-"""U2 archive planner and observation model controls."""
+"""Archive planner and observation model controls."""
 
 from __future__ import annotations
 

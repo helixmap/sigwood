@@ -136,7 +136,7 @@ def _prepared(*, weak: bool = False, days: int = 5):
         population_status=PreparedStatus(PreparedState.READY),
         blocks=dnsblock.BlockInventory(),
         population=_population(window),
-        # U4's route fixtures exercise the original grid cell explicitly;
+        # The burst/recurring route fixtures exercise the original grid cell explicitly;
         # shipped defaults are pinned separately against the sealed decision.
         calibration_vector=dnsblock.DnsblockCalibrationVector(
             arrival_days=3,

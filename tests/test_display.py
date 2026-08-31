@@ -14,6 +14,8 @@ from sigwood.common.display import (
     _ASCII_SPINNER_FRAMES,
     _CURSOR_HIDE,
     _CURSOR_SHOW,
+    _METHOD_SGR,
+    _RESET,
     _SPINNER_FRAMES,
     _color_enabled,
     _spinner_frames_for,
@@ -465,6 +467,44 @@ def test_liveness_falls_back_to_ascii_spinner_on_non_unicode_stream(
     # fallback vocabulary leaked through.
     rich_only = set(_SPINNER_FRAMES) - set(_ASCII_SPINNER_FRAMES)
     assert not any(f in fake.output for f in rich_only)
+
+
+def test_spinner_glyph_wears_method_glow_on_color_capable_tty(monkeypatch):
+    monkeypatch.delenv("TERM", raising=False)
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    fake = _FakeStream(tty=True)
+    monkeypatch.setattr(sys, "stderr", fake)
+    with liveness("running thing", delay=0.0) as ln:
+        assert _poll_until_drew(fake), (
+            "spinner thread did not draw within budget"
+        )
+        ln.seal("thing: done")
+    out = fake.output
+    # The painted shape is SGR + glyph + reset, then the plain label: the
+    # glow covers exactly the one spinner cell, never the prose beside it.
+    assert any(
+        f"{_METHOD_SGR}{frame}{_RESET} running thing" in out
+        for frame in _SPINNER_FRAMES
+    )
+    # The sealed record is the last line and carries no escape byte - the
+    # permanent stderr artifact stays plain.
+    assert out.endswith("thing: done\n")
+    assert "\x1b" not in out.splitlines()[-1]
+
+
+def test_spinner_glyph_stays_plain_under_no_color(monkeypatch):
+    monkeypatch.delenv("TERM", raising=False)
+    monkeypatch.setenv("NO_COLOR", "1")
+    fake = _FakeStream(tty=True)
+    monkeypatch.setattr(sys, "stderr", fake)
+    with liveness("running thing", delay=0.0) as ln:
+        assert _poll_until_drew(fake), (
+            "spinner thread did not draw within budget"
+        )
+        ln.seal("thing: done")
+    # Frames still draw; the color opt-out strips only the glow.
+    assert _has_any_frame(fake.output)
+    assert "\x1b" not in fake.output
 
 
 def test_rich_spinner_frames_use_exact_braille_cycle():

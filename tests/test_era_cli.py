@@ -250,7 +250,7 @@ def test_era_html_cli_path_keeps_hostile_slot_inert(
 
 
 def test_era_dry_run_never_prompts_or_loads(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """Planning-only mode returns before both confirmation and the U7 fold."""
+    """Planning-only mode returns before both confirmation and the archive fold."""
     (tmp_path / "2026-01-01").mkdir()
     import sigwood.runner as runner
     monkeypatch.setattr(runner, "_confirm_era_work", lambda **_kwargs: pytest.fail("prompted"))

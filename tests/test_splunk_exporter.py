@@ -459,6 +459,17 @@ def test_write_creates_parent_directories(tmp_path: Path) -> None:
 # ── credentials ──────────────────────────────────────────────────────────────
 
 
+def test_module_credential_guidance_names_only_environment_variables() -> None:
+    import sigwood.exporters.splunk as splunk_module
+
+    doc = splunk_module.__doc__ or ""
+    assert (
+        "Credentials:\n"
+        "  SIGWOOD_SPLUNK_USER, SIGWOOD_SPLUNK_PASS environment variables\n"
+    ) in doc
+    assert "username, password in [export.splunk]" not in doc
+
+
 def test_get_credentials_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SIGWOOD_SPLUNK_USER", "testuser")
     monkeypatch.setenv("SIGWOOD_SPLUNK_PASS", "testpass")
@@ -470,8 +481,13 @@ def test_get_credentials_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_get_credentials_missing(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("SIGWOOD_SPLUNK_USER", raising=False)
     monkeypatch.delenv("SIGWOOD_SPLUNK_PASS", raising=False)
-    with pytest.raises(ValueError, match="Splunk credentials not found"):
+    with pytest.raises(ValueError) as exc_info:
         _get_credentials({})
+
+    assert str(exc_info.value) == (
+        "Splunk credentials not found - set SIGWOOD_SPLUNK_USER and "
+        "SIGWOOD_SPLUNK_PASS"
+    )
 
 
 # ── fetch SDK guard ───────────────────────────────────────────────────────────
@@ -628,8 +644,10 @@ def test_fetch_formats_splunk_auth_error(monkeypatch: pytest.MonkeyPatch) -> Non
         )
 
     msg = str(exc_info.value)
-    assert "Splunk login failed" in msg
-    assert "SIGWOOD_SPLUNK_USER" in msg
+    assert msg == (
+        "Splunk login failed - check SIGWOOD_SPLUNK_USER and "
+        "SIGWOOD_SPLUNK_PASS"
+    )
 
 
 def test_fetch_formats_splunk_connection_error(monkeypatch: pytest.MonkeyPatch) -> None:

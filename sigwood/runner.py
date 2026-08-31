@@ -385,7 +385,7 @@ class EraHarnessReceipt:
 
 @dataclass(frozen=True)
 class EraOracleReceipt:
-    """Private U7 closure record for the full planner-to-render product route.
+    """Private whole-route record for the full planner-to-render product route.
 
     Rendered deck text may contain a safe, quoted inspect handoff, which in turn
     can carry an operator provenance directory.  The receipt therefore retains

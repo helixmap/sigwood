@@ -62,7 +62,7 @@ _BURST_GRID_ACTIVE = (2, 3, 4)
 _DAY_SECONDS = 86_400.0
 _CADENCE_MAX_GAP_SECONDS = 6 * 60 * 60
 
-# Shipped calibration selected by the sealed C1 re-decision.
+# Shipped calibration vector; the measured selection is recorded in the calibration record.
 ARRIVAL_DAYS = 5
 ARRIVAL_HISTORY = 21
 ARRIVAL_VECTOR_RATIFIED = True
@@ -77,7 +77,7 @@ RECURRING_PERIODS = 4
 
 @dataclass(frozen=True)
 class DnsblockCalibrationVector:
-    """Private C1 materialization choice over the already-frozen grids."""
+    """Private materialization choice over the already-frozen grids."""
 
     arrival_days: int = ARRIVAL_DAYS
     arrival_history: int = ARRIVAL_HISTORY
@@ -463,7 +463,7 @@ class DnsblockPrepared:
 
 @dataclass(frozen=True)
 class CalibrationSurvivorFacts:
-    """Private in-memory grid memberships; never written to C1 artifacts."""
+    """Private in-memory grid memberships; never written to calibration artifacts."""
 
     arrival_memberships: tuple[tuple[str, int], ...]
     burst_memberships: tuple[tuple[str, int], ...]

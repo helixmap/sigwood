@@ -72,6 +72,9 @@ version does not exactly match `__version__`.
 
 ## Release checklist
 
+The in-fence `### §N` echo lines are deliberate: once a pasted section has scrolled out
+of the terminal, they identify the last section the maintainer pasted.
+
 ### 0 - Preflight the current branch
 
 Do this *before* kicking off the release process. Start from an up-to-date, clean `main` in a fresh terminal and run the complete local suite:
@@ -244,7 +247,7 @@ fi
 ### §2a
 ```
 
- and wait for [Release Workflow](https://github.com/helixmap/sigwood/actions) to show a green matrix before proceding.
+ and wait for [Release Workflow](https://github.com/helixmap/sigwood/actions) to show a green matrix before proceeding.
 
 The identity block below re-checks that the commit exists and that `main` matches the remote,
 so a forgotten push fails here rather than at the tag. Every version-specific command after

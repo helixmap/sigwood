@@ -16,6 +16,7 @@ pre-allowlist traffic, so its totals are not expected to match a hunt after supp
 ([beacon](#beacon) ·
 [dns](#dns) ·
 [syslog](#syslog) ·
+[scan](#scan) ·
 [exfil](#exfil) ·
 [aws](#aws) ·
 [dnsblock](#dnsblock) ·
@@ -256,6 +257,16 @@ program the whole unit is reported at that higher severity. Nothing is hidden - 
 line is listed under the unit with its own time and program - so read a unit as "these things
 happened together", not as "these things are the same event". Narrowing the rule by program was
 measured and rejected: it dissolved genuine sessions and dropped most of their content.
+
+### scan
+
+**A scan split across a fixed bucket boundary can be missed or mis-classified.** The
+block arm can miss a scan that straddles two buckets. The slow arm can instead
+mis-classify the same split: the extra bucket raises the bucket count while the lower
+per-bucket port density can carry the burst under the vertical-density gate. These
+fixed boundaries are aligned to the Unix epoch; with the default `window_secs`, they
+land on each UTC hour. No remedy is committed yet, and changing these two arms to a
+sliding window needs its own measurement.
 
 ### exfil
 

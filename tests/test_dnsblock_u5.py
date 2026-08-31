@@ -1,4 +1,4 @@
-"""dnsblock U5: reading projections, output split, and semantic digest."""
+"""dnsblock reading projections, output split, and semantic digest."""
 
 from __future__ import annotations
 

@@ -114,12 +114,13 @@ _ASCII_SPINNER_FRAMES = ("|", "/", "-", "\\")
 _SPINNER_INTERVAL_S = 0.12
 
 
-# ── Method-chrome color seam (text handler only) ────────────────────────────
+# ── Method-chrome color seam ────────────────────────────────────────────────
 #
 # Minimal: a single SGR constant for the method-glow paint, a TTY/NO_COLOR
 # gate, and one paint() helper. Not a general terminal-capability layer; the
-# only consumer is the text handler's Detectors: line. Rebound for retuning
-# the glow in a single place.
+# only consumers are the text handler's Detectors: line and the liveness
+# spinner glyph, which share the glow deliberately - one color, one owner,
+# retuned in a single place.
 _METHOD_SGR = "\x1b[96;1m"  # bright-cyan + bold
 _RESET = "\x1b[0m"
 
@@ -700,7 +701,16 @@ class _LivenessHandle:
         # sys.stderr does not steal our writes.
         self._stream = sys.stderr
         self._isatty = _stream_isatty(self._stream)
-        self._frames = _spinner_frames_for(self._stream)
+        # Frames wear the same method glow as the text banner's technique
+        # tags - deliberately the one _METHOD_SGR owner via paint(), so
+        # NO_COLOR / TERM=dumb / non-tty streams stay plain with no extra
+        # wiring here. Glyph only: the label and every sealed record stay
+        # plain, and _clear_line never measures a frame string, so the
+        # zero-width SGR bytes cannot skew its width math.
+        self._frames = tuple(
+            paint(frame, stream=self._stream)
+            for frame in _spinner_frames_for(self._stream)
+        )
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         # _drew flips True inside the spinner thread immediately before its

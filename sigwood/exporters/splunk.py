@@ -4,9 +4,8 @@ Invoked via: sigwood export  (or: sigwood export splunk)
 Connects to the Splunk management port (default 8089), runs hourly-chunked oneshot
 queries, and writes results as flat syslog text to the configured output file.
 
-Credentials (in priority order):
-  SIGWOOD_SPLUNK_USER, SIGWOOD_SPLUNK_PASS  environment variables
-  username, password in [export.splunk] config section
+Credentials:
+  SIGWOOD_SPLUNK_USER, SIGWOOD_SPLUNK_PASS environment variables
 
 Splunk developer/free licenses enforce a hard per-query result cap at the binary
 level that limits.conf cannot override. Hourly chunking keeps each query well
@@ -70,7 +69,7 @@ def _get_credentials(config: dict[str, Any]) -> tuple[str, str]:
     if not user or not passwd:
         raise ValueError(
             "Splunk credentials not found - set SIGWOOD_SPLUNK_USER and "
-            "SIGWOOD_SPLUNK_PASS, or add username/password to [export.splunk] in config"
+            "SIGWOOD_SPLUNK_PASS"
         )
     return user, passwd
 
@@ -105,8 +104,8 @@ def _sdk_error_message(exc: Exception, host: str, port: int) -> str:
     exc_name = exc.__class__.__name__
     if exc_name == "AuthenticationError":
         return (
-            "Splunk login failed - check [export.splunk].username/password in config "
-            "and SIGWOOD_SPLUNK_USER/SIGWOOD_SPLUNK_PASS environment overrides"
+            "Splunk login failed - check SIGWOOD_SPLUNK_USER and "
+            "SIGWOOD_SPLUNK_PASS"
         )
     return (
         f"could not connect to Splunk management API at {host}:{port} - "

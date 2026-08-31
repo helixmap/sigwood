@@ -150,7 +150,7 @@ def _prepared(
         population_status=PreparedStatus(PreparedState.READY),
         blocks=dnsblock.BlockInventory(),
         population=population,
-        # These U3 mechanics fixtures were authored against the historical
+        # These arrival-mechanics fixtures were authored against the historical
         # construction cell; keep that instrument explicit after ratification.
         calibration_vector=dnsblock.DnsblockCalibrationVector(
             arrival_days=3,

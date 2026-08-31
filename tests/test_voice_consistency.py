@@ -533,9 +533,12 @@ def test_pleading_token_scan_counts_a_seeded_use() -> None:
 _RESIDUE_TOKEN_FILE = _SRC_ROOT / "private" / "residue_tokens.txt"
 _RESIDUE_ALLOW_PREFIX = "allow:"
 _RESIDUE_PUBLIC_PREFIX = "public:"
+_RESIDUE_NAME_PREFIX = "name:"
 _RESIDUE_CODE_DIRS = ("sigwood", "tests", "notebooks", "demo")
 _RESIDUE_ROOT_DOCS = ("README.md", "CHANGELOG.md", "CONTRIBUTING.md", "SECURITY.md")
+_RESIDUE_JUNK_DIRS = ("__pycache__", ".ipynb_checkpoints")
 _RESIDUE_MARKDOWN_FLOOR = 11
+_RESIDUE_NAME_FILE_FLOOR = 200
 
 ResidueKey = tuple[str, str]
 
@@ -553,11 +556,29 @@ def _strip_residue_token_line(line: str) -> str:
     return "".join(out).strip()
 
 
+def _residue_pattern_accepts_payload(rx: re.Pattern[str], payload: str) -> bool:
+    # An allowance stores the regex match, not its surrounding source text. The
+    # identifier pattern deliberately uses a separator lookbehind, so validate
+    # its exact payload in each permitted left context as well as in isolation.
+    for prefix in ("", "_", "-"):
+        framed = prefix + payload
+        for match in rx.finditer(framed):
+            if match.start() == len(prefix) and match.end() == len(framed):
+                return True
+    return False
+
+
 def _parse_residue_policy(
     text: str,
-) -> tuple[list[re.Pattern[str]], list[re.Pattern[str]], Counter[ResidueKey]]:
+) -> tuple[
+    list[re.Pattern[str]],
+    list[re.Pattern[str]],
+    list[re.Pattern[str]],
+    Counter[ResidueKey],
+]:
     patterns: list[re.Pattern[str]] = []
     public_patterns: list[re.Pattern[str]] = []
+    name_patterns: list[re.Pattern[str]] = []
     allowances: Counter[ResidueKey] = Counter()
     for lineno, line in enumerate(text.splitlines(), 1):
         entry = _strip_residue_token_line(line)
@@ -588,51 +609,82 @@ def _parse_residue_policy(
             allowances[(rel_text, matched_text)] += 1
             continue
         public = entry.startswith(_RESIDUE_PUBLIC_PREFIX)
-        pattern_text = entry.removeprefix(_RESIDUE_PUBLIC_PREFIX) if public else entry
+        named = entry.startswith(_RESIDUE_NAME_PREFIX)
+        if public:
+            pattern_text = entry.removeprefix(_RESIDUE_PUBLIC_PREFIX)
+        elif named:
+            pattern_text = entry.removeprefix(_RESIDUE_NAME_PREFIX)
+        else:
+            pattern_text = entry
         if not pattern_text:
-            raise AssertionError(f"residue policy line {lineno}: empty public pattern")
+            kind = "name" if named else "public" if public else "content"
+            raise AssertionError(f"residue policy line {lineno}: empty {kind} pattern")
         try:
             compiled = re.compile(pattern_text)
         except re.error as exc:
             raise AssertionError(f"residue policy line {lineno}: {exc}") from exc
-        patterns.append(compiled)
-        if public:
-            public_patterns.append(compiled)
+        if named:
+            name_patterns.append(compiled)
+        else:
+            patterns.append(compiled)
+            if public:
+                public_patterns.append(compiled)
 
     if not patterns:
         raise AssertionError("residue policy contains no regex patterns")
     if not public_patterns:
         raise AssertionError("residue policy contains no public-surface regex patterns")
+    if not name_patterns:
+        raise AssertionError("residue policy contains no filename regex patterns")
     for _rel, matched_text in allowances:
-        if not any(rx.fullmatch(matched_text) for rx in patterns):
+        named = matched_text.startswith(_RESIDUE_NAME_PREFIX)
+        payload = matched_text.removeprefix(_RESIDUE_NAME_PREFIX) if named else matched_text
+        validation_patterns = name_patterns if named else patterns
+        if not payload or not any(
+            _residue_pattern_accepts_payload(rx, payload) for rx in validation_patterns
+        ):
             raise AssertionError(
                 f"residue allowance text is not a full policy match: {matched_text!r}"
             )
-    return patterns, public_patterns, allowances
+    return patterns, public_patterns, name_patterns, allowances
 
 
 def _load_residue_policy(
-) -> tuple[list[re.Pattern[str]], list[re.Pattern[str]], Counter[ResidueKey]]:
+) -> tuple[
+    list[re.Pattern[str]],
+    list[re.Pattern[str]],
+    list[re.Pattern[str]],
+    Counter[ResidueKey],
+]:
     if not _RESIDUE_TOKEN_FILE.exists():
         pytest.skip("residue token list not present - dev-box enforced, public CI skips")
     return _parse_residue_policy(_RESIDUE_TOKEN_FILE.read_text(encoding="utf-8"))
 
 
-def _residue_scan_paths() -> list[Path]:
+def _residue_regular_files(root: Path) -> list[Path]:
+    # Measured before this inventory shipped: 387 of 664 files in the scoped
+    # directory roots were compiled artifacts under __pycache__. Letting those
+    # basenames into the name view produced ten interpreter- and pytest-version
+    # dependent hits, so the allowance table failed with both new occurrences
+    # and stale rows on another maintainer's box. This exclusion is portability,
+    # not cleanup.
+    return [
+        path
+        for path in sorted(root.rglob("*"))
+        if path.is_file() and not any(part in _RESIDUE_JUNK_DIRS for part in path.parts)
+    ]
+
+
+def _residue_inventory_paths() -> list[Path]:
     paths: list[Path] = []
     for dirname in _RESIDUE_CODE_DIRS:
         root = _SRC_ROOT / dirname
         assert root.is_dir(), f"residue scan root is missing: {root}"
-        for path in sorted(root.rglob("*")):
-            if path.suffix not in (".py", ".ipynb"):
-                continue
-            if any(part in ("__pycache__", ".ipynb_checkpoints") for part in path.parts):
-                continue
-            paths.append(path)
+        paths.extend(_residue_regular_files(root))
 
     docs_root = _SRC_ROOT / "docs"
     assert docs_root.is_dir(), f"residue docs root is missing: {docs_root}"
-    paths.extend(sorted(docs_root.rglob("*.md")))
+    paths.extend(_residue_regular_files(docs_root))
     for name in _RESIDUE_ROOT_DOCS:
         path = _SRC_ROOT / name
         assert path.is_file(), f"residue root document is missing: {name}"
@@ -644,6 +696,22 @@ def _residue_scan_paths() -> list[Path]:
         assert resolved != private_root and private_root not in resolved.parents, (
             f"public residue scan path resolves inside private/: {path}"
         )
+    return paths
+
+
+def _residue_scan_paths(inventory: list[Path] | None = None) -> list[Path]:
+    raw_paths = _residue_inventory_paths() if inventory is None else inventory
+    paths: list[Path] = []
+    for path in raw_paths:
+        rel = path.relative_to(_SRC_ROOT)
+        if rel.parts[0] in _RESIDUE_CODE_DIRS:
+            if path.suffix in (".py", ".ipynb"):
+                paths.append(path)
+        elif rel.parts[0] == "docs":
+            if path.suffix == ".md":
+                paths.append(path)
+        else:
+            paths.append(path)
     return paths
 
 
@@ -661,6 +729,18 @@ def _residue_occurrences_for_text(
                 observed[key] += 1
                 locations.setdefault(key, []).append(lineno)
     return observed, locations
+
+
+def _residue_occurrences_for_name(
+    rel: str,
+    name: str,
+    regexes: list[re.Pattern[str]],
+) -> Counter[ResidueKey]:
+    observed: Counter[ResidueKey] = Counter()
+    for rx in regexes:
+        for match in rx.finditer(name):
+            observed[(rel, _RESIDUE_NAME_PREFIX + match.group(0))] += 1
+    return observed
 
 
 def _residue_policy_delta(
@@ -699,13 +779,17 @@ def test_no_internal_workflow_residue_in_source() -> None:
     Some history-shaped phrasing has legitimate runtime uses and is deliberately
     not machine-pinned here.
     """
-    regexes, public_regexes, allowed = _load_residue_policy()
+    regexes, public_regexes, name_regexes, allowed = _load_residue_policy()
     this_file = Path(__file__).resolve()
     observed: Counter[ResidueKey] = Counter()
     locations: dict[ResidueKey, list[int]] = {}
     scanned_code_files = 0
     scanned_markdown = 0
-    for path in _residue_scan_paths():
+    inventory = _residue_inventory_paths()
+    for path in inventory:
+        rel = path.relative_to(_SRC_ROOT).as_posix()
+        observed.update(_residue_occurrences_for_name(rel, path.name, name_regexes))
+    for path in _residue_scan_paths(inventory):
         if path.resolve() == this_file:
             continue  # this test names and exercises the external policy grammar
         if path.suffix == ".md":
@@ -728,6 +812,10 @@ def test_no_internal_workflow_residue_in_source() -> None:
         f"residue scan walked only {scanned_markdown} public Markdown files; "
         f"expected at least {_RESIDUE_MARKDOWN_FLOOR}"
     )
+    assert len(inventory) > _RESIDUE_NAME_FILE_FLOOR, (
+        f"residue name view walked only {len(inventory)} files - a scan root naming a "
+        "missing directory rglobs nothing and leaves an empty filename rule unenforced"
+    )
     unexpected, unused = _residue_policy_delta(observed, allowed)
     problems = _format_residue_counter("unexpected residue", unexpected, locations)
     problems.extend(_format_residue_counter("unused allowance", unused))
@@ -745,7 +833,7 @@ def test_no_internal_workflow_residue_in_source() -> None:
 def test_residue_campaign_patterns_flag_independent_seeds(
     text: str, matched_text: str
 ) -> None:
-    _regexes, public_regexes, _allowed = _load_residue_policy()
+    _regexes, public_regexes, _name_regexes, _allowed = _load_residue_policy()
     observed, _locations = _residue_occurrences_for_text(
         "sigwood/seed.py", text, public_regexes
     )
@@ -753,7 +841,7 @@ def test_residue_campaign_patterns_flag_independent_seeds(
 
 
 def test_residue_campaign_patterns_keep_legitimate_controls() -> None:
-    _regexes, public_regexes, _allowed = _load_residue_policy()
+    _regexes, public_regexes, _name_regexes, _allowed = _load_residue_policy()
     patterns = [rx.pattern for rx in public_regexes]
     campaign_patterns = [
         r"\b[BDRU]\d{2}\b",
@@ -829,6 +917,71 @@ def test_residue_scan_surface_includes_only_public_markdown() -> None:
     assert {"CODE.md", "AGENTS.md", "CLAUDE.md"}.isdisjoint(rels)
     private_root = (_SRC_ROOT / "private").resolve()
     assert all(private_root not in path.resolve().parents for path in paths)
+
+
+def test_residue_inventory_excludes_interpreter_junk(tmp_path: Path) -> None:
+    root = tmp_path / "tests"
+    kept = root / "seed.py"
+    junk = root / "__pycache__" / "test_seed_u9.cpython-314.pyc"
+    kept.parent.mkdir(parents=True)
+    junk.parent.mkdir(parents=True)
+    kept.write_text("", encoding="utf-8")
+    junk.write_bytes(b"")
+
+    assert _residue_regular_files(root) == [kept]
+
+
+def test_residue_unit_code_patterns_hold_measured_boundaries() -> None:
+    regexes, _public_regexes, name_regexes, _allowed = _load_residue_policy()
+    prose, _locations = _residue_occurrences_for_text(
+        "sigwood/seed.py", "Current U9 constraint.", regexes
+    )
+    identifier, _locations = _residue_occurrences_for_text(
+        "tests/seed.py", "def test_seed_u9_route(): pass", regexes
+    )
+    control, _locations = _residue_occurrences_for_text(
+        "demo/graph.js", "const u2 = Math.max(left, right);", regexes
+    )
+    basename = _residue_occurrences_for_name(
+        "tests/test_seed_u9.txt", "test_seed_u9.txt", name_regexes
+    )
+
+    assert prose == Counter({("sigwood/seed.py", "U9"): 1})
+    assert identifier == Counter({("tests/seed.py", "u9"): 1})
+    assert control == Counter()
+    assert basename == Counter({("tests/test_seed_u9.txt", "name:u9"): 1})
+
+
+def test_residue_name_and_content_allowances_cannot_cross_consume() -> None:
+    name_allowed = "\n".join(
+        [
+            "public:U[0-9]",
+            "name:U[0-9]",
+            "allow:tests/seed_U9.txt\tname:U9",
+        ]
+    )
+    regexes, _public, name_regexes, allowed = _parse_residue_policy(name_allowed)
+    content, _locations = _residue_occurrences_for_text(
+        "tests/seed_U9.txt", "U9", regexes
+    )
+    unexpected, unused = _residue_policy_delta(content, allowed)
+    assert unexpected == Counter({("tests/seed_U9.txt", "U9"): 1})
+    assert unused == Counter({("tests/seed_U9.txt", "name:U9"): 1})
+
+    content_allowed = "\n".join(
+        [
+            "public:U[0-9]",
+            "name:U[0-9]",
+            "allow:tests/seed_U9.txt\tU9",
+        ]
+    )
+    regexes, _public, name_regexes, allowed = _parse_residue_policy(content_allowed)
+    basename = _residue_occurrences_for_name(
+        "tests/seed_U9.txt", "seed_U9.txt", name_regexes
+    )
+    unexpected, unused = _residue_policy_delta(basename, allowed)
+    assert unexpected == Counter({("tests/seed_U9.txt", "name:U9"): 1})
+    assert unused == Counter({("tests/seed_U9.txt", "U9"): 1})
 
 
 # --------------------------------------------------------------------------

@@ -1,7 +1,8 @@
 # sigwood demo corpus
 
-A tiny synthetic log corpus that shows sigwood finding one compromised host
-five different ways - across Pi-hole, beacon, dns, exfil, and syslog - in a single hunt. It drives the real
+A tiny synthetic log corpus in which five detector views independently surface facets
+of one compromised host - across Pi-hole, beacon, dns, exfil, and syslog. The analyst,
+not sigwood, joins those facets into a single hunt. It drives the real
 `loader → allowlist → detector → renderer` path - nothing is faked or
 pre-baked. This is the corpus behind the animated demo in the top-level README.
 
@@ -36,9 +37,11 @@ It makes no network calls and is byte-for-byte deterministic for a given seed,
 anchor, and timezone (defaults: seed `3759`, window anchored at
 `2026-06-01T00:00:00` UTC), so it is safe to run offline or in CI. The syslog and
 dnsmasq stamps render in the generating box's local time - the timezone those
-daemons write in - so a corpus generated and hunted on the same box keeps the
-flat-log timelines correlated with the conn/dns epochs. Pass a different `--seed`
-or `--anchor` to vary it.
+daemons write in - so a corpus generated and hunted on the same box in the same year
+keeps the flat-log timelines correlated with the conn/dns epochs. RFC 3164 carries no
+year, so hunting after a year boundary re-dates those flat-log stamps while the
+epoch-based conn and dns rows stay put; the loader's re-dating tripwire discloses that
+shift when it happens. Pass a different `--seed` or `--anchor` to vary it.
 
 ## Run the hunt
 

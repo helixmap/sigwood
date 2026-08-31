@@ -6,7 +6,7 @@ of the package, so every name is importable or monkeypatchable at
 ``sigwood.common.loader.<name>`` regardless of which submodule owns it.
 
 Submodule layout (acyclic; ``limits`` is the hard-budget leaf):
-- ``limits``      - U1 chunk/record/file-delta product ceilings.
+- ``limits``      - chunk / record / file-delta product ceilings.
 - ``io``          - ``_open_log`` + bounded records + path primitives.
 - ``types``       - ``LoadResult`` / coverage / rotation-skip dataclasses, the
                     cross-frame window helper, column constants.

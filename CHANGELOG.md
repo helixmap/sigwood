@@ -6,7 +6,28 @@ All notable changes to sigwood are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-08-31
+
 ### Changed
+
+- The repository-residue check now scans filenames as well as selected file contents,
+  recognizes the unit-code forms found in identifiers and test filenames, and excludes
+  interpreter cache directories from that inventory. Filename and content allowances are
+  separate, and the inventory has a cardinality floor so a missing scan root cannot make a
+  filename rule pass over an empty surface.
+
+- Known Issues now records the fixed-bucket boundary shared by the scan detector's block
+  and slow arms: a split scan can be missed by one arm or mis-classified by the other. The
+  boundaries are epoch-aligned and fall on UTC hours at the default window.
+
+- Splunk credential guidance now points only to `SIGWOOD_SPLUNK_USER` and
+  `SIGWOOD_SPLUNK_PASS` in the exporter overview, missing-credential error, and failed-login
+  error. The compatibility fallback that reads credentials from config is unchanged.
+
+- The demo now says that each detector surfaces one facet and the analyst joins the story;
+  sigwood does not perform cross-detector correlation. Its same-box timeline note also
+  requires generation and hunting in the same year, and names the loader warning that
+  appears when yearless RFC 3164 rows are re-dated across a year boundary.
 
 - A mistyped setting for the `aws`, `dns` or `scan` detectors is now reported instead of
   reaching the analysis. Those three had no validation, so `window_secs = "3600"` - a
@@ -1665,7 +1686,8 @@ agent, no account.
 - Analysis-window controls (`--since`/`--until`/`--days`/`--all`), a per-source default
   lookback window, and local-or-UTC time rendering.
 
-[Unreleased]: https://github.com/helixmap/sigwood/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/helixmap/sigwood/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/helixmap/sigwood/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/helixmap/sigwood/compare/v0.5.1...v0.6.0
 [0.5.1]: https://github.com/helixmap/sigwood/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/helixmap/sigwood/compare/v0.4.0...v0.5.0

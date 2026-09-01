@@ -98,12 +98,23 @@ run so you can judge that directly rather than infer it.
 **Branch model.** `main` is the development branch and the maintainer pushes to
 it directly; there is no pull-request requirement, because there is no second
 reviewer for one to route to. Force-pushes and branch deletion are blocked, so
-history on `main` is append-only. What stands behind the absence of a review
+history on `main` is append-only, and since 2026-09-01 the branch refuses unsigned
+commits (next paragraph). What stands behind the absence of a review
 gate: `main` is not a distribution channel - releases are tagged and published
 to PyPI, and that is what an install gives you. Continuous integration runs on
 every push to `main` across Python 3.11 through 3.14, and the release workflow
 runs that same full matrix again at the tag, so a published release has passed
 the suite on every supported interpreter.
+
+**Commit and tag signing.** Every commit on `main` from 2026-09-01, and every release
+tag from that date, is signed with an SSH key that lives on a FIDO2 hardware token and
+cannot sign without a physical touch on the token. Pushing to GitHub authenticates with
+the same keys. `main` and the `v*` tag namespace refuse unsigned pushes, and release
+tags refuse deletion and replacement. The maintainer's command-line token holds no
+permission to push, edit those rules, or approve a deployment; the `pypi` approval is
+given by hand in the browser. History before 2026-09-01 is unsigned and stays that way.
+The signing public keys are the signing-key list on the maintainer's GitHub account and
+are mirrored in [`allowed_signers`](allowed_signers) at the repository root.
 
 **Automated checks.** Code scanning analyzes both the Python source and the
 workflow definitions, on change and weekly. Secret scanning is enabled with push
@@ -121,3 +132,19 @@ exception and holds only the token-minting permission it needs. Releases are
 published to PyPI with Trusted Publishing and carry signed provenance
 attestations, so a release traces back to the workflow run and commit that
 produced it.
+
+**Verifying a checkout.** With any `ssh-keygen` from OpenSSH 8.2 or later on your
+path, from the repository root:
+
+```bash
+git -c gpg.ssh.allowedSignersFile=allowed_signers verify-commit HEAD
+```
+
+```bash
+git -c gpg.ssh.allowedSignersFile=allowed_signers verify-tag v1.0.0
+```
+
+Each prints `Good "git" signature for code@augros.org with ED25519-SK key ...`. GitHub
+shows the same result as a **Verified** badge on the commit and on the tag. A published
+wheel is checked against the attestation PyPI serves for it with the `pypi-attestations`
+tool, which confirms the file was uploaded by this repository's `release.yml` workflow.

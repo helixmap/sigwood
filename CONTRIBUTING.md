@@ -236,6 +236,11 @@ hooks on your behalf, by design, so a fresh clone has the hook scripts but not
 the gate until you run it. The hooks only check dash punctuation and add a
 fraction of a second to a commit.
 
+Commits on `main` are signed with the maintainer's hardware key, and the branch
+refuses unsigned ones. That is a property of the maintainer's clone, not
+something a contributor sets up; [SECURITY.md](SECURITY.md) describes it and how
+to verify a checkout.
+
 On NixOS the pip route above fails outright; manylinux wheels expect system
 libraries at paths Nix doesn't provide. `nix develop` gives you the same `.venv`,
 bootstrapped automatically, with the native library paths wired (including the

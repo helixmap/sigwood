@@ -6,6 +6,17 @@ All notable changes to sigwood are recorded here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- Commits on `main` and release tags are signed with a hardware-backed SSH key that needs a
+  physical touch, and the branch and the `v*` tag namespace refuse unsigned pushes. The
+  signing public keys are mirrored in `allowed_signers` at the repository root, and
+  `SECURITY.md` describes the chain from commit to published wheel and how to verify a
+  checkout.
+
+- The release checklist signs the release tag, verifies it before the push, confirms both
+  signatures on GitHub after publication, and carries the one-time signing-key setup.
+
 ## [0.7.0] - 2026-08-31
 
 ### Changed

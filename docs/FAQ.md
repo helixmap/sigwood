@@ -694,8 +694,11 @@ on your own logs.
 ### How do I know the sigwood I installed is genuine?
 
 Every `sigwood` release on PyPI is published by a tag-triggered CI pipeline that authenticates
-over OpenID Connect - there is no long-lived upload token sitting on anyone's laptop that could
-leak and let someone publish a malicious release under our name. Each published file also carries
+over OpenID Connect, so no upload token exists to leak. The tag that starts it is signed with a
+hardware key that needs a physical touch, `main` and the release tags refuse unsigned pushes,
+and the upload waits for the maintainer's approval in the browser, which the maintainer's
+command-line token cannot give. [SECURITY.md](../SECURITY.md) walks the chain and shows how to
+verify a checkout. Each published file also carries
 a [PEP 740](https://peps.python.org/pep-0740/) publish attestation: a Sigstore-backed, verifiable
 record that the file was uploaded by this project's release pipeline (`helixmap/sigwood`'s
 `release.yml`). PyPI shows it on each file's page. The precise claim matters - an attestation

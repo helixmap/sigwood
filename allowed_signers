@@ -1,0 +1,13 @@
+# sigwood maintainer signing keys, in the allowed_signers format read by
+# ssh-keygen(1) and git. Commits on main from 2026-09-01 and every release
+# tag from that date are signed by one of these keys. Each lives on a FIDO2
+# hardware token and cannot sign without a physical touch. Verify a checkout:
+#
+#   git -c gpg.ssh.allowedSignersFile=allowed_signers verify-commit HEAD
+#   git -c gpg.ssh.allowedSignersFile=allowed_signers verify-tag vX.Y.Z
+#
+# The authoritative list is the signing-key list on the maintainer's GitHub
+# account (helixmap); this file mirrors it so verification works offline.
+code@augros.org namespaces="git" sk-ssh-ed25519@openssh.com AAAAGnNrLXNzaC1lZDI1NTE5QG9wZW5zc2guY29tAAAAIO4iuz/ADfx7p+BVBsPCQhrCXADO/P6Zr28ANOMyzfmDAAAAE3NzaDpoZWxpeG1hcC1naXRodWI=
+code@augros.org namespaces="git" sk-ssh-ed25519@openssh.com AAAAGnNrLXNzaC1lZDI1NTE5QG9wZW5zc2guY29tAAAAIF0x5LEUxUZlsADHMLDF7tKP/yx180tqzcGUGlS3fmT5AAAAE3NzaDpoZWxpeG1hcC1naXRodWI=
+code@augros.org namespaces="git" sk-ssh-ed25519@openssh.com AAAAGnNrLXNzaC1lZDI1NTE5QG9wZW5zc2guY29tAAAAIDATXNO8MHczhY7H/Ool1FD7SuzcO6flJVtn8U1dW/CAAAAAE3NzaDpoZWxpeG1hcC1naXRodWI=

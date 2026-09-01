@@ -13,9 +13,11 @@ distribution. That is publication provenance, not a claim that the code is safe.
 successful upload the same workflow **drafts** the matching GitHub Release from the tag's
 `CHANGELOG.md` section; it never publishes one.
 
-Two human gates remain deliberate:
+Three human gates remain deliberate:
 
 - Build and validate locally before creating a tag.
+- Sign the release commit and the tag with the hardware key; each signature is one physical
+  touch, and so is each push (**One-time setup** below).
 - Approve the `pypi` GitHub environment only after the tagged commit passes the complete CI
   matrix.
 
@@ -51,7 +53,39 @@ In repository **Settings -> Environments**:
 - `testpypi`: no reviewer is needed because this is the rehearsal path. Restrict deployments
   to the default branch.
 
-Also authenticate `gh` as a maintainer of `helixmap/sigwood`:
+### Signing key
+
+Commits on `main` and release tags are signed with an SSH key held on a FIDO2 hardware
+token (an `sk-ssh-ed25519` key), registered on the maintainer's GitHub account as both an
+authentication key and a signing key, and listed in `allowed_signers` at the repository
+root. Configure the clone once. `user.signingkey` takes the private key handle's absolute
+path, so signing talks to the token directly and never through an agent:
+
+```bash
+git config gpg.format ssh
+git config user.signingkey /absolute/path/to/the/sk/key/handle
+git config commit.gpgsign true
+git config tag.gpgsign true
+git config gpg.ssh.allowedSignersFile "$(pwd)/allowed_signers"
+```
+
+On macOS, Apple's `/usr/bin/ssh` and `/usr/bin/ssh-keygen` carry no FIDO provider and fail
+with `No FIDO SecurityKeyProvider specified`. Point git at a build that has one, and let the
+repository fetch over https so only pushes reach the token:
+
+```bash
+git config gpg.ssh.program /opt/homebrew/opt/openssh/bin/ssh-keygen
+git config core.sshCommand /opt/homebrew/opt/openssh/bin/ssh
+git remote set-url origin https://github.com/helixmap/sigwood.git
+git remote set-url --push origin git@github.com:helixmap/sigwood.git
+```
+
+Every `git commit`, `git tag`, and `git push` then asks for one touch. A touch prompt you
+did not cause is the signal to stop and look.
+
+Also authenticate `gh` as a maintainer of `helixmap/sigwood`. The token wants read access
+plus issues and pull requests, and nothing that can push, approve a deployment, or edit
+repository rules; those stay in the browser.
 
 ```bash
 gh auth status
@@ -205,7 +239,8 @@ Read the prepared diff:
 git status --short && git diff
 ```
 
-then commit **everything section 1 landed** and push `main`. That is usually the three
+then commit **everything section 1 landed** and push `main`. The commit and the push each
+ask for one touch on the signing key. That is usually the three
 version-bearing files, but step 5 of that section lands any other file the release needs - a
 test the release state required, new documentation - so the commit is defined by the diff you
 just read, never by a fixed list. A fixed list silently drops the rest: the commit looks
@@ -399,12 +434,15 @@ release and its provenance/attestation panel are present. Rehearsing again creat
 
 ### 5 - Push the tag
 
-This starts the production release workflow against the exact tagged commit:
+This starts the production release workflow against the exact tagged commit. The tag is
+signed and verified locally before it leaves the machine; expect one touch for the tag and
+one for the push:
 
 ```bash
 if test -z "$(git tag --list "$TAG")" &&
   test -z "$(git ls-remote --tags origin "refs/tags/$TAG")" &&
-  git tag -a "$TAG" -m "sigwood $TAG tag" &&
+  git tag -s "$TAG" -m "sigwood $TAG tag" &&
+  git verify-tag "$TAG" &&
   git show --no-patch --decorate "$TAG" &&
   git push origin "$TAG"; then
   printf 'pushed %s\n' "$TAG"
@@ -573,6 +611,15 @@ leaving the previous version advertised as latest:
 test "$(gh release view "$TAG" --repo "$REPO" --json isDraft --jq .isDraft)" = "false" &&
   test "$(gh release view --repo "$REPO" --json tagName --jq .tagName)" = "$TAG" &&
   printf 'GitHub Release %s is published and latest\n' "$TAG"
+```
+
+Then confirm GitHub verified both signatures. The first call reads the tagged commit, the
+second the annotated tag object itself:
+
+```bash
+test "$(gh api "repos/$REPO/commits/$(git rev-list -n 1 "$TAG")" --jq .commit.verification.verified)" = "true" &&
+  test "$(gh api "repos/$REPO/git/tags/$(git rev-parse "$TAG")" --jq .verification.verified)" = "true" &&
+  printf 'commit and tag for %s are Verified on GitHub\n' "$TAG"
 
 ### §8b
 ```

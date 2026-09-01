@@ -18,6 +18,16 @@ The machine-data section contains:
 - `kit`: kit version, kit-authored generation time, platform facts, validated
   sigwood version, report schema version, and a flag when version text could not
   be parsed
+
+**Two Python versions, and they are different facts.** `python` is the interpreter
+running this kit. `python (sigwood artifact)` is the one the installed `sigwood`
+command runs under, read from its console script. These often differ - pipx builds
+its virtual environment with whatever Python it selected, while the kit runs under
+whatever `python3` resolves to - and **every sigwood measurement in the report,
+including wall-clock seconds and peak memory, comes from the artifact's
+interpreter, not the kit's.** Only the versions are reported; interpreter paths are
+not, because they routinely contain a home directory. The artifact value is empty
+when it cannot be read.
 - `smoke`: whether the synthetic canary ran and passed
 - `hunt`: the fixed `default_hunt` arm, exit code, and wall-clock seconds
 - `peak_child_rss_mb`: maximum resident memory across the completed child

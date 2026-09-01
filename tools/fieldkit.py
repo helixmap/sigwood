@@ -567,7 +567,51 @@ def _canonical_version(stdout: str) -> Tuple[Optional[str], bool]:
     return (match.group(1), False) if match else (None, True)
 
 
-def _platform_facts() -> Dict[str, Any]:
+def _artifact_python(executable: Optional[str]) -> Optional[str]:
+    """Version of the interpreter the sigwood console script runs under.
+
+    A console script's shebang names its own interpreter, which need not be the
+    one running this kit: pipx builds its venv with whatever Python it chose,
+    while this file runs under whatever `python3` resolves to. Every sigwood
+    measurement in the report comes from that other interpreter, so the report
+    names both.
+
+    Only the version is returned. The interpreter path is never reported: it
+    routinely contains a home directory.
+    """
+    if not executable:
+        return None
+    try:
+        with open(executable, "rb") as handle:
+            first_line = handle.readline(4096)
+    except OSError:
+        return None
+    if not first_line.startswith(b"#!"):
+        return None
+    parts = first_line[2:].decode("utf-8", "replace").strip().split()
+    if not parts:
+        return None
+    interpreter = parts[0]
+    if os.path.basename(interpreter) == "env" and len(parts) > 1:
+        interpreter = parts[1]
+    try:
+        completed = subprocess.run(
+            [interpreter, "-c", "import platform; print(platform.python_version())"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            errors="replace",
+            check=False,
+            timeout=15,
+        )
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+    if completed.returncode != 0:
+        return None
+    return _safe_platform_string((completed.stdout or "").strip()) or None
+
+
+def _platform_facts(artifact_python: Optional[str] = None) -> Dict[str, Any]:
     system = platform.system().lower()
     os_token = system if system in {"darwin", "linux", "windows"} else "other"
     total_mb: Optional[int] = None
@@ -583,6 +627,7 @@ def _platform_facts() -> Dict[str, Any]:
         "release": _safe_platform_string(platform.release()),
         "machine": _safe_platform_string(platform.machine()),
         "python": _safe_platform_string(platform.python_version()),
+        "sigwood_python": artifact_python,
         "cpu_count": os.cpu_count(),
         "mem_total_mb": total_mb,
     }
@@ -789,9 +834,21 @@ def render_bundle(projection: Mapping[str, Any]) -> str:
     triage = projection["triage"]
     answers = projection["answers"]
 
+    _PLATFORM_LABELS = {
+        "python": "python (this kit)",
+        "sigwood_python": "python (sigwood artifact)",
+    }
     platform_rows = [
-        (key, kit["platform"].get(key))
-        for key in ("os", "release", "machine", "python", "cpu_count", "mem_total_mb")
+        (_PLATFORM_LABELS.get(key, key), kit["platform"].get(key))
+        for key in (
+            "os",
+            "release",
+            "machine",
+            "python",
+            "sigwood_python",
+            "cpu_count",
+            "mem_total_mb",
+        )
     ]
     corpus_rows: List[Tuple[Any, Any]] = []
     if isinstance(run_summary, Mapping):
@@ -991,6 +1048,7 @@ def _resolve_out_dir(path: Path) -> Path:
 def _projection(
     *,
     generated_at: datetime,
+    artifact_python: Optional[str] = None,
     version: Optional[str],
     version_unparsed: bool,
     smoke: Mapping[str, bool],
@@ -1009,7 +1067,7 @@ def _projection(
     kit: Dict[str, Any] = {
         "kit_version": KIT_VERSION,
         "generated_at": generated_at.isoformat(),
-        "platform": _platform_facts(),
+        "platform": _platform_facts(artifact_python),
         "sigwood_version": version,
         "schema_version": REPORT_SCHEMA_VERSION,
     }
@@ -1112,6 +1170,7 @@ def run_protocol(
         generated_at = datetime.now(timezone.utc)
         projection = _projection(
             generated_at=generated_at,
+            artifact_python=_artifact_python(executable),
             version=version,
             version_unparsed=version_unparsed,
             smoke=smoke,

@@ -25,7 +25,7 @@ from sigwood.detectors import dnsblock
 UTC = timezone.utc
 
 
-def test_shipped_calibration_matches_the_sealed_ratified_vector():
+def test_shipped_calibration_matches_the_selected_vector():
     """Literal pins keep default drift visible to the vector-flip test."""
     vector = dnsblock.DnsblockCalibrationVector()
 
@@ -35,8 +35,8 @@ def test_shipped_calibration_matches_the_sealed_ratified_vector():
         12,
         4,
     )
-    assert dnsblock.ARRIVAL_VECTOR_RATIFIED is True
-    assert dnsblock.BURST_VECTOR_RATIFIED is True
+    assert dnsblock.ARRIVAL_VECTOR_SHIPPED is True
+    assert dnsblock.BURST_VECTOR_SHIPPED is True
     assert (
         vector.arrival_days,
         vector.arrival_history,

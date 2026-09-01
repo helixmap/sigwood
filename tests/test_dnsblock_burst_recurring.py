@@ -434,7 +434,7 @@ def test_note_grammar_rejects_identity_or_non_template_prose():
             )
 
 
-def test_recurring_typed_state_is_constructed_without_entity_for_u5_projection():
+def test_recurring_typed_state_is_constructed_without_entity_for_reading_projection():
     prepared = _prepared()
     analysis = prepared.analysis
     hidden = replace(

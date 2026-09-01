@@ -1097,7 +1097,7 @@ def probe_graph_inputs(
     else:
         # Resolve one configured source family at a time. When a configured
         # directory has no graphable files, retain empty buckets for that family
-        # so runner.run_graph can return the honest GraphEmpty control signal.
+        # so runner.run_graph can return the accurate GraphEmpty control signal.
         seen_sources: set[tuple[str, Path]] = set()
         for spec in selected_specs:
             _, candidates = resolve_graph_source(config, spec.kind)

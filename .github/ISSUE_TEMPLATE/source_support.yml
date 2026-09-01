@@ -1,0 +1,33 @@
+name: Source or format support
+description: A log family or layout that sigwood does not load.
+title: "[source] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Run `sigwood digest /path/to/your.log` and paste the card below. The card is the diagnostic. Redact sensitive or organization-specific details before pasting anything from a log.
+  - type: input
+    id: producer
+    attributes:
+      label: Producer
+      description: Name the product, service, or device that wrote the log.
+    validations:
+      required: true
+  - type: textarea
+    id: digest_card
+    attributes:
+      label: Digest card
+      description: Paste the digest card after redacting sensitive or organization-specific details.
+      render: text
+  - type: textarea
+    id: sample
+    attributes:
+      label: Redacted sample
+      description: Paste only the smallest useful excerpt. Remove or replace addresses, hostnames, domains, usernames, account identifiers, email addresses, tokens, paths, and organization-specific names. If safe redaction is uncertain, do not paste it.
+      render: text
+  - type: textarea
+    id: layout
+    attributes:
+      label: Layout
+      description: Describe the file layout, naming pattern, or directory structure.
+      render: text

@@ -519,7 +519,7 @@ def _run_era_harness(
     _planner_factory: Any = None,
     _archive_plan: Any = None,
 ) -> EraHarnessReceipt:
-    """Measure a ratified archive through the registered loader only.
+    """Measure a registered archive through the registered loader only.
 
     This is intentionally runner-private: callers inject candidate roots, while
     the planner owns calendar semantics and this function alone owns loader
@@ -1602,7 +1602,7 @@ def _run_analyze(
         mod = plan.detectors[name]
         det_cfg = get_detector_config(config, name, getattr(mod, "DEFAULT_CONFIG", {}))
 
-        # Per-detector prep + run, scoped to honest error labels. Prep
+        # Per-detector prep + run, scoped to accurate error labels. Prep
         # (filter_df + DetectorContext construction) is the runner's
         # responsibility; a prep failure is "prep error", NOT "detector
         # error" - separation-of-powers detail. For the non-syslog
@@ -3286,7 +3286,7 @@ def _check_required_logs(
     ``scope`` is the run's positional-scoping signal (None = unconstrained).
     A source family absent BECAUSE the operator's positional targets scoped it
     out must not read as "not configured" - the operator may have pointed
-    straight at a directory containing that family's files; the honest reason
+    straight at a directory containing that family's files; the reason
     names the scoping, not a config gap.
     """
     for req in getattr(detector_module, "REQUIRED_LOGS", []):
@@ -4116,7 +4116,7 @@ def _dnsblock_cap_note(cause: str) -> str | None:
 
 
 def _format_dnsblock_summary_notes(prepared: Any) -> list[str]:
-    """Project detector-owned dnsblock facts into the frozen runner note order."""
+    """Project detector-owned dnsblock facts into the stable runner note order."""
     lines: list[str] = []
     preflight = prepared.preflight
     if preflight.coverage_lane is CoverageLane.WEAK:
@@ -4430,7 +4430,7 @@ def _ssl_zero_findings_line(facts: dict[str, Any]) -> str | None:
 
     Three distinguishable causes, each a fact the detector measured. A run that
     scores rows says nothing here - the report's own emptiness is then the
-    honest answer, and inventing an explanation for it would be worse.
+    accurate answer, and inventing an explanation for it would be worse.
     """
     if int(facts.get("rows_eligible", 0)) > 0:
         return None
@@ -4850,7 +4850,7 @@ _DIGEST_TS_CONFIDENCE_FLOOR: float = 0.80
 
 
 def _ts_confidence(frame: pd.DataFrame) -> bool:
-    """True iff the frame's ``ts`` column can support an honest timeline.
+    """True iff the frame's ``ts`` column can support a representative timeline.
 
     Both conditions must hold:
 
@@ -5806,7 +5806,7 @@ def _run_digest(
     _ = empty_columns
 
     # Timestamp-confidence gate (now boolean). Below the floor OR with a
-    # zero non-NaN span, the timeline cannot be drawn honestly - dash the
+    # zero non-NaN span, the timeline would overstate coverage - dash the
     # identity-line window AND signal timeline_unavailable to the
     # renderer, which emits the bare "(timeline unavailable)" histogram
     # replacement. Both former failure modes (low coverage AND zero span)

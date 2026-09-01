@@ -1560,7 +1560,7 @@ def _run_graph(args: list[str]) -> int:
 
     # Permission denial is the lone failure that outranks a sibling artifact.
     # Ordinary malformed-source failures remain per-bucket and an artifact from
-    # another bucket is an honest successful graph result. All clean-empty
+    # another bucket is a successful graph result. All clean-empty
     # recognized buckets are a no-op success; every other no-artifact case is
     # an actionable failure.
     if permission_errors:
@@ -1944,7 +1944,7 @@ def _run_era(args: list[str]) -> int:
         sys.stdout.flush()
     # A completed explicit artifact is an operator-visible fact even when the
     # run itself was quiet.  ``-q`` suppresses progress/status, not the sole
-    # durable destination receipt.
+    # durable destination record.
     if output_file is not None:
         print(f"wrote era to {strip_control(compact_home(output_file))}", file=sys.stderr)
     return 0

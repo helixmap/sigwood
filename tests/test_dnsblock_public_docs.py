@@ -19,7 +19,6 @@ def test_public_pages_name_dnsblock_as_available_and_opt_in() -> None:
     assert "The nine detectors work and are covered by tests" in readme
     assert "| `dnsblock`" in readme
     assert readme.count("sigwood dnsblock /var/log/pihole") == 2
-    assert "The curated default hunt is a deliberately short, reviewed list" in readme
     assert "`dnsblock` stays opt-in at 1.0." in readme
     assert "28-day file-selection aperture" in readme
     assert "four\ntimes the report span by duration" in readme

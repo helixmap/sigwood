@@ -35,7 +35,8 @@ def test_live_cli_summary_discloses_unchecked_counts(capsys: pytest.CaptureFixtu
     captured = capsys.readouterr()
     assert captured.err == ""
     assert re.fullmatch(
-        r"validated \d+ doc links across 12 files "
+        # Root public pages plus every Markdown file directly under docs/.
+        r"validated \d+ doc links across 13 files "
         r"\(\d+ external not checked, 0 pinned refs\)\n",
         captured.out,
     )

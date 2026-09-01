@@ -73,7 +73,7 @@ needs re-checking.
 | Discovery | LAN sweeps (`scan`), cloud enumeration bursts (`aws`) | Already the best-served here |
 | Lateral Movement | Multi-host authentication failures for one source and account (`auth`) | Zeek SMB and SSH logs |
 | Collection | Nothing claimed | Zeek SMB logs |
-| Command and Control | Check-in timing (`beacon`); generated-looking domains (`dns`), with the dense tunnel path on Zeek and Pi-hole | Odd ports, tunnel log |
+| Command and Control | Check-in timing (`beacon`); generated-looking domains (`dns`), with the dense tunnel path on Zeek and Pi-hole; odd TLS session setup - no server name, or a certificate that did not validate (`ssl`) | Odd ports, tunnel log |
 | Exfiltration | DNS tunnelling shapes (`dns`, dense path on Zeek and Pi-hole); bulk outbound byte transfers (`exfil`) | Transfers below the byte floor or split across many destinations; exfiltration inside an allowed cloud service |
 | Impact | No mining-specific verdict; generic check-ins (`beacon`) can be a downstream clue | Cloud destruction events; SMB file activity |
 
@@ -128,14 +128,8 @@ the gap each one could narrow:
 - **Cloud identity and privilege** - a future CloudTrail identity and
   privilege-escalation detector, separate from the behavioral `aws` detector and named
   for its question.
-- **Corroboration across detectors** - today each detector reasons alone, which is why
-  beacon caps its own severity: regular timing is one kind of evidence, and severity
-  should rise only when independent kinds agree. Doing that honestly takes two steps, not
-  one. First, link records that refer to the same thing - a connection's destination to
-  the domain that resolved to it - and carry how *certain* that link is, because shared
-  hosting and stale answers make identity genuinely ambiguous. Only then, and only where
-  the signals are independent rather than two views of one fact, can severity rise. Being
-  confident that two records name the same host is not itself evidence of bad behavior.
+- **Corroboration across detectors** - the path that re-opens HIGH severity;
+  substantial enough that it carries its own section below.
 - **Beacon and aws, deeper on real evidence** - beacon recalibration is a full
   research branch (public C2 captures, a plain periodicity baseline to beat, the
   aliasing edges), not a quick tune; aws stays scored on the evidence actually
@@ -145,6 +139,77 @@ the gap each one could narrow:
 
 New detectors join the default hunt only after the current defaults are reviewable, and
 none of the above is a promise - each has to earn its place against real data first.
+
+## Correlating findings across detectors
+
+Run the demo corpus in this repository and the report shows the gap this section is
+about. A beacon finding names a flow from an internal host to an outside address with a
+three-minute rhythm. Later in the same report, in the system-log section, a MEDIUM line
+records a root login *from that same address*. The report holds both facts; the connection between
+them exists only in the reader's head. Nothing in sigwood today connects them: one
+outside address, appearing in the same run as a beacon's destination and as the source
+of a root login, and the analyst joins those rows by recognizing a string, the way
+analysts always have.
+
+That join is the most valuable move in a hunt, and it is mechanical, transparent work of
+exactly the kind this tool exists to package. Correlation - linking findings that refer
+to the same thing, across detectors and across source families - is the largest single
+piece of post-1.0 scope. This section records how we think about it before any of it is
+designed, so the eventual design can be judged against something written down.
+
+**The severity ladders are already built for it.** beacon, ssl, and auth each stop
+short of HIGH on purpose, and for the same stated reason: a detector cannot corroborate
+itself from outside its own question. beacon holds a single category of evidence -
+timing. ssl holds two within its question, client behavior and server infrastructure,
+and that pair is exactly what lifts a finding from LOW to MEDIUM there: independence
+already earns severity inside one detector, and the ladder stops where the detector's
+own evidence ends. auth's HIGH rule is dormant on the same principle. The dns detector
+is the shipped proof at full scale: it crowns HIGH only when its lexical score is
+corroborated by an independent category (lookups that mostly fail to resolve, or dense
+concentration under one parent), and on a clean capture it produces MEDIUMs and no HIGH
+at all. A correlator generalizes that ladder across detector lines: severity rises when
+independent kinds of evidence agree about the same thing, and only then. On the demo
+corpus the pieces are already on one page - the beacon at MEDIUM, and the root login
+that would corroborate it later in the same report, waiting to be joined.
+
+**Two steps, and the order matters.** Linking comes first, and it is not free: "the same
+host" is a genuinely uncertain claim. A domain resolves to an address shared by a
+thousand tenants; a stale answer points at an address that has since moved on; NAT folds
+many machines into one. So a link must carry how certain it is and the evidence behind
+it - this connection reached that address within this window of that resolution. Then,
+separately: agreement counts only where the signals are independent rather than two
+views of one fact. A beacon to a host and a DNS lookup of that host's name are one
+behavior seen twice. A beacon to a host and a root login arriving from it are two. Being
+confident that two records name the same thing is not itself evidence of bad behavior -
+it is the precondition for asking whether independent behaviors agree.
+
+**Shapes that could earn a place** - possibilities, not commitments:
+
+- **The shared-entity incident**: findings from different detectors naming one internal
+  host inside one window, gathered into a single reviewable story instead of scattered
+  sections.
+- **The cross-family join**: an address inside one detector's evidence matched against
+  an endpoint in another detector's flow identity - free text against a tuple, the join
+  the demo report leaves to the reader.
+- **The generalized corroborator**: one detector's finding serving as the independent
+  evidence category another detector's ladder is waiting for, the way resolution
+  failure already serves dns today.
+- **The arc**: ordering a window's related findings in time, so that break-in,
+  persistence, and data leaving read as a sequence rather than as three sections.
+
+**What any of them must honor.** The constraints are the ones every shipped detector
+already lives under, and they bind harder here because an incident is a bigger claim
+than a finding. Batch and stateless: correlation happens within one run's findings, with
+no memory between runs. Transparent evidence: a correlated incident must show why its
+members joined - the link, its certainty, and why the categories are independent - never
+a score the reader cannot account for. Fact, not verdict: an incident names what agreed;
+it does not announce a compromise.
+
+**The bar.** None of this ships from a roadmap page. Like every piece of analysis in
+this project, it would ship only after notebook experimentation against real logs and a
+planning pass, and each shape above has to earn its way from "clever" to "useful on
+someone's actual estate." Until then the ladders keep HIGH in reserve, and each report
+keeps saying plainly what a single category of evidence can and cannot claim.
 
 ## By design, not on the roadmap
 

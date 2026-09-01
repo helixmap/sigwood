@@ -1,6 +1,6 @@
 # Known issues
 
-sigwood is young, and this is the ledger of what it doesn't do well yet: the
+sigwood is still a sapling, and this is the ledger of what it doesn't do well yet: the
 rough edges worth knowing before you lean on it. Where sigwood can notice a gap at run
 time it says so in the run itself; where it can't yet, the entry below is the only
 disclosure, and if an entry says "silently," it means it. Found something that
@@ -454,16 +454,16 @@ them into an NDJSON file or open an issue with the sizes you see.
 **A deliberately malformed log file can still stop a single run.** sigwood reads whatever
 you point it at, and a file crafted to be hostile rather than merely broken can exhaust
 memory or CPU badly enough to end that one run: a compressed archive that expands enormously,
-a single line of unbounded length, an XZ stream declaring a huge decoder dictionary, a
-timestamp span that inflates the digest histogram, an unbounded journal capture, or a DNS
-name long enough to make lexical scoring crawl. The bound each of those needs is a judgement
-about real logs - how long a legitimate line can be, how far a real archive expands - and
-guessing wrong would silently discard valid data, which is worse. So they are written down
+a single line of unbounded length, an XZ stream declaring a huge decoder dictionary, an
+unbounded journal capture, or a DNS name long enough to make lexical scoring crawl. The bound
+each of those needs is a judgement about real logs - how long a legitimate line can be, how
+far a real archive expands - and guessing wrong would silently discard valid data, which is
+worse. So they are written down
 here rather than half-fixed.
 
 The scope is one local run on your own workstation: sigwood is batch, single-user, and
-reads files you chose. There is no service to take down and no exposure of data, and every
-case that produced a raw crash or an unbounded allocation has been fixed. If you are pointing
+reads files you chose. There is no service to take down and no exposure of data. Earlier
+raw crashes and several unbounded allocation paths have been fixed. If you are pointing
 sigwood at logs from a source you do not trust, treat it like any other parser: run it
 somewhere you don't mind restarting.
 

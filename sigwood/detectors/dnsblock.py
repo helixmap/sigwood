@@ -65,13 +65,13 @@ _CADENCE_MAX_GAP_SECONDS = 6 * 60 * 60
 # Shipped calibration vector; the measured selection is recorded in the calibration record.
 ARRIVAL_DAYS = 5
 ARRIVAL_HISTORY = 21
-ARRIVAL_VECTOR_RATIFIED = True
+ARRIVAL_VECTOR_SHIPPED = True
 SYNC_ADDRESSES = 3
 FOLD_MIN_MEMBERS = 4
 BURST_ABS = 400
 BURST_MULT = 12
 BURST_ACTIVE = 4
-BURST_VECTOR_RATIFIED = True
+BURST_VECTOR_SHIPPED = True
 RECURRING_PERIODS = 4
 
 
@@ -2066,7 +2066,7 @@ def _build_analysis(
     insufficient_context = None
     if insufficient_history and routed.max_history_periods < vector.arrival_history:
         # The whole-channel form is reserved for a truly degenerate prefix.  If
-        # any pair got beyond history, the per-candidate count remains honest.
+        # any pair got beyond history, the per-candidate count remains accurate.
         beyond_history = sum(
             count
             for route, count in pair_routes.items()

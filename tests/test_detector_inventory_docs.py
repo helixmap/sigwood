@@ -16,6 +16,7 @@ _PUBLIC_PAGES = (
     "CONTRIBUTING.md",
     "README.md",
     "docs/FAQ.md",
+    "docs/MANUAL.md",
     "docs/CONTRACT.md",
     "docs/ROADMAP.md",
     "docs/KNOWN-ISSUES.md",

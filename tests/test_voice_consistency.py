@@ -489,7 +489,6 @@ _PLEADING_TOKEN_RE = re.compile(
 _PLEADING_BUDGET = {
     "CHANGELOG.md": 1,
     "CONTRIBUTING.md": 2,
-    "docs/ROADMAP.md": 1,
 }
 # Root pages are enumerated, never globbed - a root glob follows local agent
 # symlinks into untracked space; docs/ is walked recursively so subdirectories

@@ -1,4 +1,4 @@
-"""Tests for the private, runner-observed DNS B16 allowlist audit."""
+"""Tests for the private, runner-observed DNS below-gate allowlist audit."""
 
 from __future__ import annotations
 
@@ -6,6 +6,8 @@ import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
+
+import pytest
 
 from sigwood import runner
 from sigwood.detectors import dns as dns_mod
@@ -42,14 +44,14 @@ def _zeek_dir(tmp_path: Path) -> Path:
     directory.mkdir()
     records: list[dict[str, object]] = []
     # Four children are in the nested day; the fifth makes the 7d arm, not 1d,
-    # reach B16's live distinct-child floor.
+    # reach the below-gate promotion's live distinct-child floor.
     for index, label in enumerate(_LETTERS):
         when = _UNTIL - (timedelta(hours=12 + index) if index < 4 else timedelta(days=6))
         records.append(_dns_record(
             when.timestamp(), f"{label}.{_PARENT}", rcode=3,
         ))
     # The real Zeek clustering path receives a population at its configured
-    # 2,000-row floor. These high-scoring filler rows cannot promote as B16.
+    # 2,000-row floor. These high-scoring filler rows cannot promote below the gate.
     for index in range(2_000):
         records.append(_dns_record(
             (_UNTIL - timedelta(hours=1, seconds=index / 10_000)).timestamp(),
@@ -61,9 +63,9 @@ def _zeek_dir(tmp_path: Path) -> Path:
     return directory
 
 
-def _config(tmp_path: Path, *, suppress_b16: bool) -> dict[str, object]:
+def _config(tmp_path: Path, *, suppress_below_gate: bool) -> dict[str, object]:
     patterns: list[str] = []
-    if suppress_b16:
+    if suppress_below_gate:
         patterns_file = tmp_path / "audit-patterns.txt"
         patterns_file.write_text("*.audit.example.com\n", encoding="utf-8")
         patterns.append(str(patterns_file))
@@ -112,23 +114,24 @@ def _stable_findings(payload: dict[str, object]) -> list[dict[str, object]]:
     ]
 
 
-def test_real_runner_audit_exercises_b16_and_keeps_output_aggregate_only(tmp_path: Path) -> None:
-    config = _config(tmp_path, suppress_b16=True)
+def test_real_runner_audit_exercises_below_gate_and_keeps_output_aggregate_only(tmp_path: Path) -> None:
+    config = _config(tmp_path, suppress_below_gate=True)
     zeek_dir = _zeek_dir(tmp_path)
     before = _product_payload(config, zeek_dir)
 
-    record = measure.observe_b16_audit(config, zeek_dir=zeek_dir, until=_UNTIL)
+    record = measure.observe_below_gate_audit(config, zeek_dir=zeek_dir, until=_UNTIL)
 
     after = _product_payload(config, zeek_dir)
     assert _stable_findings(after) == _stable_findings(before)
     assert all(dns_mod.entropy(label) < 1.8 for label in _LETTERS)
+    assert record["kind"] == "dns_below_gate_allowlist_audit"
 
     on = record["arms"]["configured_allowlist"]
     off = record["arms"]["no_allowlist"]
-    assert on["7d"]["b16_parent_count"] == 0
-    assert off["1d"]["b16_parent_count"] == 0
-    assert off["7d"]["b16_parent_count"] == 1
-    assert off["7d"]["b16_info_parent_count"] == 1
+    assert on["7d"]["below_gate_parent_count"] == 0
+    assert off["1d"]["below_gate_parent_count"] == 0
+    assert off["7d"]["below_gate_parent_count"] == 1
+    assert off["7d"]["below_gate_info_parent_count"] == 1
     assert off["7d"]["funnel"]["returned_funnel_parity"] is True
     assert off["7d"]["clustering"] == {
         "status": "ran",
@@ -143,7 +146,7 @@ def test_real_runner_audit_exercises_b16_and_keeps_output_aggregate_only(tmp_pat
         "status": "comparable",
         "reason": "both_arms_ran_with_at_least_min_cluster_size_rows",
     }
-    assert record["l4"]["additional_b16_parents"] == 1
+    assert record["l4"]["additional_below_gate_parents"] == 1
     assert record["l4"]["excess_is_failure_not_cap"] is True
 
     encoded = json.dumps(record, sort_keys=True)
@@ -155,13 +158,14 @@ def test_real_runner_audit_exercises_b16_and_keeps_output_aggregate_only(tmp_pat
 
 def test_l4_failure_keeps_the_full_count_and_zero_denominator_is_not_lenient() -> None:
     primary = measure._ArmMeasurement(
-        record={"same_arm_visible_defaults_excluding_b16": 0},
-        b16_parents=frozenset({f"parent-{index}" for index in range(8)}),
+        record={"same_arm_visible_defaults_excluding_below_gate": 0},
+        below_gate_parents=frozenset({f"parent-{index}" for index in range(8)}),
     )
 
     l4 = measure._l4_record(primary)
 
-    assert l4["additional_b16_parents"] == 8
+    assert l4["additional_below_gate_parents"] == 8
+    assert l4["existing_default_visible_excluding_below_gate"] == 0
     assert l4["parent_limit"] == 7
     assert l4["additional_fraction"] is None
     assert l4["passes"] is False
@@ -174,14 +178,14 @@ def test_window_comparison_marks_a_subfloor_cluster_arm_confounded() -> None:
             "status": "ran", "input_rows": 100, "min_cluster_size": 2_000,
             "meets_min_cluster_size": False,
         }},
-        b16_parents=frozenset({"one"}),
+        below_gate_parents=frozenset({"one"}),
     )
     large = measure._ArmMeasurement(
         record={"clustering": {
             "status": "ran", "input_rows": 2_000, "min_cluster_size": 2_000,
             "meets_min_cluster_size": True,
         }},
-        b16_parents=frozenset({"one", "seven"}),
+        below_gate_parents=frozenset({"one", "seven"}),
     )
 
     comparison = measure._window_comparison(small, large)
@@ -223,21 +227,40 @@ def test_observer_releases_dns_frame_and_findings_after_aggregating() -> None:
     observation = observations[0]
     assert not hasattr(observation, "frame")
     assert not hasattr(observation, "findings")
-    assert observation.b16_parents == frozenset({_PARENT})
-    assert observation.b16_info_parent_count == 1
-    assert observation.funnel["returned_b16_parents"] == 1
+    assert observation.below_gate_parents == frozenset({_PARENT})
+    assert observation.below_gate_info_parent_count == 1
+    assert observation.funnel["returned_below_gate_parents"] == 1
 
 
-def test_main_keeps_argument_and_config_errors_path_free(tmp_path: Path, capsys) -> None:
+def test_main_keeps_argument_and_config_errors_path_free(
+    tmp_path: Path, capsys, monkeypatch,
+) -> None:
+    with pytest.raises(SystemExit) as invalid:
+        measure.main([])
+    assert invalid.value.code == 2
+    assert capsys.readouterr().err == "measure-dns-allowlist-audit: invalid arguments\n"
+
     missing = tmp_path / "private-config.toml"
     assert measure.main(["--config", str(missing), "--zeek-dir", str(tmp_path),
                          "--until", "2026-07-28T00:00:00+00:00"]) == 2
     error = capsys.readouterr().err
-    assert error == "measure-dns-b16-allowlist-audit: could not read the config\n"
+    assert error == "measure-dns-allowlist-audit: could not read the config\n"
     assert str(missing) not in error
 
     assert measure.main(["--config", str(missing), "--zeek-dir", str(tmp_path),
                          "--until", "2026-07-28T00:00:00"]) == 2
     error = capsys.readouterr().err
-    assert error == "measure-dns-b16-allowlist-audit: an end-time timezone offset is required\n"
+    assert error == "measure-dns-allowlist-audit: an end-time timezone offset is required\n"
     assert str(tmp_path) not in error
+
+    monkeypatch.setattr(measure.cfg, "load", lambda _path: {})
+
+    def fail_measurement(*_args, **_kwargs):
+        raise measure.MeasurementError("runner measurement did not complete")
+
+    monkeypatch.setattr(measure, "observe_below_gate_audit", fail_measurement)
+    assert measure.main(["--config", str(missing), "--zeek-dir", str(tmp_path),
+                         "--until", "2026-07-28T00:00:00+00:00"]) == 2
+    assert capsys.readouterr().err == (
+        "measure-dns-allowlist-audit: runner measurement did not complete\n"
+    )

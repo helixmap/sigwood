@@ -171,7 +171,7 @@ def _write_arrival_log(path, name="a.example.com") -> None:
             f"Jan {day:2d} 12:00:00 resolver.example.test dnsmasq[1]: "
             "query[A] background.example.net from 192.0.2.7"
         )
-    # Five distinct report periods exercise the shipped ratified arrival gate.
+    # Five distinct report periods exercise the shipped arrival gate.
     for month, day in (
         ("Jan", 28),
         ("Jan", 29),
@@ -257,7 +257,7 @@ def test_real_population_path_selects_honest_zero_cause(
         )
         allowlist_dir = tmp_path / "allowlist.d"
         allowlist_dir.mkdir()
-        (allowlist_dir / "domains_u4").write_text("x.example\n", encoding="utf-8")
+        (allowlist_dir / "domains_burst").write_text("x.example\n", encoding="utf-8")
         config["allowlist"] = {
             "allowlist_dir": str(allowlist_dir),
             "domain_patterns": [],
@@ -511,7 +511,7 @@ def test_arrival_traverses_real_discovery_loader_runner_and_cadence(tmp_path):
     assert arrivals[0]["title"] == "192.0.2.7 → example.com"
 
 
-def test_u4_strong_burst_and_recurring_use_real_manifest_loader_runner_route(
+def test_strong_burst_and_recurring_use_real_manifest_loader_runner_route(
     tmp_path, monkeypatch,
 ):
     source = tmp_path / "receipted"
@@ -528,7 +528,7 @@ def test_u4_strong_burst_and_recurring_use_real_manifest_loader_runner_route(
         "Jan 10 12:00:00 resolver.example.test dnsmasq[1]: "
         "query[A] recurring.example.org from 192.0.2.9"
     )
-    # Four active periods with a 400-event peak exercise the shipped ratified
+    # Four active periods with a 400-event peak exercise the shipped
     # burst vector (400, 12, 4); this is a product-route default test.
     for day, burst_count in ((28, 5), (29, 400), (30, 5), (31, 5)):
         for second in range(burst_count):
@@ -577,8 +577,8 @@ def test_u4_strong_burst_and_recurring_use_real_manifest_loader_runner_route(
             )
         ),
     )
-    output = tmp_path / "u4.json"
-    artifact = tmp_path / "u4-aggregate.json"
+    output = tmp_path / "burst.json"
+    artifact = tmp_path / "burst-aggregate.json"
     captured = {}
     real_run = dnsblock.run
 
@@ -659,7 +659,7 @@ def test_matcher_parity_through_real_runner_route(
     _write_arrival_log(source / "pihole.log", name)
     allowlist_dir = tmp_path / "allowlist.d"
     allowlist_dir.mkdir()
-    (allowlist_dir / "domains_u3").write_text(pattern + "\n", encoding="utf-8")
+    (allowlist_dir / "domains_arrival").write_text(pattern + "\n", encoding="utf-8")
     output = tmp_path / "report.json"
     captured = {}
     real_run = dnsblock.run

@@ -345,7 +345,7 @@ def project_decisions(rows: Sequence[CanonicalRow]) -> tuple[DecisionRow, ...]:
 
 
 def canonical_service(gate: str) -> str:
-    """Return only the closed service aliases ratified for reconciliation."""
+    """Return only the closed service aliases registered for reconciliation."""
     token = gate.casefold()
     if token in {"sshd", "sshd-session", "dropbear"}:
         return "ssh"
@@ -355,7 +355,7 @@ def canonical_service(gate: str) -> str:
 
 
 def _canonical_audit_type(audit_type: str | None) -> str | None:
-    """Reconcile the two frozen numeric/named eligible audit equivalents."""
+    """Reconcile the two fixed numeric/named eligible audit equivalents."""
     return {
         "AUDIT1100": "USER_AUTH",
         "AUDIT1112": "USER_LOGIN",

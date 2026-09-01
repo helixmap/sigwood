@@ -146,7 +146,7 @@ _GRANDFATHERED_FIXTURE_DOMAINS: dict[str, frozenset[str]] = {
     # proof needs the metacharacter, and the run after `;` scans as a domain.
     "test_dns_detector.py": frozenset({"id.com"}),
     # Distinct-family placeholder apexes in the burst/recurring fixtures.
-    "test_dnsblock_u4.py": frozenset(
+    "test_dnsblock_burst_recurring.py": frozenset(
         {"alpha.com", "beta.net", "gamma.org", "delta.io"}
     ),
     # qclass-drop fixture queries.

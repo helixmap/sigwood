@@ -241,7 +241,7 @@ def test_generated_pihole_story_shape(
     assert query_rows["qtype"].nunique() >= 4
 
 
-def test_dnsblock_seed_trips_u3_through_real_product_route(
+def test_dnsblock_seed_trips_arrival_through_real_product_route(
     tmp_path: Path,
     monkeypatch,
     pin_tz,

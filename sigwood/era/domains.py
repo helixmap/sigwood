@@ -1,4 +1,4 @@
-"""Bounded, aggregate-only D20 registrable-domain eligibility and ledgers."""
+"""Bounded, aggregate-only registrable-domain eligibility and ledgers."""
 
 from __future__ import annotations
 
@@ -17,7 +17,8 @@ def effective_psl_snapshot_bytes(*, extractor: object = TLD_EXTRACT) -> bytes:
     """Return a deterministic byte view of the offline extractor's suffix set.
 
     The closure identity must bind the actual no-network PSL material used by
-    D20, rather than only the installed library version.  The ordered list is
+    the registrable-domain eligibility rule, rather than only the installed
+    library version.  The ordered list is
     an implementation input, not an output or a persisted domain identity.
     """
     suffixes = getattr(extractor, "tlds", None)
@@ -28,7 +29,7 @@ def effective_psl_snapshot_bytes(*, extractor: object = TLD_EXTRACT) -> bytes:
 
 @dataclass(frozen=True)
 class DomainLedgerFacts:
-    """Identity-free D20 ledger facts safe for cards and receipts."""
+    """Identity-free registrable-domain ledger facts safe for cards and receipts."""
 
     cap: int
     cap_exceeded: bool
@@ -46,7 +47,10 @@ class DomainHistory:
 
 
 def registrable_domain(query: object, *, extractor: Callable[[str], object] = TLD_EXTRACT) -> tuple[str | None, str | None]:
-    """Apply D20 once, returning a registrable key or a counted exclusion reason."""
+    """Apply the registrable-domain eligibility rule once.
+
+    Return a registrable key or a counted exclusion reason.
+    """
     if not isinstance(query, str):
         return None, "malformed"
     name = query.strip().lower().rstrip(".")

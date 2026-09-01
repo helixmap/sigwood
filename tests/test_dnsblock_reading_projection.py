@@ -391,7 +391,7 @@ def test_all_five_handlers_receive_dnsblock_and_keep_machine_surfaces_uncapped(
 
     def render_pdf(source: str) -> bytes:
         captured["html"] = source
-        return b"%PDF-u5"
+        return b"%PDF-reading-projection"
 
     monkeypatch.setattr(pdf_output, "_render_pdf_bytes", render_pdf)
     pdf_stream = io.BytesIO()
@@ -399,7 +399,7 @@ def test_all_five_handlers_receive_dnsblock_and_keep_machine_surfaces_uncapped(
     pdf_handler.begin(_summary())
     pdf_handler.write(findings)
     pdf_handler.end()
-    assert pdf_stream.getvalue() == b"%PDF-u5"
+    assert pdf_stream.getvalue() == b"%PDF-reading-projection"
     assert "recurring blocked-name activity" in captured["html"]
     assert "over 1d" in captured["html"]
     assert "&lt;script&gt;" in captured["html"]

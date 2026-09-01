@@ -1,0 +1,73 @@
+name: Bug report
+description: Something sigwood did that looks wrong, or a crash.
+title: "[bug] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Redact log content before you paste it. Remove addresses, hostnames, domains, account details, tokens, paths, and organization-specific names.
+  - type: input
+    id: sigwood_version
+    attributes:
+      label: sigwood version
+      description: Run `sigwood -V` and paste the result.
+    validations:
+      required: true
+  - type: input
+    id: python_version
+    attributes:
+      label: Python version
+      description: Run `python --version` and paste the result.
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      description: Name the operating system, release, and relevant hardware or environment.
+    validations:
+      required: true
+  - type: dropdown
+    id: install_method
+    attributes:
+      label: Install method
+      options:
+        - pipx
+        - pip
+        - uv tool
+        - editable clone
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: invocation
+    attributes:
+      label: Command
+      description: Paste the command that produced the problem.
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: expected_actual
+    attributes:
+      label: Expected and actual behavior
+      description: Describe what you expected and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: output
+    attributes:
+      label: Output
+      description: Paste the smallest useful output after redacting sensitive or organization-specific details.
+      render: text
+  - type: checkboxes
+    id: fieldkit
+    attributes:
+      label: Fieldkit
+      options:
+        - label: I attached [fieldkit output](https://github.com/helixmap/sigwood/blob/main/docs/FIELDKIT.md) if I could run it.
+  - type: textarea
+    id: additional_context
+    attributes:
+      label: Additional context
+      description: Attach screenshots or fieldkit output here. Code-block fields cannot accept attachments. Redact sensitive or organization-specific details first.

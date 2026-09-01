@@ -34,18 +34,29 @@ except ImportError:  # pragma: no cover - exercised on non-POSIX Python
     resource = None  # type: ignore[assignment]
 
 
-KIT_VERSION = "1"
+KIT_VERSION = "2"
 REPORT_SCHEMA_VERSION = 1
 RETURN_ADDRESS = "fieldkit@augros.org"
 
-DETECTOR_TOKENS = frozenset({"aws", "beacon", "dns", "exfil", "scan", "syslog"})
+DETECTOR_TOKENS = frozenset(
+    {"auth", "aws", "beacon", "dns", "dnsblock", "exfil", "scan", "ssl", "syslog"}
+)
 SEVERITY_TOKENS = frozenset({"high", "medium", "low", "info"})
 SEVERITY_ORDER = {"high": 0, "medium": 1, "low": 2, "info": 3, "other": 4}
 VERDICT_TOKENS = frozenset(
     {"known_benign", "unexplained_plausible", "nonsense", "interesting", "skip"}
 )
 RECORD_PATTERN_TOKENS = frozenset(
-    {"*.json*", "*.log*", "conn*.log*", "dns*.log*", "pihole*.log*", "syslog*.log*"}
+    {
+        "*.json*",
+        "*.log*",
+        "conn*.log*",
+        "dns*.log*",
+        "pihole*.log*",
+        "ssl*.log*",
+        "syslog*.log*",
+        "x509*.log*",
+    }
 )
 DATA_SOURCE_TOKENS = frozenset(
     {
@@ -55,11 +66,14 @@ DATA_SOURCE_TOKENS = frozenset(
         "syslog_raw",
         "zeek_conn",
         "zeek_dns",
+        "zeek_ssl",
         "zeek_syslog",
+        "zeek_x509",
     }
 )
 
 NUMERIC_EVIDENCE = {
+    "auth": frozenset(),
     "aws": frozenset(
         {
             "action_entropy",
@@ -100,6 +114,7 @@ NUMERIC_EVIDENCE = {
             "unique_sources",
         }
     ),
+    "dnsblock": frozenset(),
     "exfil": frozenset({"orig_bytes_total", "resp_bytes_total", "orig_share"}),
     "scan": frozenset(
         {
@@ -113,6 +128,7 @@ NUMERIC_EVIDENCE = {
             "window_secs",
         }
     ),
+    "ssl": frozenset({"conn_count"}),
     "syslog": frozenset(
         {
             "host_total",
@@ -127,11 +143,35 @@ NUMERIC_EVIDENCE = {
 }
 
 ENUM_EVIDENCE = {
+    "auth": {
+        "signal": frozenset(
+            {
+                "concentration",
+                "source_volume",
+                "account_volume",
+                "host_spread",
+                "landing",
+            }
+        )
+    },
     "aws": {"tier": frozenset({"burst", "ranked", "ranked_summary"})},
+    "beacon": {},
     "dns": {
         "tier": frozenset({"standard", "below_gate_group", "scan_summary"}),
         "severity_basis": frozenset({"resolution-outcome", "volume-concentration"}),
     },
+    "dnsblock": {
+        "kind": frozenset(
+            {
+                "arrival",
+                "arrival_fold",
+                "burst",
+                "prior_handling_exclusions",
+                "recurring_activity",
+            }
+        )
+    },
+    "exfil": {},
     "scan": {
         "direction": frozenset(
             {
@@ -142,6 +182,7 @@ ENUM_EVIDENCE = {
             }
         )
     },
+    "ssl": {"severity_basis": frozenset({"sni_absent", "validation"})},
     "syslog": {
         "shape": frozenset(
             {"plain_rare_line", "family", "burst", "reboot", "transaction"}
@@ -799,8 +840,11 @@ def render_bundle(projection: Mapping[str, Any]) -> str:
         "# sigwood field report",
         "",
         "This report was created for independent field validation. The automated "
-        "projection never copies log-derived strings. The three answers below are "
-        "the sole collaborator-authored free-text exception.",
+        "projection contains no raw identifiers and no arbitrary or unbounded "
+        "log-derived strings. It keeps only closed allowlisted tokens, numeric "
+        "aggregate distributions, and counts; finding titles and uncurated evidence "
+        "values stay out. The three answers below are the sole collaborator-authored "
+        "free-text exception.",
         "",
         "Read the whole file before sending it to %s." % RETURN_ADDRESS,
         "",

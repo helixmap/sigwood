@@ -228,7 +228,7 @@ class RotationSkipInfo:
     first-ts order is non-monotonic, ``_rotation_windowed_files`` disables
     pruning for the WHOLE pattern and returns every candidate file
     (``fallback=True``, ``skipped=0``, ``loaded=len(files)``). That keeps the
-    runner's "read the full archive" note honest - a fallback can never coexist
+    runner's "read the full archive" note accurate - a fallback can never coexist
     with a sibling group that was silently pruned.
 
     ``skipped_files`` carries ``(name, oldest_ts_or_None)`` for verbose
@@ -245,7 +245,7 @@ class RotationSkipInfo:
 
 @dataclass(frozen=True)
 class PermissionSkipInfo:
-    """Per-pattern permission-denied read accounting for runner exit honesty."""
+    """Per-pattern permission-denied read accounting for runner exit reporting."""
 
     discovered: int
     denied: int
@@ -258,7 +258,7 @@ class DirectorySkipInfo:
 
     This is plan/discovery metadata, distinct from ``PermissionSkipInfo``:
     no file candidates exist yet, so no file-level ``LoadResult`` accounting
-    can represent the omission honestly.
+    can represent the omission accurately.
     """
 
     source_key: str

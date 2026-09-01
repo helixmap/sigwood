@@ -843,7 +843,7 @@ def _rate(value: float) -> str:
     """Render a rate at one decimal, dropping a trailing zero.
 
     A rate carried six decimals implies precision the measurement lacks, but a
-    whole number wearing a false decimal (`19.0`) is its own small dishonesty.
+    whole number wearing a false decimal (`19.0`) is also misleading.
     One rule covers both: round to a tenth, then show the tenth only when it
     says something.
     """
@@ -854,7 +854,7 @@ def _rate(value: float) -> str:
 def domain_arrival_card(
     reducer: EraReducer,
 ) -> tuple[EraCard | None, DomainArrivalEvidence]:
-    """Card 10's D20-bounded arrival and mature-presence facts.
+    """Card 10's registrable-domain-bounded arrival and mature-presence facts.
 
     The ledger is exact only below its fixed cap; neither identities nor an
     identity-derived sample survive this renderer seam.

@@ -604,7 +604,7 @@ def _render_group_header(
 def _render_cap_disclosure(detector: str, renderable: DetectorRenderable, cap: int) -> str:
     """Cap disclosure: factual wording.
 
-    Honesty rail: the cap trims sections in DECLARED order, NOT
+    Constraint: the cap trims sections in DECLARED order, NOT
     global severity. For a FLAT detector (one implicit section) the cap is
     indeed by severity - sort-then-cap retains the highest tiers. For a
     SUBSECTIONED detector (dns: groups-first; aws: bursts-first) a
@@ -809,7 +809,7 @@ class TextHandler(OutputHandler):
 
         Named methods (``MethodTag(named=True)``) render as ``name (label)``
         with the label painted when ``self._stream`` is a real TTY (and
-        NO_COLOR / TERM=dumb don't opt out). Honest house badges
+        NO_COLOR / TERM=dumb don't opt out). House badges
         (``named=False``) render as ``name [label]`` plain. Detectors with
         no ``DETECTOR_METHOD`` constant fall back to the bare name -
         forward-compat for any future detector that ships without one.

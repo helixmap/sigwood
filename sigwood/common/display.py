@@ -505,7 +505,7 @@ def fmt_data_found(
     window: tuple[datetime, datetime],
     requested_span: timedelta | None,
 ) -> str:
-    """Render an analysis data window with an honest compact-span suffix.
+    """Render an analysis data window with a compact-span suffix.
 
     When the loaded span underfills the requested span by at least one hour,
     disclose both spans. Otherwise render the ordinary data-span suffix.
@@ -569,7 +569,7 @@ def plural(n: int, singular: str, plural: str | None = None) -> str:
 
 
 def _suppression_pct(count: int, total: int) -> str | None:
-    """Row-based suppression percentage with two honesty guards.
+    """Row-based suppression percentage with two boundary guards.
 
     ``None`` when ``total <= 0`` (omit the parenthetical - structurally
     shouldn't happen). count>0 but rounds to 0 → ``"<1%"``; count<total but
@@ -656,7 +656,7 @@ def progress(
 
     The pinned ``bar_format`` reproduces the long-standing NDJSON loader bar
     byte-for-byte when ``unit=" lines"``; ``unit`` is parameterized so future
-    non-line-oriented callers can be honest about what they count.
+    non-line-oriented callers can name what they count accurately.
     """
     if stream is None:
         stream = sys.stderr
@@ -688,8 +688,8 @@ class _LivenessHandle:
     """Handle returned from a ``liveness`` context manager.
 
     Owns the spinner thread, the captured stderr stream, and the bookkeeping
-    needed to keep ``seal()`` and ``__exit__`` honest about whether the
-    spinner actually drew anything.
+    needed to record whether the spinner actually drew anything before
+    ``seal()`` or ``__exit__``.
     """
 
     def __init__(self, label: str, delay: float) -> None:
@@ -704,7 +704,7 @@ class _LivenessHandle:
         # Frames wear the same method glow as the text banner's technique
         # tags - deliberately the one _METHOD_SGR owner via paint(), so
         # NO_COLOR / TERM=dumb / non-tty streams stay plain with no extra
-        # wiring here. Glyph only: the label and every sealed record stay
+        # wiring here. Glyph only: the label and every final record stay
         # plain, and _clear_line never measures a frame string, so the
         # zero-width SGR bytes cannot skew its width math.
         self._frames = tuple(
@@ -716,7 +716,7 @@ class _LivenessHandle:
         # _drew flips True inside the spinner thread immediately before its
         # first frame write. seal() / __exit__ only emit a clearing sequence
         # when _drew is True - a phase that seals before the spinner ever
-        # drew prints exactly the sealed line, no \r flicker.
+        # drew prints exactly the final line, no \r flicker.
         self._drew = False
         self._sealed = False
         # Guard concurrent writes between the spinner thread and seal/exit.
@@ -731,7 +731,7 @@ class _LivenessHandle:
         self._thread.start()
 
     def _spin(self) -> None:
-        # Wait out the initial delay. If sealed during the delay, leave
+        # Wait out the initial delay. If seal() is called during the delay, leave
         # without ever writing - this is the seal-before-delay invariant.
         if self._stop.wait(self._delay):
             return
@@ -768,7 +768,7 @@ class _LivenessHandle:
 
         Idempotent - a second seal is a no-op. On a tty, clears the spinner
         line first (only if the spinner actually drew); otherwise writes the
-        record straight to the stream. The sealed record is the only stderr
+        record straight to the stream. The final record is the only stderr
         artifact that promises "this phase finished cleanly."
         """
         with self._lock:
@@ -791,7 +791,7 @@ class _LivenessHandle:
         """Single teardown path called from __exit__.
 
         Stops the spinner thread, then clears the partial spinner line if
-        the spinner drew anything. Never writes a sealed record - that is
+        the spinner drew anything. Never writes a final record - that is
         seal()'s job, and a body that did not call seal() (whether by
         exception or by choice) leaves no record.
         """
@@ -817,7 +817,7 @@ class _NoOpLivenessHandle:
 
     Exposes only the public surface the call sites use - ``seal(text)`` - as a
     no-op. No spinner thread is ever started and nothing is written to stderr
-    (no frames, no clear sequence, no sealed record). This is the ``-q`` path:
+    (no frames, no clear sequence, no final record). This is the ``-q`` path:
     the runner-owned liveness narration goes fully dark.
     """
 
@@ -842,7 +842,7 @@ def liveness(
     draws nothing. ``ln.seal(text)`` commits a permanent record line.
 
     If the body raises (including KeyboardInterrupt - Ctrl-C during the
-    phase), the spinner line is cleared, no sealed record is written, and
+    phase), the spinner line is cleared, no final record is written, and
     the exception propagates. This is what lets the runner's top-level
     Ctrl-C handler print "Stopped." without a false-success seal landing
     just before it.

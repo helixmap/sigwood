@@ -30,6 +30,7 @@ box, over logs at rest, and your logs never have to leave your machine.
 
 <p align="center">
   <b><a href="#quick-start">Install</a></b> ·
+  <a href="https://github.com/helixmap/sigwood/blob/main/docs/MANUAL.md">Manual</a> ·
   <a href="https://github.com/helixmap/sigwood/blob/main/docs/FAQ.md">FAQ</a> ·
   <a href="https://github.com/helixmap/sigwood/blob/main/docs/CONTRACT.md">Contract</a> ·
   <a href="https://github.com/helixmap/sigwood/blob/main/docs/ROADMAP.md">Roadmap</a> ·
@@ -91,7 +92,7 @@ next steps to run it down.
 ```bash
 sigwood digest /var/log/pihole/pihole.log   # orient: what's in the log
 sigwood /var/log/pihole/                    # hunt: DNS clustering over your queries
-sigwood dnsblock /var/log/pihole/           # opt-in: behavior in names Pi-hole blocked
+sigwood dnsblock /var/log/pihole/           # bonus: behavior in names Pi-hole blocked
 ```
 
 The usual invocations:
@@ -116,7 +117,7 @@ sigwood hunt --config=demo/sigwood.toml    # beacons, a DGA burst, a bulk transf
 
 The generated logs live under `demo/corpus/` (gitignored); the full walkthrough is in
 [`demo/README.md`](https://github.com/helixmap/sigwood/blob/main/demo/README.md). Here is a
-full run against that corpus, and the same findings as an HTML report:
+full run against that corpus, followed by the same findings in HTML format:
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/helixmap/sigwood/main/docs/img/demo.svg" width="760" alt="sigwood hunting one compromised host across conn, DNS, and syslog - synthetic RFC 5737 data with random-label demo domains">
@@ -126,32 +127,37 @@ full run against that corpus, and the same findings as an HTML report:
        width="760" alt="sigwood html report">
 </p>
 
-## Why use sigwood?
+...and the same flows replayed by `sigwood graph`, one self-contained HTML file:
 
-- **It runs where your logs are.** No service, no database, no daemon, no agent to push.
-  `pipx install sigwood`, point it at a directory, get output. The only setup step is
-  optional: `sigwood init`, which just writes plain text files under `~/.sigwood/`.
-- **Named methods.** beacon uses an FFT over connection timing; dns uses HDBSCAN clustering
-  over per-query behavior; syslog uses drain3 log-templating plus rarity scoring, and folds
-  recognized admin sessions and update runs into single labeled review units; aws uses a
-  per-principal z-score composite; auth uses authentication structure across failures,
-  services, sources, accounts, and hosts; dnsblock measures first activity, bursts, and
-  recurrence in Pi-hole blocked-name events. Every run names the technique each detector used,
-  and `-v` shows the evidence behind a finding.
-- **Big-tent ingestion.** One tool reads Zeek (NDJSON *and* TSV, flat *or* date-partitioned
-  directories), Pi-hole/dnsmasq, the live **systemd journal** (`journalctl`, no sudo), flat
-  syslog (Debian *and* RHEL/Fedora layouts, RFC 3164 *and* ISO-8601), and CloudTrail. Rotation
-  and `.gz`/`.bz2`/`.xz` compression are handled for you.
-- **Orient before you hunt.** `sigwood digest FILE` reports facts about a log -
-  time span, top talkers, the shape of the mix - so you know where to point the
-  detectors. `sigwood graph FILE` creates a visual representation of the
-  activity on a log. sigwood gives you facts, not verdicts.
-- **Filter before analyze.** A curated allowlist of known-harmless infrastructure ships on and
-  drops that noise *before* any detector sees the data - toggle a list off by name, or drop the
-  whole thing with `--no-allowlist`. Every run reports how much it hid.
-- **Pick the output for the job.** A **report** to read (`text`, `html`, `pdf`),
-  a **lossless feed** to script against (`json`), or a **worklist** to triage
-  from (`csv`), or a Sankey animation (`graph`).
+<p align="center">
+  <img src="https://raw.githubusercontent.com/helixmap/sigwood/main/docs/img/graph.gif"
+       width="760" alt="sigwood graph replaying conn.log flows as an animated Sankey - hosts, the services they reach, and destination hosts across a morning of traffic; scrambled sample data">
+</p>
+
+
+## Installation
+
+One name everywhere: the PyPI distribution, the command, the import package, and the config
+section are all `sigwood`. Requires **Python 3.11+**.
+
+The recommended install is [pipx](https://pipx.pypa.io), which keeps sigwood in its own
+isolated environment and on your PATH (and sidesteps the `externally-managed-environment`
+refusal a bare `pip install` hits on modern distros):
+
+```bash
+# Debian / Raspberry Pi OS / Ubuntu:  sudo apt install pipx
+# Fedora:                             sudo dnf install pipx
+# macOS:                              brew install pipx
+
+pipx ensurepath              # once - then reopen your shell
+pipx install sigwood
+sigwood --help
+```
+
+Prefer [uv](https://docs.astral.sh/uv/)? `uv tool install sigwood` does the same job, and a
+plain virtualenv also works. Optional extras, upgrades, `sudo pip` recovery, and the on-disk
+footprint are all in the
+[manual](https://github.com/helixmap/sigwood/blob/main/docs/MANUAL.md#installing-and-upgrading).
 
 ## What it hunts
 
@@ -168,27 +174,27 @@ full run against that corpus, and the same findings as an HTML report:
 | `aws`     | per-principal anomalous CloudTrail behavior         | statistical (z-score composite) | CloudTrail `*.json*` (incl. `.gz`) |
 
 \* opt-in: `dnsblock`, `auth`, and `ssl` are not in the curated default hunt. Run one by
-name (`sigwood auth PATH`), select it with `--detect`, or run everything with `--detect=all`.
+name (`sigwood dnsblock /var/log/pihole/`), select it with `--detect`, or run everything with `--detect=all`.
 
-`dns` and `syslog` each answer **one** question across several source families - Zeek and
-Pi-hole for DNS; the live systemd journal, flat rsyslog, and Zeek's own `syslog.log` for syslog -
-and adapt to whichever fidelity they're handed. On a systemd host `syslog` prefers the live
-journal by default (`--syslog-source=auto`); `--syslog-source=files` keeps the flat-file behavior.
+`dns` and `syslog` each answer **one** question across several source families -
+Zeek and Pi-hole for DNS; the live systemd journal, flat rsyslog, and Zeek's own
+`syslog.log` for syslog - and adapt to whichever fidelity they're handed. On a
+systemd host `syslog` prefers the live journal by default.
 
-Run the curated default hunt (`sigwood hunt`), run everything available
-(`sigwood hunt --detect=all`), select some (`sigwood hunt --detect=beacon,dns`), or exclude
-(`sigwood hunt --detect='all,!syslog'`). Each detector is also its own subcommand:
-`sigwood beacon ~/zeek`.
+Run the curated default hunt (`sigwood hunt`), or just some (`sigwood hunt --detect=beacon,dns`). Each detector is also its own subcommand: `sigwood beacon ~/zeek`.
 
-**And what it doesn't hunt.** sigwood watches up to three flanks - your network, your
-system logs, and your cloud API activity - whichever of them you actually have, and with
-no agent on your machines, so some attacker behavior stays out of view however good the
-detectors get. The
-[roadmap](https://github.com/helixmap/sigwood/blob/main/docs/ROADMAP.md) maps both halves
-onto the [MITRE ATT&CK](https://attack.mitre.org/) matrix, tactic by tactic: what sigwood
-sees today, what could narrow each gap, and which gaps it will never close - some because
-closing them would mean shipping threat-intel feeds or signature packs instead of
-behavior, others because they sit outside its agentless, behavior-first design.
+**And what it doesn't hunt.** sigwood watches up to three flanks - your network,
+your system logs, and your cloud API activity - whichever of them you actually
+have, and with no agent on your machines, so some attacker behavior stays out of
+view however good the detectors get. The
+[roadmap](https://github.com/helixmap/sigwood/blob/main/docs/ROADMAP.md) maps
+both halves onto the [MITRE ATT&CK](https://attack.mitre.org/) matrix, tactic by
+tactic: what sigwood sees today, what could narrow each gap, and which gaps it
+will never close - some because closing them would mean shipping threat-intel
+feeds or signature packs instead of behavior, others because they sit outside
+its agentless, behavior-first design. sigwood aims for the top of the
+[pyramid of pain](https://www.attackiq.com/glossary/pyramid-of-pain-2/) as a
+design muse, and will not enumerate badness.
 
 ## Evidence and field validation
 
@@ -198,402 +204,41 @@ still owed. To help test sigwood on an environment that did not shape it, use th
 privacy-bounded
 [field validation kit](https://github.com/helixmap/sigwood/blob/main/docs/FIELDKIT.md).
 
-## Orient before the hunt: `digest`
+## Where it stands
 
-```bash
-sigwood digest /var/log/messages
-sigwood digest /var/log/pihole/pihole.log   # a great first move on a Pi-hole box
-sigwood digest conn.log dns.log             # several files → several cards
-```
+sigwood's North Star is behavior: beacon uses an FFT over connection timing; dns uses
+HDBSCAN clustering over per-query behavior; syslog uses drain3 log-templating plus rarity;
+aws uses a per-principal z-score composite; auth uses authentication structure across failures,
+services, sources, accounts, and hosts. Every run names the technique each detector used, and
+`-v` shows the evidence behind a finding. A finding is a lead, not a verdict - severity marks
+what deserves review first, and HIGH is deliberately scarce.
 
-For blocked-name behavior behind that same Pi-hole view, run the opt-in detector directly:
-
-```bash
-sigwood dnsblock /var/log/pihole/
-```
-
-The curated default hunt is a deliberately short, reviewed list, and the
+The curated default hunt is a short, reviewed list, and the
 [evidence ledger](https://github.com/helixmap/sigwood/blob/main/docs/EVIDENCE.md) records what
-each detector has and has not been measured on; `dnsblock` stays opt-in at 1.0.
-
-`digest` content-sniffs each file, routes it to the right summarizer (conn, dns, syslog,
-weird, cloudtrail), and falls back to a fast byte-profiler - **blob** - for anything it doesn't
-recognize. A card is flush-left and factual: the file's time window, line count and size, a
-scale-anchored histogram, and a handful of plain-language insights ("one client accounts for
-71% of queries") - facts and superlatives, never verdicts. It reads *before* the allowlist,
-because everything in the file is part of "what's in here." The blob profiler samples a big
-file rather than reading it, so a one-gigabyte mystery file costs the same as a one-kilobyte
-one.
-
-## See your logs: `graph`
-
-```bash
-sigwood graph                                 # bare: one artifact per kind your config supports
-sigwood graph conn                            # just one kind by name (conn, dns, or pihole)
-sigwood graph /opt/zeek                       # narrow to a path - a conn graph and a dns graph
-sigwood graph /var/log/pihole/pihole.log      # a Pi-hole box → clients, domains, dispositions
-sigwood graph --pihole-dir=/var/log/pihole    # narrow to one configured source family
-sigwood graph dns.log --out=~/graphs/         # choose where the artifact lands
-```
-
-`graph` builds a **self-contained HTML artifact** - one file, no server, no
-external resources, no network calls - that *replays* the flows in a log as an
-animated Sankey: who talked to whom, over the window, with time, speed, and filter
-controls. Watch the flows form and dissolve as you quickly get a sense of what's going
-on in the data.
-
-<p align="center">
-  <img src="https://raw.githubusercontent.com/helixmap/sigwood/main/docs/img/graph.gif"
-       width="760" alt="sigwood graph replaying conn.log flows as an animated Sankey - hosts, the services they reach, and destination hosts across a morning of traffic; scrambled sample data">
-</p>
-
-Pointed at a directory, `graph` windows like the hunt does: the last
-`default_window` (7d out of the box) of that source's available data, peeking
-rotation files' timestamps and skipping the rest instead of decompressing a whole
-archive. `--all` or an explicit `--since` widens, and a single named file always
-loads in full.
-
-A Zeek directory produces two graphs - a **conn** graph (hosts vs the services
-they reach) and a **dns** graph (clients vs the domains they look up). Pi-hole
-adds a **disposition lane**: alongside the domains each client queried, you can
-switch on a column for what Pi-hole did with each query - `blocked`,
-`forwarded`, `cached`, or `local`. Like `digest`, `graph` reads *before* the
-allowlist, and it states facts, not verdicts: it shows you the fat ribbon
-leaving your database server at 3 AM, and lets you decide if that's your backup
-window or a nightmare exfil scenario. Every artifact includes the command to
-hunt the data being visualized, for a quick pivot into analysis.
-
-## sigwood and RITA / AC-Hunter
-
-If you know [RITA](https://github.com/activecm/rita) (or its commercial sibling AC-Hunter),
-the beacon-hunting goal will look familiar - both hunt C2 in Zeek logs, and RITA is excellent
-at it. sigwood differs in conception: there is no database and no import step (it reads Zeek -
-and Pi-hole, syslog, and CloudTrail - in place), it spans several log families rather than
-conn/dns alone, and it ships an orientation verb (`digest`) for logs you haven't met yet. If
-you already run RITA against a dedicated Zeek sensor, keep it - sigwood is for the box where
-the logs already live and the analyst who wants one tool across all of them.
-
-## How a run works
-
-```
-discover & parse  →  allowlist (suppress)  →  detect  →  render
-```
-
-The **loader** finds files, decompresses, and normalizes every connection source to one
-canonical schema, absorbing storage variation (TSV vs. NDJSON, flat vs. dated directories,
-rotation). The **allowlist** suppresses known-good traffic before analysis. **Detectors** only
-analyze - they never open files, read config, or suppress. **Output handlers** only render.
-The CLI turns errors into actionable messages and owns the exit code. Every detector is also
-an importable Python function, handy in a notebook.
-
-### Analysis window
-
-Pointed at a **directory**, an unqualified run looks back over the last `default_window` (`7d`
-out of the box) of *that source's own* data - a sensible default for a live log dir you don't
-want to read in full every time. Pointed at a **single file**, it reads the whole file.
-When `dnsblock` is selected on a peekable Pi-hole directory, sigwood may select 21 additional
-days of rotated files to establish history while the reported rows stay inside that same
+each detector has and has not been measured on; `dnsblock` stays opt-in at 1.0. When it runs,
+`dnsblock` reaches beyond the report window for history, extending file selection over
 `default_window`. With the stock `7d` setting, that is a 28-day file-selection aperture - four
 times the report span by duration, though the number of files depends on the rotation layout.
-An unpeekable directory already loads in full. Explicit time bounds and `--all` keep their
-ordinary meanings.
-Override either way:
 
-```bash
-sigwood --since=7d ~/zeek            # last 7 days
-sigwood --since=2026-05-01 --until=2026-05-08 ~/zeek
-sigwood --days=2-4 ~/zeek            # 2 to 4 days ago
-sigwood --all ~/zeek                 # the entire archive
-```
+If you know [RITA](https://github.com/activecm/rita) (or AC-Hunter), the
+beacon-hunting goal will look familiar - RITA is excellent at it. sigwood
+differs in conception: frequency domain, no database, no import step, several
+log families rather than conn/dns alone, and an orientation verb for logs you
+have not met yet. If you already run RITA against a dedicated Zeek sensor, keep
+it - sigwood is for the box where the logs already live.
 
-CloudTrail opts out of the default window - novelty detection needs full history, so it always
-loads in full unless you narrow it explicitly. Times render in your local timezone, labeled as
-such; pass `--utc` or set `use_utc = true` for UTC. `json` output is always UTC. (Grouped
-syslog rows are the one exception - they lead with a syslog-shaped stamp instead. See the
-FAQ.)
+## Digging deeper
 
-## Installation
-
-One name everywhere: the PyPI distribution, the command, the import package, and the config
-section are all `sigwood`. Requires **Python 3.11+**.
-
-The recommended install is [pipx](https://pipx.pypa.io), which gives sigwood its own isolated
-environment, puts the command on your PATH, and sidesteps the `externally-managed-environment`
-refusal (PEP 668) that a bare `pip install` hits on Debian 12+, Raspberry Pi OS, Ubuntu 23.04+,
-and Fedora:
-
-```bash
-# Debian / Raspberry Pi OS / Ubuntu:  sudo apt install pipx
-# Fedora:                             sudo dnf install pipx
-# macOS:                              brew install pipx
-
-pipx ensurepath              # once - then reopen your shell
-pipx install sigwood
-sigwood --help
-```
-
-Prefer [uv](https://docs.astral.sh/uv/)? `uv tool install sigwood` does the same
-job. A plain virtualenv also works (`python3 -m venv venv && venv/bin/pip
-install sigwood`; a minimal Debian may need `sudo apt install python3-venv`
-first).
-
-On macOS/arm64, a clean virtualenv install of sigwood 0.6.0 uses roughly half a gigabyte
-on disk; the `[all]` extra rounds to the same figure. Most of that footprint is the
-scientific-Python dependency stack. For run-time memory on large-window DNS runs, see
-**DNS clustering cost rises with the volume of unsuppressed queries** in
-[KNOWN-ISSUES.md](https://github.com/helixmap/sigwood/blob/main/docs/KNOWN-ISSUES.md).
-
-### Upgrade an existing installation
-
-Use the upgrade command for the tool that owns the isolated environment, then confirm which
-version your shell finds:
-
-```bash
-pipx upgrade sigwood
-# or: uv tool upgrade sigwood
-sigwood --version
-```
-
-For an editable source installation, update the checkout through your normal Git workflow,
-then refresh the existing virtual environment and confirm its command directly:
-
-```bash
-.venv/bin/pip install -e '.[all]'
-.venv/bin/sigwood --version
-```
-
-Do not use `sudo pip install sigwood`. It modifies a system Python as root, can conflict with
-packages managed by the operating system, and can leave the command or its files owned by root.
-If that has already happened, use the package-management path that owns that system Python to
-remove or repair the system copy; there is no universally safe one-line uninstall command.
-Install a user-owned copy with pipx or uv instead. For pipx, run `pipx ensurepath` and reopen
-your shell so its executable directory is on PATH. Keep a user configuration under a writable
-`~/.sigwood` and run the isolated command as your user rather than with `sudo`; `/etc/sigwood`
-is the separate, deliberately system-administered configuration home.
-
-Optional extras (same spelling under pipx or pip):
-
-```bash
-pipx install 'sigwood[all]'           # fast + splunk + cloudtrail (recommended)
-pipx install 'sigwood[splunk]'        # Splunk exporter
-pipx install 'sigwood[cloudtrail]'    # CloudTrail (S3) exporter
-pipx install 'sigwood[pdf]'           # PDF reports - opt-in, see note below
-```
-
-Those install sigwood *with* an extra. **Adding one to an install you already have
-needs `--force`**, because pipx will otherwise decline to touch the existing
-environment: `pipx install --force 'sigwood[pdf]'`. In a virtualenv, plain
-`pip install 'sigwood[pdf]'` adds it in place; under `uv`, see uv's own
-documentation for reinstalling a tool with extras.
-
-A bare install needs no C compiler on the platforms people run this on. On
-64-bit machines, DNS clustering uses `fast-hdbscan`; on 32-bit ARM it uses stock
-`hdbscan` which is a bit slower but still works fine. The **first** run on a
-small box takes a minute or two while the scientific stack warms up (cached on
-disk after that); every run after is fast.
-
-`[pdf]` is separate from `[all]` because PDF also needs native text libraries `pip` can't
-install - `brew install pango` on macOS, `apt install libpango-1.0-0` (or `dnf install pango`)
-on Linux. Every other format works with no extra setup.
-
-**Platforms.** sigwood is developed and used on macOS and Linux, including Raspberry Pi;
-CI runs the full test suite on Linux across Python 3.11 through 3.14. Windows is untested,
-and some of the safety machinery (file locking, permission tightening) is POSIX-specific -
-on Windows, run it under WSL.
-
-**Uninstall.** sigwood installs no services, daemons, or scheduled jobs, so removal is the
-package plus, if you want it gone, its one data directory:
-
-```bash
-pipx uninstall sigwood
-```
-
-```bash
-uv tool uninstall sigwood
-```
-
-Everything sigwood writes lives under `~/.sigwood/` (configuration, allowlist drop-ins,
-exports, reports) - delete that directory too for a clean slate, after saving any reports
-or exported logs you still want. A system-wide config, if you created one, is
-`/etc/sigwood/`.
-
-From source:
-
-```bash
-git clone https://github.com/helixmap/sigwood
-cd sigwood
-python3 -m venv .venv                # Python 3.11+
-.venv/bin/pip install -e '.[all]'
-```
-
-## Configuration
-
-Configuration is optional - sigwood will run against a path with no config. When you want it
-repeatable, `sigwood init` looks at the conventional locations on your box, profiles what it
-finds (which log families, rough size, freshness), and writes an annotated config under `~/.sigwood/` (or
-`/etc/sigwood` for a system-wide install). If you decline a source, it offers to skip the
-detectors that would have read it (a `detect` exclusion in the config - re-running init after
-you add the source offers to lift it again). Re-run it any time: it merges into an existing
-config without clobbering settings you already have, and shows a summary of what will change
-before it writes anything.
-
-Config is loaded from the first of: `--config=FILE`, then `~/.sigwood/config.toml`, then
-`/etc/sigwood/config.toml`. Everything sigwood owns lives under `~/.sigwood/` -
-config, allowlists, exports, reports. A trimmed example:
-
-```toml
-[sigwood]
-detect     = "default"             # "default" | "all" | "dns,beacon" | "all,!syslog"
-zeek_dir   = "/var/log/zeek"
-syslog_dir = "/var/log"
-# pihole_dir     = "/var/log/pihole"
-# cloudtrail_dir = "/var/log/cloudtrail"
-
-home_net       = ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"]
-default_window = "7d"             # lookback for a directory; "" or "all" = full
-output_format  = "text"           # text | json | csv | html | pdf
-```
-
-Findings print to your terminal by default (pipeable). Set `report_dir`
-(or pass `--out=PATH`) to write report files instead. Every setting a detector
-has is documented in a commented "engine room" section at the bottom of the
-generated config (you rarely need to mess around in there). And `sigwood
-<detector> --help` lists that command's flags.
-
-`sigwood era [DIR]` is a separate whole-archive measurement for dated Zeek archives.
-It reads the planner's complete calendar rather than the hunt default window, and is
-deliberately allowlist-blind: its counts include traffic a normal hunt suppresses.
-Use `--dry-run` to inspect its calendar and work estimate before it loads data. It
-prints plain text by default; `--format=html` and `--format=pdf` render the same
-measured cards as a page you can read in a browser or hand to someone.
-
-Everything sigwood writes is private by default: directories it creates are mode
-`0700` and files `0600`, whatever your umask, because reports and exports can carry
-domains, client addresses, and evidence. If an existing sigwood home is group- or
-world-readable, a run points that out on stderr with the `chmod 700` to close it -
-sigwood never changes permissions on directories it didn't create. A system-wide
-`/etc/sigwood` config keeps normal shared permissions.
-
-## Log sources it speaks
-
-- **Zeek** - `conn.log`, `dns.log`, `syslog.log`, in NDJSON or TSV, from a flat directory or
-  date-partitioned subdirectories. Rotation and gzip/bzip2/xz compression are transparent.
-- **Pi-hole / dnsmasq** - DNS event logs, aggregated per domain for clustering.
-- **syslog** - flat RFC 3164 and ISO-8601 (the high-precision format stock rsyslog writes on
-  Ubuntu/Pop 24.04 and newer). Discovery is content-sniffed, not filename-matched, so it handles
-  both the Debian convention (`syslog`, `auth.log`, `kern.log`) and the RHEL/Fedora one
-  (extensionless `messages`, `secure`, `maillog`) - and won't mistake `dnf.log` or a binary like
-  `wtmp` for a log stream.
-- **CloudTrail** - gzipped JSON event records, read locally or pulled from S3 (see exporters below).
-
-## The allowlist
-
-sigwood filters **before** it analyzes: known-harmless traffic is dropped before any detector
-sees it, so signal isn't buried in plumbing. Two kinds of allowlist file:
-
-- **Flat files = suppression.** One rule per line - an IP, a CIDR, a `:port/proto`, a domain
-  glob/regex, or a system-log host pattern. Matching traffic is dropped before any detector runs.
-- **TOML stanzas = structured suppression.** The same drop, expressed as an entry that carries a
-  comment and an optional per-detector scope (`detectors = ["exfil"]`). A richer
-  classification role - telling a detector *what* something is - is planned, but no shipped
-  detector consumes it yet, so today a stanza suppresses.
-
-sigwood ships three curated **domain** lists, toggled by name:
-
-| list | default | covers |
-|------|---------|--------|
-| `common`  | on  | broad internet infrastructure - CDNs, cloud, NTP, certificate validation, public DNS, OS update channels |
-| `devices` | on  | consumer IoT / smart-home phone-home |
-| `homelab` | off | self-hosted tooling (Splunk, Proxmox, UniFi, …) - opt-in, since suppressing a product you run is a real blind spot |
-
-Nothing ad-, tracking-, or destination-specific ships - opinions differ and you may want to see
-those. sigwood never ships numeric connection or host suppressions (both depend on your
-environment, and shipping them could hide real findings).
-
-```bash
-sigwood allowlist                 # what's loaded, each list's on/off state and size
-sigwood allowlist show common     # the patterns in a list
-sigwood allowlist enable homelab  # turn a shipped list on
-sigwood allowlist disable common  # …or off
-sigwood allowlist copy common     # fork a shipped list into your allowlist.d to edit
-```
-
-Toggles can also be set under `[allowlist.lists]` in config; the whole allowlist turns off for
-one run with `--no-allowlist` or permanently with `enabled = false`. Every detect run discloses
-its coverage on the banner (`allowlist: suppressed 1,284 connections (12%) and 312 domains
-(59%)` - the share of loaded rows suppressed, per kind; host suppression adds a third clause,
-`9,412 rows from 2 hosts`), so a surprising suppression rate is visible at a glance.
-
-Add your own in any `domains_*` file under `~/.sigwood/allowlist.d/` (the shipped `domains_user`
-is a starter). A chatty machine's system logs can be silenced whole-host: one glob or `re:`
-pattern per line in the `hosts` file there, matched against the syslog host column across every
-feed (flat files, the journal, Zeek `syslog.log`) - it removes that host's entire system-log
-story, reboots and update runs included, so prefer narrow patterns. Drop-ins are additive and
-survive upgrades; to replace a shipped list, `disable`
-it and add your own. A bare host IP with no port suppresses *all* traffic involving that host - powerful
-but dangerous, and flagged as such wherever it appears.
-
-## Pulling logs in: exporters
-
-sigwood can fetch logs from external systems to local files, which it then analyzes like any
-other source - the syslog detector can't tell whether the data came from rsyslog or a Splunk
-export.
-
-```bash
-sigwood export splunk            # run the only configured query
-sigwood export splunk auth       # run the configured named query: "auth"
-sigwood export cloudtrail        # pull logs from S3
-```
-
-- **Splunk** - named SPL queries under `[export.splunk.query.<name>]`. Prefer the
-  `SIGWOOD_SPLUNK_USER` / `SIGWOOD_SPLUNK_PASS` environment variables over plaintext credentials
-  in config, but sigwood will not judge you.
-- **CloudTrail** - pulls gzipped JSON from an S3 prefix. AWS authentication is *not* handled
-  here: you authenticate your shell, and boto3 resolves the ambient credential chain. sigwood
-  never reads, stores, or prompts for AWS credentials, and warns before a large egress.
-
-## Output formats
-
-Choose by what you're doing with the findings - `--format=NAME` (or set `output_format` in
-config):
-
-- **`text`** (default) - a grouped report for the terminal, with a per-detector table of the
-  signals behind each finding.
-- **`html`** - the same report as a self-contained styled file to open in a browser, print, or
-  share. No extra dependencies; dark mode and print styles included.
-- **`pdf`** - the html report rendered to PDF (one renderer, two outputs). Opt-in:
-  `pip install 'sigwood[pdf]'` plus the native text libraries (see the install note above).
-- **`json`** - the lossless machine feed: a single object with `run_summary` and `findings`,
-  correctly typed for `jq` or a SIEM, always the full set. Carries a `schema_version`.
-- **`csv`** - a remediation worklist: one row per finding with the next-steps, the "why", and
-  empty `status`/`notes` columns to track as you knock items down.
-
-`text`, `html`, and `pdf` are reading views - they honor `-v` (the curated "why it scored") and
-`-vv` (raw debug). `json` and `csv` always carry the full set.
-
-The [public contract](https://github.com/helixmap/sigwood/blob/main/docs/CONTRACT.md)
-lists the CLI, Python, config, JSON, CSV, and exit-code surfaces that stay stable
-throughout 1.x.
-
-Every text format - including `html` - prints to stdout by default; redirect or pipe to save
-(`sigwood dns -f=html > report.html`). `pdf` is binary, so it needs a destination: a pipe
-(`-f=pdf > report.pdf`) or a file. Set `--out=PATH` or `report_dir` to write files; a directory
-target auto-names the report and prints the path it wrote.
-
-## Building from source & running tests
-
-```bash
-git clone https://github.com/helixmap/sigwood
-cd sigwood
-python3 -m venv .venv                # Python 3.11+
-.venv/bin/pip install -e '.[dev]'
-.venv/bin/python -m pytest
-```
-
-`main` is kept runnable. Architecture tests cover detector discovery, run
-planning, loader metadata, allowlist suppression, output registration, and CLI
-error formatting.
+The [manual](https://github.com/helixmap/sigwood/blob/main/docs/MANUAL.md) is the deep door:
+verbs and exit codes, source discovery, windows and time, every detector in depth, output,
+tuning, and exporters, in the order a hunt runs. The
+[FAQ](https://github.com/helixmap/sigwood/blob/main/docs/FAQ.md) answers objections,
+[known issues](https://github.com/helixmap/sigwood/blob/main/docs/KNOWN-ISSUES.md) quantifies
+the rough edges, the [contract](https://github.com/helixmap/sigwood/blob/main/docs/CONTRACT.md)
+says what stays stable through 1.x, and
+[CONTRIBUTING](https://github.com/helixmap/sigwood/blob/main/CONTRIBUTING.md) covers building
+from source and adding a detector.
 
 ## License
 
-sigwood is licensed under the [MIT License](https://github.com/helixmap/sigwood/blob/main/LICENSE).
+MIT. See the [MIT License](https://github.com/helixmap/sigwood/blob/main/LICENSE).

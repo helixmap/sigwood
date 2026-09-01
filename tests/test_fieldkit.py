@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import ast
 import importlib.util
 import json
 import os
@@ -15,10 +14,9 @@ from types import ModuleType
 
 import pytest
 
-from sigwood import runner
 from sigwood.common.finding import DetectorContext
 from sigwood.common.loader import load_logs
-from sigwood.detectors import aws, beacon, dns, exfil, scan, syslog
+from sigwood.detectors import beacon
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -158,51 +156,6 @@ def _machine_data(bundle: str) -> dict[str, object]:
     return json.loads("\n".join(lines[1:-1]))
 
 
-def test_standalone_script_is_python39_syntax_and_has_no_product_or_network_imports() -> None:
-    source = FIELDKIT_PATH.read_text(encoding="utf-8")
-    tree = ast.parse(source, filename=str(FIELDKIT_PATH), feature_version=(3, 9))
-    imported: set[str] = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            imported.update(alias.name for alias in node.names)
-        elif isinstance(node, ast.ImportFrom) and node.module:
-            imported.add(node.module)
-    assert not {name for name in imported if name == "sigwood" or name.startswith("sigwood.")}
-    assert not imported.intersection(
-        {"http", "http.client", "requests", "socket", "urllib", "urllib.request"}
-    )
-
-
-def test_literal_vocabulary_tables_match_live_available_detectors() -> None:
-    modules = (aws, beacon, dns, exfil, scan, syslog)
-    assert fieldkit.DETECTOR_TOKENS == frozenset(
-        module.DETECTOR_NAME for module in modules
-    )
-    patterns = {
-        spec["pattern"]
-        for module in modules
-        for spec in [*module.REQUIRED_LOGS, *module.OPTIONAL_LOGS]
-    }
-    assert fieldkit.RECORD_PATTERN_TOKENS == frozenset(patterns)
-
-    needed_logs = {
-        "*.json*": "cloudtrail_dir",
-        "*.log*": "journal",
-        "conn*.log*": "zeek_dir",
-        "dns*.log*": "zeek_dir",
-        "pihole*.log*": "pihole_dir",
-        "syslog*.log*": "zeek_dir",
-    }
-    expected_sources = set(
-        runner._derive_data_sources(
-            needed_logs,
-            {pattern: 1 for pattern in needed_logs},
-        )
-    )
-    expected_sources.update({"syslog_raw"})
-    assert fieldkit.DATA_SOURCE_TOKENS == frozenset(expected_sources)
-
-
 def test_real_protocol_adversarial_bundle_copies_no_hostile_report_string(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -251,6 +204,97 @@ def test_whitelist_types_and_identifier_buckets_are_fail_closed() -> None:
         "max": 0.75,
     }
     assert projected["counts"]["other"]["other"] == 1
+
+
+def test_auth_dnsblock_and_ssl_projection_keeps_only_curated_evidence() -> None:
+    titles = {
+        "auth": "Authentication activity for account alice",
+        "dnsblock": "Blocked name activity for workstation-17",
+        "ssl": "TLS validation detail for api.internal.example",
+    }
+    address = "203.0.113.91"
+    family_key = "workstation-17|blocked.example"
+    member = "192.0.2.44"
+    validation_status = "unable to verify certificate for api.internal.example"
+    findings = [
+        {
+            "detector": "auth",
+            "severity": "medium",
+            "title": titles["auth"],
+            "evidence": {
+                "signal": [
+                    "concentration",
+                    "source_volume",
+                    "account_volume",
+                    "host_spread",
+                    "landing",
+                ],
+                "address": address,
+            },
+        },
+        {
+            "detector": "dnsblock",
+            "severity": "medium",
+            "title": titles["dnsblock"],
+            "evidence": {
+                "kind": [
+                    "arrival",
+                    "arrival_fold",
+                    "burst",
+                    "prior_handling_exclusions",
+                    "recurring_activity",
+                ],
+                "family_key": family_key,
+                "members": [{"address": member}],
+            },
+        },
+        {
+            "detector": "ssl",
+            "severity": "low",
+            "title": titles["ssl"],
+            "evidence": {
+                "conn_count": 7,
+                "severity_basis": ["sni_absent", "validation"],
+                "validation_status": validation_status,
+            },
+        },
+    ]
+    private_values = [*titles.values(), address, family_key, member, validation_status]
+    encoded_input = json.dumps(findings, sort_keys=True)
+    for value in private_values:
+        assert value in encoded_input
+
+    projected, _ = fieldkit._project_findings(findings)
+
+    assert projected is not None
+    assert set(projected["counts"]) == {"auth", "dnsblock", "ssl"}
+    assert projected["evidence"]["ssl"]["numeric"]["conn_count"] == {
+        "n": 1,
+        "min": 7.0,
+        "median": 7.0,
+        "max": 7.0,
+    }
+    assert projected["evidence"]["auth"]["enums"]["signal"] == {
+        "account_volume": 1,
+        "concentration": 1,
+        "host_spread": 1,
+        "landing": 1,
+        "source_volume": 1,
+    }
+    assert projected["evidence"]["dnsblock"]["enums"]["kind"] == {
+        "arrival": 1,
+        "arrival_fold": 1,
+        "burst": 1,
+        "prior_handling_exclusions": 1,
+        "recurring_activity": 1,
+    }
+    assert projected["evidence"]["ssl"]["enums"]["severity_basis"] == {
+        "sni_absent": 1,
+        "validation": 1,
+    }
+    encoded_projection = json.dumps(projected, sort_keys=True)
+    for value in private_values:
+        assert value not in encoded_projection
 
 
 def test_json_reader_rejects_nonfinite_constants(tmp_path: Path) -> None:

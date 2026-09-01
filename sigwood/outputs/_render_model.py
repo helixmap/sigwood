@@ -200,7 +200,7 @@ def _partition_auth(findings: list[Finding]) -> list[Section]:
 
 
 def _partition_dnsblock(findings: list[Finding]) -> list[Section]:
-    """dnsblock's frozen operator order, independent of detector emission order."""
+    """dnsblock's stable operator order, independent of detector emission order."""
     kinds: dict[str, list[Finding]] = {
         "arrival": [],
         "burst": [],
@@ -1007,7 +1007,7 @@ def section_columns(section: Section) -> list[ColumnSpec]:
     (``full_width`` rows - aws ranked_summary and no-timestamp syslog rows -
     carry no grid cells and are skipped here; they render as a spanning row).
     A row shorter than the union
-    contributes ``""`` at the missing positions, so ``all_empty`` stays honest
+    contributes ``""`` at the missing positions, so ``all_empty`` stays accurate
     for heterogeneous sections (syslog event vs reboot).
     """
     grid_rows = [project_row(f) for f in section.findings]
@@ -1077,7 +1077,7 @@ def html_columns(section: Section) -> list[tuple[int, ColumnSpec]]:
 # paged media every cell wraps, so the pdf NEVER clips regardless of this estimate.
 # This helper only chooses portrait vs landscape so a wide table wraps LESS - a
 # mis-estimate yields a slightly-sub-optimal-but-lossless layout, never dropped data.
-# The numbers are a character-based model (honest because data cells are
+# The numbers are a character-based model (appropriate because data cells are
 # ui-monospace); the two B-tests pin a wide IPv6 table → landscape and a realistic
 # v4 beacon/scan table → portrait (the default-portrait MUST).
 

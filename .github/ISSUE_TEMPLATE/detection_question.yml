@@ -1,0 +1,40 @@
+name: Detection question
+description: sigwood surfaced something you do not understand, or missed something you expected.
+title: "[detection] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        A finding is a lead, not a verdict. An absent finding can be correct when the evidence does not support one.
+  - type: input
+    id: detector
+    attributes:
+      label: Detector
+      description: Name the detector or the behavior you expected sigwood to examine.
+    validations:
+      required: true
+  - type: textarea
+    id: what_happened
+    attributes:
+      label: What happened
+      description: Describe the finding or the expected finding after redacting sensitive or organization-specific details.
+    validations:
+      required: true
+  - type: textarea
+    id: verbose_output
+    attributes:
+      label: Verbose output
+      description: Paste the smallest useful verbose output after redacting sensitive or organization-specific details.
+      render: text
+  - type: input
+    id: window_and_source
+    attributes:
+      label: Time window and source
+      description: Name the time window and log source involved.
+    validations:
+      required: true
+  - type: textarea
+    id: additional_context
+    attributes:
+      label: Additional context
+      description: Attach screenshots here after redacting sensitive or organization-specific details.

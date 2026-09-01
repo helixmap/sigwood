@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Audit the shipped DNS B16 below-gate promotion without changing product behavior.
+"""Audit the shipped DNS below-gate promotion without changing product behavior.
 
 This development-only tool runs the ordinary default hunt under four fixed arms:
 one and seven days, each with the configured allowlist on and forced off.  It
@@ -39,7 +39,7 @@ _PARENT_LIMIT = 7
 _FRACTION_LIMIT = 0.13
 _WINDOW_DAYS = (1, 7)
 _INTERPRETATION = (
-    "audit of the shipped B16 channel; configured-allowlist dependence is not "
+    "audit of the shipped below-gate channel; configured-allowlist dependence is not "
     "precision and generalization to another operator list is unmeasured"
 )
 
@@ -57,14 +57,14 @@ class SafeArgumentParser(argparse.ArgumentParser):
 
     def error(self, message: str) -> None:
         del message
-        self.exit(2, "measure-dns-b16-allowlist-audit: invalid arguments\n")
+        self.exit(2, "measure-dns-allowlist-audit: invalid arguments\n")
 
 
 @dataclass(frozen=True)
 class _Observation:
     funnel: dict[str, object]
-    b16_parents: frozenset[str]
-    b16_info_parent_count: int
+    below_gate_parents: frozenset[str]
+    below_gate_info_parent_count: int
     data_window: tuple[datetime, datetime]
     min_cluster_size: int
     clustering: dict[str, object]
@@ -73,7 +73,7 @@ class _Observation:
 @dataclass(frozen=True)
 class _ArmMeasurement:
     record: dict[str, object]
-    b16_parents: frozenset[str]
+    below_gate_parents: frozenset[str]
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -95,7 +95,7 @@ def _parse_until(value: str) -> datetime:
     return parsed.astimezone(timezone.utc)
 
 
-def _b16_finding(finding: Finding) -> bool:
+def _is_below_gate_finding(finding: Finding) -> bool:
     return (
         finding.detector == "dns"
         and finding.evidence.get("tier") == "below_gate_group"
@@ -103,7 +103,7 @@ def _b16_finding(finding: Finding) -> bool:
 
 
 def _query_parent(query: str) -> str:
-    """Mirror B16's registrable-parent identity for private audit bookkeeping."""
+    """Mirror the below-gate promotion's parent identity for audit bookkeeping."""
     extracted = TLD_EXTRACT(query)
     parent = extracted.top_domain_under_public_suffix
     if parent:
@@ -170,10 +170,10 @@ def _cluster_record(frame: pd.DataFrame, min_cluster_size: int) -> dict[str, obj
 
 
 def _returned_above_gate_parents(findings: tuple[Finding, ...]) -> set[str]:
-    """Extract live above-gate parents from returned non-B16 DNS findings."""
+    """Extract live above-gate parents from returned non-below-gate DNS findings."""
     parents: set[str] = set()
     for finding in findings:
-        if finding.detector != "dns" or _b16_finding(finding):
+        if finding.detector != "dns" or _is_below_gate_finding(finding):
             continue
         evidence = finding.evidence
         if evidence.get("tier") == "scan_summary":
@@ -192,14 +192,14 @@ def _audit_funnel(
 ) -> tuple[dict[str, object], frozenset[str]]:
     """Build diagnostic four-gate aggregates and retain no identities in output.
 
-    The returned B16 findings, not this reconstruction, decide the stop rule.
+    The returned below-gate findings, not this reconstruction, decide the stop rule.
     The reconstruction exists only to expose where the live channel's population
     changes and carries a parity flag against the real returned channel.
     """
     returned = frozenset(
         str(finding.evidence["registrable_domain"])
         for finding in findings
-        if _b16_finding(finding)
+        if _is_below_gate_finding(finding)
         and isinstance(finding.evidence.get("registrable_domain"), str)
     )
     if frame.empty or "query" not in frame.columns or "rcode" not in frame.columns:
@@ -208,7 +208,7 @@ def _audit_funnel(
             "distinct_child_floor_parents": 0,
             "nxdomain_gate_parents": 0,
             "already_above_gate_exclusions": 0,
-            "returned_b16_parents": len(returned),
+            "returned_below_gate_parents": len(returned),
             "returned_funnel_parity": len(returned) == 0,
         }, returned
 
@@ -220,7 +220,7 @@ def _audit_funnel(
             "distinct_child_floor_parents": 0,
             "nxdomain_gate_parents": 0,
             "already_above_gate_exclusions": 0,
-            "returned_b16_parents": len(returned),
+            "returned_below_gate_parents": len(returned),
             "returned_funnel_parity": len(returned) == 0,
         }, returned
 
@@ -256,7 +256,7 @@ def _audit_funnel(
         "distinct_child_floor_parents": len(child_floor),
         "nxdomain_gate_parents": len(qualifying),
         "already_above_gate_exclusions": len(already_above),
-        "returned_b16_parents": len(returned),
+        "returned_below_gate_parents": len(returned),
         "returned_funnel_parity": expected == set(returned),
     }, returned
 
@@ -272,18 +272,18 @@ def _observe_dns_run() -> Iterator[list[_Observation]]:
         frame = context.logs.get("dns*.log*")
         returned_findings = tuple(findings)
         frame = pd.DataFrame() if frame is None else frame
-        funnel, b16_parents = _audit_funnel(frame, returned_findings)
-        b16_info_parent_count = sum(
+        funnel, below_gate_parents = _audit_funnel(frame, returned_findings)
+        below_gate_info_parent_count = sum(
             1
             for finding in returned_findings
-            if _b16_finding(finding)
+            if _is_below_gate_finding(finding)
             and finding.severity == Severity.INFO
             and isinstance(finding.evidence.get("registrable_domain"), str)
         )
         observations.append(_Observation(
             funnel=funnel,
-            b16_parents=b16_parents,
-            b16_info_parent_count=b16_info_parent_count,
+            below_gate_parents=below_gate_parents,
+            below_gate_info_parent_count=below_gate_info_parent_count,
             data_window=context.data_window,
             min_cluster_size=int(context.config.get("min_cluster_size", _MIN_CLUSTER_SIZE)),
             clustering=_cluster_record(frame, int(
@@ -303,7 +303,7 @@ def _observe_dns_run() -> Iterator[list[_Observation]]:
         detector.run = original
 
 
-def _visible_defaults_excluding_b16(payload: dict[str, object]) -> int:
+def _visible_defaults_excluding_below_gate(payload: dict[str, object]) -> int:
     """Apply the existing default visibility policy to runner JSON metadata only."""
     raw_findings = payload.get("findings")
     if not isinstance(raw_findings, list):
@@ -333,8 +333,8 @@ def _run_arm(
     config: dict[str, Any], *, zeek_dir: Path, since: datetime, until: datetime,
     no_allowlist: bool,
 ) -> _ArmMeasurement:
-    """Run one actual default hunt and reduce it to B16-safe aggregates."""
-    with tempfile.TemporaryDirectory(prefix="sigwood-b16-audit-") as temp_dir:
+    """Run one actual default hunt and reduce it to below-gate-safe aggregates."""
+    with tempfile.TemporaryDirectory(prefix="sigwood-below-gate-audit-") as temp_dir:
         sink = Path(temp_dir) / "discarded-run.json"
         try:
             with _observe_dns_run() as observations:
@@ -363,7 +363,7 @@ def _run_arm(
         raise MeasurementError("runner did not produce exactly one DNS observation")
 
     observation = observations[0]
-    visible_without_b16 = _visible_defaults_excluding_b16(payload)
+    visible_without_below_gate = _visible_defaults_excluding_below_gate(payload)
     return _ArmMeasurement(
         record={
             "requested_window": {
@@ -376,19 +376,19 @@ def _run_arm(
             ],
             "clustering": observation.clustering,
             "funnel": observation.funnel,
-            "b16_parent_count": len(observation.b16_parents),
-            "b16_info_parent_count": observation.b16_info_parent_count,
-            "same_arm_visible_defaults_excluding_b16": visible_without_b16,
+            "below_gate_parent_count": len(observation.below_gate_parents),
+            "below_gate_info_parent_count": observation.below_gate_info_parent_count,
+            "same_arm_visible_defaults_excluding_below_gate": visible_without_below_gate,
             "same_arm_combined_visible_defaults": (
-                visible_without_b16 + len(observation.b16_parents)
+                visible_without_below_gate + len(observation.below_gate_parents)
             ),
         },
-        b16_parents=observation.b16_parents,
+        below_gate_parents=observation.below_gate_parents,
     )
 
 
 def _window_comparison(one_day: _ArmMeasurement, seven_day: _ArmMeasurement) -> dict[str, object]:
-    """Report safe B16 overlap counts and conservative clustering comparability."""
+    """Report safe below-gate overlap counts and conservative clustering comparability."""
     one_cluster = one_day.record["clustering"]
     seven_cluster = seven_day.record["clustering"]
     assert isinstance(one_cluster, dict) and isinstance(seven_cluster, dict)
@@ -399,9 +399,9 @@ def _window_comparison(one_day: _ArmMeasurement, seven_day: _ArmMeasurement) -> 
         and seven_cluster.get("meets_min_cluster_size") is True
     )
     return {
-        "one_day_only": len(one_day.b16_parents - seven_day.b16_parents),
-        "seven_day_only": len(seven_day.b16_parents - one_day.b16_parents),
-        "both": len(one_day.b16_parents & seven_day.b16_parents),
+        "one_day_only": len(one_day.below_gate_parents - seven_day.below_gate_parents),
+        "seven_day_only": len(seven_day.below_gate_parents - one_day.below_gate_parents),
+        "both": len(one_day.below_gate_parents & seven_day.below_gate_parents),
         "status": "comparable" if comparable else "confounded",
         "reason": (
             "both_arms_ran_with_at_least_min_cluster_size_rows"
@@ -413,15 +413,15 @@ def _window_comparison(one_day: _ArmMeasurement, seven_day: _ArmMeasurement) -> 
 
 def _l4_record(primary: _ArmMeasurement) -> dict[str, object]:
     """Evaluate the preregistered no-allowlist attention stop rule uncapped."""
-    additions = len(primary.b16_parents)
-    denominator = primary.record["same_arm_visible_defaults_excluding_b16"]
+    additions = len(primary.below_gate_parents)
+    denominator = primary.record["same_arm_visible_defaults_excluding_below_gate"]
     assert isinstance(denominator, int)
     fraction = None if denominator == 0 else additions / denominator
     ratio_passes = additions == 0 if denominator == 0 else fraction <= _FRACTION_LIMIT
     return {
         "primary_arm": "no_allowlist_7d",
-        "additional_b16_parents": additions,
-        "existing_default_visible_excluding_b16": denominator,
+        "additional_below_gate_parents": additions,
+        "existing_default_visible_excluding_below_gate": denominator,
         "additional_fraction": fraction,
         "parent_limit": _PARENT_LIMIT,
         "fraction_limit": _FRACTION_LIMIT,
@@ -432,7 +432,7 @@ def _l4_record(primary: _ArmMeasurement) -> dict[str, object]:
     }
 
 
-def observe_b16_audit(
+def observe_below_gate_audit(
     config: dict[str, Any], *, zeek_dir: Path, until: datetime,
 ) -> dict[str, object]:
     """Run the four preregistered live-channel audit arms."""
@@ -459,7 +459,7 @@ def observe_b16_audit(
         for label, records in arms.items()
     }
     return {
-        "kind": "dns_b16_allowlist_audit",
+        "kind": "dns_below_gate_allowlist_audit",
         "interpretation": _INTERPRETATION,
         "parameters": {
             "channel": "shipped_dns_below_gate_group",
@@ -490,17 +490,17 @@ def main(argv: list[str] | None = None) -> int:
     try:
         until = _parse_until(args.until)
     except ToolUsageError as exc:
-        print(f"measure-dns-b16-allowlist-audit: {exc}", file=sys.stderr)
+        print(f"measure-dns-allowlist-audit: {exc}", file=sys.stderr)
         return 2
     try:
         config = cfg.load(args.config)
     except (OSError, cfg.ConfigError):
-        print("measure-dns-b16-allowlist-audit: could not read the config", file=sys.stderr)
+        print("measure-dns-allowlist-audit: could not read the config", file=sys.stderr)
         return 2
     try:
-        record = observe_b16_audit(config, zeek_dir=args.zeek_dir, until=until)
+        record = observe_below_gate_audit(config, zeek_dir=args.zeek_dir, until=until)
     except (MeasurementError, ToolUsageError) as exc:
-        print(f"measure-dns-b16-allowlist-audit: {exc}", file=sys.stderr)
+        print(f"measure-dns-allowlist-audit: {exc}", file=sys.stderr)
         return 2
     print(json.dumps(record, sort_keys=True, allow_nan=False))
     return 0

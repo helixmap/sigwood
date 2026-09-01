@@ -45,23 +45,13 @@ The one exception is a system-wide `/etc/sigwood` config, which keeps ordinary
 shared permissions so non-root users can read it.
 
 ### How do I upgrade, or recover from a `sudo pip install`?
+*Full detail: [the manual](MANUAL.md#installing-and-upgrading).*
 
 Use `pipx upgrade sigwood` or `uv tool upgrade sigwood`, matching the tool that installed it,
-then run `sigwood --version` to confirm which command your shell finds. For an editable source
-checkout, update it through your normal Git workflow and rerun its editable install in the
-existing virtual environment. The complete commands are in [Installation](../README.md#installation).
-
-Do not repair an isolated pipx, uv, or virtualenv install by rerunning it with `sudo`. A prior
-`sudo pip install` modified a system Python, so cleanup must follow the package-management path
-that owns that Python; a universal `sudo pip uninstall` recipe could damage operating-system
-packages. Install a user-owned copy with pipx or uv instead, run `pipx ensurepath` if needed,
-and keep its configuration in a writable user home.
-
-The configuration home decides whether elevation is appropriate. `/etc/sigwood` is deliberately
-shared and system-administered, so writing it can require administrator privileges.
-`~/.sigwood` belongs to the user running a pipx, uv, or virtualenv command; choose that writable
-home and run the user-owned command without `sudo`, which avoids root-owned files and a root
-environment that may not be able to find the isolated executable.
+then run `sigwood --version` to confirm which command your shell finds. Do not repair an isolated
+pipx, uv, or virtualenv install by rerunning it with `sudo`: a prior `sudo pip install` modified
+a system Python, so cleanup must follow the package-management path that owns it. Install a
+user-owned copy instead. Complete commands are in [Installation](../README.md#installation).
 
 ### Do I need Zeek?
 
@@ -86,27 +76,12 @@ on its own to cluster it directly; details in
 [KNOWN-ISSUES.md](KNOWN-ISSUES.md)). Pi-hole is a great project and is worth a look: https://pi-hole.net/
 
 ### I'm on Pi-hole v6 - where is the log sigwood reads?
+*Full detail: [the manual](MANUAL.md#sources-and-discovery).*
 
 Same place as v5: the flat query log at `/var/log/pihole/pihole.log`, plus its rotated
-siblings (`pihole.log.1`, `.gz`, ...), which sigwood picks up automatically. Point it at
-the directory:
-
-```bash
-sigwood dns /var/log/pihole/
-```
-
-In v6 that log is controlled by the `dns.queryLogging` setting (on by default). If your
-`pihole.log` is missing or empty, turn it on:
-
-```bash
-sudo pihole-FTL --config dns.queryLogging true
-```
-
-or flip `queryLogging` under `[dns]` in `/etc/pihole/pihole.toml`, or use the web
-interface (Settings, Expert mode, All settings). sigwood reads only this flat log - not
-FTL's long-term database - so query logging is the one switch that matters to it. Note
-the log usually needs root to read, so either run sigwood with appropriate privileges
-for the read or export the log to where your user can reach it.
+siblings, which sigwood picks up automatically. Pi-hole v6 controls it with
+`dns.queryLogging`; if the log is missing or empty, turn query logging on. sigwood reads
+this flat log, not FTL's long-term database. See [Quick start](../README.md#quick-start).
 
 ### How is this different from a SIEM? From an IDS?
 
@@ -151,30 +126,16 @@ detectors. (It also reads your data *before* the allowlist, because everything i
 is part of "what's in here.")
 
 ### What's the `graph` verb for?
+*Full detail: [the manual](MANUAL.md#reading-output).*
 
 `graph` (`sigwood graph`, or `sigwood graph <path>` to narrow to one log) is the third way
-to look at a log, alongside the hunt and `digest`. It writes a self-contained HTML file that *replays* the log's flows as an animated
-Sankey - clients, the domains or services they reached, and, for Pi-hole, what happened to each
-query. Think of the three as orient, see, analyze: `digest` tells you what's in a file, `graph`
-lets you watch it move, and the hunt tells you what stands out.
-
-For Zeek connection logs, byte ribbons use the recorded total and duration to draw a
-constant-rate band across each connection; connection counts remain anchored at starts.
-Zeek does not record the timing of bytes inside a connection, so this is an explicit model,
-not a claim that a bursty transfer was uniform. The artifact names the assumption and notes
-any recorded byte mass clipped outside its shown window.
-
-It is deliberately a **replay, not a monitor** - it plays back a saved record and never tails a
-live one, so it keeps sigwood daemon-free and dashboard-free. Like `digest` it reads *before*
-the allowlist and renders facts rather than verdicts: it shows you a flow, never a label like
-"exfil" or "suspicious." The artifact is one file with no external resources and no network
-calls, and it ends with the exact `sigwood hunt` command for the same log - so a graph is a
-hook into the hunt, not a replacement for it.
-
-A valid log always yields a graph. A very busy one that is too dense to animate smoothly
-degrades rather than failing - it caps the smoothing, coarsens the time bins, or folds to the
-busiest hosts and services, and notes what it did in the header - so you always get an artifact
-to look at instead of an error.
+to look at a log, alongside the hunt and `digest`. It writes one self-contained HTML artifact
+that replays the log's flows as an animated Sankey - clients, the domains or services they
+reached, and, for Pi-hole, what happened to each query. It is a **replay, not a monitor**: it
+never tails a live log. Like `digest`, it reads before the allowlist and renders facts rather
+than verdicts, so it shows a flow without calling it suspicious or exfiltration. The artifact
+uses no external resources or network calls and ends with the exact `sigwood hunt` command for
+the same log. A valid log always yields an artifact, even when a busy one must be simplified.
 
 ### What is `era`?
 
@@ -215,6 +176,7 @@ RHEL/Fedora one), and CloudTrail JSON. Rotation and `.gz`/`.bz2`/`.xz` compressi
 for you. Forthcoming, possibly: more.
 
 ### Does it read the systemd journal?
+*Full detail: [the manual](MANUAL.md#sources-and-discovery).*
 
 Yes. On a systemd host `sigwood syslog` (and `sigwood hunt`) read the live system journal
 directly - it runs `journalctl --output=json` for the journal *your* user can already read, with
@@ -222,22 +184,9 @@ directly - it runs `journalctl --output=json` for the journal *your* user can al
 removed as soon as the data is loaded). Every entry becomes the same five-column row as flat
 syslog, so the detector treats journal and file logs identically.
 
-`--syslog-source` picks the local source: `auto` (the default) prefers the journal and falls back
-to your `syslog_dir` files if journalctl is missing or the journal has nothing usable; `journal`
-requires it; `files` uses the flat directory only; `off` turns the local lane off. sigwood uses
-**one** local source per run - it never merges the journal with flat files (choose `files`
-explicitly if you want the on-disk archive). It needs systemd 236 or newer, and a single journal
-entry larger than 1 MiB fails the run visibly rather than being silently truncated.
-
-Zeek's own `syslog.log` can load alongside the local source, and the same rule extends per host:
-a host present in the local feed keeps its local rows only, and Zeek contributes just the hosts
-the local feed lacks - otherwise a doubly-carried line would count twice and stop looking rare.
-The run summary discloses it in counts when it happens (`system logs: 1 host carried by both the
-local feed and Zeek syslog.log - kept the local rows (16,094 Zeek rows set aside)`).
-
-**Existing configs migrate to `auto`.** If you never set `syslog_source`, sigwood now prefers the
-journal on a systemd host and tells you which source it used; set `syslog_source = "files"` to keep
-the old file-only behavior.
+`--syslog-source` selects `auto` (prefer the journal, then fall back to files), `journal`
+(require it), `files` (use the flat directory), or `off` (disable the local lane). Existing
+configs migrate to `auto`; set `syslog_source = "files"` to keep the old file-only behavior.
 
 ---
 
@@ -257,10 +206,8 @@ Tell it once and it'll stop. sigwood filters **before** it analyzes: a flat-file
 suppresses known-good traffic before any detector sees the data. Add the host, CIDR,
 `:port/proto`, or domain pattern to your allowlist and that traffic never reaches the
 detector - so it can't be flagged, and your noise floor is yours to set. (There's a second,
-structured form - TOML stanzas - which suppress the same way but let a rule carry a
-comment and a per-detector scope. A future classification role, where a detector is told
-what a thing *is* - a nameserver, a backup client - rather than dropping it, is planned
-but not consumed by any shipped detector yet.)
+structured form - TOML stanzas - that suppresses the same way while carrying a comment and
+per-detector scope.)
 
 ### What does it suppress out of the box?
 
@@ -273,31 +220,22 @@ ships off, since suppressing a product you run is a real blind spot - turn it on
 list - opinions differ and you may want to see those.
 
 ### How do I see or change what's suppressed?
+*Full detail: [the manual](MANUAL.md#tuning-and-suppression).*
 
-`sigwood allowlist` prints what's loaded, which lists are on, and - on every detect run - how
-much got suppressed (the `allowlist:` line on the run-summary banner, e.g. `suppressed 1,284
-connections (12%) and 312 domains (59%)` - the parenthetical is the share of loaded rows each
-covered, so an unexpectedly high rate rings a bell). `sigwood allowlist show <name>` prints a
-list's patterns;
-`enable`/`disable <name>` toggle a shipped list; `copy <name>` forks one into your
-`~/.sigwood/allowlist.d/` to edit. Add your own names in any `domains_*` there (always
-additive - to replace a shipped list, disable it). Names carry no extension, so a dotted copy
-like `domains_user.bak` won't load (the readout nudges a rename); park a retired list with a
-trailing `~` or by dropping the prefix. Turn suppression off for one run with
-`--no-allowlist`, or permanently with `enabled = false`.
+`sigwood allowlist` prints what is loaded and which lists are on. Every detect run also shows
+an `allowlist:` banner line such as `suppressed 1,284 connections (12%) and 312 domains
+(59%)`; the percentages are shares of the loaded rows, so an unexpectedly high rate is worth
+checking. Use `sigwood allowlist show <name>` for one list. Turn suppression off for one run
+with `--no-allowlist`.
 
 ### How do I silence one noisy host?
+*Full detail: [the manual](MANUAL.md#tuning-and-suppression).*
 
 Put a pattern in the `hosts` file under `~/.sigwood/allowlist.d/` (seeded blank by
-`sigwood init`) - one fnmatch glob or `re:` regex per line, matched case-insensitively
-against the system-log host column (`lab-*`, `re:^kiosk-[0-9]+$`). It applies to every
-syslog feed - flat files, the system journal, and Zeek `syslog.log` - before analysis, and
-the run banner discloses it (`suppressed 9,412 rows from 1 host`). Two things to know
-before you reach for it: suppression removes that host's *entire* system-log story - rare
-lines, bursts, reboots, admin-session and update-run units - and removing a chatty host
-shifts what counts as rare for the remaining hosts, because rarity is relative to the
-loaded corpus. Prefer narrow patterns, and review the file periodically. Host lists are
-local-only: sigwood never ships one.
+`sigwood init`), one pattern per line; for example, `lab-*` matches those hostnames
+case-insensitively. Suppression removes that host's *entire* system-log story - rare lines,
+bursts, reboots, admin-session and update-run units - and removing a chatty host shifts what
+counts as rare for the remaining hosts. Prefer narrow patterns.
 
 ### What does the shipped allowlist not protect you from seeing?
 
@@ -326,29 +264,22 @@ ongoing work - see [KNOWN-ISSUES.md](KNOWN-ISSUES.md). When in doubt, `digest` t
 whether the volume is the story.
 
 ### How much data can it handle?
+*Full detail: [the manual](MANUAL.md#windows-time-and-scale).*
 
 Pointed at a directory, an unqualified run looks back over the last `default_window` (`7d`
 out of the box), so a live log directory isn't read end-to-end every time; widen with
 `--since` / `--days` or read it all with `--all`. For rotated flat logs it peeks each
 rotation file's first timestamp and stops early instead of decompressing the whole archive.
-The opt-in `dnsblock` detector needs earlier context: on a peekable Pi-hole directory it may
-select 21 additional days of rotated files while keeping reported rows inside the configured
-window. Under the stock `7d` setting, that is a 28-day selection aperture - four times the
-report span by duration, with an actual file count that depends on rotation. An unpeekable
-source already loads in full; explicit time bounds and `--all` retain their ordinary meanings.
-And it prompts before chewing through more than `warn_above` records (default 10,000,000;
-`warn_above = 0` turns the prompt off).
-Very large single pulls (tens of millions of CloudTrail events) are the current scaling
-edge.
-
-Memory is the other edge worth knowing. sigwood reads each log fully into memory (pandas)
-rather than streaming it, so peak memory scales with the *largest single file* it opens, not
-the total on disk - a ~560 MB `conn.log` peaked near 6 GB in one measurement. The default
-window keeps a live directory from being read end to end, but one very large file, or `--all`
-over a big archive, can OOM a small box. Narrow the window with `--since`/`--days`, point at a
-single file, or run where there's headroom.
+The opt-in `dnsblock` detector may select 21 additional days of rotated files for its
+28-day selection aperture while keeping reported rows inside the configured window.
+An unpeekable source already loads in full; explicit time bounds and `--all` keep their normal
+meanings. sigwood prompts before reading more than `warn_above` records (default 10,000,000),
+and `warn_above = 0` turns that prompt off. It reads each log fully into memory rather than
+streaming it, so one very large file can exhaust a small machine; narrow the window, point at
+a single file, or run where there is headroom.
 
 ### What timezone are the times in?
+*Full detail: [the manual](MANUAL.md#reading-output).*
 
 Your machine's local timezone, labeled `local` on human-readable timestamps. Pass
 `--utc` (or set `use_utc = true` in config) to render everything in UTC with a `UTC` label
@@ -360,17 +291,8 @@ anchors on the same midnights, and the date in an auto-named report or digest fi
 follows it too. `json` output is the exception by design - it is always ISO-8601 UTC, so
 feeds into other tooling never shift with a display preference.
 
-One display exception, on syslog's grouped rows: the leading stamp on a review unit, a burst
-or a reboot is written in syslog's own wall-clock shape - `Jul 12 21:57:33` - rather than the
-labeled form, so it reads like the log itself. It carries no `local` word, and it is the same
-converted time as every other timestamp. Under `--utc` it picks up a ` UTC` suffix, because
-there it no longer matches the clock the log was written in.
-
-Two things to know when reading those rows. Syslog lines carry no year, so neither does this
-stamp; the report header names the window, and `-v` shows each row's first timestamp in full.
-And a raw log line's own stamp is the clock of the host that wrote it, which need not be
-yours - a log shipped in from another timezone, or one carrying its own offset, can show
-different digits from the grouped row above it even in local mode.
+Syslog's grouped rows are the display exception: their leading stamp keeps syslog's own
+wall-clock shape, adding a ` UTC` suffix under `--utc`.
 
 ### Can I run it on a schedule?
 
@@ -527,11 +449,8 @@ measured (1,000 seeded samples per label length against the live scorer, eleven 
 high; dictionary-word DGAs never cleared the candidate bar (a score of 1.8) in measurement;
 and random letter-only labels never clear it at any length - zero of 11,000 samples, and the
 best possible all-letter label sits below the bar by arithmetic - so a letter-only name can
-never reach HIGH severity or trip the dense-cluster tunnel scan on its score. A random
-vowel-free digit-and-consonant label - the shape the score is tuned toward - clears the bar
-about 19-36% of the time at typical DGA lengths (10-16 characters); a uniformly random
-letter-digit label, vowels included, clears it 6.6-14.8% at the same lengths; a long
-hexadecimal label straddles the bar, with roughly half of samples clearing (see
+never reach HIGH severity or trip the dense-cluster tunnel scan on its score. Measured
+single-name catch rates vary by label shape and length (see
 [KNOWN-ISSUES.md](KNOWN-ISSUES.md)). Those are single-name rates, not the detector's -
 what one name's score does and does not decide is two paragraphs down. "High-entropy
 cluster" elsewhere is a colloquial name for that random-looking
@@ -638,11 +557,9 @@ a message that differs only by such an identifier counts as repetition rather th
 of one-offs. Ordinary short numbers, dates, and colon-joined MAC addresses are never
 normalized, and the raw log line is always displayed exactly as written.
 
-The shipped class is configuration, not a hidden rule. Copy the commented
-`privileged_programs = [...]` block under `[detectors.syslog]` from
-`config_example.toml` into your config, then add or remove exact program tokens; an operator
-list replaces the shipped roster. A restart should not bury the day's real signal, and
-rarity alone should not overstate it.
+The privileged program class is configurable: copy the commented
+`privileged_programs = [...]` block from `config_example.toml`, then add or remove exact
+program tokens.
 
 On top of rarity, sigwood recognizes two routine *transactions* the same way it recognizes
 reboots: an **admin session** (a login through its logout, anchored on the session

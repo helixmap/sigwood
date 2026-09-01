@@ -1,0 +1,11 @@
+blank_issues_enabled: true
+contact_links:
+  - name: FAQ
+    url: https://github.com/helixmap/sigwood/blob/main/docs/FAQ.md
+    about: Check common questions before opening an issue.
+  - name: Known issues
+    url: https://github.com/helixmap/sigwood/blob/main/docs/KNOWN-ISSUES.md
+    about: Check current limitations and known problems.
+  - name: Manual
+    url: https://github.com/helixmap/sigwood/blob/main/docs/MANUAL.md
+    about: Read the full command and workflow guide.

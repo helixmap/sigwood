@@ -1479,7 +1479,7 @@ def _make_group_finding(
     # dominant-domain member count lives in cluster_true_member_count below.
     n_rows = len(grp)
 
-    # Honest counts. A dense-cluster group can mix noise rows with sampled rows
+    # Measured counts. A dense-cluster group can mix noise rows with sampled rows
     # from one or more dense clusters; count noise rows individually but each
     # dense cluster ONCE via its true (dominant-domain) totals - never per
     # sampled row (overcounts under the per-cluster cap) nor per registrable
@@ -1526,7 +1526,7 @@ def _make_group_finding(
 
     if has_dense and dense_tunnel_supported:
         # Deliberately surfaced dense cluster - the opposite of noise. {subdomain_count}
-        # is the honest dominant-domain count, never the capped/sampled row count.
+        # is the measured dominant-domain count, never the capped/sampled row count.
         namespace_kind = (
             "Registrable domain" if has_public_suffix else "Private namespace"
         )
@@ -1647,7 +1647,7 @@ def _make_singleton_finding(
 
     # A dense cluster of one repeated high-entropy query collapses to a single
     # distinct candidate and routes here. The defensive dense-origin branch keeps
-    # the prose honest independent of the group/singleton routing invariant.
+    # the prose accurate independent of the group/singleton routing invariant.
     dense_origin = "dense_cluster_id" in row.index and pd.notna(row.get("dense_cluster_id"))
     dense_tunnel_supported = (
         dense_origin
@@ -1755,7 +1755,7 @@ def _make_scan_summary_finding(
     """One synthetic INFO Finding disclosing the dense-cluster scan aggregate.
 
     Counts ONCE PER CLUSTER from dense_cluster_id (never a sampled-row sum): the
-    id is what lets the summary count clusters honestly. It counts only clusters
+    id is what lets the summary count clusters directly. It counts only clusters
     that SURVIVE the same ``label_entropy >= threshold`` gate the dense findings
     pass, so the disclosure can never claim a cluster the report does not show -
     the gate can drop every surfaced dense row when ``threshold`` is set above

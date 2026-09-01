@@ -275,7 +275,7 @@ def test_snapshot_content_identity_excludes_only_scan_interval(tmp_path):
     assert left.content_identity_sha256 == right.content_identity_sha256
 
 
-def test_snapshot_scan_bound_identity_keeps_pre_c1_canonical_bytes(tmp_path):
+def test_snapshot_scan_bound_identity_keeps_canonical_bytes_before_the_fold(tmp_path):
     path = tmp_path / "one.log"
     path.write_text("1\n", encoding="utf-8")
     start = datetime(2026, 1, 1, tzinfo=UTC)

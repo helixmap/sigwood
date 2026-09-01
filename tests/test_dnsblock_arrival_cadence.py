@@ -226,7 +226,7 @@ def _context(prepared):
     )
 
 
-def test_u3_arrival_uses_frozen_voice_evidence_and_cadence_floor():
+def test_arrival_uses_frozen_voice_evidence_and_cadence_floor():
     prepared = _prepared()
     findings = dnsblock.run(_context(prepared), _prepared=prepared)
     assert len(findings) == 1
@@ -287,7 +287,7 @@ def test_private_calibration_vector_rejects_values_outside_frozen_grids():
         dnsblock.DnsblockCalibrationVector(arrival_days=6)
 
 
-def test_u3_strong_arrival_uses_available_history_voice():
+def test_strong_arrival_uses_available_history_voice():
     prepared = _prepared(strong=True)
     finding = dnsblock.run(_context(prepared), _prepared=prepared)[0]
     assert finding.description == (
@@ -300,7 +300,7 @@ def test_u3_strong_arrival_uses_available_history_voice():
     assert finding.evidence["novelty_noun"] == "first_available_history"
 
 
-def test_u3_fold_conserves_members_and_report_only_share_facts():
+def test_fold_conserves_members_and_report_only_share_facts():
     prepared = _prepared(
         ("a.example.com", "b.example.net", "c.example.org", "d.example.edu")
     )

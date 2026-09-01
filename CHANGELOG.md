@@ -6,6 +6,21 @@ All notable changes to sigwood are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `docs/MANUAL.md`, a reference manual covering installation, source discovery, time
+  windows, each detector's limits, output formats, tuning, suppression, and the exporters.
+  The README is now a front door of about 1,650 words that points into it, and the FAQ hands
+  its longer installation and tuning answers to the manual instead of repeating them.
+
+- GitHub issue forms for bug reports, detection questions, and source-support requests.
+  Each form asks the reporter to redact addresses, hostnames, and domain names before
+  pasting, and links to the manual, the FAQ, known issues, and the field-validation kit.
+
+- The roadmap describes how findings could be correlated across detectors after 1.0:
+  linking first, with the certainty of each link stated, and severity rising only where
+  independent kinds of evidence agree about the same thing.
+
 ### Changed
 
 - Commits on `main` and release tags are signed with a hardware-backed SSH key that needs a
@@ -16,6 +31,24 @@ All notable changes to sigwood are recorded here. The format follows
 
 - The release checklist signs the release tag, verifies it before the push, confirms both
   signatures on GitHub after publication, and carries the one-time signing-key setup.
+
+- The package classifier moved from Beta to Production/Stable. The manual states the tested
+  Python range plainly: 3.11 through 3.14, the versions CI runs; installing on 3.15 is
+  permitted rather than verified.
+
+- `tools/fieldkit.py`, the field-validation kit, was rewritten around a closed vocabulary
+  bound to live detector discovery, so a report projects `auth`, `dnsblock`, `ssl`, and
+  TLS-source evidence without carrying identifiers or uncurated values. The report also
+  records the interpreter that ran sigwood separately from the one that ran the kit; on a
+  host whose pipx default differs from `python3`, every measurement was previously
+  attributed to the wrong interpreter.
+
+- Known Issues no longer claims that every earlier raw crash and unbounded allocation path
+  has been fixed; it says which ones were and leaves the open limits beside them.
+
+- Public documentation and code comments no longer characterize the tool's own virtues, and
+  the internal shorthand that had leaked into shipped comments and test-module names gave
+  way to the behavioral names the documentation uses.
 
 ## [0.7.0] - 2026-08-31
 

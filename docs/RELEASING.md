@@ -83,6 +83,18 @@ git remote set-url --push origin git@github.com:helixmap/sigwood.git
 Every `git commit`, `git tag`, and `git push` then asks for one touch. A touch prompt you
 did not cause is the signal to stop and look.
 
+The keys are resident on their tokens, so a second machine needs no new key and no GitHub
+change. With the token plugged in, download its handle, then run the same configuration
+against that file:
+
+```bash
+ssh-keygen -K
+```
+
+It asks for the token's PIN and writes `id_ed25519_sk_rk_helixmap-github` and its `.pub`
+into the current directory. The handle is useless without that token, and each of the
+three tokens produces its own.
+
 Also authenticate `gh` as a maintainer of `helixmap/sigwood`. The token wants read access
 plus issues and pull requests, and nothing that can push, approve a deployment, or edit
 repository rules; those stay in the browser.

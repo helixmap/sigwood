@@ -23,6 +23,8 @@ DOC_FILES = (
     PurePosixPath("demo/README.md"),
 )
 DOCS_GLOB = "docs/*.md"
+ISSUE_FORMS_DIR = PurePosixPath(".github/ISSUE_TEMPLATE")
+ISSUE_FORM_SUFFIXES = frozenset({".yml", ".yaml"})
 
 REPO_OWNER = "helixmap"
 REPO_NAME = "sigwood"
@@ -48,6 +50,8 @@ _HTML_TAG = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 _ATX_HEADING = re.compile(r"^ {0,3}#{1,6}(?:[ \t]+|$)(?P<text>.*)$")
+_ABSOLUTE_HTTP_URL = re.compile(r"https?://[^\s<>\"']+")
+_TRAILING_URL_PUNCTUATION = ".,;:!?"
 
 
 @dataclass(frozen=True)
@@ -166,6 +170,22 @@ def _extract_targets(text: str) -> list[str]:
     return [item.target for item in sorted(extracted, key=lambda item: item.position)]
 
 
+def _source_delimited_url(value: str) -> str:
+    """Remove prose/Markdown terminators without changing URL-owned delimiters."""
+    value = value.rstrip(_TRAILING_URL_PUNCTUATION)
+    while value.endswith(")") and value.count(")") > value.count("("):
+        value = value[:-1].rstrip(_TRAILING_URL_PUNCTUATION)
+    return value
+
+
+def _absolute_http_targets(text: str) -> list[str]:
+    return [
+        target
+        for match in _ABSOLUTE_HTTP_URL.finditer(text)
+        if (target := _source_delimited_url(match.group(0)))
+    ]
+
+
 def _heading_slugs(text: str) -> set[str]:
     counts: dict[str, int] = {}
     slugs: set[str] = set()
@@ -196,6 +216,19 @@ def _document_paths(root: Path) -> tuple[Path, ...]:
     if not docs:
         raise ValueError("no public Markdown files found under docs")
     return fixed + docs
+
+
+def _issue_form_paths(root: Path) -> tuple[Path, ...]:
+    forms_dir = root / Path(ISSUE_FORMS_DIR)
+    if not forms_dir.is_dir():
+        return ()
+    return tuple(
+        sorted(
+            path
+            for path in forms_dir.iterdir()
+            if path.is_file() and path.suffix.lower() in ISSUE_FORM_SUFFIXES
+        )
+    )
 
 
 def _inside_root(root: Path, candidate: Path) -> Path | None:
@@ -347,6 +380,7 @@ def scan_doc_links(root: Path = Path(".")) -> ScanResult:
     """Scan the public documentation tree and return findings plus disclosure data."""
     root = root.resolve()
     documents = _document_paths(root)
+    issue_forms = _issue_form_paths(root)
     texts = {path: path.read_text(encoding="utf-8") for path in documents}
     heading_cache = {path: _heading_slugs(text) for path, text in texts.items()}
     findings: list[Finding] = []
@@ -373,9 +407,20 @@ def scan_doc_links(root: Path = Path(".")) -> ScanResult:
                 _inspect_relative_target(source, root, target, heading_cache)
             )
 
+    for source in issue_forms:
+        text = source.read_text(encoding="utf-8")
+        for target in _absolute_http_targets(text):
+            link_count += 1
+            repo_findings, classification = _inspect_repo_url(source, root, target)
+            findings.extend(repo_findings)
+            if classification == "external" or classification is None:
+                external_targets.append(target)
+            elif classification == "pinned":
+                pinned_targets.append(target)
+
     return ScanResult(
         findings=tuple(findings),
-        file_count=len(documents),
+        file_count=len(documents) + len(issue_forms),
         link_count=link_count,
         external_targets=tuple(external_targets),
         pinned_targets=tuple(pinned_targets),

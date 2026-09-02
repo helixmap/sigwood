@@ -127,11 +127,20 @@ can also be raised confidentially through GitHub rather than by email.
 
 **Release integrity.** Every GitHub Actions step is pinned to a full commit SHA
 rather than a moving tag, and those pins are kept current by scheduled update
-proposals. Workflows run read-only by default; the publish job is the single
-exception and holds only the token-minting permission it needs. Releases are
-published to PyPI with Trusted Publishing and carry signed provenance
-attestations, so a release traces back to the workflow run and commit that
-produced it.
+proposals. Workflows run read-only by default. The release gate requires the selected
+commit to be on `main` history; the package job then builds the wheel and source
+distribution once with the hash-locked toolchain, attests them, and uploads the `dist`
+workflow artifact. The test matrix consumes that artifact, and only after it passes does
+the environment-scoped, action-only publish job download the same files and mint the
+token used for the selected package index. The build attestation and PyPI publication
+attestation record different parts of that path. Neither proves that the code is safe or
+reviewed.
+
+Because the package job has both shell steps and permission to mint an OIDC token,
+repository structure alone cannot prove that it is unable to publish. The expected
+decisive control is the external PyPI Trusted Publisher binding to the `pypi`
+environment: if configured as intended, the package job does not satisfy it. Verify
+that PyPI setting directly rather than treating the workflow as evidence of it.
 
 **Verifying a checkout.** With any `ssh-keygen` from OpenSSH 8.2 or later on your
 path, from the repository root:
@@ -148,3 +157,6 @@ Each prints `Good "git" signature for code@augros.org with ED25519-SK key ...`. 
 shows the same result as a **Verified** badge on the commit and on the tag. A published
 wheel is checked against the attestation PyPI serves for it with the `pypi-attestations`
 tool, which confirms the file was uploaded by this repository's `release.yml` workflow.
+The separate GitHub build provenance attestation is checked with `gh attestation verify`,
+constrained to this repository and `.github/workflows/release.yml`; it binds the file digest
+to the source commit and build workflow, not to a security review.

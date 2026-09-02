@@ -1,17 +1,14 @@
 # Releasing sigwood
 
 This is the maintainer checklist for publishing sigwood to PyPI and GitHub. Run it from the
-repository root in one Bash session, and confirm each step before continuing. The pushed tag
-can still be replaced before PyPI approval; publishing a version to PyPI cannot be undone or
-repeated.
+repository root in one Bash session, and confirm each step before continuing. A pushed `v*` tag
+cannot be deleted or replaced under the version-protection ruleset, and publishing a version to
+PyPI cannot be undone or repeated.
 
-sigwood publishes through **Trusted Publishing**. A tag-triggered GitHub Actions workflow
-(`.github/workflows/release.yml`) builds the distributions and authenticates to PyPI with
-OpenID Connect, so no long-lived API token is stored. Each upload also carries a **PEP 740
-PyPI Publish Attestation**, a Sigstore-backed record of which Trusted Publisher uploaded the
-distribution. That is publication provenance, not a claim that the code is safe. After a
-successful upload the same workflow **drafts** the matching GitHub Release from the tag's
-`CHANGELOG.md` section; it never publishes one.
+sigwood publishes through **Trusted Publishing**. The GitHub Actions route builds and tests one
+set of distributions, then authenticates to the selected package index with OpenID Connect, so
+no long-lived API token is stored in the normal path. The complete route and the limits of its
+two kinds of attestation are described once under **Release workflow route** below.
 
 Three human gates remain deliberate:
 
@@ -115,6 +112,64 @@ line deliberately repeats the version as rendered prose, so update it in the sam
 
 Stable versions use `X.Y.Z`; tags use `vX.Y.Z`. The release workflow rejects a tag whose
 version does not exactly match `__version__`.
+
+## Release workflow route
+
+The workflow has one ordered graph: `gate -> package -> test -> publish -> github-release`.
+`github-release` runs only for a tag push; a TestPyPI dispatch ends after `publish`.
+
+The `gate` job first requires the selected commit to be an ancestor of `origin/main` as fetched
+when the job runs. This applies to both trigger paths. It neither proves that GitHub required a
+passing check before the commit reached `main` nor replaces the `pypi` environment's human
+review of the exact tagged SHA.
+
+The `package` job constructs the wheel and source distribution once, before any development
+dependency or project test runs. Its three direct build-tool roots are `build`, `twine`, and
+`setuptools>=77`. Their resolved graph is recorded in
+`.github/requirements/build-toolchain.txt`; installation requires every download to match a
+recorded hash and force-reinstalls even a matching version already present on the runner. The
+job builds without PEP 517 isolation, so the hash-checked backend is the backend that runs.
+
+Regenerate the lock with uv 0.12.7 and the exact runner target:
+
+```bash
+uv pip compile .github/requirements/build-toolchain.in --generate-hashes \
+  --python-version 3.12 --python-platform x86_64-unknown-linux-gnu \
+  -o .github/requirements/build-toolchain.txt
+```
+
+Do not omit the Python or platform arguments. A lock resolved for the maintainer's macOS host is
+not the Linux lock consumed by the GitHub-hosted runner. The hashes cover the Python build
+toolchain, not the `ubuntu-latest` runner image, the Python installed by
+`actions/setup-python`, that Python's bundled pip, or the package index serving the hashed
+downloads; those layers remain trusted by assumption.
+
+After validation, `package` creates a GitHub build provenance attestation for both distributions,
+then uploads those same files as the `dist` workflow artifact. The attestation binds their
+digests to the source commit and `release.yml` workflow that built them. It does not prove that
+the code is safe or reviewed, that the inputs were reproducible, or that no packaging-layer
+difference changes behavior.
+
+The four `test` legs download that completed artifact before installing the checkout's broad
+development dependencies. The suite tests the checkout at the build commit; pytest's import mode
+can let that checkout shadow an installed wheel. The Python 3.12 clean-venv smoke is the wheel
+check: it installs the downloaded wheel, checks its dependencies, imports its data, and runs its
+command.
+
+Only after all test legs pass does the environment-scoped, action-only `publish` job download
+the same `dist` artifact and upload it. A dispatch selects the deliberately ungated `testpypi`
+environment; a tag push selects `pypi`, whose required reviewer is the production human gate.
+Each index upload carries a PEP 740 PyPI Publish Attestation recording the artifact digest and
+Trusted Publisher identity. That is publication provenance, distinct from the GitHub build
+provenance above, and it is not a claim that the code is safe or reviewed.
+
+The package job needs OpenID Connect for build attestation, so repository structure alone cannot
+prove that it is unable to publish. The expected decisive control is the external Trusted
+Publisher binding to the matching environment: if configured as intended, a token from the
+environment-free package job does not satisfy it. Confirm the publisher identity on each index
+rather than inferring it from this workflow. After a successful production upload,
+`github-release` drafts the matching GitHub Release from the tag's `CHANGELOG.md` section; it
+never publishes the draft.
 
 ## Release checklist
 
@@ -443,6 +498,26 @@ Both index flags are required. `--index-url` selects the sigwood package from Te
 On the [TestPyPI project page](https://test.pypi.org/project/sigwood/#history), confirm that the dev
 release and its provenance/attestation panel are present. Rehearsing again creates a fresh
 `.dev` version because package indexes never accept the same version twice.
+
+Download the rehearsal's workflow artifact and verify both files against this repository and
+the release workflow. Preserve the command and output with the release evidence:
+
+```bash
+ATTEST_DIR=$(mktemp -d "${TMPDIR:-/tmp}/sigwood-attestation.XXXXXX")
+if gh run download "$REHEARSAL_RUN_ID" --repo "$REPO" --name dist --dir "$ATTEST_DIR" &&
+  test "$(find "$ATTEST_DIR" -type f \( -name '*.whl' -o -name '*.tar.gz' \) | wc -l | tr -d ' ')" -eq 2 &&
+  find "$ATTEST_DIR" -type f \( -name '*.whl' -o -name '*.tar.gz' \) \
+    -exec gh attestation verify '{}' --repo "$REPO" \
+      --signer-workflow "$REPO/.github/workflows/release.yml" \;; then
+  rm -rf "$ATTEST_DIR"
+else
+  printf 'build provenance verification failed; inspect %s\n' "$ATTEST_DIR" >&2
+  false
+fi
+```
+
+This proves that GitHub accepted a signed statement binding those digests to the expected
+repository and workflow. It does not prove that the source or resulting behavior is safe.
 
 ### 5 - Push the tag
 

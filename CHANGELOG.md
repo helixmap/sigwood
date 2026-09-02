@@ -23,11 +23,27 @@ All notable changes to sigwood are recorded here. The format follows
 
 ### Changed
 
+- Release artifacts now carry GitHub build provenance tying their digests to the source commit
+  and release workflow, alongside PyPI's separate publication attestation. The package job's
+  added OIDC permission does not itself prove that it cannot publish; the documented boundary
+  depends on the external Trusted Publisher environment binding being configured as intended.
+
+- The release workflow now constructs the wheel and source distribution once, before any
+  development dependency or test runs, using a hash-locked build toolchain and the checked
+  backend rather than a fresh isolated resolution. Every test leg downloads and fingerprints
+  those artifacts before installing the checkout's development graph, the wheel smoke uses the
+  downloaded wheel, and publication remains an action-only job consuming the same artifact.
+
+- The release workflow refuses a selected commit that is not an ancestor of `origin/main`
+  when the gate runs, before the build matrix or publication path can start. The gate applies
+  to tag pushes and TestPyPI dispatches; the existing PyPI environment approval remains the
+  maintainer's exact-SHA review.
+
 - Commits on `main` and release tags are signed with a hardware-backed SSH key that needs a
   physical touch, and the branch and the `v*` tag namespace refuse unsigned pushes. The
-  signing public keys are mirrored in `allowed_signers` at the repository root, and
-  `SECURITY.md` describes the chain from commit to published wheel and how to verify a
-  checkout.
+  protected version tags also refuse deletion and replacement after the push. The signing
+  public keys are mirrored in `allowed_signers` at the repository root, and `SECURITY.md`
+  describes the chain from commit to published wheel and how to verify a checkout.
 
 - The release checklist signs the release tag, verifies it before the push, confirms both
   signatures on GitHub after publication, and carries the one-time signing-key setup.

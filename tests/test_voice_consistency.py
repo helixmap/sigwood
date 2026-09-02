@@ -476,19 +476,22 @@ def test_range_flag_tripwire_catches_single_value() -> None:
 # the tool's own virtue. A virtue-word whose deletion leaves the sentence's facts
 # intact ("the honest ledger", "stated plainly") reads as a plea to be believed,
 # and a reader told twice that the tool is honest starts asking why it insists.
-# The budget below holds the SYMPTOMATIC token family at its floor: the remaining
-# uses define a contributor value, bound a method claim, or name a change whose
-# whole point was a disclosure's truthfulness (CHANGELOG's beacon excluded-
-# connections entry - the word is the subject there, not seasoning). Exact both
-# ways so the table drains - a new use argues with this comment, a removed use
-# shrinks its row in the same change. Whether a sentence pleads in OTHER words is
-# a prose judgment no scan decides; that half is review-enforced.
+# The budget below holds the SYMPTOMATIC token family at its three-use floor: two
+# CONTRIBUTING uses define a contributor value and its guidance, while one
+# CHANGELOG use names a change whose whole point was a disclosure's truthfulness
+# (the word is the subject there, not seasoning). The path-plus-exact-match table
+# drains both ways: a new use argues with this comment, and a removed use shrinks
+# its row in the same change. Case and inflection changes deliberately require a
+# table decision. Moving the same exact token within one file remains invisible;
+# catching that would require brittle context or position anchors. Whether a
+# sentence pleads in OTHER words is a prose judgment no scan decides; that half
+# is review-enforced.
 _PLEADING_TOKEN_RE = re.compile(
     r"\bhonest(?:y|ly)?\b|\btruthful(?:ly|ness)?\b", re.IGNORECASE
 )
 _PLEADING_BUDGET = {
-    "CHANGELOG.md": 1,
-    "CONTRIBUTING.md": 2,
+    "CHANGELOG.md": Counter({"truthfully": 1}),
+    "CONTRIBUTING.md": Counter({"honest": 1, "Honesty": 1}),
 }
 # Root pages are enumerated, never globbed - a root glob follows local agent
 # symlinks into untracked space; docs/ is walked recursively so subdirectories
@@ -502,14 +505,14 @@ _PLEADING_ROOT_DOCS = (
 )
 
 
-def _pleading_token_counts() -> dict[str, int]:
-    files = [_SRC_ROOT / rel for rel in _PLEADING_ROOT_DOCS]
-    files += sorted((_SRC_ROOT / "docs").rglob("*.md"))
-    counts: dict[str, int] = {}
+def _pleading_token_counts(src_root: Path = _SRC_ROOT) -> dict[str, Counter[str]]:
+    files = [src_root / rel for rel in _PLEADING_ROOT_DOCS]
+    files += sorted((src_root / "docs").rglob("*.md"))
+    counts: dict[str, Counter[str]] = {}
     for path in files:
-        n = len(_PLEADING_TOKEN_RE.findall(path.read_text(encoding="utf-8")))
-        if n:
-            counts[path.relative_to(_SRC_ROOT).as_posix()] = n
+        matches = Counter(_PLEADING_TOKEN_RE.findall(path.read_text(encoding="utf-8")))
+        if matches:
+            counts[path.relative_to(src_root).as_posix()] = matches
     return counts
 
 
@@ -527,13 +530,52 @@ def test_pleading_token_scan_counts_a_seeded_use() -> None:
     assert len(_PLEADING_TOKEN_RE.findall(seeded)) == 3
 
 
+def _write_pleading_test_corpus(
+    tmp_path: Path, contributing_text: str
+) -> dict[str, Counter[str]]:
+    for rel in _PLEADING_ROOT_DOCS:
+        path = tmp_path / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("", encoding="utf-8")
+    (tmp_path / "docs").mkdir(exist_ok=True)
+    (tmp_path / "CHANGELOG.md").write_text("truthfully\n", encoding="utf-8")
+    (tmp_path / "CONTRIBUTING.md").write_text(contributing_text, encoding="utf-8")
+    return _pleading_token_counts(tmp_path)
+
+
+def test_pleading_token_budget_rejects_an_inflection_substitution(
+    tmp_path: Path,
+) -> None:
+    """A same-file substitution cannot hide behind an unchanged total count."""
+    observed = _write_pleading_test_corpus(tmp_path, "honest truthfully\n")
+    allowed = _PLEADING_BUDGET["CONTRIBUTING.md"]
+    substituted = observed["CONTRIBUTING.md"]
+
+    assert substituted.total() == allowed.total()  # The old integer budget passed.
+    assert observed != _PLEADING_BUDGET
+    assert substituted - allowed == Counter({"truthfully": 1})
+    assert allowed - substituted == Counter({"Honesty": 1})
+
+
+def test_pleading_token_budget_rejects_an_unused_allowance(tmp_path: Path) -> None:
+    """Removing a legitimate use requires shrinking its exact-text table row."""
+    observed = _write_pleading_test_corpus(tmp_path, "honest\n")
+    allowed = _PLEADING_BUDGET["CONTRIBUTING.md"]
+    after_removal = observed["CONTRIBUTING.md"]
+
+    assert observed != _PLEADING_BUDGET
+    assert after_removal - allowed == Counter()
+    assert allowed - after_removal == Counter({"Honesty": 1})
+
+
 # This test is the one tracked file that names the private token-file path; the
 # residue scan below excludes this file from itself, so the literal is sanctioned here.
 _RESIDUE_TOKEN_FILE = _SRC_ROOT / "private" / "residue_tokens.txt"
 _RESIDUE_ALLOW_PREFIX = "allow:"
 _RESIDUE_PUBLIC_PREFIX = "public:"
 _RESIDUE_NAME_PREFIX = "name:"
-_RESIDUE_CODE_DIRS = ("sigwood", "tests", "notebooks", "demo")
+_RESIDUE_CODE_DIRS = ("sigwood", "tests", "notebooks", "demo", "tools")
+_RESIDUE_YAML_DIRS = (".github",)
 _RESIDUE_ROOT_DOCS = ("README.md", "CHANGELOG.md", "CONTRIBUTING.md", "SECURITY.md")
 _RESIDUE_JUNK_DIRS = ("__pycache__", ".ipynb_checkpoints")
 _RESIDUE_MARKDOWN_FLOOR = 11
@@ -674,22 +716,42 @@ def _residue_regular_files(root: Path) -> list[Path]:
     ]
 
 
-def _residue_inventory_paths() -> list[Path]:
-    paths: list[Path] = []
-    for dirname in _RESIDUE_CODE_DIRS:
-        root = _SRC_ROOT / dirname
+def _residue_inventory_paths(source_root: Path = _SRC_ROOT) -> list[Path]:
+    for dirname in (*_RESIDUE_CODE_DIRS, *_RESIDUE_YAML_DIRS):
+        root = source_root / dirname
         assert root.is_dir(), f"residue scan root is missing: {root}"
-        paths.extend(_residue_regular_files(root))
 
-    docs_root = _SRC_ROOT / "docs"
+    docs_root = source_root / "docs"
     assert docs_root.is_dir(), f"residue docs root is missing: {docs_root}"
-    paths.extend(_residue_regular_files(docs_root))
     for name in _RESIDUE_ROOT_DOCS:
-        path = _SRC_ROOT / name
+        path = source_root / name
         assert path.is_file(), f"residue root document is missing: {name}"
+
+    result = subprocess.run(
+        ["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
+        cwd=source_root,
+        check=True,
+        capture_output=True,
+    )
+    selected_roots = {*_RESIDUE_CODE_DIRS, *_RESIDUE_YAML_DIRS, "docs"}
+    paths: list[Path] = []
+    for raw_rel in result.stdout.split(b"\0"):
+        if not raw_rel:
+            continue
+        rel = Path(os.fsdecode(raw_rel))
+        if rel.as_posix() not in _RESIDUE_ROOT_DOCS and (
+            not rel.parts or rel.parts[0] not in selected_roots
+        ):
+            continue
+        path = source_root / rel
+        if not path.is_file() or any(part in _RESIDUE_JUNK_DIRS for part in rel.parts):
+            continue
+        nested_directories = rel.parts[1:-1] if rel.parts[0] == ".github" else rel.parts[:-1]
+        if any(part.startswith(".") for part in nested_directories):
+            continue
         paths.append(path)
 
-    private_root = (_SRC_ROOT / "private").resolve()
+    private_root = (source_root / "private").resolve()
     for path in paths:
         resolved = path.resolve()
         assert resolved != private_root and private_root not in resolved.parents, (
@@ -698,13 +760,20 @@ def _residue_inventory_paths() -> list[Path]:
     return paths
 
 
-def _residue_scan_paths(inventory: list[Path] | None = None) -> list[Path]:
-    raw_paths = _residue_inventory_paths() if inventory is None else inventory
+def _residue_scan_paths(
+    inventory: list[Path] | None = None,
+    *,
+    source_root: Path = _SRC_ROOT,
+) -> list[Path]:
+    raw_paths = _residue_inventory_paths(source_root) if inventory is None else inventory
     paths: list[Path] = []
     for path in raw_paths:
-        rel = path.relative_to(_SRC_ROOT)
+        rel = path.relative_to(source_root)
         if rel.parts[0] in _RESIDUE_CODE_DIRS:
             if path.suffix in (".py", ".ipynb"):
+                paths.append(path)
+        elif rel.parts[0] in _RESIDUE_YAML_DIRS:
+            if path.suffix in (".yml", ".yaml"):
                 paths.append(path)
         elif rel.parts[0] == "docs":
             if path.suffix == ".md":
@@ -916,6 +985,87 @@ def test_residue_scan_surface_includes_only_public_markdown() -> None:
     assert {"CODE.md", "AGENTS.md", "CLAUDE.md"}.isdisjoint(rels)
     private_root = (_SRC_ROOT / "private").resolve()
     assert all(private_root not in path.resolve().parents for path in paths)
+
+
+def test_residue_new_public_roots_catch_untracked_seeded_tokens(tmp_path: Path) -> None:
+    token = "D" + str(99)
+    tools_seed = tmp_path / "tools/u10_seed_probe.py"
+    form_seed = tmp_path / ".github/ISSUE_TEMPLATE/u10_seed_probe.yml"
+    tools_seed.parent.mkdir(parents=True)
+    form_seed.parent.mkdir(parents=True)
+    tools_seed.write_text(f"# {token} marker\n", encoding="utf-8")
+    form_seed.write_text(f"description: {token} marker\n", encoding="utf-8")
+
+    paths = _residue_scan_paths(
+        [tools_seed, form_seed],
+        source_root=tmp_path,
+    )
+    assert paths == [tools_seed, form_seed]
+
+    regexes, _public_regexes, _name_regexes, _allowed = _load_residue_policy()
+    observed = Counter()
+    for path in paths:
+        found, _locations = _residue_occurrences_for_text(
+            path.relative_to(tmp_path).as_posix(),
+            path.read_text(encoding="utf-8"),
+            regexes,
+        )
+        observed.update(found)
+    assert observed == Counter(
+        {
+            ("tools/u10_seed_probe.py", token): 1,
+            (".github/ISSUE_TEMPLATE/u10_seed_probe.yml", token): 1,
+        }
+    )
+
+
+def test_residue_inventory_uses_public_git_projection_and_skips_junk(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    relative_paths = [
+        "sigwood/live.py",
+        "tools/u10_seed_probe.py",
+        "tools/.cache/hidden.py",
+        "tests/__pycache__/junk.pyc",
+        ".github/ISSUE_TEMPLATE/live.yml",
+        "private/secret.py",
+        *_RESIDUE_ROOT_DOCS,
+        "docs/INDEX.md",
+    ]
+    for dirname in (*_RESIDUE_CODE_DIRS, *_RESIDUE_YAML_DIRS, "docs"):
+        (tmp_path / dirname).mkdir(parents=True, exist_ok=True)
+    for rel in relative_paths:
+        path = tmp_path / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("", encoding="utf-8")
+
+    def _git_inventory(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        assert command == [
+            "git",
+            "ls-files",
+            "-z",
+            "--cached",
+            "--others",
+            "--exclude-standard",
+        ]
+        assert kwargs["cwd"] == tmp_path
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=b"\0".join(rel.encode() for rel in relative_paths) + b"\0",
+        )
+
+    monkeypatch.setattr(subprocess, "run", _git_inventory)
+    rels = {
+        path.relative_to(tmp_path).as_posix()
+        for path in _residue_inventory_paths(tmp_path)
+    }
+    assert "tools/u10_seed_probe.py" in rels
+    assert ".github/ISSUE_TEMPLATE/live.yml" in rels
+    assert "tools/.cache/hidden.py" not in rels
+    assert "tests/__pycache__/junk.pyc" not in rels
+    assert "private/secret.py" not in rels
 
 
 def test_residue_inventory_excludes_interpreter_junk(tmp_path: Path) -> None:

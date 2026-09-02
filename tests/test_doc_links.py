@@ -35,11 +35,81 @@ def test_live_cli_summary_discloses_unchecked_counts(capsys: pytest.CaptureFixtu
     captured = capsys.readouterr()
     assert captured.err == ""
     assert re.fullmatch(
-        # Root public pages plus every Markdown file directly under docs/.
-        r"validated \d+ doc links across 13 files "
+        # Root public pages, docs/*.md, and the issue-form corpus.
+        r"validated \d+ doc links across 17 files "
         r"\(\d+ external not checked, 0 pinned refs\)\n",
         captured.out,
     )
+
+
+def test_live_issue_form_corpus_is_discovered_as_files_not_an_allowlist() -> None:
+    assert [path.relative_to(_ROOT).as_posix() for path in doc_links._issue_form_paths(_ROOT)] == [
+        ".github/ISSUE_TEMPLATE/bug_report.yml",
+        ".github/ISSUE_TEMPLATE/config.yml",
+        ".github/ISSUE_TEMPLATE/detection_question.yml",
+        ".github/ISSUE_TEMPLATE/source_support.yml",
+    ]
+
+
+def test_issue_form_dead_repo_link_can_fail_and_pass(tmp_path: Path) -> None:
+    missing = "https://github.com/helixmap/sigwood/blob/main/docs/missing.md"
+    root = _doc_tree(
+        tmp_path,
+        {".github/ISSUE_TEMPLATE/bug.yml": f"description: '[guide]({missing})'\n"},
+    )
+    findings = doc_links.validate_doc_links(root)
+    assert [(item.target, item.rule) for item in findings] == [
+        (missing, doc_links.RULE_REPO_PATH)
+    ]
+
+    (root / "docs/missing.md").write_text("present\n", encoding="utf-8")
+    assert doc_links.validate_doc_links(root) == []
+
+
+def test_issue_form_targets_preserve_canonical_classifications(tmp_path: Path) -> None:
+    external = "https://github.com/example-org/example-tool"
+    pinned = "https://github.com/helixmap/sigwood/blob/v1.2.3/docs/missing.md"
+    wrong_case = "https://github.com/HelixMap/sigwood/blob/main/docs/INDEX.md"
+    raw_missing = "https://raw.githubusercontent.com/helixmap/sigwood/main/docs/missing.png"
+    root = _doc_tree(
+        tmp_path,
+        {
+            ".github/ISSUE_TEMPLATE/question.yaml": "\n".join(
+                [
+                    f"external: {external}",
+                    f"pinned: {pinned}",
+                    f"identity: {wrong_case}",
+                    f"raw: {raw_missing}",
+                ]
+            )
+        },
+    )
+    result = doc_links.scan_doc_links(root)
+    assert [(item.target, item.rule) for item in result.findings] == [
+        (wrong_case, doc_links.RULE_REPO_IDENTITY),
+        (raw_missing, doc_links.RULE_REPO_PATH),
+    ]
+    assert external in result.external_targets
+    assert pinned in result.pinned_targets
+
+
+def test_issue_form_url_extraction_removes_source_delimiters(tmp_path: Path) -> None:
+    markdown = "https://example.net/markdown"
+    period = "https://example.net/period"
+    comma = "https://example.net/comma"
+    root = _doc_tree(
+        tmp_path,
+        {
+            ".github/ISSUE_TEMPLATE/question.yml": (
+                f"description: '[guide]({markdown})'\n"
+                f"period: See {period}.\n"
+                f"comma: See {comma}, then continue.\n"
+            )
+        },
+    )
+    result = doc_links.scan_doc_links(root)
+    assert result.findings == ()
+    assert result.external_targets[-3:] == (markdown, period, comma)
 
 
 def test_relative_path_rule_can_fail_and_pass(tmp_path: Path) -> None:

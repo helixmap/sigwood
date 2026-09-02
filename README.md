@@ -165,9 +165,9 @@ footprint are all in the
 |-----------|-----------------------------------------------------|------------------------------|--------------------------------|
 | `beacon`  | periodic C2-style callbacks                         | FFT over connection timing   | Zeek `conn.log`                |
 | `dns`     | DGA / tunneling / anomalous lookups                 | HDBSCAN clustering           | Zeek `dns.log` **or** Pi-hole  |
-| `dnsblock` \* | first activity, bursts & recurrence in blocked names | pattern (bounded behavioral) | Pi-hole                        |
-| `syslog`  | rare events & reboots                               | drain3 templating + rarity   | systemd journal, flat syslog, **or** Zeek `syslog.log` |
-| `auth` \* | failure concentration, volume, spread & landings    | heuristics                   | systemd journal, flat syslog, **or** Zeek `syslog.log` |
+| `dnsblock` \* | new blocked names, bursts & recurrence | pattern (bounded behavioral) | Pi-hole                        |
+| `syslog`  | rare events & reboots                               | drain3 templating + rarity   | journal, syslog, **or** Zeek `syslog.log` |
+| `auth` \* | failure concentration, volume, spread & landings    | heuristics                   | journal, syslog, **or** Zeek `syslog.log` |
 | `scan`    | vertical / horizontal / block / slow port scans     | pattern (heuristic)          | Zeek `conn.log`                |
 | `exfil`   | bulk outbound byte transfer                        | heuristics                   | Zeek `conn.log`                |
 | `ssl` \*  | outbound TLS setup unlike your estate's norm         | heuristics                   | Zeek `ssl.log` (+ `x509.log`)  |

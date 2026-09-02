@@ -15,19 +15,54 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  build:
-    name: build + verify (py${{ matrix.python-version }})
+  gate:
+    name: require main history
     runs-on: ubuntu-latest
-    timeout-minutes: 20
-    strategy:
-      fail-fast: false
-      matrix:
-        python-version: ["3.11", "3.12", "3.13", "3.14"]
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Require the selected commit to be on main history
+        run: |
+          if merge_base_error=$(git merge-base --is-ancestor "$GITHUB_SHA" origin/main 2>&1); then
+            echo "ref $GITHUB_REF_NAME at $GITHUB_SHA is on main history"
+            exit 0
+          else
+            merge_base_status=$?
+          fi
+
+          if [ "$merge_base_status" -eq 1 ]; then
+            annotation_ref="${GITHUB_REF_NAME//'%'/'%25'}"
+            annotation_ref="${annotation_ref//$'\r'/'%0D'}"
+            annotation_ref="${annotation_ref//$'\n'/'%0A'}"
+            echo "::error::ref $annotation_ref at $GITHUB_SHA is not on main history"
+            exit 1
+          fi
+
+          printf '%s\n' "$merge_base_error" >&2
+          echo "::error::could not determine whether the selected commit is on main history"
+          exit "$merge_base_status"
+
+  package:
+    name: package distributions
+    needs: gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # OIDC signs the artifact attestation. This job has no release environment;
+    # the separately scoped publish job remains the declared index upload path.
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          python-version: ${{ matrix.python-version }}
+          python-version: "3.12"
 
       - name: Tag matches version (tag push only)
         if: github.event_name == 'push'
@@ -37,22 +72,15 @@ jobs:
           echo "tag=$tag version=$ver"
           test "$tag" = "$ver" || { echo "::error::tag v$tag != __version__ $ver"; exit 1; }
 
-      - name: Install dev extras and packaging tools
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install -e ".[dev]" build twine
+      # --force-reinstall ensures a same-version tool already on the runner is
+      # downloaded and hash-checked instead of accepted as "already satisfied".
+      - name: Install hash-locked build toolchain
+        run: >-
+          python -m pip install --require-hashes --force-reinstall
+          -r .github/requirements/build-toolchain.txt
 
-      # Fail loudly if recursive extras stop installing dependencies whose tests
-      # would otherwise skip and make the full-suite result incomplete.
-      - name: Guard gap-closing dependencies
-        run: python -c "import botocore.exceptions, splunklib; print('cloudtrail + splunk deps present')"
-
-      - name: Full suite
-        run: python -m pytest -ra
-
-      # The universal wheel is packaged once, after the Python 3.12 suite passes.
-      - name: Throwaway version for TestPyPI (workflow dispatch, Python 3.12)
-        if: github.event_name == 'workflow_dispatch' && matrix.python-version == '3.12'
+      - name: Throwaway version for TestPyPI (workflow dispatch)
+        if: github.event_name == 'workflow_dispatch'
         run: |
           python - <<'PY'
           import os, re, pathlib
@@ -72,12 +100,63 @@ jobs:
           print("rehearsal version:", got)
           PY
 
+      # --no-isolation makes build use the hash-checked backend above. The
+      # default isolated build would resolve build-system.requires again.
       - name: Build and validate distributions
-        if: matrix.python-version == '3.12'
         run: |
-          python -m build
+          python -m build --no-isolation
           python -m twine check dist/*
           python tools/validate_distribution.py dist
+          sha256sum dist/*
+
+      - name: Attest build provenance
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: dist/*
+
+      - name: Upload dist
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+
+  test:
+    name: test (py${{ matrix.python-version }})
+    needs: package
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      # Every leg downloads and fingerprints the same artifact. The suite below
+      # tests the checkout; the 3.12 clean-venv smoke tests the wheel.
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: dist
+          path: dist/
+      - name: Show downloaded distribution digests
+        run: sha256sum dist/*
+
+      - name: Install dev extras
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+
+      # Fail loudly if recursive extras stop installing dependencies whose tests
+      # would otherwise skip and make the full-suite result incomplete.
+      - name: Guard gap-closing dependencies
+        run: python -c "import botocore.exceptions, splunklib; print('cloudtrail + splunk deps present')"
+
+      - name: Full suite against the checkout
+        run: python -m pytest -ra
 
       - name: Clean-venv wheel smoke
         if: matrix.python-version == '3.12'
@@ -92,17 +171,9 @@ jobs:
           "$VENV/bin/sigwood" --help >/dev/null
           "$VENV/bin/python" -c "import importlib.resources as r; assert (r.files('sigwood') / 'data' / 'config_example.toml').is_file()"
 
-      - name: Upload dist
-        if: matrix.python-version == '3.12'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: dist
-          path: dist/
-          if-no-files-found: error
-
   publish:
     name: publish ${{ github.event_name == 'workflow_dispatch' && 'TestPyPI' || 'PyPI' }}
-    needs: build
+    needs: [package, test]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     environment:

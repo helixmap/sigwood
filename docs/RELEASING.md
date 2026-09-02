@@ -279,7 +279,7 @@ Two checks belong here as well, because no test covers either:
   output than the release produces. Check it rather than judging it by eye:
 
   ```bash
-  python tools/refresh_assets.py --check
+  .venv/bin/python tools/refresh_assets.py --check
   ```
 
   The check regenerates the report's finding rows and the terminal text from the demo corpus and

@@ -111,8 +111,8 @@ tag from that date, is signed with an SSH key that lives on a FIDO2 hardware tok
 cannot sign without a physical touch on the token. Pushing to GitHub authenticates with
 the same keys. `main` and the `v*` tag namespace refuse unsigned pushes, and release
 tags refuse deletion and replacement. The maintainer's command-line token holds no
-permission to push, edit those rules, or approve a deployment; the `pypi` approval is
-given by hand in the browser. History before 2026-09-01 is unsigned and stays that way.
+permission to push, dispatch a workflow, approve a deployment, publish a release, or edit
+those rules; each of those is done by hand in the browser. History before 2026-09-01 is unsigned and stays that way.
 The signing public keys are the signing-key list on the maintainer's GitHub account and
 are mirrored in [`allowed_signers`](allowed_signers) at the repository root.
 

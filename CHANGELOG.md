@@ -6,6 +6,14 @@ All notable changes to sigwood are recorded here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- The release checklist audits dependencies under the development interpreter, takes the
+  release commit message from a file the maintainer writes, validates from a fresh clone rather
+  than an archive export, and inspects and publishes the GitHub Release in the browser.
+  Following the checklist for 0.7.1 showed that each replaced form either failed or could not
+  run with the command-line token it prescribes.
+
 ## [0.7.1] - 2026-09-02
 
 ### Added
@@ -63,10 +71,6 @@ All notable changes to sigwood are recorded here. The format follows
 
 - Known Issues no longer claims that every earlier raw crash and unbounded allocation path
   has been fixed; it says which ones were and leaves the open limits beside them.
-
-- Public documentation and code comments no longer characterize the tool's own virtues, and
-  the internal shorthand that had leaked into shipped comments and test-module names gave
-  way to the behavioral names the documentation uses.
 
 - The release checklist dispatches the TestPyPI rehearsal from the Actions tab and picks the
   run up by its commit. The maintainer token the checklist prescribes cannot create a

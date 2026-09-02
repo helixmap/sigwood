@@ -93,8 +93,8 @@ into the current directory. The handle is useless without that token, and each o
 three tokens produces its own.
 
 Also authenticate `gh` as a maintainer of `helixmap/sigwood`. The token wants read access
-plus issues and pull requests, and nothing that can push, approve a deployment, or edit
-repository rules; those stay in the browser.
+plus issues and pull requests, and nothing that can push, dispatch a workflow, approve a
+deployment, publish or edit a release, or edit repository rules; each of those is a browser act.
 
 ```bash
 gh auth status
@@ -204,10 +204,13 @@ Audit the installed dependencies for known advisories. Dependabot proposes updat
 action pins on a schedule, but it does not scan the Python packages sigwood installs, so a
 published advisory against a runtime dependency would otherwise reach a cut unnoticed. Run
 `pip-audit` ephemerally with `uvx` (nothing is installed into the venv) against the venv's
-resolved third-party packages:
+resolved third-party packages. `uvx` runs the audit under an interpreter of its own choosing, so
+hand it the venv's version: a dependency pinned to a newer Python than the audit's interpreter
+fails the audit before it starts, and the graph the venv actually runs is the one to audit:
 
 ```bash
-uvx pip-audit -r <(.venv/bin/pip freeze --exclude-editable)
+uvx --python "$(.venv/bin/python -c 'import sys; print(".".join(map(str, sys.version_info[:2])))')" \
+  pip-audit -r <(.venv/bin/pip freeze --exclude-editable)
 ```
 
 `--exclude-editable` drops the editable `sigwood` line itself, so only the third-party
@@ -246,6 +249,15 @@ before running anything in the next one.
 
 5. Land every other file that belongs in the release, including new documentation.
 6. Re-run the complete suite. It must be green before the state is offered for commit.
+7. Write the commit message to a file and keep its path in `RELEASE_MESSAGE` for section 2.
+   It is public text for a reader who knows nothing of how the work was organized: say what
+   changed in the release and why, in the product's own terms, and stop. Hyphens only; the
+   commit-msg hook refuses dash punctuation.
+
+   ```bash
+   RELEASE_MESSAGE=$(mktemp "${TMPDIR:-/tmp}/sigwood-release-message.XXXXXX")
+   "${EDITOR:-vi}" "$RELEASE_MESSAGE"
+   ```
 
 Two checks belong here as well, because no test covers either:
 
@@ -306,8 +318,8 @@ Read the prepared diff:
 git status --short && git diff
 ```
 
-then commit **everything section 1 landed** and push `main`. The commit and the push each
-ask for one touch on the signing key. That is usually the three
+then commit **everything section 1 landed**, with the message section 1 wrote, and push `main`.
+The commit and the push each ask for one touch on the signing key. That is usually the three
 version-bearing files, but step 5 of that section lands any other file the release needs - a
 test the release state required, new documentation - so the commit is defined by the diff you
 just read, never by a fixed list. A fixed list silently drops the rest: the commit looks
@@ -338,7 +350,8 @@ PY
 git add -u
 # plus any new file section 1 added:  git add <path>
 
-if git commit -m "sigwood $VERSION final" &&
+if test -s "${RELEASE_MESSAGE:-}" &&
+  git commit -F "$RELEASE_MESSAGE" &&
   test -z "$(git status --short)"; then
   git push origin main
 else
@@ -380,11 +393,12 @@ All checks must succeed.
 ### 3 - Build and validate locally
 
 GitHub Actions rebuilds the artifacts, but local validation is the go/no-go gate before any
-tag exists. Build from a clean export of the tracked commit, never from the working tree; a
-working-tree build can accidentally include untracked files.
+tag exists. Build from a fresh clone of the tracked commit, never from the working tree: a
+working-tree build can include untracked files, and the clone is also a repository, which the
+suite needs because several tests read the tracked file inventory through git.
 
 The block runs fail-fast inside a subshell, leaves the caller in the repository root, removes
-its temporary export on success, and retains it for inspection on failure.
+its temporary clone on success, and retains it for inspection on failure.
 
 It guards the working tree first. Everything here builds from `HEAD`, while `$VERSION` was
 read from the working tree in step 2, so an uncommitted release state produces artifacts one
@@ -402,8 +416,9 @@ BUILD=$(mktemp -d "${TMPDIR:-/tmp}/sigwood-build.XXXXXX")
     exit 1
   fi
 
-  git archive HEAD | tar -x -C "$BUILD"
-  cd "$BUILD"
+  git clone -q --no-local --no-hardlinks "$PWD" "$BUILD/src"
+  git -C "$BUILD/src" checkout -q "$(git rev-parse HEAD)"
+  cd "$BUILD/src"
 
   python3 -m venv .venv-rel
   .venv-rel/bin/python -m pip install -q --upgrade pip
@@ -620,24 +635,31 @@ creates a **draft** Release for the tag, titled `sigwood vX.Y.Z`, whose body is 
 carries the version). Nothing is public yet: a draft is visible only to maintainers, and the
 Releases page keeps advertising the previous version as latest until this step publishes it.
 
-Confirm the draft exists and open it for rendered inspection:
+The command-line token cannot see a draft, and it can neither publish nor create a release:
+`gh release view` reports "release not found" for a draft that exists. Inspecting and publishing
+are browser acts. The draft's address comes from the run's own log, where the draft job prints
+it, and a release the token CAN see is one that is already public:
 
 ```bash
-case "$(gh release view "$TAG" --repo "$REPO" --json isDraft --jq .isDraft 2>/dev/null)" in
-  true)  gh release view "$TAG" --repo "$REPO" --web ;;
-  false) printf 'GitHub Release %s is already published - skip to step 8\n' "$TAG" ;;
-  *)     printf 'no Release for %s - create the draft by hand (see the end of this step)\n' "$TAG" >&2
-         false ;;
-esac
+if test "$(gh release view "$TAG" --repo "$REPO" --json isDraft --jq .isDraft 2>/dev/null)" = "false"; then
+  printf 'GitHub Release %s is already published - skip to step 8\n' "$TAG"
+elif DRAFT_URL=$(gh run view "$RUN_ID" --repo "$REPO" --log 2>/dev/null |
+    grep -oE 'drafted https://[^[:space:]]+' | head -1 | cut -d' ' -f2) && [[ -n "$DRAFT_URL" ]]; then
+  printf 'draft: %s\n' "$DRAFT_URL"
+else
+  printf 'no draft found in run %s - create it by hand (see the end of this step)\n' "${RUN_ID:-?}" >&2
+  false
+fi
 
 ### §7a
 ```
 
-Confirm the title, tag, and rendered notes. Publishing is a separate explicit action:
+Open the draft address in the browser and read the title, tag, and rendered notes. Publishing is
+a separate explicit act on that page: **Publish release**. Then confirm from the terminal, which
+can see the release once it is public:
 
 ```bash
-gh release edit "$TAG" --repo "$REPO" --draft=false &&
-  test "$(gh release view "$TAG" --repo "$REPO" --json isDraft --jq .isDraft)" = "false" &&
+test "$(gh release view "$TAG" --repo "$REPO" --json isDraft --jq .isDraft)" = "false" &&
   printf 'published GitHub Release %s\n' "$TAG"
 
 ### §7b
@@ -649,9 +671,8 @@ Attaching built artifacts is optional; PyPI remains the distribution source of t
 
 The draft job fails closed: a missing or misnamed changelog section, or a GitHub API failure,
 leaves the tag with no Release rather than one with wrong notes, and the PyPI upload is
-unaffected either way. Create the draft by hand with the same notes extraction the workflow
-uses - reading `CHANGELOG.md` from the *tagged commit*, so the working tree cannot matter -
-then return to §7a:
+unaffected either way. Extract the notes with the same rule the workflow uses, reading
+`CHANGELOG.md` from the tagged commit so the working tree cannot matter:
 
 ```bash
 if NOTES_FILE=$(mktemp "${TMPDIR:-/tmp}/sigwood-${VERSION}-notes.XXXXXX") &&
@@ -661,18 +682,19 @@ if NOTES_FILE=$(mktemp "${TMPDIR:-/tmp}/sigwood-${VERSION}-notes.XXXXXX") &&
     copying { print }
     END { if (!copying) exit 1 }
   ' > "$NOTES_FILE" &&
-  test -s "$NOTES_FILE" &&
-  gh release create "$TAG" --repo "$REPO" --title "sigwood $TAG" \
-    --verify-tag --draft --notes-file "$NOTES_FILE"; then
-  rm -f "$NOTES_FILE"
+  test -s "$NOTES_FILE"; then
+  printf 'notes for %s are at %s\n' "$TAG" "$NOTES_FILE"
 else
-  printf 'could not draft the GitHub Release for %s; notes remain at %s\n' \
-    "$TAG" "${NOTES_FILE:-unknown}" >&2
+  printf 'CHANGELOG.md at %s has no "## [%s] - " section\n' "$TAG" "$VERSION" >&2
   false
 fi
 
 ### §7c
 ```
+
+Then on the Releases page choose **Draft a new release**, pick the existing tag `vX.Y.Z`, title
+it `sigwood vX.Y.Z`, paste the notes file's contents as the body, and **Save draft**. Return to
+§7a.
 
 ### 8 - Verify the public release
 

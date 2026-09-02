@@ -6,6 +6,8 @@ All notable changes to sigwood are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-09-02
+
 ### Added
 
 - `docs/MANUAL.md`, a reference manual covering installation, source discovery, time
@@ -65,6 +67,10 @@ All notable changes to sigwood are recorded here. The format follows
 - Public documentation and code comments no longer characterize the tool's own virtues, and
   the internal shorthand that had leaked into shipped comments and test-module names gave
   way to the behavioral names the documentation uses.
+
+- The release checklist dispatches the TestPyPI rehearsal from the Actions tab and picks the
+  run up by its commit. The maintainer token the checklist prescribes cannot create a
+  workflow run, so the `gh workflow run` form it used could not be executed as written.
 
 ## [0.7.0] - 2026-08-31
 
@@ -1746,7 +1752,8 @@ agent, no account.
 - Analysis-window controls (`--since`/`--until`/`--days`/`--all`), a per-source default
   lookback window, and local-or-UTC time rendering.
 
-[Unreleased]: https://github.com/helixmap/sigwood/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/helixmap/sigwood/compare/v0.7.1...HEAD
+[0.7.1]: https://github.com/helixmap/sigwood/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/helixmap/sigwood/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/helixmap/sigwood/compare/v0.5.1...v0.6.0
 [0.5.1]: https://github.com/helixmap/sigwood/compare/v0.5.0...v0.5.1

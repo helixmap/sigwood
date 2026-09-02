@@ -457,12 +457,23 @@ throwaway `X.Y.Z.dev<run-number>` form, and publishes through the ungated
 `testpypi` environment. It does not exercise the `draft GitHub Release` job, which runs on
 tag pushes only (a rehearsal has no tag and must create no Release); that job's failure
 mode is covered by the by-hand fallback in step 7, not by this rehearsal. The commands derive that version from the run itself;
-there is no placeholder to replace. Progress can be monitored on the 
+there is no placeholder to replace. The dispatch itself is a browser act: `gh workflow run`
+needs the Actions write permission that the maintainer token from the one-time setup
+deliberately does not carry, so the block below asks for the click and then finds the run by
+the commit it ran on and the time it was created. Progress can be monitored on the
 [Actions tab](https://github.com/helixmap/sigwood/actions) of the GitHub Repository.
 
 ```bash
-REHEARSAL_URL=$(gh workflow run release.yml --repo "$REPO" --ref main)
-REHEARSAL_RUN_ID=${REHEARSAL_URL##*/}
+REHEARSAL_SINCE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+read -r -p "dispatch now (Actions tab -> release -> Run workflow -> branch main), then press Enter: "
+REHEARSAL_RUN_ID=
+for _ in {1..30}; do
+  REHEARSAL_RUN_ID=$(gh run list --repo "$REPO" --workflow release.yml --event workflow_dispatch \
+    --commit "$(git rev-parse HEAD)" --created ">=$REHEARSAL_SINCE" --limit 1 \
+    --json databaseId --jq '.[0].databaseId')
+  [[ -n "$REHEARSAL_RUN_ID" ]] && break
+  sleep 2
+done
 if [[ "$REHEARSAL_RUN_ID" =~ ^[0-9]+$ ]] &&
   gh run watch "$REHEARSAL_RUN_ID" --repo "$REPO" --compact --exit-status &&
   test "$(gh run view "$REHEARSAL_RUN_ID" --repo "$REPO" --json headSha --jq .headSha)" = "$(git rev-parse HEAD)" &&
@@ -485,7 +496,7 @@ if [[ "$REHEARSAL_RUN_ID" =~ ^[0-9]+$ ]] &&
     false
   fi
 else
-  printf 'TestPyPI rehearsal failed for %s\n' "${REHEARSAL_URL:-no run URL}" >&2
+  printf 'TestPyPI rehearsal failed for run %s\n' "${REHEARSAL_RUN_ID:-not found}" >&2
   false
 fi
 

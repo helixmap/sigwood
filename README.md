@@ -22,7 +22,7 @@ already blocked.
 no account. Install it, point it at a directory of logs, read the output. It runs on your own
 box, over logs at rest, and your logs never have to leave your machine.
 
-> **Status: early / pre-1.0 (`0.7.0`).** The nine detectors work and are covered by tests,
+> **Status: early / pre-1.0 (`0.7.1`).** The nine detectors work and are covered by tests,
 > but things may change before 1.0. Built with heavy AI assistance under human review;
 > the [FAQ says how](https://github.com/helixmap/sigwood/blob/main/docs/FAQ.md#a-brand-new-repo-a-short-history-tidy-docs---was-this-written-by-ai),
 > and the [evidence ledger](https://github.com/helixmap/sigwood/blob/main/docs/EVIDENCE.md)

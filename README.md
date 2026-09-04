@@ -22,8 +22,9 @@ already blocked.
 no account. Install it, point it at a directory of logs, read the output. It runs on your own
 box, over logs at rest, and your logs never have to leave your machine.
 
-> **Status: early / pre-1.0 (`0.7.1`).** The nine detectors work and are covered by tests,
-> but things may change before 1.0. Built with heavy AI assistance under human review;
+> **Status: stable (`1.0.0`).** The nine detectors work and are covered by tests;
+> [what 1.0 means](#what-10-means) says which interfaces are now fixed and which are not.
+> Built with heavy AI assistance under human review;
 > the [FAQ says how](https://github.com/helixmap/sigwood/blob/main/docs/FAQ.md#a-brand-new-repo-a-short-history-tidy-docs---was-this-written-by-ai),
 > and the [evidence ledger](https://github.com/helixmap/sigwood/blob/main/docs/EVIDENCE.md)
 > records what has and has not been measured. Feedback is welcome.
@@ -227,6 +228,47 @@ differs in conception: frequency domain, no database, no import step, several
 log families rather than conn/dns alone, and an orientation verb for logs you
 have not met yet. If you already run RITA against a dedicated Zeek sensor, keep
 it - sigwood is for the box where the logs already live.
+
+## What 1.0 means
+
+**The interfaces are stable.** From 1.0, these do not change without a major version:
+
+- the `sigwood` command and its verbs: `hunt`, the nine detector names, `digest`,
+  `graph`, `era`, `export`, `init`, `allowlist`
+- flag syntax: `--flag=value`, and `-f=value` for the short forms
+- the five output formats stay available and selectable, though `json` and `csv` are the
+  ones carrying machine contracts. `json` is a single object with its own
+  `schema_version` (currently 1) that bumps only on a breaking change; `csv` is a fixed
+  column set. The text, HTML and PDF reports are for reading, and their layout may
+  change. Parse the first two, not the last three.
+- the config file: `~/.sigwood/config.toml`, its `[sigwood]` section, and the allowlist
+  drop-in naming rules
+- exit codes: 0 for a clean run, 1 for a failure, 130 on interrupt, 141 on a closed pipe
+
+If you script against sigwood, those are the things to hold onto. Breaking any of them
+means 2.0.
+
+**Detection is not frozen, and should not be.** What sigwood reports on a given log will
+change between 1.0 releases: thresholds move when measurement says they should, and
+detectors get quieter or catch more as they meet real data. Scoring internals,
+calibration constants, the exact set of findings from a given corpus, and the internals
+of the `graph` artifact sit outside the stability contract on purpose.
+
+**What 1.0 promises about detection is a posture, not a number:**
+
+- **Defensible defaults.** Every detector in the default hunt is there deliberately,
+  and the reasoning is written down. Three (`auth`, `dnsblock` and `ssl`) are deliberately
+  not, and that reasoning is written down too.
+- **Every material limit is stated in plain language**, in known-issues and at run time
+  where it applies, including the unflattering ones.
+- **No finding claims more than its evidence supports.** Severity is structural, not a
+  score band: timing alone caps at MEDIUM, HIGH requires corroboration from a different
+  kind of evidence, and where a log source cannot supply that, HIGH is unreachable and
+  sigwood says so rather than grading on a curve.
+
+1.0 is not a claim that sigwood is finished, or that its detection is state of the art.
+It is a claim that the surface is stable enough to build on, and that the limits are
+written down where you can read them.
 
 ## Digging deeper
 

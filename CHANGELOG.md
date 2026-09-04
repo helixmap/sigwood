@@ -6,7 +6,15 @@ All notable changes to sigwood are recorded here. The format follows
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-09-04
+
 ### Added
+
+- A statement of what 1.0 means, as its own README section. The command and its verbs, the
+  flag syntax, the availability of the five output formats, the config file and allowlist
+  drop-in naming, and the exit codes do not change again without a major version. Detection
+  is deliberately outside that promise: thresholds and the findings a given log produces
+  keep changing between 1.0 releases. The status line and the FAQ point at the section.
 
 - A code of conduct at `.github/CODE_OF_CONDUCT.md`, adopting the Contributor Covenant
   2.1 by reference and covering issues, pull requests, and other project spaces. Reports
@@ -1807,7 +1815,8 @@ agent, no account.
 - Analysis-window controls (`--since`/`--until`/`--days`/`--all`), a per-source default
   lookback window, and local-or-UTC time rendering.
 
-[Unreleased]: https://github.com/helixmap/sigwood/compare/v0.7.1...HEAD
+[Unreleased]: https://github.com/helixmap/sigwood/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/helixmap/sigwood/compare/v0.7.1...v1.0.0
 [0.7.1]: https://github.com/helixmap/sigwood/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/helixmap/sigwood/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/helixmap/sigwood/compare/v0.5.1...v0.6.0

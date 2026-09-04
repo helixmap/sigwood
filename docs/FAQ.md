@@ -707,11 +707,13 @@ this section applies: read the code, run the tests.
 
 ### What state is sigwood in?
 
-Early, pre-1.0. The nine detectors above work and are covered by tests. A protocol
+Stable, at 1.0. The nine detectors above work and are covered by tests. A protocol
 classifier remains a roadmap future. Zeek's `weird.log` has a `digest` card, which
 reports the shape of that log and reaches no verdict; that card is the shipped form
-of weird analysis rather than a promise of a future detector. Interfaces may still move before
-1.0. The current roadmap and the running list of known rough edges are public, in
+of weird analysis rather than a promise of a future detector. The interfaces listed under
+[what 1.0 means](../README.md#what-10-means) are fixed from here; detection keeps moving,
+and the reasoning for that split is in the same place. The current roadmap and the running
+list of known rough edges are public, in
 [ROADMAP.md](ROADMAP.md) and [KNOWN-ISSUES.md](KNOWN-ISSUES.md).
 
 ### How would I add a new log format, or a new detector?

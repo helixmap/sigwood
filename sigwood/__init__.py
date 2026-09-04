@@ -4,4 +4,4 @@ from sigwood.common.finding import DetectorContext, Finding, Severity
 
 __all__ = ["DetectorContext", "Finding", "Severity", "__version__"]
 
-__version__ = "0.7.1"
+__version__ = "1.0.0"

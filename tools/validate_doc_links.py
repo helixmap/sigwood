@@ -20,6 +20,7 @@ DOC_FILES = (
     PurePosixPath("README.md"),
     PurePosixPath("CONTRIBUTING.md"),
     PurePosixPath("SECURITY.md"),
+    PurePosixPath("CODE_OF_CONDUCT.md"),
     PurePosixPath("demo/README.md"),
 )
 DOCS_GLOB = "docs/*.md"

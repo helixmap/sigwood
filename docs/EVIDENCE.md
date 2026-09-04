@@ -29,3 +29,7 @@ same corpus, and simple-baseline comparisons. Results should be published whethe
 win, lose, or split. Field reports from other environments are equally important:
 [the field validation kit](FIELDKIT.md) collects aggregate behavior without copying log
 identifiers into its report.
+
+This ledger covers measurements of sigwood. For the published work behind the three
+detectors that name a technique, and a plain statement that the other six name none, see
+[prior work](REFERENCES.md).

@@ -36,6 +36,7 @@ box, over logs at rest, and your logs never have to leave your machine.
   <a href="https://github.com/helixmap/sigwood/blob/main/docs/ROADMAP.md">Roadmap</a> ·
   <a href="https://github.com/helixmap/sigwood/blob/main/docs/KNOWN-ISSUES.md">Known issues</a> ·
   <a href="https://github.com/helixmap/sigwood/blob/main/docs/SCHEMA.md">Schemas</a> ·
+  <a href="https://github.com/helixmap/sigwood/blob/main/docs/REFERENCES.md">Prior work</a> ·
   <a href="https://github.com/helixmap/sigwood/blob/main/SECURITY.md">Security</a>
 </p>
 

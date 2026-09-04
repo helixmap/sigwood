@@ -22,6 +22,12 @@ All notable changes to sigwood are recorded here. The format follows
   into place, matching the PDF deck and every other whole-file output. Opening the
   destination directly emptied a file that a hard link still referred to.
 
+- A [prior work](docs/REFERENCES.md) page collects the published research behind the three
+  detectors whose run-summary tag names a technique, and states plainly that the other six
+  name a house method with no paper behind it. It also lists the specifications the parsers
+  implement. It is a reading list rather than a lineage claim: sigwood implements none of
+  these papers and inherits none of their measured performance.
+
 - Every IPv4 and IPv6 address in the repository is now checked on each test run.
   Documentation ranges, addresses reserved for a role, and a short list of shared private
   placeholders pass, as do a handful of wider ranges named exactly. Everything else fails,

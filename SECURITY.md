@@ -13,7 +13,8 @@ as we investigate. We will credit reporters who wish to be credited.
 
 ## Supported versions
 
-sigwood is pre-1.0. Security fixes land on the latest release and `main`.
+Security fixes land on the latest release and `main`. Earlier releases are not
+patched; upgrade to pick up a fix.
 
 ## Threat model - what sigwood does and does not trust
 

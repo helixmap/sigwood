@@ -134,10 +134,22 @@ def test_pyproject_version_is_dynamic():
 
 
 def test_readme_status_version_matches_package_version() -> None:
-    """Pin only the status line's VERSION token, not its pre-1.0 prose."""
+    """The README carries one status line naming the package version.
+
+    Only the VERSION token is pinned, never the surrounding prose, so the status
+    line is free to be reworded. Its PRESENCE is pinned separately and
+    deliberately: a guard that tolerated the line's absence would pass over a
+    README naming no version at all, which is the shape a rewording reaches by
+    accident.
+    """
     matches = re.findall(
         r"^> \*\*Status:.*\(`([0-9]+\.[0-9]+\.[0-9]+)`\)",
         _README.read_text(encoding="utf-8"),
         re.MULTILINE,
     )
-    assert matches == [sigwood.__version__]
+    assert len(matches) == 1, (
+        "README needs exactly one status blockquote carrying its version in "
+        "backticked parentheses, as in '> **Status: ... (`1.2.3`).**'; "
+        f"found {len(matches)}"
+    )
+    assert matches[0] == sigwood.__version__

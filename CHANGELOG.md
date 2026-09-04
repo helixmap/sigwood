@@ -6,6 +6,12 @@ All notable changes to sigwood are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- A code of conduct at `.github/CODE_OF_CONDUCT.md`, adopting the Contributor Covenant
+  2.1 by reference and covering issues, pull requests, and other project spaces. Reports
+  go to a private address named in the document.
+
 ### Changed
 
 - The release checklist's recovery path no longer deletes a pushed tag, which the tag

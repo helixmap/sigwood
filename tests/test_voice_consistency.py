@@ -501,7 +501,7 @@ _PLEADING_ROOT_DOCS = (
     "CHANGELOG.md",
     "CONTRIBUTING.md",
     "SECURITY.md",
-    "CODE_OF_CONDUCT.md",
+    ".github/CODE_OF_CONDUCT.md",
     "demo/README.md",
 )
 

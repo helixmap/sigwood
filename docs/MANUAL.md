@@ -306,8 +306,9 @@ auth reads the normalized system-log lane and groups recognized authentication o
 by service, source, account namespace, account, and host. It surfaces concentrated failure
 runs, unusually high source or account volume, the same source-account identity spreading
 across hosts, and a success that follows sustained failures for the same service identity.
-The observers are reconciled so different log dialects describing the same activity do not
-erase or inflate one another.
+No log dialect deletes another's records: sigwood counts them together. A host that reports
+through both sshd's own log and the audit system can therefore record one event twice, so
+these counts are decision records rather than a count of human attempts.
 
 Every auth finding tops out at MEDIUM. Failure volume, spread, and a later success are useful
 structural signals, but the calibration work stopped before it had an independent population
@@ -342,9 +343,9 @@ from the spelling score alone. A narrower Zeek-only route can also surface a fam
 lower-scoring subdomains as INFO when they concentrate under a parent and overwhelmingly fail
 to resolve.
 
-Pi-hole supplies no response code. Its dense scan can find the high-volume shape, but that
-same volume is not allowed to corroborate itself there, so Pi-hole-only DNS findings stop at
-MEDIUM. Letter-only generated labels cannot reach the lexical bar by construction, and hex
+sigwood's Pi-hole parser does not carry the resolution outcome. Its dense scan can find the
+high-volume shape, but that same volume is not allowed to corroborate itself there, so
+Pi-hole-only DNS findings stop at MEDIUM. Letter-only generated labels cannot reach the lexical bar by construction, and hex
 labels can straddle it. Families spread across many registrable domains can escape the
 concentration route. On small captures HDBSCAN may form no cluster and the lexical route does
 the work even though the method label still names the backend. The published

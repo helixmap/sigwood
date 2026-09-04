@@ -60,14 +60,8 @@ body:
       label: Output
       description: Paste the smallest useful output after redacting sensitive or organization-specific details.
       render: text
-  - type: checkboxes
-    id: fieldkit
-    attributes:
-      label: Fieldkit
-      options:
-        - label: I attached [fieldkit output](https://github.com/helixmap/sigwood/blob/main/docs/FIELDKIT.md) if I could run it.
   - type: textarea
     id: additional_context
     attributes:
       label: Additional context
-      description: Attach screenshots or fieldkit output here. Code-block fields cannot accept attachments. Redact sensitive or organization-specific details first.
+      description: Attach screenshots here if they help. Code-block fields cannot accept attachments. Redact sensitive or organization-specific details first.

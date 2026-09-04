@@ -52,6 +52,7 @@ from sigwood.common.paths import (
     private_mkdir,
     private_open,
     private_write_bytes,
+    private_write_text,
     resolve_path,
     unique_path,
 )
@@ -1934,8 +1935,10 @@ def _run_era(args: list[str]) -> int:
         if isinstance(rendered, bytes):
             private_write_bytes(output_file, rendered)
         else:
-            with private_open(output_file, encoding="utf-8", newline="") as opened:
-                opened.write(rendered)
+            # The whole deck is already in hand, so it is written to a fresh
+            # name and moved into place: opening the destination directly would
+            # empty a file that a hard link still refers to.
+            private_write_text(output_file, rendered, encoding="utf-8", newline="")
     elif isinstance(rendered, bytes):
         sys.stdout.buffer.write(rendered)
         sys.stdout.buffer.flush()

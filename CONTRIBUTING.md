@@ -1,20 +1,18 @@
 # Contributing to sigwood
 
 Thanks for your interest. sigwood is a small, single-maintainer tool for hunting
-through your own logs. If you've been running it and want to fix something,
-teach it a log format it doesn't handle yet, or send along a pile of logs it
-should read better, this is the lay of the land.
+through your own logs. If you've been running it and want to fix something, teach
+it a log format it doesn't handle yet, or tell it about a layout it reads wrong,
+this is the doc to read first.
 
-One very useful thing you can send even if you don't do Python is data.
-The detectors are built against real logs, and a scrubbed sample of a format or
-layout sigwood gets wrong (or doesn't support) does more for the next version
-than almost any patch. You don't need to touch the code to help that way;
-there's a section on it below.
+You don't need to write Python to help. A clear description of a log layout
+sigwood mishandles, with a redacted digest card, does more for the next version
+than almost any patch; there's a section on it below.
 
 The rest of this is a tour of how the pieces fit together, so if you do want to
 change something, you know where it goes.
 
-## The shape of the thing
+## The shape
 
 There's one mental model, and most of the design falls out of it:
 
@@ -71,7 +69,8 @@ def run(context: DetectorContext) -> list[Finding]:
 ```
 
 `source` is one of the four config dir keys (`zeek_dir`, `syslog_dir`, `pihole_dir`,
-`cloudtrail_dir`); `pattern` is the glob the loader hands you files for. If a
+`cloudtrail_dir`) or `journal`, the live systemd journal, which the operator selects
+with `--syslog-source`; `pattern` is the glob the loader hands you files for. If a
 required pattern turns up nothing, the detector is skipped with a note - never a
 crash. `DEFAULT_CONFIG` is the *only* place your defaults live: the runner overlays
 the user's `[detectors.yours]` config section on top and hands you the merged dict as
@@ -110,9 +109,9 @@ carries one and a tripwire keeps it that way, but that is a standard we hold our
 not a requirement on yours - a detector written before this constant existed still loads
 and runs exactly as it did.
 
-The two-source detectors (`dns`, `syslog`) are the pattern for one question over two
-feeds: leave `REQUIRED_LOGS` empty, list both sources in `OPTIONAL_LOGS`, set
-`REQUIRES_ONE_OF_OPTIONAL = True`, and read both pattern keys inside `run()`,
+The multi-source detectors (`dns`, `syslog`, `auth`) are the pattern for one question over
+several feeds: leave `REQUIRED_LOGS` empty, list every source in `OPTIONAL_LOGS`, set
+`REQUIRES_ONE_OF_OPTIONAL = True`, and read each pattern key inside `run()`,
 concatenating whatever's non-empty. The detector stays source-blind - it reads only
 the canonical columns both feeds share.
 
@@ -175,25 +174,23 @@ with a few drift tripwires keeping those in agreement. It's very doable, but it'
 cross-cutting enough that it's worth opening an issue to talk through the shape before
 building the whole thing.
 
-## Send logs
+## Contributing data
 
 One useful thing you can contribute is data, and you don't need to write any
-code to do it. The detectors are built against real logs, so a well-sanitized corpus
-- or even a clear description of a layout sigwood is getting wrong - moves things
+code to do it. The detectors are built against real logs, so a real corpus,
+or even a clear description of a layout sigwood is getting wrong - moves things
 further than you'd expect.
 
-**CloudTrail from a real, busy AWS shop** is the one that would help most. The `aws`
-detector learns per-principal behavior, and the variety in a live, multi-account,
-many-role environment is exactly what's hard to synthesize. If you're sitting on that
-kind of history and willing to scrub and share it, it's the kind of data the detector
-can't get any other way.
+If you have real-world log history and are willing to scrub and share it, that
+provides evidence synthetic fixtures cannot. CloudTrail from a busy AWS
+environment or Zeek logs containing confirmed malicious activity would be
+especially useful as hold-out data for evaluating the detectors.
 
 Sanitize first, of course - strip or redact IPs, hostnames, account IDs, ARNs,
 anything identifying - and keep the *shape* intact (timestamps, event names,
-structure). If you're not sure how much to scrub, open an issue and we'll work
-out a safe form together. If the data is sensitive enough that a public channel
-is the wrong place, the contact in [SECURITY.md](SECURITY.md) works
-for this too.
+structure). If you're not sure how much to scrub, email **syslogd@augros.org**
+to agree on a safe form before sharing anything. Subsequent deletion requests
+will of course be honored.
 
 ## A few things that hold throughout
 

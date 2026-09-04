@@ -1,5 +1,5 @@
 # sigwood maintainer signing keys, in the allowed_signers format read by
-# ssh-keygen(1) and git. Commits on main from 2026-09-01 and every release
+# ssh-keygen(1) and git. Commits on main from 2026-09-02 and every release
 # tag from that date are signed by one of these keys. Each lives on a FIDO2
 # hardware token and cannot sign without a physical touch. Verify a checkout:
 #

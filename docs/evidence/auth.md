@@ -49,7 +49,8 @@ arbitration**, which is the part worth keeping.
 - **Magnitudes are decision-record counts, never inferred human attempts**, and the
   wording says so.
 - **Severity caps at MEDIUM across the whole detector**, with a single-signal basis
-  always. The higher tier is dormant and returns only on measured corroboration.
+  always. There is no HIGH rule to reach; the tier is held for corroboration between
+  detectors, which is measured work this detector cannot do alone.
 - **One lens never promotes or demotes another.** That invariant is what structurally
   closes an attacker-choosable severity subtraction, rather than repairing the timing
   mechanism it rode on.

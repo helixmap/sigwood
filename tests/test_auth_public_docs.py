@@ -64,7 +64,10 @@ def test_known_issues_carries_the_four_auth_residuals() -> None:
     assert "medium" in issues and "landing" in issues
     assert "window-relative" in issues and "first_seen" in issues
     assert "source address" in issues and "individually" in issues and "allowlist" in issues
-    assert "synthetic" in issues and "high" in issues and "estate" in issues
+    # auth constructs only MEDIUM, so the page states that plainly rather than
+    # describing a HIGH rule that is waiting to fire.
+    assert "auth never reports high" in issues
+    assert "corroboration between different detectors" in issues
 
 
 def test_unreleased_changelog_records_auth_activation_without_claiming_a_regression() -> None:

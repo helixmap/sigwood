@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-sigwood-scan - Port Scan Detector
-Part of the sigwood suite.
+Port scan exploration over Zeek conn.log data.
 
-Detects port scanning activity from Zeek conn.log data.
+A standalone prototype kept for the working-out behind the shipped `scan`
+detector; run the detector itself with `sigwood scan`.
 
 Scan types detected:
   vertical    one source → many ports on one target host
@@ -12,12 +12,12 @@ Scan types detected:
   slow        activity spread across time windows to evade per-window thresholds
 
 Usage:
-  sigwood-scan conn.log
-  sigwood-scan /path/to/logs/conn.*.log.gz
-  sigwood-scan conn.log --output scan_results/
-  sigwood-scan conn.log --format json
-  sigwood-scan conn.log --min-severity MEDIUM
-  sigwood-scan conn.log --vertical-threshold 20 --horizontal-threshold 20
+  python3 notebooks/conn_scan.py conn.log
+  python3 notebooks/conn_scan.py /path/to/logs/conn.*.log.gz
+  python3 notebooks/conn_scan.py conn.log --output scan_results/
+  python3 notebooks/conn_scan.py conn.log --format json
+  python3 notebooks/conn_scan.py conn.log --min-severity MEDIUM
+  python3 notebooks/conn_scan.py conn.log --vertical-threshold 20 --horizontal-threshold 20
 """
 
 import argparse
@@ -38,7 +38,7 @@ from tqdm import tqdm
 warnings.filterwarnings('ignore')
 
 # ── Version ───────────────────────────────────────────────────────────────────
-VERSION = '1.0.0'
+VERSION = 'prototype'
 
 # ── Defaults ──────────────────────────────────────────────────────────────────
 DEFAULT_VERTICAL_PORT_THRESHOLD   = 15
@@ -948,7 +948,7 @@ def export_results(df_dedup: pd.DataFrame, ts_min, ts_max, n_raw: int,
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        prog='sigwood-scan',
+        prog='conn_scan.py',
         description='Port scan detector - part of the sigwood suite.',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
@@ -1015,7 +1015,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p.add_argument('--verbose', '-v', action='store_true',
                    help='Print progress and diagnostic detail')
-    p.add_argument('--version', action='version', version=f'sigwood-scan {VERSION}')
+    p.add_argument('--version', action='version', version=f'conn_scan.py {VERSION}')
 
     return p
 
@@ -1027,7 +1027,7 @@ def main():
     run_ts = datetime.now().strftime('%Y%m%d_%H%M%S')
 
     # ── Load ──────────────────────────────────────────────────────────────────
-    print(f"sigwood-scan {VERSION} - loading {args.log_path}")
+    print(f"conn_scan.py {VERSION} - loading {args.log_path}")
     try:
         df_raw, n_skipped = load_conn_log(args.log_path, verbose=args.verbose)
     except (FileNotFoundError, ValueError) as e:

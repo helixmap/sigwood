@@ -107,9 +107,9 @@ scan requires. The public wording was corrected rather than quietly kept.
   lexical lane; measured, not assumed.
 - **The clustering vocabulary is batch-relative by design.** What counts as a common
   suffix is derived from the data in front of it, not from a shipped list.
-- **The top tier is unreachable on a Pi-hole-only feed.** No resolution outcome is
-  recorded there, and while the dense scan does run on that path, the volume evidence it
-  gathers is not allowed to corroborate on its own.
+- **The top tier is unreachable on a Pi-hole-only feed.** sigwood's Pi-hole parser does
+  not carry the resolution outcome, and while the dense scan does run on that path, the
+  volume evidence it gathers is not allowed to corroborate on its own.
 - **A tunnel spread thin across many registrable domains, or below the conservative
   volume floor, is unscanned.**
 

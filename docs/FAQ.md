@@ -482,8 +482,9 @@ names (the strictest still crossed 57 in a benign reference week) or caught unde
 target. Corroboration carries severity because no spelling rule tested could.
 
 Two consequences worth knowing. On **Pi-hole/dnsmasq-only** data, HIGH is effectively out of
-reach: Pi-hole records no DNS response code, so resolution outcome cannot corroborate, and the
-dense-cluster scan, which does run on Pi-hole, is not allowed to corroborate on its own there.
+reach: sigwood's Pi-hole parser does not carry the resolution outcome, so it cannot corroborate,
+and the dense-cluster scan, which does run on Pi-hole, is not allowed to corroborate on its own
+there.
 The below-gate family net above needs response codes too, so it is also Zeek-only: on Pi-hole a
 name is reached either by its own score or by the dense scan's concentration test, and nothing
 else.
@@ -591,10 +592,9 @@ claim about the number of human login attempts.
 
 Every `auth` finding caps at MEDIUM. Failures followed by a success still ride along as
 evidence on the multi-host finding that covers the same source and account, so the report
-does not print one event twice. That corroboration does not raise a severity today. A
-HIGH rule is dormant by design: a synthetic regression pins the multi-host-failure plus
-landing-success shape, but no shipped finding activates that tier. The witness proves that the
-dormant rule recognizes its declared shape; it is not a precision claim about real attacks.
+does not print one event twice. That corroboration does not raise a severity today, and no
+rule promotes an auth finding to HIGH. That tier is held back for corroboration between
+different detectors, which sigwood does not do yet.
 
 Counts are decision records as each source logged them. A host that reports through more than
 one source, such as sshd's own log and the audit system, can record one event in each, so a

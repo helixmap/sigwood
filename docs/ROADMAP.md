@@ -168,7 +168,7 @@ itself from outside its own question. beacon holds a single category of evidence
 timing. ssl holds two within its question, client behavior and server infrastructure,
 and that pair is exactly what lifts a finding from LOW to MEDIUM there: independence
 already earns severity inside one detector, and the ladder stops where the detector's
-own evidence ends. auth's HIGH rule is dormant on the same principle. The dns detector
+own evidence ends. auth caps at MEDIUM on the same principle, with no HIGH rule to reach. The dns detector
 is the shipped proof at full scale: it crowns HIGH only when its lexical score is
 corroborated by an independent category (lookups that mostly fail to resolve, or dense
 concentration under one parent), and on a clean capture it produces MEDIUMs and no HIGH

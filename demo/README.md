@@ -159,7 +159,8 @@ nothing stable to hash.
 So it is refreshed explicitly, with an operator-supplied source:
 
 ```
-python tools/scrub_conn.py <raw-conn-log.gz> <private-output.log.gz>
+python tools/scrub_conn.py <raw-conn-log.gz> <private-output.log.gz> \
+    --source-internal=<capture-internal-cidr>
 python tools/refresh_assets.py --only=graph --from=<private-output.log.gz>
 ```
 

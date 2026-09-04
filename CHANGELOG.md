@@ -8,6 +8,40 @@ All notable changes to sigwood are recorded here. The format follows
 
 ### Changed
 
+- The release checklist's recovery path no longer deletes a pushed tag, which the tag
+  ruleset refuses anyway. A failed release is left in place and the fix ships under the next
+  patch number with a new signed tag. The two recovery commands the maintainer token cannot
+  run are now browser steps, and the approval gate names the real workflow jobs.
+
+- The bug report form no longer invites field-kit output into a public issue,
+  and all three issue forms open with the same list of what to redact. A corpus
+  someone chooses to share goes to a private address, is used only to test
+  sigwood, and is deleted on request.
+
+- An era deck written to `--out` as text or HTML is now written to a fresh name and moved
+  into place, matching the PDF deck and every other whole-file output. Opening the
+  destination directly emptied a file that a hard link still referred to.
+
+- Every IPv4 and IPv6 address in the repository is now checked on each test run.
+  Documentation ranges, addresses reserved for a role, and a short list of shared private
+  placeholders pass, as do a handful of wider ranges named exactly. Everything else fails,
+  so a real internal range cannot ship unnoticed. Some fixtures named addresses assigned to
+  real organizations and now use reserved space instead.
+
+- Several documentation statements that a reader could check and find false are corrected.
+  The security policy's verification example named a tag that does not exist, and its signing
+  start date left two unsigned commits inside the range it claimed. The manual said auth
+  reconciliation prevents log dialects from inflating each other's counts, when the opposite
+  is true and the page now says so. Known Issues and the FAQ described a dormant auth HIGH
+  rule; auth never reports HIGH, and the pages say that instead. The auth `gate` field
+  documented six values and ships nine. The exfil evidence record said the demo corpus cannot
+  exercise the detector, which it does. Both DNS pages blamed Pi-hole for a missing resolution
+  outcome that sigwood's own parser drops.
+
+- The connection-log scrubber takes the capture's internal networks on the command line
+  instead of carrying fixed ranges in source, refuses a source network that overlaps its own
+  output ranges, and maps any number of networks rather than exactly two.
+
 - The roadmap no longer describes the DNS measured pass as in progress. Its
   behavior-corroborated severity and below-gate families shipped in 0.2.9 and its Pi-hole
   dense-cluster scan in 0.6.0; the section now names the shipped passes and points at the

@@ -116,7 +116,7 @@ def test_reducer_uses_complete_utc_shards_and_half_open_edges() -> None:
 
 @pytest.mark.parametrize(
     ("query", "reason"),
-    (("1.1.1.1", "ip-literal"), ("host", "single-label"), ("host.local", "mdns-local"), ("4.3.2.1.in-addr.arpa", "ptr-arpa"), ("co.uk", "public-suffix-only")),
+    (("192.0.2.1", "ip-literal"), ("host", "single-label"), ("host.local", "mdns-local"), ("4.3.2.1.in-addr.arpa", "ptr-arpa"), ("co.uk", "public-suffix-only")),
 )
 def test_d20_exclusions_are_counted_without_retaining_the_query(query: str, reason: str) -> None:
     key, actual = registrable_domain(query)

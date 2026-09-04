@@ -114,7 +114,9 @@ The `exfil` detector requires both `bytes` and `resp_bytes`. Its
 evidence describe only complete-byte measured rows for the pair; they do not
 claim totals or byte share for rows whose responder bytes were unavailable.
 
-Zeek-specific names (`id.orig_h`, etc.) never appear outside `parsers/zeek.py`.
+Zeek-specific names (`id.orig_h`, etc.) are confined to the two Zeek front-ends,
+`parsers/zeek.py` and `parsers/zeek_tsv.py`, plus the `zeek-cut` commands some findings
+offer as a pivot. Detectors read the canonical names.
 
 ### Fidelity-aware DNS schema (Zeek dns + dnsmasq)
 
@@ -277,11 +279,12 @@ serial           - audit event serial, verbatim (nullable)
 Every nullable field is textual. Audit carries unset markers and placeholders that
 are meaningful as written, so no value is coerced to an integer.
 
-`gate` domain, exactly six values: `sshd` · `dropbear` · `sudo` · `su` ·
-`runuser` · `audit`. The gate is the deciding mechanism, not the emitting process,
-so `sshd` and `sshd-session` share `sshd`, and both audit serializations share
-`audit`. A PAM line's gate is the service named inside its parentheses; a service
-outside the six returns `None` rather than minting a token.
+`gate` domain, nine values: `sshd` · `dropbear` · `sudo` · `su` · `runuser` ·
+`login` · `audit` · `kde` · `gdm-password`. The gate is the deciding mechanism, not
+the emitting process, so `sshd` and `sshd-session` share `sshd`, and both audit
+serializations share `audit`. A PAM line's gate is the service named inside its
+parentheses, accepted only from the set the emitting program allows; any other
+service returns `None` rather than minting a token.
 
 `outcome` is three-valued and the third value is load-bearing. `indeterminate`
 marks a line emitted by an authentication service during an authentication

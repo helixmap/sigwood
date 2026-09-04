@@ -362,7 +362,8 @@ fi
 ### §2a
 ```
 
- and wait for [Release Workflow](https://github.com/helixmap/sigwood/actions) to show a green matrix before proceeding.
+Wait for the [CI workflow](https://github.com/helixmap/sigwood/actions/workflows/ci.yml) run on
+that push to go green before proceeding.
 
 The identity block below re-checks that the commit exists and that `main` matches the remote,
 so a forgotten push fails here rather than at the tag. Every version-specific command after
@@ -601,8 +602,8 @@ monitor that page until it reaches the approval trigger below.
 
 ### 6 - Approve the PyPI publish (irreversible)
 
-Approve only when every `build + verify` job is green and `publish PyPI` is waiting for
-review. In the run opened above:
+Approve only when `require main history`, `package distributions` and every `test` job are
+green and `publish PyPI` is waiting for review. In the run opened above:
 
 1. Click **Review deployments**.
 2. Select the `pypi` environment.
@@ -758,32 +759,22 @@ Then confirm:
 ### Before PyPI approval
 
 No package has been published, and no GitHub Release has been drafted - the draft job runs
-only after a successful upload. If the run is active or waiting for approval, cancel it first:
+only after a successful upload. If the run is active or waiting for approval, cancel it from
+the run's page in the browser; the maintainer token cannot cancel runs.
 
-```bash
-[[ "$RUN_ID" =~ ^[0-9]+$ ]] && gh run cancel "$RUN_ID" --repo "$REPO"
-```
-
-Once GitHub shows the run as failed or cancelled and you have confirmed that PyPI has no such
-version, remove the remote tag before the local tag:
-
-```bash
-git push origin ":refs/tags/$TAG" &&
-  git tag -d "$TAG"
-```
-
-Fix and push the release state, rerun the identity and validation steps, and create a new tag.
-If the workflow had already failed or been cancelled, the cancel command is unnecessary. If
-the shell restarted, rerun the exact-run lookup in step 5 before cancelling an active run.
+Leave the tag where it is. A pushed `v*` tag is never deleted or moved, and nothing here needs
+it to be: fix the problem on `main`, bump the patch version, rerun the identity and validation
+steps, and cut a new signed tag. The tag that failed stays in the history as the record of what
+was tried.
 
 ### After PyPI publication
 
 Do not move or reuse the tag. Bump the patch version, fix the problem, and publish a new
 release. Yank the bad version from **PyPI project -> Manage -> Release -> Yank** so normal
 resolution avoids it while exact pins remain available. The bad version's GitHub Release is
-still a draft at this point: either delete it (`gh release delete "$TAG" --repo "$REPO"
---yes`) or publish it with a note pointing at the replacement - do not leave an unexplained
-draft beside the tag.
+still a draft at this point, and the maintainer token cannot see drafts, so open the Releases
+page in the browser and either delete the draft or publish it with a note pointing at the
+replacement - do not leave an unexplained draft beside the tag.
 
 ### Trusted Publishing is unavailable
 

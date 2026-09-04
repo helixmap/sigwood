@@ -136,8 +136,8 @@ allowlist_dir    = "allowlist.d/"
 # ════════════════════════════════════════════════════════════════════
 # Detector tuning - the engine room. You rarely need any of this; every
 # detector ships sensible defaults. The values shown ARE those defaults -
-# uncomment a line and change it to tune. Full surface per detector:
-# `sigwood <detector> --help`.
+# uncomment a line and change it to tune. The keys below are the whole tuning
+# surface; docs/CONTRACT.md lists them per detector.
 # ════════════════════════════════════════════════════════════════════
 
 # beacon - periodic C2-style callbacks (FFT over connection timing).

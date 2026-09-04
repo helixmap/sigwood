@@ -6,6 +6,8 @@ body:
     attributes:
       value: |
         A finding is a lead, not a verdict. An absent finding can be correct when the evidence does not support one.
+
+        Redact log content before you paste it. Remove addresses, hostnames, domains, account details, tokens, paths, and organization-specific names.
   - type: input
     id: detector
     attributes:

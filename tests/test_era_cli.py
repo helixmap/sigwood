@@ -129,6 +129,37 @@ def test_era_directory_target_autonames_and_avoids_collisions(
     assert written[0].read_text() == written[1].read_text() == "deck\n"
 
 
+@pytest.mark.parametrize(
+    ("fmt", "suffix"), [("text", "txt"), ("html", "html"), ("pdf", "pdf")]
+)
+def test_era_deck_replaces_the_name_and_spares_a_hard_linked_file(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, fmt: str, suffix: str,
+) -> None:
+    """Every deck format writes a fresh file and moves it into place.
+
+    A hard link at the destination must lose one of its names, never its
+    contents: opening the destination directly would empty the file the other
+    name still refers to.
+    """
+    monkeypatch.setattr(cli, "_load_config", lambda _parsed: {"sigwood": {"zeek_dir": "archive"}})
+    import sigwood.runner as runner
+    from sigwood.outputs import pdf as pdf_output
+
+    monkeypatch.setattr(runner, "run_era", lambda _config, **_kwargs: _receipt())
+    monkeypatch.setattr(pdf_output, "_render_pdf_bytes", lambda _html: b"%PDF-era")
+
+    keeper = tmp_path / f"keeper.{suffix}"
+    keeper.write_text("the other name's contents\n")
+    target = tmp_path / f"deck.{suffix}"
+    target.hardlink_to(keeper)
+    assert target.stat().st_nlink == 2
+
+    cli._run_era([f"--format={fmt}", f"--out={target}", "--quiet"])
+
+    assert keeper.read_text() == "the other name's contents\n"
+    assert target.stat().st_nlink == 1
+
+
 def test_era_html_and_pdf_write_their_native_artifacts(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
@@ -157,12 +188,12 @@ def test_era_writes_each_explicit_destination_once(
 
     text_writes: list[Path] = []
     byte_writes: list[Path] = []
-    original_open = cli.private_open
+    original_write_text = cli.private_write_text
     original_write_bytes = cli.private_write_bytes
 
-    def count_open(path: Path, **kwargs: object):
+    def count_write_text(path: Path, payload: str, **kwargs: object) -> None:
         text_writes.append(path)
-        return original_open(path, **kwargs)
+        original_write_text(path, payload, **kwargs)
 
     def count_write_bytes(path: Path, payload: bytes) -> None:
         byte_writes.append(path)
@@ -170,7 +201,7 @@ def test_era_writes_each_explicit_destination_once(
 
     monkeypatch.setattr(runner, "run_era", lambda _config, **_kwargs: _receipt())
     monkeypatch.setattr(pdf_output, "_render_pdf_bytes", lambda _html: b"%PDF-era")
-    monkeypatch.setattr(cli, "private_open", count_open)
+    monkeypatch.setattr(cli, "private_write_text", count_write_text)
     monkeypatch.setattr(cli, "private_write_bytes", count_write_bytes)
     text_target = tmp_path / "deck.txt"
     html_target = tmp_path / "deck.html"

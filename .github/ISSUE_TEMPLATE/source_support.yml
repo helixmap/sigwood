@@ -5,7 +5,9 @@ body:
   - type: markdown
     attributes:
       value: |
-        Run `sigwood digest /path/to/your.log` and paste the card below. The card is the diagnostic. Redact sensitive or organization-specific details before pasting anything from a log.
+        Run `sigwood digest /path/to/your.log` and paste the card below. The card is the diagnostic.
+
+        Redact log content before you paste it. Remove addresses, hostnames, domains, account details, tokens, paths, and organization-specific names.
   - type: input
     id: producer
     attributes:

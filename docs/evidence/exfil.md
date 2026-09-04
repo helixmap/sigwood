@@ -108,8 +108,9 @@ at scale there is no plateau, only smooth decay. The defensible claim is the wea
 - **Every mass, share, and count figure covers the measured population only.** Outbound
   mass cannot bound the error on the share, so no surface presents a measured share as
   an all-records share.
-- **The synthetic demo corpus cannot exercise this detector at all.** It carries about
-  7 MB of total outbound mass and seeds no bulk transfer. Recorded as a product gap.
+- **The synthetic demo corpus does exercise this detector**, since it seeds a bulk
+  transfer that surfaces as one MEDIUM finding. That anchor shows the detector fires on a
+  known shape; it says nothing about behavior on real traffic.
 - **Every finding surfaced across every corpus in 121 days was benign**, a pooled
   backup service and an API endpoint. Zero true-malicious transfers were present to
   find, so this evidence bounds noise, not recall.

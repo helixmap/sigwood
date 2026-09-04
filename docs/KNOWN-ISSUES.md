@@ -91,12 +91,12 @@ you recognize.
 
 **On Pi-hole/dnsmasq-only data, DNS findings cannot reach HIGH.** HIGH requires a name to
 look generated *and* to be corroborated by something else - lookups that mostly fail to
-resolve, or membership in a dense concentrated cluster. Pi-hole records no DNS response
-code, so the first is unavailable. The dense-cluster scan does run on Pi-hole, but the
+resolve, or membership in a dense concentrated cluster. sigwood's Pi-hole parser does not
+carry the resolution outcome, so the first is unavailable. The dense-cluster scan does run on Pi-hole, but the
 corroboration it grants is deliberately withheld there: the scan's volume evidence counts
 toward HIGH only on Zeek, where a resolution outcome can corroborate it independently.
 Pi-hole DNS findings therefore top out at MEDIUM. This is a fidelity limit
-of the source, not a judgement that the traffic is benign - add Zeek for the same domains
+of what sigwood reads from that feed, not a judgement that the traffic is benign - add Zeek for the same domains
 if you need the distinction.
 
 **On Pi-hole/dnsmasq data, a high-volume family is recovered only when it concentrates
@@ -397,11 +397,11 @@ not a canonical allowlist field, so only whole-host suppression applies on this 
 remote sources disclose that boundary; per-address suppression needs a future normalization and
 allowlist change, not detector-local filtering.
 
-**Auth HIGH is dormant by design, and its positive witness is synthetic.** The available real
-estate corpora contain no exact multi-host-failure plus landing shape, so they cannot activate
-or validate HIGH against real traffic. The positive regression uses generated authentication
-traffic with known structure to pin the dormant rule. That proves the rule recognizes its
-declared shape; it is not a precision claim about real attacks.
+**Auth never reports HIGH.** Every auth finding caps at MEDIUM, and no rule promotes one
+above that. A source failing against many hosts and then succeeding rides along as evidence on
+the finding that already covers it rather than raising its severity. HIGH is held back for
+corroboration between different detectors, which sigwood does not do yet, so nothing you can
+run will produce a HIGH auth finding today.
 
 ### ssl
 

@@ -229,9 +229,9 @@ def test_destination_pools_do_not_merge_across_sources_or_networks() -> None:
         _row(src="10.0.0.11", dst="198.51.100.22"),
         _row(src="10.0.0.11", dst="198.51.100.23"),
         _row(src="10.0.0.12", dst="198.51.100.24"),
-        _row(src="10.0.0.12", dst="198.51.116.20"),
-        _row(src="10.0.0.12", dst="198.51.116.21"),
-        _row(src="10.0.0.12", dst="198.51.116.22"),
+        _row(src="10.0.0.12", dst="203.0.113.20"),
+        _row(src="10.0.0.12", dst="203.0.113.21"),
+        _row(src="10.0.0.12", dst="203.0.113.22"),
     ]))
 
     assert len(findings) == 8

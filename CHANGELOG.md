@@ -8,6 +8,11 @@ All notable changes to sigwood are recorded here. The format follows
 
 ### Changed
 
+- The roadmap no longer describes the DNS measured pass as in progress. Its
+  behavior-corroborated severity and below-gate families shipped in 0.2.9 and its Pi-hole
+  dense-cluster scan in 0.6.0; the section now names the shipped passes and points at the
+  evidence ledger for what is measured next.
+
 - The release checklist audits dependencies under the development interpreter, takes the
   release commit message from a file the maintainer writes, validates from a fresh clone rather
   than an archive export, and inspects and publishes the GitHub Release in the browser.

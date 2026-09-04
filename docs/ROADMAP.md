@@ -93,11 +93,16 @@ but cannot reach the network record.
 
 Actively being worked on or thought through:
 
-- **One detector at a time.** Each noisy detector gets its own measured pass - a
+- **One detector at a time.** Each noisy detector gets its own measured pass: a
   pre-registered bar for what "better" means, data held back from tuning, and a simple
   baseline the change has to beat. The syslog pass shipped in 0.2.7 (rare-line rollups,
-  recognized transactions, reboot reporting); the DNS pass is in progress
-  (behavior-corroborated severity in place of score-only verdicts).
+  recognized transactions, reboot reporting). The DNS pass shipped across 0.2.9 and 0.6.0
+  (behavior-corroborated severity in place of score-only verdicts, below-gate families,
+  and the dense tunnel scan on Pi-hole as well as Zeek). The exfil pass ratified both of
+  its gates unchanged. Every pass so far was measured on one estate's own logs, so the
+  next ones run against evidence from outside it: held-out public corpora and a RITA
+  comparison on the same corpus. The [evidence ledger](EVIDENCE.md) records what each
+  detector has and has not been measured on, and what it is still owed.
 
 ## Later
 

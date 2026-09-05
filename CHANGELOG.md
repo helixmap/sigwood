@@ -6,6 +6,18 @@ All notable changes to sigwood are recorded here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- The release checklist calls for a TestPyPI rehearsal after a change to the repository's
+  allowed-actions policy, not only after a change to the release workflow. The publish job
+  resolves an action that no workflow file names, so a policy built from the workflow files
+  alone refuses it, and the refusal lands after the publish approval has already been given.
+
+- The release checklist prints the draft release's editor address alongside its preview
+  address, and says which of the two carries the publish control. It also notes that the
+  dependency audit covers the development environment rather than what a release ships, so a
+  finding in local tooling is not read as a blocker.
+
 ## [1.0.0] - 2026-09-04
 
 ### Added

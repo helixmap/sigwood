@@ -361,7 +361,7 @@ def test_fstring_normalization_blanks_fields_in_string_tokens() -> None:
     plain = tokenize.TokenInfo(
         tokenize.STRING, '"a {braced-fixture.com} b"', (1, 0), (1, 26), ""
     )
-    assert "braced-fixture.com" in _normalized_string_text(plain)
+    assert _normalized_string_text(plain) == plain.string
 
 
 def test_scanner_catches_domain_in_data_fixture(tmp_path) -> None:

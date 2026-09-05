@@ -218,6 +218,12 @@ dependencies are audited. `pip-audit` exits non-zero when it finds a vulnerabili
 anything it reports by bumping the affected version or consciously accepting it with a note before
 tagging; a clean report is the pass, and an unreviewed one is not.
 
+The audited population is the development venv, which is wider than what a release ships: anything
+installed for local work sits in it too. Before treating a report as a blocker, check whether the
+affected package is in what users receive, which is `[project] dependencies` plus the shipped
+extras in `pyproject.toml`; the `dev` extra is maintainer-only. A finding in tooling that reaches
+no user is still worth fixing, and it is not a reason to hold the cut.
+
 Finally, confirm that nothing is knowingly shipping in a defective state. A detector outside the
 default hunt is still reachable by name and under `--detect=all`, so "not in the default hunt" is
 not the same as "not reachable"; a detector known to produce wrong results still reaches anyone
@@ -464,9 +470,17 @@ Nothing above this point changes remote release state.
 
 ### 4 - Rehearse on TestPyPI when required
 
-This step is non-negotiable before the first Trusted Publishing release and after any change
-to `.github/workflows/release.yml`. It is still recommended for later releases when that workflow is
-unchanged.
+This step is non-negotiable before the first Trusted Publishing release, after any change to
+`.github/workflows/release.yml`, and after any change to the repository's allowed-actions policy.
+It is still recommended for later releases when none of those changed.
+
+An unchanged workflow is not the same as an unchanged release path. The publish job resolves
+actions that no workflow file names: `pypa/gh-action-pypi-publish` pins its own
+`actions/setup-python`, and an allowed-actions list assembled from the workflow files alone leaves
+that one out. The refusal surfaces in the publish job's `Set up job` step, which runs only after
+the `pypi` environment is approved, so the production failure is a tag pushed, a green matrix, an
+approval given, nothing published, and a tag that cannot be reused. Bumping the publish action's
+pin can change which `setup-python` it resolves, so treat that bump as a policy change too.
 
 The manual dispatch builds and tests `main`, changes the artifact version to the
 throwaway `X.Y.Z.dev<run-number>` form, and publishes through the ungated
@@ -646,7 +660,8 @@ if test "$(gh release view "$TAG" --repo "$REPO" --json isDraft --jq .isDraft 2>
   printf 'GitHub Release %s is already published - skip to step 8\n' "$TAG"
 elif DRAFT_URL=$(gh run view "$RUN_ID" --repo "$REPO" --log 2>/dev/null |
     grep -oE 'drafted https://[^[:space:]]+' | head -1 | cut -d' ' -f2) && [[ -n "$DRAFT_URL" ]]; then
-  printf 'draft: %s\n' "$DRAFT_URL"
+  printf 'read:    %s\npublish: %s\n' \
+    "$DRAFT_URL" "${DRAFT_URL/\/releases\/tag\//\/releases\/edit\/}"
 else
   printf 'no draft found in run %s - create it by hand (see the end of this step)\n' "${RUN_ID:-?}" >&2
   false
@@ -655,9 +670,13 @@ fi
 ### §7a
 ```
 
-Open the draft address in the browser and read the title, tag, and rendered notes. Publishing is
-a separate explicit act on that page: **Publish release**. Then confirm from the terminal, which
-can see the release once it is public:
+Open the first address and read the title, tag, and rendered notes. It is a read-only preview of
+the draft and carries no publish control, so a draft cannot be published from it. The second
+address is the same draft in the editor, where **Publish release** sits at the foot of the form
+beside *Save draft*; the editor is also reachable from the preview's pencil button. Confirm the
+tag field reads `vX.Y.Z` before publishing, because a draft carries its tag as a property, which
+is why its preview address is an `untagged-` one. Then confirm from the terminal, which can see
+the release once it is public:
 
 ```bash
 test "$(gh release view "$TAG" --repo "$REPO" --json isDraft --jq .isDraft)" = "false" &&

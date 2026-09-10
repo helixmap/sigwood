@@ -16,6 +16,7 @@ shows; the html value is a substring of text's, so the shared datum is pinned.
 
 from __future__ import annotations
 
+import csv
 import html as _htmllib
 import io
 import math
@@ -35,6 +36,7 @@ from sigwood.outputs._evidence import (
 )
 from sigwood.outputs._render_model import (
     Section,
+    _build_renderable,
     html_cell_value,
     project_row,
     section_columns,
@@ -267,6 +269,26 @@ _VARIANTS: dict[str, Finding] = {
         "disabled for this run - these clusters were not analyzed.", {
             "tier": "unscanned_clusters", "cluster_count": 2,
             "total_members": 3218,
+    }),
+    "protocol_mismatch": _f("protocol", Severity.LOW, "192.0.2.77 -> 198.51.100.88:443/tcp", {
+        "kind": "mismatch", "services": ["ssh"], "mismatched_services": ["ssh"],
+        "expected_ports": {"ssh": [22]}, "conventional_ports": {}, "conns": 6,
+        "norm_class": "routine", "first_seen": "2026-06-01T12:34:56+00:00",
+    }),
+    "protocol_unlabeled": _f("protocol", Severity.MEDIUM, "192.0.2.78 -> 198.51.100.89:80/tcp", {
+        "kind": "unlabeled", "services": [], "eligible_unlabeled_conns": 3, "conns": 3,
+        "first_seen": "2026-06-01T12:35:57+00:00",
+    }),
+    "protocol_context": _f("protocol", Severity.INFO, "what this run could evaluate", {
+        "kind": "context", "labeled_rows": 123, "unlabeled_rows": 45,
+    }),
+    "protocol_rollup": _f("protocol", Severity.LOW, "ssh on 443/tcp", {
+        "kind": "rollup", "member_count": 12,
+        "members": [
+            {"src": f"192.0.2.{index}", "dst": "198.51.100.90", "port": 443,
+             "proto": "tcp", "conns": index}
+            for index in range(1, 13)
+        ],
     }),
 }
 
@@ -683,6 +705,61 @@ def test_row_signal_parity_text_and_html(variant: str) -> None:
         assert html_val in html_out, f"{variant}: {html_val!r} missing from HTML"
         checked += 1
     assert checked > 0, f"{variant}: no non-empty cells exercised"
+
+
+def test_protocol_context_is_cap_exempt_and_rollup_member_slice_is_shared() -> None:
+    mismatch = deepcopy(_VARIANTS["protocol_mismatch"])
+    second = deepcopy(mismatch)
+    second.title = "192.0.2.79 -> 198.51.100.91:443/tcp"
+    context = deepcopy(_VARIANTS["protocol_context"])
+    renderable = _build_renderable("protocol", [mismatch, second, context], 0, 1)
+    assert renderable.cap_truncated == 1
+    assert [f.evidence["kind"] for section in renderable.sections for f in section.findings] == [
+        "mismatch", "context",
+    ]
+
+    rollup = _VARIANTS["protocol_rollup"]
+    text_one, text_two = _text([rollup], level=1), _text([rollup], level=2)
+    html_one, html_two = _html_text([rollup], level=1), _html_text([rollup], level=2)
+    assert "192.0.2.10" in text_one and "showing 10 of 12 members" in text_one
+    assert "192.0.2.11" not in text_one and "192.0.2.11" in text_two
+    assert "192.0.2.10" in html_one and "showing 10 of 12 members" in html_one
+    assert "192.0.2.11" not in html_one and "192.0.2.11" in html_two
+
+    unlabeled = _VARIANTS["protocol_unlabeled"]
+    assert "services=" not in _text([unlabeled])
+
+
+def test_protocol_hostile_values_are_inert_without_mutating_the_finding() -> None:
+    controls = "\x1b\x00\x07\r\x9b"
+    hostile = controls + "=PROTO<script>alert(1)</script>"
+    finding = deepcopy(_VARIANTS["protocol_mismatch"])
+    finding.title = hostile
+    finding.description = hostile
+    finding.next_steps = [hostile]
+    finding.evidence["services"] = [hostile]
+    finding.evidence["mismatched_services"] = [hostile]
+    finding.evidence["expected_ports"] = {hostile: [22]}
+    finding.evidence["nested_future"] = {"value": hostile}
+    before = deepcopy(finding)
+
+    text_zero = _text([finding])
+    text_two = _text([finding], level=2)
+    html_raw = render_report_html(
+        [finding], _summary([finding]), verbose_level=2, max_findings_per_detector=100,
+    )
+    csv_raw = _machine(CsvHandler, [finding])
+    json_raw = _machine(JsonHandler, [finding])
+
+    for rendered in (text_zero, text_two, html_raw):
+        assert all(ch not in rendered for ch in controls)
+    csv_cells = next(csv.DictReader(io.StringIO(csv_raw))).values()
+    assert all(ch not in value for value in csv_cells for ch in controls)
+    assert "<script>alert(1)</script>" not in html_raw
+    assert "&lt;script&gt;alert(1)&lt;/script&gt;" in html_raw
+    assert "'=PROTO" in csv_raw
+    assert "\\u001b" in json_raw
+    assert finding == before
 
 
 def test_html_strips_redundant_keyed_labels() -> None:

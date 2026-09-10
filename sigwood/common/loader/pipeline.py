@@ -118,6 +118,8 @@ from sigwood.parsers.syslog import (
 )
 from sigwood.parsers.zeek import (
     _COLLISION_MAPS,
+    _CONN_RETAINED_SOURCE_FIELDS,
+    _attach_conn_source_flags,
     _has_rename_collision,
     _normalize_conn_df,
     _normalize_dns_df,
@@ -757,8 +759,8 @@ def run_load(
       Strategy ``parse`` returns a pre-filter DataFrame; the pipeline
       observes the pre-filter frame, windows via ``_apply_ts_filter`` (which
       drops NaN-ts then trims - that IS the drop policy), and optionally
-      normalises post-concat. Empty paths return bare ``pd.DataFrame()`` -
-      Zeek's empty shape is preserved exactly (no forced columns). A frame
+      normalises post-concat. Empty conn results return the declared canonical
+      frame; other Zeek families preserve the bare ``pd.DataFrame()`` shape. A frame
       parse that raises ``ValueError`` (e.g. a live/mid-write Zeek TSV with a
       broken header) skips THAT file and continues - so a sink-less call
       (``_warnings=None``) never raises on malformed TSV content: it gets
@@ -910,6 +912,11 @@ def run_load(
                         if _warnings is not None:
                             _warnings.append(_zeek_file_parse_warning(path, exc))
                         continue
+                    if _log_type(pattern) == "conn":
+                        pre = _attach_conn_source_flags(
+                            pre,
+                            pre.attrs.get("zeek_source_fields", pre.columns),
+                        )
                     tracker.observe_frame(pre)
                     post = _apply_ts_filter(pre, since, until)
                     if not post.empty:
@@ -1010,9 +1017,11 @@ def run_load(
                 _coverage["coverage"] = sc
         return pd.DataFrame(rows, columns=strategy.columns)
 
-    # Frame mode (Zeek): concat with TODAY's behavior - bare empty, no forced
-    # columns. Zeek's non-empty columns come from parse + normalize.
+    # Frame mode (Zeek): concat parsed frames. Empty conn results use the
+    # declared canonical aperture; other Zeek families stay bare-empty.
     result = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+    if result.empty and _log_type(pattern) == "conn":
+        result = empty_canonical_frame("conn")
     normalized_to_empty = False
     if strategy.normalize is not None and not result.empty:
         result = strategy.normalize(result, pattern, warnings=_warnings)
@@ -1123,6 +1132,14 @@ def _fold_zeek_chunks(
     aggregate_message_drops = _log_type(pattern) == "syslog"
     message_drops = 0
 
+    def attach_conn_flags(
+        raw: pd.DataFrame,
+        observed_fields: object,
+    ) -> pd.DataFrame:
+        if _log_type(pattern) != "conn":
+            return raw
+        return _attach_conn_source_flags(raw, observed_fields)
+
     def normalize(raw: pd.DataFrame) -> pd.DataFrame:
         nonlocal message_drops
         if strategy.normalize is None:
@@ -1135,6 +1152,92 @@ def _fold_zeek_chunks(
         if aggregate_message_drops:
             message_drops += len(raw) - len(post)
         return post
+
+    def emit_ndjson_records(
+        decode_reader: BoundedLogicalRecordReader,
+        lines: Iterable[tuple[str, int]],
+        observed_fields: set[str],
+        *,
+        prefix_bytes: int,
+    ) -> Iterator[DecodedChunk]:
+        """Decode one NDJSON pass from an already positioned bounded reader."""
+        ordinal = 0
+        buffered: list[tuple[dict[str, Any], int]] = []
+        buffered_bytes = prefix_bytes
+        parsed_records = 0
+
+        def flush() -> DecodedChunk | None:
+            nonlocal ordinal, buffered, buffered_bytes
+            if not buffered:
+                return None
+            raw = _records_frame([row for row, _ in buffered])
+            raw = attach_conn_flags(raw, observed_fields)
+            post = normalize(raw)
+            chunk = _chunk_from_frame(post, buffered_bytes, ordinal, window)
+            ordinal += len(post)
+            buffered = []
+            buffered_bytes = 0
+            return chunk
+
+        for line, size in lines:
+            records = _zeek_records_from_lines([line])
+            if not records:
+                continue
+            parsed_records += 1
+            if buffered and (
+                len(buffered) >= MAX_CHUNK_ROWS
+                or buffered_bytes + size > MAX_CHUNK_DECODED_BYTES
+            ):
+                chunk = flush()
+                if chunk is not None:
+                    yield chunk
+            buffered.append((records[0], size))
+            buffered_bytes += size
+        chunk = flush()
+        if chunk is not None:
+            yield chunk
+        if parsed_records == 0:
+            warnings.append(_zeek_no_records_warning(item.path))
+        if decode_reader.skipped_oversize:
+            noun = "record" if decode_reader.skipped_oversize == 1 else "records"
+            warnings.append(
+                f"{strip_control(item.path.name)}: skipped "
+                f"{decode_reader.skipped_oversize} oversized logical {noun} "
+                f"({decode_reader.limit_note})"
+            )
+        quality_out[item.path] = SourceFileQuality(
+            decoded_records=decode_reader.decoded_records,
+            decoded_bytes=decode_reader.decoded_bytes,
+            skipped_oversize=decode_reader.skipped_oversize,
+        )
+        message_drops_out[item.path] = message_drops
+
+    def emit_ndjson(observed_fields: set[str]) -> Iterator[DecodedChunk]:
+        """Reopen and decode NDJSON after the conn metadata pass."""
+        with open_snapshot_text(item) as decode_handle:
+            decode_reader = BoundedLogicalRecordReader(decode_handle)
+            prefix_bytes = 0
+            first: tuple[str, int] | None = None
+            for line in decode_reader:
+                stripped = line.strip()
+                if stripped and not stripped.startswith("#"):
+                    first = (line, decode_reader.last_record_bytes)
+                    break
+                prefix_bytes += decode_reader.last_record_bytes
+            lines = (
+                itertools.chain(
+                    [first],
+                    ((line, decode_reader.last_record_bytes) for line in decode_reader),
+                )
+                if first is not None
+                else ()
+            )
+            yield from emit_ndjson_records(
+                decode_reader,
+                lines,
+                observed_fields,
+                prefix_bytes=prefix_bytes,
+            )
 
     with open_snapshot_text(item) as handle:
         reader = BoundedLogicalRecordReader(handle)
@@ -1161,44 +1264,27 @@ def _fold_zeek_chunks(
         ordinal = 0
         is_ndjson = first_data.lstrip().startswith("{")
         if is_ndjson:
-            buffered: list[tuple[dict[str, Any], int]] = []
-            buffered_bytes = prefix_bytes
-            parsed_records = 0
-
-            def flush() -> DecodedChunk | None:
-                nonlocal ordinal, buffered, buffered_bytes
-                if not buffered:
-                    return None
-                raw = _records_frame([row for row, _ in buffered])
-                post = normalize(raw)
-                chunk = _chunk_from_frame(post, buffered_bytes, ordinal, window)
-                ordinal += len(post)
-                buffered = []
-                buffered_bytes = 0
-                return chunk
-
-            for line, size in itertools.chain(
-                [(first_data, first_data_bytes)],
-                ((line, reader.last_record_bytes) for line in reader),
-            ):
-                records = _zeek_records_from_lines([line])
-                if not records:
-                    continue
-                parsed_records += 1
-                if buffered and (
-                    len(buffered) >= MAX_CHUNK_ROWS
-                    or buffered_bytes + size > MAX_CHUNK_DECODED_BYTES
-                ):
-                    chunk = flush()
-                    if chunk is not None:
-                        yield chunk
-                buffered.append((records[0], size))
-                buffered_bytes += size
-            chunk = flush()
-            if chunk is not None:
-                yield chunk
-            if parsed_records == 0:
-                warnings.append(_zeek_no_records_warning(item.path))
+            if _log_type(pattern) == "conn":
+                observed: set[str] = set()
+                for line in itertools.chain([first_data], reader):
+                    for record in _zeek_records_from_lines([line]):
+                        observed.update(
+                            field
+                            for field in _CONN_RETAINED_SOURCE_FIELDS
+                            if field in record
+                        )
+                yield from emit_ndjson(observed)
+            else:
+                yield from emit_ndjson_records(
+                    reader,
+                    itertools.chain(
+                        [(first_data, first_data_bytes)],
+                        ((line, reader.last_record_bytes) for line in reader),
+                    ),
+                    set(),
+                    prefix_bytes=prefix_bytes,
+                )
+            return
         elif has_separator:
             data_lines: list[str] = []
             decoded = prefix_bytes
@@ -1211,6 +1297,10 @@ def _fold_zeek_chunks(
                     return None
                 bad_lines: list[tuple[int, str]] = []
                 raw = _parse_tsv_log(itertools.chain(prefix, data_lines), bad_lines=bad_lines)
+                raw = attach_conn_flags(
+                    raw,
+                    raw.attrs.get("zeek_source_fields", raw.columns),
+                )
                 bad_lines_all.extend(
                     (line_number + prior_data_lines, reason)
                     for line_number, reason in bad_lines
@@ -1291,6 +1381,8 @@ def run_folded_source(
         )
 
     execution = execute_sink_plan(snapshot, plan, chunks)
+    if execution.frame.empty and _log_type(pattern) == "conn":
+        execution.frame = empty_canonical_frame("conn")
     total_message_drops = sum(message_value_drops.values())
     if total_message_drops:
         warning_sink.append(

@@ -20,7 +20,12 @@ from sigwood.outputs._sanitize import strip_control_keep_newlines
 
 CONN_COLUMNS = (
     "src", "dst", "port", "proto", "ts", "bytes", "resp_bytes",
-    "duration", "conn_state", "local_orig",
+    "duration", "conn_state", "local_orig", "orig_port",
+    "service", "history", "missed_bytes", "orig_pkts", "resp_pkts",
+    "orig_ip_bytes", "resp_ip_bytes",
+    "_source_has_service", "_source_has_history", "_source_has_missed_bytes",
+    "_source_has_orig_pkts", "_source_has_resp_pkts",
+    "_source_has_orig_ip_bytes", "_source_has_resp_ip_bytes",
 )
 DNS_COLUMNS = (
     "ts", "src", "query", "resolver", "qtype", "rtt", "ttl", "rcode",
@@ -33,6 +38,7 @@ def _conn_record(index: int = 0, *, collision: bool = True) -> dict[str, object]
         "_path": "conn",
         "ts": 1_787_440_000.0 + index * 180.0,
         "id.orig_h": "192.0.2.10",
+        "id.orig_p": 49152 + index,
         "id.resp_h": "198.51.100.20",
         "id.resp_p": 443,
         "proto": "tcp",
@@ -111,6 +117,19 @@ def test_conn_and_dns_apertures_are_ordered_and_in_lockstep() -> None:
     assert set(zeek._DNS_COLUMNS) == (
         zeek._REQUIRED_COLUMNS["dns"] | zeek._OPTIONAL_COLUMNS["dns"]
     )
+
+
+def test_originator_port_rename_collision_is_contained() -> None:
+    record = _conn_record(collision=False)
+    record["orig_port"] = 22
+    sink: list[str] = []
+    result = _zeek_normalize(pd.DataFrame([record]), "conn*.log*", warnings=sink)
+    assert result.empty
+    assert tuple(result.columns) == CONN_COLUMNS
+    assert sink == [
+        "conn.log: skipped 1 row - a source column collides with a canonical name; "
+        "is this a Zeek conn.log?"
+    ]
 
 
 def test_real_beacon_route_collision_has_no_confident_count_or_future_warning(

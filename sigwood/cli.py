@@ -196,6 +196,8 @@ _VERBS: dict[str, VerbSpec] = {
                          "[PATH]", _SINGLE_DET_ALLOWED),
     "exfil": VerbSpec("exfil", "bulk outbound-transfer detection (conn.log)",
                          "[PATH]", _SINGLE_DET_ALLOWED),
+    "protocol": VerbSpec("protocol", "expected-port and unlabeled-protocol detection (conn.log)",
+                         "[PATH]", _SINGLE_DET_ALLOWED),
     "ssl":      VerbSpec("ssl",      "outbound TLS setup anomalies (ssl.log)",
                          "[PATH]", _SINGLE_DET_ALLOWED),
     "aws":      VerbSpec("aws",      "CloudTrail behavioral surfacing (per-principal)",
@@ -216,7 +218,7 @@ _VERBS: dict[str, VerbSpec] = {
 
 
 _SINGLE_DETECTOR_COMMANDS: frozenset[str] = frozenset({
-    "auth", "beacon", "dns", "dnsblock", "syslog", "scan", "exfil", "ssl",
+    "auth", "beacon", "dns", "dnsblock", "syslog", "scan", "exfil", "protocol", "ssl",
     "aws",
 })
 

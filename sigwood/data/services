@@ -1,0 +1,91 @@
+# sigwood protocol service expectations
+# zeek_tag=v8.2.1
+# generated_on=2026-09-09
+# generator=notebooks/generate_protocol_services.py
+# fields: service port/proto # tier=<registered|conventional> [reason=<text>]
+dce_rpc          135/tcp # tier=registered
+dhcp             67/udp # tier=registered
+dhcp             68/udp # tier=registered
+dhcp             4011/udp # tier=registered
+dnp3             20000/tcp # tier=registered
+dnp3             20000/udp # tier=registered
+dns              53/tcp # tier=registered
+dns              53/udp # tier=registered
+dns              137/udp # tier=registered
+dns              853/tcp # tier=conventional reason=DNS over TLS convention
+dns              5353/udp # tier=registered
+dns              5355/udp # tier=registered
+dtls             443/udp # tier=registered
+finger           79/tcp # tier=registered
+ftp              21/tcp # tier=registered
+ftp              2811/tcp # tier=registered
+http             80/tcp # tier=registered
+http             81/tcp # tier=registered
+http             631/tcp # tier=registered
+http             1080/tcp # tier=registered
+http             3128/tcp # tier=registered
+http             8000/tcp # tier=registered
+http             8080/tcp # tier=registered
+http             8888/tcp # tier=registered
+imap             143/tcp # tier=registered
+irc              6666/tcp # tier=registered
+irc              6667/tcp # tier=registered
+irc              6668/tcp # tier=registered
+irc              6669/tcp # tier=registered
+krb              88/tcp # tier=registered
+krb              88/udp # tier=registered
+ldap             389/tcp # tier=registered
+ldap             389/udp # tier=registered
+ldap             3268/tcp # tier=registered
+modbus           502/tcp # tier=registered
+mqtt             1883/tcp # tier=registered
+mysql            1434/tcp # tier=registered
+mysql            3306/tcp # tier=registered
+ntp              123/udp # tier=registered
+postgresql       5432/tcp # tier=registered
+quic             443/udp # tier=registered
+quic             784/udp # tier=registered
+quic             853/udp # tier=registered
+radius           1812/udp # tier=registered
+rdp              3389/tcp # tier=registered
+rdp              3389/udp # tier=registered
+redis            6379/tcp # tier=registered
+sip              5060/udp # tier=registered
+smb              139/tcp # tier=registered
+smb              445/tcp # tier=registered
+smtp             25/tcp # tier=registered
+smtp             587/tcp # tier=registered
+snmp             161/udp # tier=registered
+snmp             162/udp # tier=registered
+socks            1080/tcp # tier=registered
+ssh              22/tcp # tier=registered
+ssl              443/tcp # tier=registered
+ssl              465/tcp # tier=registered
+ssl              563/tcp # tier=registered
+ssl              585/tcp # tier=registered
+ssl              614/tcp # tier=registered
+ssl              636/tcp # tier=registered
+ssl              853/tcp # tier=conventional reason=DNS over TLS convention
+ssl              989/tcp # tier=registered
+ssl              990/tcp # tier=registered
+ssl              992/tcp # tier=registered
+ssl              993/tcp # tier=registered
+ssl              995/tcp # tier=registered
+ssl              5223/tcp # tier=registered
+ssl              8443/tcp # tier=conventional reason=HTTPS alternate-port convention
+syslog           514/udp # tier=registered
+xmpp             5222/tcp # tier=registered
+xmpp             5269/tcp # tier=registered
+# flags: service kind [values=comma-separated-carriers]
+# flag service=ayiya kind=encapsulation
+# flag service=dce_rpc kind=negotiated
+# flag service=ftp-data kind=negotiated
+# flag service=gssapi kind=dependent_on values=dce_rpc,smb
+# flag service=gtp kind=encapsulation
+# flag service=krb kind=dependent_on values=dce_rpc,gssapi
+# flag service=ntlm kind=dependent_on values=dce_rpc,http,smb
+# flag service=rtp kind=negotiated
+# flag service=sip kind=negotiated
+# flag service=ssl kind=dependent_on values=ftp,http,imap,pop3,quic,smtp,xmpp
+# flag service=teredo kind=encapsulation
+# flag service=websocket kind=dependent_on values=http

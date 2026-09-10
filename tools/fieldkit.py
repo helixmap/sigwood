@@ -39,7 +39,7 @@ REPORT_SCHEMA_VERSION = 1
 RETURN_ADDRESS = "fieldkit@augros.org"
 
 DETECTOR_TOKENS = frozenset(
-    {"auth", "aws", "beacon", "dns", "dnsblock", "exfil", "scan", "ssl", "syslog"}
+    {"auth", "aws", "beacon", "dns", "dnsblock", "exfil", "protocol", "scan", "ssl", "syslog"}
 )
 SEVERITY_TOKENS = frozenset({"high", "medium", "low", "info"})
 SEVERITY_ORDER = {"high": 0, "medium": 1, "low": 2, "info": 3, "other": 4}
@@ -116,6 +116,15 @@ NUMERIC_EVIDENCE = {
     ),
     "dnsblock": frozenset(),
     "exfil": frozenset({"orig_bytes_total", "resp_bytes_total", "orig_share"}),
+    "protocol": frozenset(
+        {
+            "ambiguous_rows", "conns", "days_present", "eligible_unlabeled_conns",
+            "labeled_rows", "member_count", "not_evaluable_rows", "orig_bytes_total",
+            "pairs_below_floor", "reference_labeled_share", "reference_size",
+            "resp_bytes_total", "span_seconds", "unavailable_rows", "unlabeled_rows",
+            "window_share",
+        }
+    ),
     "scan": frozenset(
         {
             "active_buckets",
@@ -172,6 +181,12 @@ ENUM_EVIDENCE = {
         )
     },
     "exfil": {},
+    "protocol": {
+        "kind": frozenset({"context", "mismatch", "rollup", "unlabeled"}),
+        "leg_b": frozenset({"evaluated", "quality-not-supplied", "service-not-supplied"}),
+        "norm_class": frozenset({"rare", "routine"}),
+        "severity_basis": frozenset({"port-mismatch", "unlabeled-payload"}),
+    },
     "scan": {
         "direction": frozenset(
             {

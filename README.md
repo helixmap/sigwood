@@ -22,7 +22,7 @@ already blocked.
 no account. Install it, point it at a directory of logs, read the output. It runs on your own
 box, over logs at rest, and your logs never have to leave your machine.
 
-> **Status: stable (`1.0.0`).** The nine detectors work and are covered by tests;
+> **Status: stable (`1.0.0`).** The ten detectors work and are covered by tests;
 > [what 1.0 means](#what-10-means) says which interfaces are now fixed and which are not.
 > Built with heavy AI assistance under human review;
 > the [FAQ says how](https://github.com/helixmap/sigwood/blob/main/docs/FAQ.md#a-brand-new-repo-a-short-history-tidy-docs---was-this-written-by-ai),
@@ -172,10 +172,11 @@ footprint are all in the
 | `auth` \* | failure concentration, volume, spread & landings    | heuristics                   | journal, syslog, **or** Zeek `syslog.log` |
 | `scan`    | vertical / horizontal / block / slow port scans     | pattern (heuristic)          | Zeek `conn.log`                |
 | `exfil`   | bulk outbound byte transfer                        | heuristics                   | Zeek `conn.log`                |
+| `protocol` \* | expected-port mismatch and newly unlabeled payload | expectation              | Zeek `conn.log`                |
 | `ssl` \*  | outbound TLS setup unlike your estate's norm         | heuristics                   | Zeek `ssl.log` (+ `x509.log`)  |
 | `aws`     | per-principal anomalous CloudTrail behavior         | statistical (z-score composite) | CloudTrail `*.json*` (incl. `.gz`) |
 
-\* opt-in: `dnsblock`, `auth`, and `ssl` are not in the curated default hunt. Run one by
+\* opt-in: `dnsblock`, `auth`, `protocol`, and `ssl` are not in the curated default hunt. Run one by
 name (`sigwood dnsblock /var/log/pihole/`), select it with `--detect`, or run everything with `--detect=all`.
 
 `dns` and `syslog` each answer **one** question across several source families -
@@ -233,7 +234,7 @@ it - sigwood is for the box where the logs already live.
 
 **The interfaces are stable.** From 1.0, these do not change without a major version:
 
-- the `sigwood` command and its verbs: `hunt`, the nine detector names, `digest`,
+- the `sigwood` command and its verbs: `hunt`, the ten detector names, `digest`,
   `graph`, `era`, `export`, `init`, `allowlist`
 - flag syntax: `--flag=value`, and `-f=value` for the short forms
 - the five output formats stay available and selectable, though `json` and `csv` are the
@@ -257,7 +258,7 @@ of the `graph` artifact sit outside the stability contract on purpose.
 **What 1.0 promises about detection is a posture, not a number:**
 
 - **Defensible defaults.** Every detector in the default hunt is there deliberately,
-  and the reasoning is written down. Three (`auth`, `dnsblock` and `ssl`) are deliberately
+  and the reasoning is written down. Four (`auth`, `dnsblock`, `protocol` and `ssl`) are deliberately
   not, and that reasoning is written down too.
 - **Every material limit is stated in plain language**, in known-issues and at run time
   where it applies, including the unflattering ones.

@@ -58,7 +58,7 @@ class ArchitectureSpineTests(unittest.TestCase):
         detectors = discover_detectors()
 
         self.assertEqual(set(detectors), {
-            "auth", "aws", "beacon", "dns", "dnsblock", "exfil", "scan", "ssl",
+            "auth", "aws", "beacon", "dns", "dnsblock", "exfil", "protocol", "scan", "ssl",
             "syslog",
         })
 
@@ -68,7 +68,7 @@ class ArchitectureSpineTests(unittest.TestCase):
         detectors = discover_detectors(_vocab=vocab)
 
         self.assertEqual(set(detectors), {
-            "auth", "aws", "beacon", "dns", "dnsblock", "exfil", "scan", "ssl",
+            "auth", "aws", "beacon", "dns", "dnsblock", "exfil", "protocol", "scan", "ssl",
             "syslog",
         })
         self.assertEqual(set(vocab), set(detectors))
@@ -362,6 +362,29 @@ class ArchitectureSpineTests(unittest.TestCase):
         # asserting is that the scope check gates suppression, not the shape.)
         filtered_dns = matcher.filter_df(df, "dns")
         self.assertEqual(len(filtered_dns), 2)
+
+    def test_protocol_scoped_stanza_filters_protocol_and_not_a_sibling(self) -> None:
+        matcher = build_matcher({
+            "allowlist": {
+                "domain_patterns": "",
+                "entry": [{
+                    "match": "ip_pair",
+                    "src": "192.0.2.10",
+                    "dst": "198.51.100.20",
+                    "dst_port": 443,
+                    "detectors": ["protocol"],
+                }],
+            }
+        })
+        frame = pd.DataFrame([
+            {"src": "192.0.2.10", "dst": "198.51.100.20", "port": 443, "proto": "tcp"},
+            {"src": "192.0.2.11", "dst": "203.0.113.20", "port": 443, "proto": "tcp"},
+        ])
+
+        self.assertEqual(matcher.filter_df(frame, "protocol")["src"].tolist(), ["192.0.2.11"])
+        self.assertEqual(matcher.filter_df(frame, "scan")["src"].tolist(), [
+            "192.0.2.10", "192.0.2.11",
+        ])
 
     def test_connection_rule_path_can_be_operator_friendly_string(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

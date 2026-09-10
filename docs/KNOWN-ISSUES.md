@@ -423,6 +423,23 @@ reason to retune. A benign recurring pair - a backup target, an appliance with a
 self-signed certificate - surfaces on every run until you allowlist it; there is no
 learned normal, because sigwood keeps no state between runs.
 
+### protocol
+
+**`protocol` is calibrated against one estate.** Its expected-port rarity split and the
+newly-unlabeled reference gates were measured on one archive. A held-back week surfaced one
+persistent non-HTTP port-80 channel from a laptop to a cloud VM; that is a finding class to
+investigate, not evidence that every such channel is malicious. The detector therefore remains
+opt-in until another environment tests transfer.
+
+**The folded NDJSON route reads connection metadata twice.** File-level source-presence flags are
+established before chunked decoding, so folded NDJSON makes one bounded metadata pass and then the
+ordinary data pass. This costs I/O but prevents an early chunk from being mislabeled because a
+later valid record is the first to carry a field.
+
+**The session-shape leg is absent.** Its autoencoder did not beat the baseline on held-back
+positive recall, so no model, disabled switch, or inert configuration key ships. Reopening it
+requires a new measured design rather than turning on hidden code.
+
 ## Ingestion and windows
 
 **An implicit `dnsblock` run can read more Pi-hole rotations than its report window.** The

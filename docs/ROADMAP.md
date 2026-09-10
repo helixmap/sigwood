@@ -13,14 +13,15 @@ The middle section maps what sigwood can and cannot see onto the
 
 What sigwood does today:
 
-- **Nine detectors** - beacon (FFT periodicity), dns (density clustering over Zeek
+- **Ten detectors** - beacon (FFT periodicity), dns (density clustering over Zeek
   dns.log or Pi-hole/dnsmasq), syslog (drain3 templating with per-host burst collapse,
   over the live systemd journal, flat rsyslog, or Zeek syslog.log), auth (five
   authentication-structure heuristics over that same system-log lane), scan, exfil
   (bulk outbound transfers over connection logs), ssl (outbound TLS setup measured
   against your own estate, over Zeek ssl.log), aws (per-principal behavior over
   CloudTrail), and dnsblock (first activity, bursts, and recurrence in Pi-hole
-  blocked-name events).
+  blocked-name events), and protocol (expected-port mismatches plus newly unlabeled payload on
+  ports that are otherwise almost always labeled).
 - **A curated default hunt** that narrows the routine review surface while every
   detector remains runnable by name; `--detect=all` still runs everything available.
   The run discloses which available detectors were held out of the default hunt, so an
@@ -73,7 +74,7 @@ needs re-checking.
 | Discovery | LAN sweeps (`scan`), cloud enumeration bursts (`aws`) | Already the best-served here |
 | Lateral Movement | Multi-host authentication failures for one source and account (`auth`) | Zeek SMB and SSH logs |
 | Collection | Nothing claimed | Zeek SMB logs |
-| Command and Control | Check-in timing (`beacon`); generated-looking domains (`dns`), with the dense tunnel path on Zeek and Pi-hole; odd TLS session setup - no server name, or a certificate that did not validate (`ssl`) | Odd ports, tunnel log |
+| Command and Control | Check-in timing (`beacon`); generated-looking domains and tunnelling shape (`dns`, behavioral support for T1572); odd TLS session setup, no server name or a certificate that did not validate (`ssl`); a Zeek-confirmed service on an unexpected port, or newly unlabeled payload on a normally labeled port (`protocol`, behavioral support for T1571) | Tunnel-log corroboration and independent-estate validation |
 | Exfiltration | DNS tunnelling shapes (`dns`, dense path on Zeek and Pi-hole); bulk outbound byte transfers (`exfil`) | Transfers below the byte floor or split across many destinations; exfiltration inside an allowed cloud service |
 | Impact | No mining-specific verdict; generic check-ins (`beacon`) can be a downstream clue | Cloud destruction events; SMB file activity |
 
@@ -111,10 +112,10 @@ prototyped in the open, as scripts and notebooks under `notebooks/` run against
 real logs, before they ship (see [CONTRIBUTING.md](../CONTRIBUTING.md)). Grouped by
 the gap each one could narrow:
 
-- **Command and control** - a protocol classifier that notices a service running
-  somewhere it normally does not. (TLS and certificate
-  anomalies now ship as the opt-in `ssl` detector, judged against your own estate's
-  norms rather than a fingerprint database.)
+- **Command and control, beyond port identity** - the opt-in `protocol` detector now notices a
+  Zeek-confirmed service on an unexpected port and newly unlabeled payload on a port the loaded
+  window almost always labels. A session-shape model did not pass its held-back comparison and
+  does not ship. TLS and certificate anomalies remain the separate opt-in `ssl` detector.
 - **Exfiltration, beyond bulk volume** - `exfil` now answers "who is uploading, and to
   whom" for transfers large enough to clear its floor, complementing the tunnelling
   shapes `dns` already covers. The open ground is what volume alone cannot see: a
@@ -139,8 +140,8 @@ the gap each one could narrow:
   research branch (public C2 captures, a plain periodicity baseline to beat, the
   aliasing edges), not a quick tune; aws stays scored on the evidence actually
   available to it.
-- **Exploratory ideas** - flagging scans of internal space at higher severity, a
-  per-protocol anomaly model, and an emailed-report output.
+- **Exploratory ideas** - flagging scans of internal space at higher severity and an
+  emailed-report output. Reopening a per-protocol anomaly model requires a new measured design.
 
 New detectors join the default hunt only after the current defaults are reviewable, and
 none of the above is a promise - each has to earn its place against real data first.

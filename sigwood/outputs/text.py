@@ -48,6 +48,7 @@ from sigwood.outputs._evidence import (
     evidence_at_level,
     description_for_reading,
     exfil_members_at_level,
+    protocol_members_at_level,
     scan_members_at_level,
     format_evidence_for_reading,
     sample_bound_note,
@@ -458,6 +459,8 @@ def _level_tail(finding: Finding, indent: str, verbose_level: int) -> list[str]:
     member_lines = _exfil_member_lines(finding, indent, verbose_level)
     if not member_lines:
         member_lines = _scan_member_lines(finding, indent, verbose_level)
+    if not member_lines:
+        member_lines = _protocol_member_lines(finding, indent, verbose_level)
     if not member_lines or not tail:
         return tail
     # Positional dependency: data window is the tail's last element, so rollup
@@ -534,6 +537,31 @@ def _scan_member_lines(
             f"{indent}  · {_sanitize(target)} · {breadth} {noun} "
             f"· conns={conns} · {ratio} no normal close"
         )
+    if note is not None:
+        lines.append(f"{indent}  {_sanitize(note)}")
+    return lines if len(lines) > 1 else []
+
+
+def _protocol_member_lines(
+    finding: Finding,
+    indent: str,
+    verbose_level: int,
+) -> list[str]:
+    """Render protocol rollup members as bounded inert rows."""
+    members, note = protocol_members_at_level(finding, verbose_level)
+    if not members:
+        return []
+    lines = [f"{indent}members:"]
+    for member in members:
+        identity = (
+            f"{member.get('src', '')} -> {member.get('dst', '')}:"
+            f"{member.get('port', '')}/{member.get('proto', '')}"
+        )
+        try:
+            conns = f"{int(member.get('conns', 0)):,}"
+        except (TypeError, ValueError):
+            continue
+        lines.append(f"{indent}  · {_sanitize(identity)} · conns={conns}")
     if note is not None:
         lines.append(f"{indent}  {_sanitize(note)}")
     return lines if len(lines) > 1 else []
@@ -854,6 +882,8 @@ class TextHandler(OutputHandler):
             return self._render_dnsblock_group(live)
         if detector == "ssl":
             return self._render_ssl_group(live)
+        if detector == "protocol":
+            return self._render_protocol_group(live)
         # Generic fallback - flat detector, one Section with label=None.
         out: list[str] = []
         for s in live:
@@ -883,6 +913,10 @@ class TextHandler(OutputHandler):
                 blocks.append(line + ("\n" + "\n".join(tail) if tail else ""))
             out.extend(_separate_finding_blocks(blocks, self._verbose_level))
         return out
+
+    def _render_protocol_group(self, sections: list[Section]) -> list[str]:
+        """Render protocol's shared mismatch/context projection."""
+        return self._render_dnsblock_group(sections)
 
     def _render_auth_group(self, sections: list[Section]) -> list[str]:
         """Render auth through its shared identity-safe cell projection."""

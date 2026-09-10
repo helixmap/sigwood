@@ -308,6 +308,21 @@ def scan_members_at_level(
     )
 
 
+def protocol_members_at_level(
+    finding: Finding,
+    level: int,
+) -> tuple[list[dict[str, Any]], str | None]:
+    """Return protocol rollup members: ten at level 1, all at level 2."""
+    if level < 1 or finding.detector != "protocol" or finding.evidence.get("kind") != "rollup":
+        return [], None
+    raw_members = finding.evidence.get("members")
+    if not isinstance(raw_members, (list, tuple)):
+        return [], None
+    members = [member for member in raw_members if isinstance(member, dict)]
+    shown = members if level >= 2 else members[:EXFIL_MEMBER_DISPLAY_CAP]
+    return shown, sample_bound_note(len(members), len(shown), "member")
+
+
 # Per-detector curated-evidence subsets for level 1 - tolerant: omit absent
 # keys rather than printing ``None``. Per-variant lookup uses existing
 # evidence keys (scan's scan_type, dns's source, aws's tier, syslog's tier).
@@ -441,6 +456,12 @@ def curated_evidence(finding: Finding) -> dict[str, Any]:
             "port_mix", "first_seen",
         )
         always_keys = ("severity_basis",)
+    elif det == "protocol":
+        keys = (
+            ("member_count", "severity_basis")
+            if ev.get("kind") == "rollup"
+            else ("label_outcomes", "expected_ports", "window_share", "first_seen")
+        )
     elif det == "aws":
         tier = ev.get("tier")
         if tier == "burst":

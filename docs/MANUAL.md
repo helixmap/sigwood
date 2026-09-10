@@ -428,6 +428,20 @@ an opt-in behavioral detector, not inclusion in the default hunt or transfer to 
 environment. The [ssl ledger row](EVIDENCE.md#evidence-and-its-limits) is the current public
 record; a full conclusion and cross-estate measurement remain open.
 
+### protocol: does the service fit the port?
+
+protocol is an opt-in Zeek `conn.log` analysis. Its first leg compares each confirmed Zeek service
+label with the registrations generated from the pinned Zeek v8.2.1 scripts and three reviewed
+conventional ports. It keeps every label outcome, treats direction-flipped sessions
+conservatively, and groups only the exact source, destination, responder port, transport, and
+confirmed/removed label shape. `min_connections` sets that shape's surfaced floor.
+
+Its second leg looks for a new full flow identity carrying completed, bidirectional payload that
+Zeek could not label on a port whose earlier quality-clean reference population in the same
+window was at least 100 connections and 99.9% labeled. These are metadata observations, not a
+malware verdict. The detector is held out of the default hunt because calibration is from one
+estate; the session-shape model did not pass held-back recall and is absent.
+
 ### aws: which CloudTrail principal stands out?
 
 aws separates automated service activity from interactive principals. It uses a transparent
@@ -584,6 +598,7 @@ file remains the owner of values.
 | `[detectors.scan]` | `vertical_threshold`, `horizontal_threshold`, `block_port_threshold`, and `block_host_threshold` set breadth gates; `block_state_min` and `slow_state_min` set state-share gates; `window_secs`, `slow_min_ports`, and `slow_min_buckets` define the time buckets and slow route. |
 | `[detectors.exfil]` | `min_outbound_bytes` is the measured-volume floor and `min_orig_share` is the outbound-direction gate. |
 | `[detectors.ssl]` | `min_connections` is the surfaced pair floor. |
+| `[detectors.protocol]` | `min_connections` is the exact connection-shape floor. |
 | `[detectors.dns]` | `min_cluster_size` and `min_samples` shape clustering; `threshold`, `promote_below_gate`, `promote_min_subdomains`, `promote_min_nxdomain_fraction`, and `thresh_high_entropy` control lexical and promoted routes; `scan_dense_clusters`, `scan_min_high_entropy_fraction`, `scan_min_cluster_members`, `scan_min_regdomain_share`, and `scan_max_members_per_cluster` control dense-cluster inspection. The nested `[detectors.dns.pihole]` has its own `min_cluster_size` and `min_samples`. |
 | `[detectors.syslog]` | `rarity_pct` and `max_count` define rarity; `burst_gap_seconds`, `burst_min_size`, and `family_min_size` define folds; `privileged_programs` defines the elevated program class; `reboot_cluster_seconds` groups boot signals; `recognize_transactions` controls administration and update review units. |
 | `[detectors.aws]` | `min_events` and `min_scorable_principals` bound the ranked population; `burst_gap_seconds` and `burst_min_firsts` form first-activity bursts; `burst_high_error_rate` is the burst escalation gate; `composite_medium_threshold` and `composite_low_threshold` set absolute score bands. `burst_window_edge_margin_seconds` and `burst_high_service_count` remain accepted for compatibility but are unused. |

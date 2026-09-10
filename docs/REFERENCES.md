@@ -1,6 +1,6 @@
 # Prior work
 
-Three of sigwood's nine detectors rest on a published technique. The rest do not, and this
+Three of sigwood's ten detectors rest on a published technique. The rest do not, and this
 page says which is which, because the difference matters more than the citations do.
 
 What follows is a reading list, not a lineage claim. sigwood does not implement any of these
@@ -67,15 +67,15 @@ syslog groups log lines into templates before it asks which templates are rare.
   installs. sigwood adds two masks of its own for hex identifiers and register dumps, chosen
   by [measurement on a real estate](evidence/syslog.md) rather than taken from the paper.
 
-## The six with nothing to cite
+## The seven with nothing to cite
 
-`scan`, `exfil`, `aws`, `auth`, `ssl` and `dnsblock` print a house method in brackets:
-`[pattern]`, `[heuristics]`, `[statistical]`. There is no paper behind any of them. They are
+`scan`, `exfil`, `aws`, `auth`, `ssl`, `dnsblock` and `protocol` print a house method in brackets:
+`[pattern]`, `[heuristics]`, `[statistical]`, `[expectation]`. There is no paper behind any of them. They are
 arithmetic and operational judgement: a byte total against a floor, a count of destination
 ports in a window, a z-score across a population, a first-seen date. The bracket is there so
 the report doesn't dress one of these as an algorithm.
 
-That is not a statement about how well they work. Six of the nine detectors have
+That is not a statement about how well they work. Seven of the ten detectors have
 [published measurement records](EVIDENCE.md); the two with no calibration campaign at all are
 `scan` and `aws`, and the ledger says so on its own rows.
 

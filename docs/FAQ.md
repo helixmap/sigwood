@@ -167,6 +167,20 @@ yours was rather than assuming.
 `ssl` is **opt-in**: run `sigwood ssl`, or include it with `--detect=all`. It stays out
 of the default hunt until its calibration rests on more than one estate.
 
+### What does the `protocol` detector actually claim?
+
+It reports two connection-metadata facts. First, Zeek confirmed a service on a port outside that
+analyzer's pinned registration or the short reviewed conventional list. Second, traffic that met
+strict completed-session quality checks appeared without a Zeek service label on a port whose
+earlier traffic in the same window was at least 99.9% labeled. It reads metadata only; sigwood does
+not log or classify payload bytes.
+
+The comparison table is generated from Zeek v8.2.1 rather than the host's `/etc/services`, and the
+finding shows the expected ports it used. A scoped allowlist can suppress an intentional high-port
+service for `protocol` without removing that connection from other detectors. The detector is
+opt-in and calibrated on one estate. Its session-shape model failed the held-back recall gate and
+does not ship.
+
 ### What log sources can it read?
 
 Zeek (`conn.log`, `dns.log`, `syslog.log`, in NDJSON or TSV, flat or date-partitioned
@@ -707,8 +721,9 @@ this section applies: read the code, run the tests.
 
 ### What state is sigwood in?
 
-Stable, at 1.0. The nine detectors above work and are covered by tests. A protocol
-classifier remains a roadmap future. Zeek's `weird.log` has a `digest` card, which
+Stable, at 1.0. The ten detectors above work and are covered by tests. The opt-in `protocol`
+detector covers expected-port and newly unlabeled metadata evidence; its rejected session-shape
+model is not part of the product. Zeek's `weird.log` has a `digest` card, which
 reports the shape of that log and reaches no verdict; that card is the shipped form
 of weird analysis rather than a promise of a future detector. The interfaces listed under
 [what 1.0 means](../README.md#what-10-means) are fixed from here; detection keeps moving,

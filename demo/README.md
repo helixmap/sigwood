@@ -43,6 +43,14 @@ year, so hunting after a year boundary re-dates those flat-log stamps while the
 epoch-based conn and dns rows stay put; the loader's re-dating tripwire discloses that
 shift when it happens. Pass a different `--seed` or `--anchor` to vary it.
 
+The generated `conn.log` has 2,643 rows. Every row carries deterministic Zeek
+connection metadata, including service/history labels where Zeek would have a
+value and directional packet and IP-byte counts. Seven of those rows are
+isolated protocol fixtures: six `ssh`-on-443 connections and one deliberately
+truncated, asymmetric TLS session. They do not add a finding to the current
+demo hunt; the latter is wiring data only, not evidence that a shape detector
+works.
+
 ## Run the hunt
 
 From the repository root, after generating the corpus:

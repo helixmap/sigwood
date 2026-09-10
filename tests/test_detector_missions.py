@@ -49,6 +49,11 @@ _EXPECTED_SHIPPED_MISSIONS = {
         "Finds large outbound transfers to hosts outside your network. You decide how "
         "big a transfer has to be to count as large."
     ),
+    "protocol": (
+        "Looks for a connection whose protocol does not match the port it used, and for a port "
+        "that is normally labeled starting to carry traffic Zeek could not label. You decide "
+        "how many connections a pair needs before it counts."
+    ),
     "scan": (
         "Finds one host reaching for many ports or many hosts - the shape of something "
         "looking around. You decide how many ports or hosts count as many."
@@ -104,7 +109,7 @@ def test_shipped_inventory_has_one_nonempty_mission_per_available_detector() -> 
     detectors = runner.discover_detectors()
 
     assert set(detectors) == {
-        "auth", "aws", "beacon", "dns", "dnsblock", "exfil", "scan", "ssl", "syslog",
+        "auth", "aws", "beacon", "dns", "dnsblock", "exfil", "protocol", "scan", "ssl", "syslog",
     }
     assert all(
         isinstance(module.DETECTOR_MISSION, str) and module.DETECTOR_MISSION.strip()
@@ -112,7 +117,7 @@ def test_shipped_inventory_has_one_nonempty_mission_per_available_detector() -> 
     )
 
 
-def test_all_nine_shipped_missions_are_exact_plain_rendered_surfaces() -> None:
+def test_all_ten_shipped_missions_are_exact_plain_rendered_surfaces() -> None:
     detectors = runner.discover_detectors()
     actual = {
         name: module.DETECTOR_MISSION
@@ -170,7 +175,7 @@ def test_legacy_missionless_dropin_coexists_with_the_shipped_inventory(
     try:
         detectors = runner.discover_detectors()
         assert set(detectors) == {
-            "auth", "aws", "beacon", "dns", "dnsblock", "exfil",
+            "auth", "aws", "beacon", "dns", "dnsblock", "exfil", "protocol",
             "legacy_probe", "scan", "ssl", "syslog",
         }
         assert not hasattr(detectors["legacy_probe"], "DETECTOR_MISSION")

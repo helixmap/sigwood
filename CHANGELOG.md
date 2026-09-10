@@ -8,6 +8,31 @@ All notable changes to sigwood are recorded here. The format follows
 
 ### Changed
 
+- The new opt-in `protocol` detector reports Zeek-confirmed services on unexpected ports and
+  newly unlabeled, completed bidirectional traffic on ports whose earlier reference population
+  in the same window was at least 99.9% labeled. It uses connection metadata only, ships a
+  reproducible expectation table generated from Zeek v8.2.1, and exposes one tuning key:
+  `min_connections`. Its rejected session-shape model does not ship.
+
+- The demo corpus generator writes Zeek connection metadata on every connection row (service
+  and history where Zeek would have them, missed bytes, and directional packet and IP-byte
+  counts) and adds seven isolated rows: six `ssh` connections on port 443 and one truncated,
+  asymmetric TLS session. The generated `conn.log` grows from 2,636 to 2,643 rows; the demo
+  hunt's existing-detector findings are unchanged, and the new rows seed `protocol` acceptance;
+  they are fixtures, not evidence about a real environment.
+
+- Connection frames now carry Zeek's originator port as nullable `orig_port`, plus Zeek's
+  `service`, `history`, `missed_bytes`, `orig_pkts`,
+  `resp_pkts`, `orig_ip_bytes` and `resp_ip_bytes` as nullable canonical columns, each with a
+  per-file boolean recording whether that source file supplied the field (declared in a TSV
+  header, or carried by any valid NDJSON record). `protocol` reads these fields; existing
+  detector, digest and graph output on populated logs is unchanged, except for the zero-row
+  correction below. The canonical empty connection frame grows from 24 to 25 columns.
+
+- A connection input with zero valid rows, whether a header-only log that declares its columns
+  or one whose records are all rejected, now loads as the empty canonical frame with every
+  column present. The beacon detector no longer reports the columns as missing on such input.
+
 - The release checklist calls for a TestPyPI rehearsal after a change to the repository's
   allowed-actions policy, not only after a change to the release workflow. The publish job
   resolves an action that no workflow file names, so a policy built from the workflow files

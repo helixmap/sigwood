@@ -257,6 +257,18 @@ def _partition_ssl(findings: list[Finding]) -> list[Section]:
     )
 
 
+def _partition_protocol(findings: list[Finding]) -> list[Section]:
+    """Protocol entities first, followed by the run's evaluation context."""
+    mismatches = [f for f in findings if f.evidence.get("kind") != "context"]
+    context = [f for f in findings if f.evidence.get("kind") == "context"]
+    out: list[Section] = []
+    if mismatches:
+        out.append(Section("mismatches", mismatches, len(mismatches)))
+    if context:
+        out.append(Section("context", context, len(context)))
+    return out
+
+
 def _partition_flat(findings: list[Finding]) -> list[Section]:
     """Flat detector - one section with no label."""
     return [Section(None, findings, len(findings))]
@@ -269,6 +281,7 @@ _PARTITIONERS = {
     "auth": _partition_auth,
     "dnsblock": _partition_dnsblock,
     "ssl": _partition_ssl,
+    "protocol": _partition_protocol,
 }
 
 # Per-detector severity-sort opt-out. Severity sort is the
@@ -304,6 +317,10 @@ def _is_always_show(finding: Finding) -> bool:
             finding.detector == "dnsblock"
             and finding.evidence.get("kind")
             in ("prior_handling_exclusions", "recurring_activity")
+        )
+        or (
+            finding.detector == "protocol"
+            and finding.evidence.get("kind") == "context"
         )
     )
 
@@ -952,6 +969,56 @@ def _project_dnsblock(f: Finding) -> list[Cell]:
     ]
 
 
+def _protocol_time(value: object) -> str:
+    try:
+        return fmt_timestamp(datetime.fromisoformat(str(value)), include_seconds=True)
+    except (TypeError, ValueError):
+        return str(value or "")
+
+
+def _project_protocol(f: Finding) -> list[Cell]:
+    ev = f.evidence
+    kind = ev.get("kind")
+    if kind == "context":
+        return [Cell(None, f.title, full_width=True)]
+    if kind == "rollup":
+        return [
+            Cell(None, f.title),
+            Cell("members", f"members={int(ev.get('member_count', 0))}", align="right"),
+        ]
+    services = ",".join(map(str, ev.get("services", ())))
+    first = _protocol_time(ev.get("first_seen"))
+    if kind == "unlabeled":
+        return [
+            Cell(None, f.title),
+            Cell("services", f"services={services}" if services else "", optional=True),
+            Cell("mismatch", "", optional=True),
+            Cell("unlabeled", f"unlabeled={int(ev.get('eligible_unlabeled_conns', 0))}", align="right", optional=True),
+            Cell("expects", "", optional=True),
+            Cell("conns", f"conns={int(ev.get('conns', 0))}", align="right"),
+            Cell("norm", "", optional=True),
+            Cell("first", f"first={first}"),
+        ]
+    expected = ev.get("expected_ports", {})
+    conventional = ev.get("conventional_ports", {})
+    parts: list[str] = []
+    for label in sorted(ev.get("mismatched_services", ())):
+        registered = ",".join(map(str, expected.get(label, ())))
+        conv = ",".join(map(str, conventional.get(label, ())))
+        suffix = f"+{conv}" if conv else ""
+        parts.append(f"{label}:{registered}{suffix}")
+    return [
+        Cell(None, f.title),
+        Cell("services", f"services={services}"),
+        Cell("mismatch", f"mismatch={','.join(map(str, ev.get('mismatched_services', ())))}"),
+        Cell("unlabeled", "", optional=True),
+        Cell("expects", f"expects={';'.join(parts)}"),
+        Cell("conns", f"conns={int(ev.get('conns', 0))}", align="right"),
+        Cell("norm", f"norm={ev.get('norm_class', '')}"),
+        Cell("first", f"first={first}"),
+    ]
+
+
 _PROJECTORS = {
     "beacon": _project_beacon,
     "dns": _project_dns,
@@ -962,6 +1029,7 @@ _PROJECTORS = {
     "auth": _project_auth,
     "dnsblock": _project_dnsblock,
     "ssl": _project_ssl,
+    "protocol": _project_protocol,
 }
 
 

@@ -63,7 +63,7 @@ _EVIDENCE_ROW_RE = re.compile(
 )
 _EVIDENCE_DISPOSITIONS = {
     "published conclusion": frozenset({"auth", "beacon", "dns", "exfil", "syslog"}),
-    "measured; conclusion not yet published": frozenset({"dnsblock", "ssl"}),
+    "measured; conclusion not yet published": frozenset({"dnsblock", "protocol", "ssl"}),
     "no calibration campaign found": frozenset({"aws", "scan"}),
 }
 

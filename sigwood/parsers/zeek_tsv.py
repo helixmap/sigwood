@@ -378,6 +378,10 @@ def parse_tsv_log(
         records.append(record)
 
     if not records:
-        return pd.DataFrame(columns=hdr.fields)
-
-    return pd.DataFrame(records)
+        result = pd.DataFrame(columns=hdr.fields)
+    else:
+        result = pd.DataFrame(records)
+    # Preserve the complete declared source shape without changing the
+    # long-standing value-derived DataFrame column behavior.
+    result.attrs["zeek_source_fields"] = tuple(hdr.fields)
+    return result

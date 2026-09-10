@@ -166,6 +166,10 @@ allowlist_dir    = "allowlist.d/"
 # [detectors.ssl]
 # min_connections = 1  # flagged sessions a (src, dst) pair needs to surface
 
+# protocol - expected-port and newly unlabeled metadata evidence; opt-in.
+# [detectors.protocol]
+# min_connections = 3  # exact connection-shape floor
+
 # dns - DNS clustering (HDBSCAN over per-query behavior).
 # [detectors.dns]
 # min_cluster_size               = 2000

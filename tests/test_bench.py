@@ -370,10 +370,13 @@ def test_bench_end_to_end_repeats_ranks_and_detects_threshold_change(tmp_path: P
     assert type(runtime_a) is type(runtime_b) is float
     assert summary_a == summary_b
 
-    assert summary_a["total_findings"] == 1
+    assert summary_a["total_findings"] == 4
     assert summary_a["findings_by_detector_severity"]["beacon"]["medium"] == 1
     assert summary_a["findings_by_detector_severity"]["scan"] == {
         "high": 0, "medium": 0, "low": 0, "info": 0,
+    }
+    assert summary_a["findings_by_detector_severity"]["protocol"] == {
+        "high": 0, "medium": 0, "low": 2, "info": 1,
     }
     assert summary_a["known_example_ranks"]["beacon_c2"]["rank"] == 1
     assert summary_a["requested_span_seconds"] is None
@@ -398,7 +401,7 @@ def test_bench_end_to_end_repeats_ranks_and_detects_threshold_change(tmp_path: P
     summary_changed = json.loads(changed.stdout)
     assert summary_changed["config_hash"] != summary_a["config_hash"]
     assert summary_changed["findings_by_detector_severity"]["beacon"]["medium"] == 0
-    assert summary_changed["total_findings"] == 0
+    assert summary_changed["total_findings"] == 3
 
     left_path = tmp_path / "summary-a.json"
     right_path = tmp_path / "summary-changed.json"

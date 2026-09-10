@@ -8,10 +8,28 @@ import pandas as pd
 # Columns that already have canonical names (proto, ts, conn_state, local_orig) are absent.
 _CONN_COLUMN_MAP: dict[str, str] = {
     "id.orig_h":  "src",
+    "id.orig_p":  "orig_port",
     "id.resp_h":  "dst",
     "id.resp_p":  "port",
     "orig_bytes": "bytes",
 }
+
+# Zeek-native conn fields retained for protocol interpretation. This tuple is
+# the single ordering owner for the values and their per-source-file presence
+# flags; consumers must not reconstruct either list independently.
+_CONN_RETAINED_SOURCE_FIELDS: tuple[str, ...] = (
+    "service",
+    "history",
+    "missed_bytes",
+    "orig_pkts",
+    "resp_pkts",
+    "orig_ip_bytes",
+    "resp_ip_bytes",
+)
+
+_CONN_SOURCE_FLAG_COLUMNS: tuple[str, ...] = tuple(
+    f"_source_has_{field}" for field in _CONN_RETAINED_SOURCE_FIELDS
+)
 
 # Zeek dns log → canonical DNS schema.
 # Renames: TTLs→ttl, answers→answer, TC→tc, id.orig_h→src,
@@ -44,7 +62,8 @@ _CONN_COLUMNS: tuple[str, ...] = (
     "duration",
     "conn_state",
     "local_orig",
-)
+    "orig_port",
+) + _CONN_RETAINED_SOURCE_FIELDS + _CONN_SOURCE_FLAG_COLUMNS
 
 _DNS_COLUMNS: tuple[str, ...] = (
     "ts",
@@ -189,7 +208,8 @@ _OPTIONAL_COLUMNS: dict[str, set[str]] = {
         "resp_bytes",
         "conn_state",
         "local_orig",
-    },
+        "orig_port",
+    } | set(_CONN_RETAINED_SOURCE_FIELDS) | set(_CONN_SOURCE_FLAG_COLUMNS),
     "dns":  {"resolver", "qtype", "rtt", "ttl", "rcode", "answer", "tc"},
     # syslog extended (Zeek-only): facility/severity carried as-is from Zeek
     # (uppercase enum strings, e.g. "DAEMON" / "INFO"). The digest consumes
@@ -211,6 +231,39 @@ def _normalize_conn_df(df: pd.DataFrame) -> pd.DataFrame:
     """Rename Zeek conn log columns to the canonical schema. Only renames columns that exist."""
     rename = {k: v for k, v in _CONN_COLUMN_MAP.items() if k in df.columns}
     return df.rename(columns=rename) if rename else df
+
+
+def _attach_conn_source_flags(
+    df: pd.DataFrame,
+    observed_fields: object,
+) -> pd.DataFrame:
+    """Attach strict per-file presence facts for retained conn source fields."""
+    observed = set(observed_fields)
+    result = df.copy()
+    for field, flag in zip(
+        _CONN_RETAINED_SOURCE_FIELDS, _CONN_SOURCE_FLAG_COLUMNS, strict=True
+    ):
+        if field not in result.columns:
+            result[field] = pd.NA
+        result[flag] = bool(field in observed)
+    return result
+
+
+def parse_service(value: object) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Parse Zeek's comma-joined confirmed/removed analyzer grammar."""
+    if not isinstance(value, str) or not value:
+        return (), ()
+    confirmed: set[str] = set()
+    removed: set[str] = set()
+    for label in value.split(","):
+        if not label:
+            continue
+        if label.startswith("-"):
+            if label[1:]:
+                removed.add(label[1:])
+        else:
+            confirmed.add(label)
+    return tuple(sorted(confirmed)), tuple(sorted(removed))
 
 
 def _normalize_zeek_syslog_df(df: pd.DataFrame) -> pd.DataFrame:

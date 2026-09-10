@@ -13,7 +13,7 @@ import pandas as pd
 import pytest
 
 import sigwood.parsers.zeek_tsv as zeek_tsv_module
-from sigwood.parsers.zeek import _normalize_conn_df, _normalize_dns_df
+from sigwood.parsers.zeek import _normalize_conn_df, _normalize_dns_df, parse_service
 from sigwood.parsers.zeek_tsv import parse_tsv_log
 
 # ── Fixture constants ─────────────────────────────────────────────────────────
@@ -41,6 +41,22 @@ _CONN_TSV = (
     "\ttcp\t-\t-\t0\t0\tS0\tF\tF\t-\n"
     "#close\t2026-01-01-00:00:00\n"
 )
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("ssl,http", (("http", "ssl"), ())),
+        ("-ssl,-http", ((), ("http", "ssl"))),
+        ("ssl,-http,ssl,-http,dns", (("dns", "ssl"), ("http",))),
+        ("-z,a,-b,c", (("a", "c"), ("b", "z"))),
+        ("", ((), ())),
+        (None, ((), ())),
+        (7, ((), ())),
+    ],
+)
+def test_parse_service_returns_sorted_deduplicated_sets(value, expected):
+    assert parse_service(value) == expected
 
 # Equivalent events in NDJSON. Absent keys mirror TSV unset tokens.
 _CONN_NDJSON = (

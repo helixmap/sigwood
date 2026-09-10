@@ -64,6 +64,8 @@ FLOW = {
     "below_gate_timing": 0x18,
     "non_psl_labels": 0x19,
     "exfil": 0x1A,
+    "protocol_mismatch": 0x1B,
+    "protocol_shape": 0x1C,
 }
 
 WINDOW_SECONDS = 86_400  # primary story window; dnsblock adds bounded prehistory
@@ -84,6 +86,28 @@ EXFIL_DESTINATION = "203.0.113.77"
 EXFIL_CONNECTION_COUNT = 12
 EXFIL_START_SECONDS = 79_500
 EXFIL_SPACING_SECONDS = 300
+PROTOCOL_MISMATCH_SOURCE = "192.168.1.240"
+PROTOCOL_MISMATCH_DESTINATION = "192.0.2.240"
+PROTOCOL_MISMATCH_COUNT = 6
+PROTOCOL_SHAPE_SOURCE = "192.168.1.241"
+PROTOCOL_SHAPE_DESTINATION = "198.51.100.241"
+
+_SERVICE_BY_PORT = {
+    22: "ssh",
+    53: "dns",
+    80: "http",
+    443: "ssl",
+    8443: "ssl",
+}
+_HISTORY_BY_STATE = {
+    "SF": "ShADadFf",
+    "S1": "ShADad",
+    "S0": "S",
+    "REJ": "Sr",
+    "RSTO": "ShADadR",
+}
+_BYTES_PER_PACKET = 1_200
+_IP_HEADER_BYTES = 40
 
 # DGA alphabet: digits + consonants (no vowels) - consonant-heavy random labels
 # are a realistic DGA shape and clear the detector's entropy gates cleanly.
@@ -172,14 +196,38 @@ def main() -> None:
 # conn.log - two beacons + shaped background
 # ---------------------------------------------------------------------------
 
+def _conn_metadata(port: int, state: str, orig_bytes: int,
+                   resp_bytes: int) -> dict[str, object]:
+    """Derive Zeek conn metadata without consuming a random draw."""
+    orig_pkts = 0 if orig_bytes == 0 else max(1, math.ceil(orig_bytes / _BYTES_PER_PACKET))
+    resp_pkts = 0 if resp_bytes == 0 else max(1, math.ceil(resp_bytes / _BYTES_PER_PACKET))
+    metadata: dict[str, object] = {
+        "missed_bytes": 0,
+        "orig_pkts": orig_pkts,
+        "resp_pkts": resp_pkts,
+        "orig_ip_bytes": orig_bytes + _IP_HEADER_BYTES * orig_pkts,
+        "resp_ip_bytes": resp_bytes + _IP_HEADER_BYTES * resp_pkts,
+    }
+    service = _SERVICE_BY_PORT.get(port)
+    history = _HISTORY_BY_STATE.get(state)
+    if service is not None:
+        metadata["service"] = service
+    if history is not None:
+        metadata["history"] = history
+    return metadata
+
+
 def _conn_row(rows: list[dict], ts: float, src: str, dst: str, port: int,
               proto: str, orig_bytes: int, resp_bytes: int, state: str,
-              duration: float) -> None:
-    rows.append({
+              duration: float, *, service: str | None = None,
+              history: str | None = None) -> None:
+    index = len(rows)
+    row = {
         "_path": "conn",
         "ts": round(ts, 6),
-        "uid": f"C{len(rows):07d}",
+        "uid": f"C{index:07d}",
         "id.orig_h": src,
+        "id.orig_p": 49152 + index % 16384,
         "id.resp_h": dst,
         "id.resp_p": port,
         "proto": proto,
@@ -188,10 +236,17 @@ def _conn_row(rows: list[dict], ts: float, src: str, dst: str, port: int,
         "conn_state": state,
         "local_orig": True,
         "duration": round(duration, 6),
-    })
+        **_conn_metadata(port, state, orig_bytes, resp_bytes),
+    }
+    if service is not None:
+        row["service"] = service
+    if history is not None:
+        row["history"] = history
+    rows.append(row)
 
 
-def _gen_conn(rows: list[dict], rng_for, epoch0: float) -> None:
+def _gen_conn(rows: list[dict], rng_for, epoch0: float, *,
+              include_protocol: bool = True) -> None:
     # Primary beacon - periodic 3-minute C2, the more prominent of the two.
     # A 60s cadence sits exactly at the 30s-bin Nyquist limit, where the score
     # is anchor-sensitive (identical flows score far apart by how arrivals fall
@@ -237,6 +292,8 @@ def _gen_conn(rows: list[dict], rng_for, epoch0: float) -> None:
                   rb.choice(["SF", "SF", "S1"]), rb.uniform(0.02, 5.0))
 
     _gen_exfil(rows, rng_for, epoch0)
+    if include_protocol:
+        _gen_protocol_conn(rows, rng_for, epoch0)
     rows.sort(key=lambda r: r["ts"])
 
 
@@ -259,6 +316,41 @@ def _gen_exfil(rows: list[dict], rng_for, epoch0: float) -> None:
             "SF",
             rng.uniform(180, 260),
         )
+
+
+def _gen_protocol_conn(rows: list[dict], rng_for, epoch0: float) -> None:
+    """Append decorrelated protocol fixtures; neither is detection evidence."""
+    mismatch_rng = rng_for("protocol_mismatch")
+    for index in range(PROTOCOL_MISMATCH_COUNT):
+        _conn_row(
+            rows,
+            epoch0 + 18_000 + index * 907 + mismatch_rng.uniform(-13, 13),
+            PROTOCOL_MISMATCH_SOURCE,
+            PROTOCOL_MISMATCH_DESTINATION,
+            443,
+            "tcp",
+            mismatch_rng.randint(400, 1_200),
+            mismatch_rng.randint(600, 4_000),
+            "SF",
+            mismatch_rng.uniform(0.1, 1.5),
+            service="ssh",
+        )
+
+    shape_rng = rng_for("protocol_shape")
+    _conn_row(
+        rows,
+        epoch0 + 65_000 + shape_rng.uniform(-30, 30),
+        PROTOCOL_SHAPE_SOURCE,
+        PROTOCOL_SHAPE_DESTINATION,
+        443,
+        "tcp",
+        shape_rng.randint(8_000, 12_000),
+        shape_rng.randint(7_500_000, 8_500_000),
+        "SF",
+        shape_rng.uniform(6_900, 7_500),
+        service="ssl",
+        history="ShADad",
+    )
 
 
 def _gen_bench_conn(rows: list[dict], rng_for, epoch0: float) -> None:

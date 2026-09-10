@@ -91,7 +91,7 @@ is checkable.
 ### Canonical connection schema (Zeek conn / dns transport)
 
 Source: `parsers/zeek.py`, `parsers/zeek_tsv.py`. Consumers: beacon, scan,
-exfil, digest (conn card), graph (conn replay). (The Zeek dns feed shares the
+exfil, protocol, digest (conn card), graph (conn replay). (The Zeek dns feed shares the
 `src`/`ts` naming but has its own minimal schema, below.)
 
 ```
@@ -105,7 +105,25 @@ resp_bytes - responder bytes (int, nullable; graph byte-direction shares and exf
 duration   - connection duration in seconds (float, nullable)
 conn_state - connection state (str, nullable)
 local_orig - bool (nullable)
+orig_port  - originator port (int, nullable; protocol role-inversion evidence)
+service, history, missed_bytes, orig_pkts, resp_pkts, orig_ip_bytes,
+resp_ip_bytes - retained Zeek conn inputs (nullable, in this canonical order)
+_source_has_service, _source_has_history, _source_has_missed_bytes,
+_source_has_orig_pkts, _source_has_resp_pkts, _source_has_orig_ip_bytes,
+_source_has_resp_ip_bytes - strict booleans recording whether that source file supplied
+                            each retained input
 ```
+
+The observation flags are file facts attached to every row before files are concatenated.
+For TSV, supplied means the field is declared in that file's `#fields` header; for NDJSON,
+it means at least one valid record in that file carried the exact key. A supplied null is
+therefore distinct from a field the source never supplied.
+
+The `protocol` context counts labeled and unlabeled rows only after the row has a valid
+source/destination/responder-port/transport identity and timestamp. Structurally invalid rows
+are outside those eligible-population counts, are counted under the bounded context reason
+`identity-invalid`, and never become entity evidence. `service-not-supplied` is reserved for a
+source file that did not supply the service field.
 
 ### Exfil evidence population
 

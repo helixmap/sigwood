@@ -16,7 +16,7 @@ def _read(path: str) -> str:
 
 def test_public_pages_name_dnsblock_as_available_and_opt_in() -> None:
     readme = _read("README.md")
-    assert "The nine detectors work and are covered by tests" in readme
+    assert "The ten detectors work and are covered by tests" in readme
     assert "| `dnsblock`" in readme
     assert readme.count("sigwood dnsblock /var/log/pihole") == 2
     assert "`dnsblock` stays opt-in at 1.0." in readme
@@ -31,20 +31,20 @@ def test_public_pages_name_dnsblock_as_available_and_opt_in() -> None:
     assert "select 21 additional days of rotated files" in faq
     assert "28-day selection aperture" in faq
     state = faq.split("### What state is sigwood in?", 1)[1]
-    assert "A protocol\nclassifier remains a roadmap future" in state
+    assert "The opt-in `protocol`\ndetector covers expected-port" in state
     assert "promise of a future detector" in state
     assert "`dnsblock`" not in state.split("### How would I add", 1)[0]
 
 
 def test_contract_roadmap_changelog_and_known_issue_agree() -> None:
     contract = _read("docs/CONTRACT.md")
-    assert "Sixteen, all of which stay recognized:" in contract
-    assert "The nine callable detectors are" in contract
+    assert "Seventeen, all of which stay recognized:" in contract
+    assert "The ten callable detectors are" in contract
     assert "`dnsblock`: no public tuning keys" in contract
 
     roadmap = _read("docs/ROADMAP.md")
     shipped = roadmap.split("## MITRE ATT&CK coverage", 1)[0]
-    assert "**Nine detectors**" in shipped
+    assert "**Ten detectors**" in shipped
     assert "dnsblock (first activity, bursts, and recurrence" in shipped
     assert "**Known-bad access patterns** - **dnsblock**" not in roadmap
 

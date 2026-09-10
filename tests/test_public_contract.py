@@ -41,7 +41,7 @@ _WINDOW = (
 
 _VERBS = {
     "allowlist", "auth", "aws", "beacon", "digest", "dns", "dnsblock", "exfil",
-    "era", "export", "graph", "hunt", "init", "scan", "ssl", "syslog",
+    "era", "export", "graph", "hunt", "init", "protocol", "scan", "ssl", "syslog",
 }
 _FORMATS = {"csv", "html", "json", "pdf", "text"}
 _FLAGS = (
@@ -200,7 +200,7 @@ def test_unsuppressed_context_uses_fresh_defaults_and_a_real_empty_matcher() -> 
 def test_all_available_detectors_run_on_an_empty_unsuppressed_context() -> None:
     context = DetectorContext.unsuppressed({}, data_window=_WINDOW)
     for name in sorted({
-        "auth", "aws", "beacon", "dns", "exfil", "scan", "syslog",
+        "auth", "aws", "beacon", "dns", "exfil", "protocol", "scan", "syslog",
     }):
         run = import_module(f"sigwood.detectors.{name}").run
         result = run(context)
@@ -264,9 +264,9 @@ def test_contract_page_tracks_the_atomic_auth_surface_inventory() -> None:
         Path(__file__).resolve().parents[1] / "docs" / "CONTRACT.md"
     ).read_text(encoding="utf-8")
 
-    assert "Sixteen, all of which stay recognized:" in contract
+    assert "Seventeen, all of which stay recognized:" in contract
     assert "`hunt` · `auth` · `beacon`" in contract
-    assert "The nine callable detectors are `auth`, `aws`, `beacon`" in contract
+    assert "The ten callable detectors are `auth`, `aws`, `beacon`" in contract
     assert "exactly `auth` and `syslog` own the local system-log lane" in contract
     assert "## Exfil measured evidence" in contract
     assert "They are not a claim about\nunmeasured rows for the same pair." in contract

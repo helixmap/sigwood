@@ -38,6 +38,7 @@ from sigwood.outputs._evidence import (
     evidence_at_level,
     description_for_reading,
     exfil_members_at_level,
+    protocol_members_at_level,
     scan_members_at_level,
     format_evidence_for_reading,
     sample_bound_note,
@@ -270,6 +271,7 @@ def _render_detail_row(finding: Finding, *, verbose_level: int, colspan: int) ->
     )
     parts.append(_render_exfil_members(finding, verbose_level))
     parts.append(_render_scan_members(finding, verbose_level))
+    parts.append(_render_protocol_members(finding, verbose_level))
     body = "".join(p for p in parts if p)
     if not body:
         return ""
@@ -309,6 +311,31 @@ def _render_scan_members(finding: Finding, verbose_level: int) -> str:
     note_line = (
         f'<div class="sample-bound">{_esc(note)}</div>' if note is not None else ""
     )
+    return (
+        '<div class="exfil-members"><div class="members-label">members:</div>'
+        f"{''.join(lines)}{note_line}</div>"
+    )
+
+
+def _render_protocol_members(finding: Finding, verbose_level: int) -> str:
+    """Render protocol rollup members as inert structured text."""
+    members, note = protocol_members_at_level(finding, verbose_level)
+    if not members:
+        return ""
+    lines: list[str] = []
+    for member in members:
+        try:
+            line = (
+                f"{member.get('src', '')} -> {member.get('dst', '')}:"
+                f"{member.get('port', '')}/{member.get('proto', '')} · "
+                f"conns={int(member.get('conns', 0)):,}"
+            )
+        except (TypeError, ValueError):
+            continue
+        lines.append(f'<div class="exfil-member">{_esc(line)}</div>')
+    if not lines:
+        return ""
+    note_line = f'<div class="sample-bound">{_esc(note)}</div>' if note else ""
     return (
         '<div class="exfil-members"><div class="members-label">members:</div>'
         f"{''.join(lines)}{note_line}</div>"

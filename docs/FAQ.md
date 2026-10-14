@@ -170,13 +170,15 @@ of the default hunt until its calibration rests on more than one estate.
 ### What does the `protocol` detector actually claim?
 
 It reports two connection-metadata facts. First, Zeek confirmed a service on a port outside that
-analyzer's pinned registration or the short reviewed conventional list. Second, traffic that met
+analyzer's pinned registration. A port on the short reviewed conventional list, such as `ssl` on
+8443, is still reported, but never above low. Second, traffic that met
 strict completed-session quality checks appeared without a Zeek service label on a port whose
 earlier traffic in the same window was at least 99.9% labeled. It reads metadata only; sigwood does
 not log or classify payload bytes.
 
 The comparison table is generated from Zeek v8.2.1 rather than the host's `/etc/services`, and the
-finding shows the expected ports it used. A scoped allowlist can suppress an intentional high-port
+finding shows the expected ports it used: the registered ports first, then any conventional ones
+after a `+`. A scoped allowlist can suppress an intentional high-port
 service for `protocol` without removing that connection from other detectors. The detector is
 opt-in and calibrated on one estate. Its session-shape model failed the held-back recall gate and
 does not ship.

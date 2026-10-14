@@ -22,7 +22,7 @@ already blocked.
 no account. Install it, point it at a directory of logs, read the output. It runs on your own
 box, over logs at rest, and your logs never have to leave your machine.
 
-> **Status: stable (`1.0.0`).** The ten detectors work and are covered by tests;
+> **Status: stable (`1.1.0`).** The ten detectors work and are covered by tests;
 > [what 1.0 means](#what-10-means) says which interfaces are now fixed and which are not.
 > Built with heavy AI assistance under human review;
 > the [FAQ says how](https://github.com/helixmap/sigwood/blob/main/docs/FAQ.md#a-brand-new-repo-a-short-history-tidy-docs---was-this-written-by-ai),

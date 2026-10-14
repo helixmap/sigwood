@@ -6,7 +6,9 @@ All notable changes to sigwood are recorded here. The format follows
 
 ## [Unreleased]
 
-### Changed
+## [1.1.0] - 2026-10-13
+
+### Added
 
 - The new opt-in `protocol` detector reports Zeek-confirmed services on unexpected ports and
   newly unlabeled, completed bidirectional traffic on ports whose earlier reference population
@@ -14,12 +16,18 @@ All notable changes to sigwood are recorded here. The format follows
   reproducible expectation table generated from Zeek v8.2.1, and exposes one tuning key:
   `min_connections`. Its rejected session-shape model does not ship.
 
+### Changed
+
 - The demo corpus generator writes Zeek connection metadata on every connection row (service
   and history where Zeek would have them, missed bytes, and directional packet and IP-byte
   counts) and adds seven isolated rows: six `ssh` connections on port 443 and one truncated,
   asymmetric TLS session. The generated `conn.log` grows from 2,636 to 2,643 rows; the demo
   hunt's existing-detector findings are unchanged, and the new rows seed `protocol` acceptance;
   they are fixtures, not evidence about a real environment.
+
+- The README's terminal recording is regenerated from the current demo corpus, so its
+  connection count matches the 2,643-row `conn.log` the generator now writes. The hunt it
+  shows reports the same findings as before.
 
 - Connection frames now carry Zeek's originator port as nullable `orig_port`, plus Zeek's
   `service`, `history`, `missed_bytes`, `orig_pkts`,
@@ -1852,7 +1860,8 @@ agent, no account.
 - Analysis-window controls (`--since`/`--until`/`--days`/`--all`), a per-source default
   lookback window, and local-or-UTC time rendering.
 
-[Unreleased]: https://github.com/helixmap/sigwood/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/helixmap/sigwood/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/helixmap/sigwood/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/helixmap/sigwood/compare/v0.7.1...v1.0.0
 [0.7.1]: https://github.com/helixmap/sigwood/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/helixmap/sigwood/compare/v0.6.0...v0.7.0

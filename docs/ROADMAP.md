@@ -223,25 +223,30 @@ sigwood is deliberately a local, batch tool - no daemon, no stream, no service;
 the exporters pull on demand and that is the only network it touches. It won't
 grow into any of these:
 
-- No daemon, database, or agent - you install it, point it at logs, and get output.
+- No daemon, database, socket, or agent - you install it, point it at logs, and get output.
 - No real-time streaming or alerting pipeline - it runs over logs you already have.
-- Not a SIEM, and not trying to be - it sits between grep and a SIEM, a focused hunting
-  tool that lives next to one.
-- **No threat-intel feeds, and no shipped lists of bad domains, IPs, or file hashes.**
-  Those are the cheapest thing for an attacker to change, so detections built on them
-  go stale quietly. sigwood looks for behavior instead - which is also why it will never
-  cover the Resource Development tactic above.
+- Not a SIEM, and not trying to be - it sits between grep and a SIEM, a focused
+  hunting tool that lives next to one.
+- **No threat-intel feeds, no signatures, no reputations.** Lists of bad domains,
+  fingerprints, IPs, or file hashes are the cheapest thing for an attacker to
+  change, so detections built on them have a shelf date measured in weeks at
+  best. sigwood is built for behavior instead, and carries procedures for measuring
+  instead of knowledge of what bad looks like; the baseline is computed from the
+  window it runs on, every run, and no model is kept between runs.
 - **No detector-per-event-ID catalogues.** A detector here answers one question
-  behaviorally, and does not grow into a signature pack to maintain. Narrow recognition of
-  stable, documented event semantics is fine - the `aws` work reads specific API verb
-  names that way - but the question comes first and the vocabulary stays small. What
-  sigwood rejects is signature-pack sprawl, not the use of semantic fields.
+  behaviorally, and does not grow into a signature pack to maintain. No security
+  content. The tool stands or falls on its own. Narrow recognition of stable,
+  documented event semantics is fine - the `aws` work reads specific API verb
+  names that way - but the question comes first and the vocabulary stays small.
+  What sigwood rejects is signature-pack sprawl and imported knowledge from
+  an outside source, not the use of semantic fields.
 
-Some things are left out for a plainer reason - there is no way to test them yet.
-Detections for Windows event logs, or for Active Directory protocols like Kerberos, are
-not ruled out on principle, but sigwood's current telemetry and measured corpora are
-Linux-heavy, and without real logs of that kind there is no way to measure whether a
-detector works or just makes noise. That measurement, not the idea, is the blocker.
+Some things are left out for a plainer reason - there is no way to test them
+yet. Detections for Windows event logs, or for Active Directory protocols like
+Kerberos, are not ruled out on principle, but sigwood's current telemetry and
+measured corpora are Linux-heavy, and without real logs of that kind there is no
+way to measure whether a detector works or just makes noise. That measurement,
+not the idea, is the blocker.
 
 ---
 

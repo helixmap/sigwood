@@ -321,7 +321,7 @@ def test_release_packages_once_before_tests_and_publication() -> None:
     attest_target = "actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6"
     attest = package.index(attest_target)
     upload = package.index(
-        "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
+        "actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9"
     )
     assert build < validate < digest < attest < upload
     assert package.count(attest_target) == 1
@@ -336,8 +336,8 @@ def test_release_packages_once_before_tests_and_publication() -> None:
         assert test_marker not in package
 
     assert workflow.count("python -m build --no-isolation") == 1
-    upload_target = "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
-    download_target = "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c"
+    upload_target = "actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9"
+    download_target = "actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333"
     assert workflow.count(upload_target) == 1
     assert upload_target in package
     assert download_target not in package

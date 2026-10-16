@@ -62,6 +62,7 @@ _FLAGS = (
     ("--days", None, True, "N-M"),
     ("--hours", None, True, "N-M"),
     ("--utc", None, False, ""),
+    ("--recursive", None, False, ""),
     ("--zeek-dir", None, True, "PATH"),
     ("--pihole-dir", None, True, "PATH"),
     ("--syslog-dir", None, True, "PATH"),

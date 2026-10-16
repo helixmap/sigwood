@@ -22,11 +22,11 @@ import shlex
 import sys
 import time
 from collections import Counter
-from contextlib import ExitStack
+from contextlib import ExitStack, nullcontext
 from dataclasses import asdict, dataclass, field, replace
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Collection, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, Callable, Collection, Mapping, Sequence
 
 import pandas as pd
 
@@ -49,6 +49,7 @@ from sigwood.common.display import (
     _stream_isatty,
     _suppression_pct,
     compact_home,
+    compact_path_list as _compact_path_list,
     cursor_visible,
     default_window_advisory,
     fmt_compact_span,
@@ -78,12 +79,17 @@ from sigwood.common.loader import (
     CoverageDecisionReason,
     CoverageLane,
     DirectorySkipInfo,
+    DiscoveryFact,
+    DiscoveryFactKind,
     DualWindow,
     ExportAvailability,
+    FileOutcomeKind,
     FileSpan,
     JournalCaptureOutcome,
     PositionalMask,
     PreparedState,
+    RootFact,
+    RootFactKind,
 )
 from sigwood.common.output import OutputHandler, Reporter
 from sigwood.common.paths import (
@@ -102,6 +108,7 @@ from sigwood.common.sources import (
     SyslogProviderDecision,
     arbitrate_syslog_capture,
     arbitrate_syslog_probe,
+    declared_source_patterns as _declared_source_patterns,
     resolve_digest_source,
     resolve_graph_source,
     resolve_analyze_sources,
@@ -173,6 +180,7 @@ class _LoadedPlan:
     default_spec: str
     coverage_decisions: dict[str, CoverageDecision]
     dnsblock_prepared: Any | None = None
+    coverage_lines: tuple[str, ...] = ()
 
 
 def _select_coverage_lane(
@@ -274,6 +282,9 @@ def run(
     _detector_selection: DetectorSelection | None = None,
     _dnsblock_preflight_path: Path | None = None,
     invocation: str | None = None,
+    *,
+    discovery: Any | None = None,
+    recursive_retry: str | None = None,
 ) -> int:
     """Main entry point for a detection run. Called by CLI dispatch functions.
 
@@ -306,6 +317,17 @@ def run(
     DIRECTORY verdict; the runner auto-names inside it). With both None there is
     no surprise file: text / json / csv / html stream to stdout, and pdf streams
     to ``stdout.buffer`` on a pipe but raises on a terminal (binary safety).
+
+    ``discovery`` is the CLI's ``AnalyzeDiscovery`` context. With it, planning,
+    window resolution, every load pass and the dry-run read one shared
+    inventory of observed inputs, and the run discloses its directory coverage.
+    ``None`` keeps the ordinary per-consumer discovery and adds no coverage
+    disclosure, so programmatic callers are unchanged.
+
+    ``recursive_retry`` is the operator's own command with ``--recursive``
+    inserted, already quoted and checked by the CLI, or ``None``. It is offered
+    once, after the coverage notices, when an input the invocation supplied has
+    subdirectories the run did not search. The runner never reads argv.
     """
     set_narration_enabled(not quiet)
     with hidden_cursor():
@@ -333,6 +355,8 @@ def run(
             _detector_selection=_detector_selection,
             _dnsblock_preflight_path=_dnsblock_preflight_path,
             invocation=invocation,
+            discovery=discovery,
+            recursive_retry=recursive_retry,
         )
 
 
@@ -1057,6 +1081,9 @@ def _run_analyze(
     _detector_selection: DetectorSelection | None = None,
     _dnsblock_preflight_path: Path | None = None,
     invocation: str | None = None,
+    *,
+    discovery: Any | None = None,
+    recursive_retry: str | None = None,
 ) -> int:
     cfg_sigwood = config.get("sigwood", {})
     home_net = resolve_home_net(config)
@@ -1114,16 +1141,57 @@ def _run_analyze(
         dry_sources = _source_dirs_for_provider(
             resolved, probe_decision.provider
         )
-        plan = build_run_plan(
-            detect_spec=detect_spec,
-            zeek_dir=dry_sources.get("zeek_dir"),
-            syslog_dir=dry_sources.get("syslog_dir"),
-            pihole_dir=dry_sources.get("pihole_dir"),
-            cloudtrail_dir=dry_sources.get("cloudtrail_dir"),
-            scope=syslog_intent.adjusted_scope,
-            selection=selection,
-            virtual_sources=probe_decision.virtual_sources,
-        )
+        dry_default_spec: str = cfg_sigwood.get("default_window", "7d")
+        with _discovery_liveness(discovery, quiet=quiet):
+            plan = build_run_plan(
+                detect_spec=detect_spec,
+                zeek_dir=dry_sources.get("zeek_dir"),
+                syslog_dir=dry_sources.get("syslog_dir"),
+                pihole_dir=dry_sources.get("pihole_dir"),
+                cloudtrail_dir=dry_sources.get("cloudtrail_dir"),
+                scope=syslog_intent.adjusted_scope,
+                selection=selection,
+                virtual_sources=probe_decision.virtual_sources,
+                inventory=discovery.inventory if discovery is not None else None,
+            )
+            # The preview's window peeks and selection belong to the same
+            # planning phase, so they run inside its spinner.
+            preview = (
+                _dry_run_preview(
+                    plan,
+                    dry_sources,
+                    inventory=discovery.inventory if discovery is not None else None,
+                    default_spec=dry_default_spec,
+                    load_all=load_all,
+                    since=since,
+                    until=until,
+                    virtual_sources=probe_decision.virtual_sources,
+                    verbose=verbose_level >= 1,
+                )
+                if plan.will_run
+                else None
+            )
+        if discovery is not None:
+            dry_span = (
+                parse_window_span(cfg_sigwood.get("default_window", "7d"))
+                if not load_all and since is None and until is None else None
+            )
+            for line in _discovery_coverage_lines(
+                discovery, plan, dry_sources, default_span=dry_span, dry_run=True,
+                recursive_retry=recursive_retry,
+            ):
+                _estderr(line)
+            # A dry run renders no report, so its denial notes go to stderr.
+            for line in _unowned_directory_skip_lines(plan, dry_sources):
+                _estderr(line)
+        if preview is not None:
+            # The selection warnings a load would print, so a dry run is not
+            # silent where the run warns.
+            for line in preview.warnings:
+                _estderr(line)
+            if not quiet:
+                for line in preview.fallback_lines:
+                    _estderr(line)
         opt_in = _default_opt_in_remainder(plan, selection, detect_spec)
         _print_dry_run(
             zeek_dir=zeek_dirs,
@@ -1138,6 +1206,9 @@ def _run_analyze(
             opt_in=opt_in,
             syslog_intent=syslog_intent,
             syslog_probe=probe_decision,
+            preview=preview,
+            default_spec=dry_default_spec,
+            used_sources=frozenset(plan.needed_logs.values()),
         )
         return 0
 
@@ -1212,6 +1283,8 @@ def _run_analyze(
                 pre_resolved_windows=pre_resolved,
                 dnsblock_preflight_path=_dnsblock_preflight_path,
                 dnsblock_unsuppressed=no_allowlist,
+                discovery=discovery,
+                recursive_retry=recursive_retry,
             )
 
     if decision.provider is not SyslogProvider.JOURNAL:
@@ -1232,6 +1305,8 @@ def _run_analyze(
             allowlist=allowlist,
             dnsblock_preflight_path=_dnsblock_preflight_path,
             dnsblock_unsuppressed=no_allowlist,
+            discovery=discovery,
+            recursive_retry=recursive_retry,
         )
 
     assert loaded_or_rc is not None
@@ -1471,12 +1546,19 @@ def _run_analyze(
     # another's finding). Derives from already-resolved source_dirs + plan, like
     # the home_net note above. Appended before the coverage/rotation extends,
     # which are deliberately last.
-    notes.extend(_source_overlap_notes(source_dirs, plan))
+    if discovery is None or not discovery.recursive:
+        # A recursive run states actual shared candidates among its coverage
+        # lines instead: an equal directory there no longer implies a cross-read.
+        notes.extend(_source_overlap_notes(source_dirs, plan))
     # Source-coverage disclosure: for each planned source that contributed 0
     # in-window rows, append a note (SPAN / BARE / silent per the parse-gap
     # vs window-gap tri-state in CoverageTracker). Reads the merged coverage
     # written by the runner-side flat-default block above (when fired).
     notes.extend(_zero_window_coverage_notes(load_result, plan, load_all=load_all))
+    # Directory coverage facts the shared inventory established (unsearched
+    # children, unreadable entries, inputs that were missing or empty). They
+    # were printed on stderr at planning; the report carries the same lines.
+    notes.extend(loaded_or_rc.coverage_lines)
     # A source directory omitted before file discovery is a plan fact rather
     # than LoadResult metadata. Partial runs remain successful, but every
     # report format with notes must disclose that the directory was absent.
@@ -1702,6 +1784,18 @@ def _run_analyze(
     return 0
 
 
+def _discovery_liveness(discovery: Any | None, *, quiet: bool) -> Any:
+    """The planning-phase spinner, entered only when the shared inventory runs.
+
+    Observation can take a while on a large directory, so the inventory path
+    shows a delayed spinner around planning. Without a discovery context the
+    phase sequence is exactly the historical one.
+    """
+    if discovery is None:
+        return nullcontext()
+    return liveness("finding log files", delay=0.5, enabled=not quiet)
+
+
 def _source_dirs_for_provider(
     resolved: ResolvedSources,
     provider: SyslogProvider,
@@ -1754,6 +1848,213 @@ def _emit_syslog_skip_diagnostic(
         _estderr("system logs: no eligible flat files found")
 
 
+@dataclass(frozen=True)
+class _RunWindows:
+    """The windows a run loads with, resolved once from its final plan."""
+
+    populations: dict[str, Any] | None
+    load_windows: list[Any]
+    source_windows: dict[str, tuple[datetime | None, datetime | None]] | None
+    file_select_windows: dict[str, tuple[datetime | None, datetime | None]] | None
+    policies: dict[str, Any]
+    history_floors: dict[str, tuple[datetime, str]]
+
+
+def _resolve_run_windows(
+    plan: RunPlan,
+    source_dirs: dict[str, list[Path]],
+    *,
+    inventory: Any | None,
+    default_spec: str,
+    load_all: bool,
+    since: datetime | None,
+    until: datetime | None,
+    pre_resolved_windows: Mapping[str, Any] | None = None,
+) -> _RunWindows:
+    """Resolve a run's windows from its final plan, for the load and its preview.
+
+    This is the one owner of the populations published from the final
+    post-arbitration plan, the resolver's windows and the reason it recorded
+    for each family, the precise and file-selection maps, and the history
+    aperture a selected detector widens file selection by. Both the load and
+    the dry-run preview call it, so the preview selects with the load's windows.
+    """
+    from sigwood.common import loader
+
+    # Published only now, from the final post-arbitration plan, so a population
+    # can never describe a provider the run did not choose.
+    populations = (
+        inventory.populations(plan.needed_logs, source_dirs)
+        if inventory is not None
+        else None
+    )
+    policies: dict[str, Any] = {}
+    load_windows = loader.resolve_load_windows(
+        plan.needed_logs,
+        source_dirs,
+        default_spec,
+        load_all=load_all,
+        since=since,
+        until=until,
+        pre_resolved_windows=pre_resolved_windows,
+        _directory_skips=plan.directory_skips,
+        _discovery=populations,
+        _policies=policies,
+    )
+    source_windows = (
+        {
+            window.source: window.select_window
+            for window in load_windows
+            if window.select_window is not None and window.trim_span is None
+        }
+        or None
+    )
+    file_select_windows = (
+        {
+            window.source: window.select_window
+            for window in load_windows
+            if window.select_window is not None and window.trim_span is not None
+        }
+        or None
+    )
+    history_floors: dict[str, tuple[datetime, str]] = {}
+    dnsblock_mod = (
+        plan.detectors.get("dnsblock") if "dnsblock" in plan.will_run else None
+    )
+    if dnsblock_mod is not None and file_select_windows is not None:
+        pihole_file_window = file_select_windows.get("pihole_dir")
+        if pihole_file_window is not None:
+            floor, upper = pihole_file_window
+            if floor is not None:
+                widened = floor - timedelta(days=dnsblock_mod.ARRIVAL_HISTORY)
+                file_select_windows = {
+                    **file_select_windows,
+                    "pihole_dir": (widened, upper),
+                }
+                history_floors["pihole_dir"] = (widened, dnsblock_mod.DETECTOR_NAME)
+    return _RunWindows(
+        populations=populations,
+        load_windows=load_windows,
+        source_windows=source_windows,
+        file_select_windows=file_select_windows,
+        policies=policies,
+        history_floors=history_floors,
+    )
+
+
+@dataclass(frozen=True)
+class _FamilyPreview:
+    """One source family's preview, unioned across its patterns by real path."""
+
+    discovered: tuple[Path, ...]
+    selected: tuple[Path, ...]
+    not_selected: tuple[Path, ...]
+    discovered_bytes: int
+    discovered_unsized: tuple[Path, ...]
+    selected_bytes: int
+    selected_unsized: tuple[Path, ...]
+
+
+@dataclass(frozen=True)
+class _DryRunPreview:
+    """What a run would select, computed by the load's own window and selection owners."""
+
+    windows: _RunWindows
+    families: dict[str, _FamilyPreview]
+    warnings: tuple[str, ...]
+    fallback_lines: tuple[str, ...]
+
+
+def _dry_run_preview(
+    plan: RunPlan,
+    source_dirs: dict[str, list[Path]],
+    *,
+    inventory: Any | None,
+    default_spec: str,
+    load_all: bool,
+    since: datetime | None,
+    until: datetime | None,
+    virtual_sources: Collection[tuple[str, str]],
+    verbose: bool,
+) -> _DryRunPreview:
+    """Select each family's files the way the run would, without loading them.
+
+    The windows come from ``_resolve_run_windows`` and the files from the
+    loader's own selector, so the preview cannot disagree with the run it
+    describes. A virtual ``(source, pattern)`` pair has no files to select,
+    so it gets none. Nothing is parsed, hashed, validated or captured; sizes
+    come from ``stat``.
+    """
+    from sigwood.common import loader
+
+    windows = _resolve_run_windows(
+        plan,
+        source_dirs,
+        inventory=inventory,
+        default_spec=default_spec,
+        load_all=load_all,
+        since=since,
+        until=until,
+    )
+    needed = {
+        pattern: source
+        for pattern, source in plan.needed_logs.items()
+        if (source, pattern) not in virtual_sources
+    }
+    previews = loader.preview_required_files(
+        needed,
+        source_dirs,
+        since,
+        until,
+        source_windows=windows.source_windows,
+        file_select_windows=windows.file_select_windows,
+        discovered_candidates=windows.populations,
+        verbose=verbose,
+        _directory_skips=plan.directory_skips,
+    )
+    by_source: dict[str, list[Any]] = {}
+    for preview in previews.values():
+        by_source.setdefault(preview.source, []).append(preview)
+    families: dict[str, _FamilyPreview] = {}
+    for source, items in by_source.items():
+        # One file can serve several patterns of a family; it is one file here,
+        # and a file another pattern selects is never called unselected.
+        discovered = loader._union_dedupe([list(item.discovered) for item in items])
+        selected = loader._union_dedupe([list(item.selected) for item in items])
+        selected_real = {loader._safe_resolve(path) for path in selected}
+        not_selected = tuple(
+            path for path in discovered
+            if loader._safe_resolve(path) not in selected_real
+        )
+        discovered_bytes, discovered_unsized = loader.on_disk_bytes(discovered)
+        selected_bytes, selected_unsized = loader.on_disk_bytes(selected)
+        families[source] = _FamilyPreview(
+            discovered=tuple(discovered),
+            selected=tuple(selected),
+            not_selected=not_selected,
+            discovered_bytes=discovered_bytes,
+            discovered_unsized=discovered_unsized,
+            selected_bytes=selected_bytes,
+            selected_unsized=selected_unsized,
+        )
+    warnings = tuple(
+        line for preview in previews.values() for line in preview.warnings
+    )
+    fallback_lines = tuple(
+        _rotation_fallback_line(
+            _pattern_human_label(preview.source, pattern), preview.rotation_skip,
+        )
+        for pattern, preview in previews.items()
+        if preview.rotation_skip is not None and preview.rotation_skip.fallback
+    )
+    return _DryRunPreview(
+        windows=windows,
+        families=families,
+        warnings=warnings,
+        fallback_lines=fallback_lines,
+    )
+
+
 def _plan_and_load(
     *,
     detect_spec: str | None,
@@ -1772,20 +2073,49 @@ def _plan_and_load(
     pre_resolved_windows: Mapping[str, Any] | None = None,
     dnsblock_preflight_path: Path | None = None,
     dnsblock_unsuppressed: bool = False,
+    discovery: Any | None = None,
+    recursive_retry: str | None = None,
 ) -> _LoadedPlan | int:
-    """Build the final plan and eagerly load its one-provider source map."""
+    """Build the final plan and eagerly load its one-provider source map.
+
+    With a ``discovery`` context the plan is built from its inventory, which
+    is first asked here, after the system-log provider is decided. Coverage
+    facts print before any detector skip line, and the observed populations,
+    published from the final plan, feed window resolution and every load pass.
+    """
     from sigwood.common import loader
 
-    plan = build_run_plan(
-        detect_spec=detect_spec,
-        zeek_dir=source_dirs.get("zeek_dir"),
-        syslog_dir=source_dirs.get("syslog_dir"),
-        pihole_dir=source_dirs.get("pihole_dir"),
-        cloudtrail_dir=source_dirs.get("cloudtrail_dir"),
-        journal=source_dirs.get("journal"),
-        scope=scope,
-        selection=selection,
-    )
+    inventory = discovery.inventory if discovery is not None else None
+    with _discovery_liveness(discovery, quiet=quiet):
+        plan = build_run_plan(
+            detect_spec=detect_spec,
+            zeek_dir=source_dirs.get("zeek_dir"),
+            syslog_dir=source_dirs.get("syslog_dir"),
+            pihole_dir=source_dirs.get("pihole_dir"),
+            cloudtrail_dir=source_dirs.get("cloudtrail_dir"),
+            journal=source_dirs.get("journal"),
+            scope=scope,
+            selection=selection,
+            inventory=inventory,
+        )
+    coverage_lines: tuple[str, ...] = ()
+    if discovery is not None:
+        span = (
+            parse_window_span(default_spec)
+            if not load_all and since is None and until is None else None
+        )
+        coverage_lines = tuple(
+            _discovery_coverage_lines(
+                discovery, plan, source_dirs, default_span=span, dry_run=False,
+                recursive_retry=recursive_retry,
+            )
+        )
+        for line in coverage_lines:
+            _estderr(line)
+        if not plan.will_run:
+            # No report will render, so the denial notes it would carry go here.
+            for line in _unowned_directory_skip_lines(plan, source_dirs):
+                _estderr(line)
     _emit_syslog_skip_diagnostic(plan, provider_decision, syslog_intent)
     _warn_skips(plan.skipped)
     if not plan.will_run:
@@ -1798,48 +2128,23 @@ def _plan_and_load(
         _estderr("no detectors to run - the detect spec selected none")
         return 0
 
-    load_windows = loader.resolve_load_windows(
-        plan.needed_logs,
+    windows = _resolve_run_windows(
+        plan,
         source_dirs,
-        default_spec,
+        inventory=inventory,
+        default_spec=default_spec,
         load_all=load_all,
         since=since,
         until=until,
         pre_resolved_windows=pre_resolved_windows,
-        _directory_skips=plan.directory_skips,
     )
-    source_windows = (
-        {
-            window.source: window.select_window
-            for window in load_windows
-            if window.select_window is not None and window.trim_span is None
-        }
-        or None
-    )
-    file_select_windows = (
-        {
-            window.source: window.select_window
-            for window in load_windows
-            if window.select_window is not None and window.trim_span is not None
-        }
-        or None
-    )
+    populations = windows.populations
+    load_windows = windows.load_windows
+    source_windows = windows.source_windows
+    file_select_windows = windows.file_select_windows
     dnsblock_mod = (
         plan.detectors.get("dnsblock") if "dnsblock" in plan.will_run else None
     )
-    if dnsblock_mod is not None and file_select_windows is not None:
-        pihole_file_window = file_select_windows.get("pihole_dir")
-        if pihole_file_window is not None:
-            floor, upper = pihole_file_window
-            if floor is not None:
-                file_select_windows = {
-                    **file_select_windows,
-                    "pihole_dir": (
-                        floor
-                        - timedelta(days=dnsblock_mod.ARRIVAL_HISTORY),
-                        upper,
-                    ),
-                }
     if load_windows and not quiet:
         open_ended = any(
             window.trim_span is None
@@ -1865,6 +2170,7 @@ def _plan_and_load(
             show_progress=not quiet,
             file_select_windows=file_select_windows,
             _directory_skips=plan.directory_skips,
+            discovered_candidates=populations,
         )
     else:
         if dnsblock_mod is None:
@@ -1904,6 +2210,7 @@ def _plan_and_load(
             },
             dual_windows={pattern: broad_window},
             _directory_skips=plan.directory_skips,
+            discovered_candidates=populations,
         )
         pass_wall_seconds["anchor_block"] = time.monotonic() - first_pass_started
         snapshot = anchor_block_result.snapshots.get(pattern)
@@ -2020,6 +2327,7 @@ def _plan_and_load(
             dual_windows={pattern: fold_window},
             prepared_snapshots={pattern: snapshot},
             _directory_skips=plan.directory_skips,
+            discovered_candidates=populations,
         )
         pass_wall_seconds["population"] = time.monotonic() - population_started
         # R3: only this final population pass may choose and feed the lane.
@@ -2102,6 +2410,7 @@ def _plan_and_load(
                     dual_windows={pattern: fold_window},
                     prepared_snapshots={pattern: snapshot},
                     _directory_skips=plan.directory_skips,
+                    discovered_candidates=populations,
                 )
                 channel = cadence_sink.channel
                 pair_status = cadence_load.prepared_status.get(
@@ -2143,6 +2452,11 @@ def _plan_and_load(
         )
         for pattern in plan.needed_logs
     }
+    if discovery is not None:
+        unselected = _unselected_retained_lines(discovery, plan, load_result)
+        for line in unselected:
+            _estderr(line)
+        coverage_lines = (*coverage_lines, *unselected)
     return _LoadedPlan(
         plan=plan,
         source_dirs=source_dirs,
@@ -2151,6 +2465,7 @@ def _plan_and_load(
         default_spec=default_spec,
         coverage_decisions=coverage_decisions,
         dnsblock_prepared=dnsblock_prepared,
+        coverage_lines=coverage_lines,
     )
 
 
@@ -2843,6 +3158,8 @@ def build_run_plan(
     scope: frozenset[str] | None = None,
     selection: DetectorSelection | None = None,
     virtual_sources: frozenset[tuple[str, str]] = frozenset(),
+    *,
+    inventory: Any | None = None,
 ) -> RunPlan:
     """Resolve detector selection, required-log skips, and log patterns to load.
 
@@ -2859,6 +3176,13 @@ def build_run_plan(
     Zeek/syslog directory listing denials accumulate in the plan-owned sink so
     skipped detectors get the permission cause and partial reports retain the
     missing-directory disclosure through later window/load probes.
+
+    With an ``inventory`` (the analyze run's ``DiscoveryInventory``), every
+    input of every source a selected detector declares is observed before any
+    satisfiability answer is reduced, so an early success or an early failed
+    requirement can never leave a later input, or its denial, unobserved.
+    Every later question is then answered from those observations. Reasons and
+    selection outcomes are the same either way.
     """
     resolved_selection = selection or select_detectors(detect_spec, detectors)
     import_failures = resolved_selection.import_failures
@@ -2885,6 +3209,20 @@ def build_run_plan(
     will_run: list[str] = []
     skipped: dict[str, str] = {}
     directory_skips: dict[tuple[str, Path], DirectorySkipInfo] = {}
+    if inventory is not None:
+        declared = _declared_source_patterns(
+            [name for name in selected if name not in import_failures],
+            all_detectors,
+            virtual_sources,
+        )
+        for source, patterns in declared.items():
+            if not inventory.supports(source):
+                continue
+            for path in source_map.get(source, []):
+                for pattern in patterns:
+                    inventory.candidates(
+                        source, path, pattern, _directory_skips=directory_skips,
+                    )
     for name in selected:
         # An import-failed name is absent from all_detectors - skip it before
         # the required-logs check (which would KeyError). The reason does not
@@ -2898,6 +3236,7 @@ def build_run_plan(
             scope,
             virtual_sources,
             _directory_skips=directory_skips,
+            inventory=inventory,
         )
         if reason:
             skipped[name] = reason
@@ -2918,6 +3257,7 @@ def build_run_plan(
                 source_map,
                 virtual_sources,
                 _directory_skips=directory_skips,
+                inventory=inventory,
             ):
                 _claim_needed_log(needed_logs, req["pattern"], req["source"])
 
@@ -3138,6 +3478,7 @@ def _any_input_yields_files(
     _directory_skips: (
         dict[tuple[str, Path], DirectorySkipInfo] | None
     ) = None,
+    inventory: Any | None = None,
 ) -> bool:
     """Plan-time discovery lockstep with the LOADER for one family.
 
@@ -3158,12 +3499,24 @@ def _any_input_yields_files(
       content-routed Pi-hole input named e.g. ``events.log`` is NOT plan-rejected.
 
     Returns True iff ANY input yields at least one file.
+
+    With an ``inventory`` the answer comes from its observations of every
+    input, the same selection the loader will run; a missing input still
+    contributes nothing.
     """
     from sigwood.common.loader import (
         _discover_syslog_files,
         discover_for_source_key,
         discover_zeek_files,
     )
+    if inventory is not None and inventory.supports(source):
+        answers = [
+            bool(inventory.candidates(
+                source, p, pattern, _directory_skips=_directory_skips,
+            ))
+            for p in paths
+        ]
+        return any(answers)
     for p in paths:
         if not p.exists():
             continue
@@ -3222,6 +3575,7 @@ def _is_optional_satisfiable(
     _directory_skips: (
         dict[tuple[str, Path], DirectorySkipInfo] | None
     ) = None,
+    inventory: Any | None = None,
 ) -> bool:
     """Return True if an OPTIONAL_LOGS entry has files available to load."""
     source = req["source"]
@@ -3235,6 +3589,7 @@ def _is_optional_satisfiable(
         paths,
         req["pattern"],
         _directory_skips=_directory_skips,
+        inventory=inventory,
     )
 
 
@@ -3280,6 +3635,7 @@ def _check_required_logs(
     _directory_skips: (
         dict[tuple[str, Path], DirectorySkipInfo] | None
     ) = None,
+    inventory: Any | None = None,
 ) -> str | None:
     """Return None if all REQUIRED_LOGS are available, or a human-readable reason if not.
 
@@ -3312,6 +3668,7 @@ def _check_required_logs(
             paths,
             pattern,
             _directory_skips=_directory_skips,
+            inventory=inventory,
         ):
             denial_reason = _directory_denial_reason(
                 source, paths, _directory_skips,
@@ -3321,7 +3678,7 @@ def _check_required_logs(
             if len(paths) == 1:
                 p = paths[0]
                 if not p.exists():
-                    return f"{source} {p} not found"
+                    return _not_found_reason(source, p)
                 if source == "cloudtrail_dir":
                     # Preserve the family-specific wording for the no-events
                     # skip path - recursive AWSLogs/<acct>/CloudTrail/<region>/
@@ -3339,6 +3696,7 @@ def _check_required_logs(
                 source_map,
                 virtual_sources,
                 _directory_skips=_directory_skips,
+                inventory=inventory,
             ):
                 return None
         for opt in getattr(detector_module, "OPTIONAL_LOGS", []):
@@ -3359,6 +3717,11 @@ def _check_required_logs(
         )
 
     return None
+
+
+def _not_found_reason(source: str, path: Path) -> str:
+    """The single-input skip reason for a configured input that does not exist."""
+    return f"{source} {path} not found"
 
 
 def _claim_needed_log(
@@ -3402,50 +3765,8 @@ def _warn_skipped(detector_names: Sequence[str], reason: str) -> None:
     _estderr(f"{reason} - skipping detectors: {', '.join(detector_names)}")
 
 
-# The shipped-Zeek connection/dns/syslog primary log patterns. The dry-run zeek_dir
-# count discovers through the same loader helper the hunt uses (discover_zeek_files),
-# so a dated zeekctl tree (YYYY-MM-DD/ + current/) is counted the way it will actually
-# be loaded - not just its immediate file children.
-_ZEEK_DRYRUN_PATTERNS = ("conn*.log*", "dns*.log*", "syslog*.log*")
-
-
-def _zeek_entry_display(p: Path) -> str:
-    """Render one zeek_dir input for the dry-run block.
-
-    A DIRECTORY shows ``{path}  (N files, X.X MB)`` where N/size come from the
-    loader's ``discover_zeek_files`` union over the shipped patterns, so a dated
-    zeekctl layout is counted (not just immediate file children); an unreadable
-    tree shows ``{path}  (unreadable)`` (truth unknown, never a raw traceback). A
-    FILE shows ``{path}  (X.X MB)``; a non-existent path shows ``{path}  - not found``.
-    """
-    from sigwood.common.loader import discover_zeek_files
-
-    if not p.exists():
-        return f"{p}  - not found"
-    if p.is_dir():
-        discovered: dict[Path, Path] = {}
-        try:
-            for pattern in _ZEEK_DRYRUN_PATTERNS:
-                for f in discover_zeek_files(p, pattern):
-                    discovered[f.resolve()] = f
-        except OSError:
-            return f"{p}  (unreadable)"   # discovery failed - truth unknown, not empty
-        total = 0
-        for f in discovered.values():
-            try:
-                total += f.stat().st_size
-            except OSError:
-                pass  # a file denied/removed mid-scan - skip its bytes, keep the count
-        return f"{p}  ({len(discovered)} files, {total / 1_048_576:.1f} MB)"
-    try:
-        size_mb = p.stat().st_size / 1_048_576
-        return f"{p}  ({size_mb:.1f} MB)"
-    except OSError:
-        return f"{p}"
-
-
 def _status_entry_display(p: Path) -> str:
-    """Render one syslog/pihole/cloudtrail input for the dry-run block."""
+    """Render one source input for the dry-run block."""
     status = "found" if p.exists() else "not found"
     return f"{p}  ({status})"
 
@@ -3472,6 +3793,147 @@ def _print_family_block(label: str, paths: list[Path], formatter) -> None:
         print(f"{indent}  {e}")
 
 
+def _explicit_window_text(since: datetime | None, until: datetime | None) -> str:
+    """An explicit time window as the dry run states it."""
+    if since and until:
+        return fmt_window((since, until))
+    since_str = fmt_timestamp(since) if since else "beginning of data"
+    until_str = fmt_timestamp(until) if until else "end of data"
+    return f"{since_str} → {until_str}"
+
+
+def _size_text(total: int, unsized: Sequence[Path]) -> str:
+    """On-disk bytes, never presented as complete when some files had no size."""
+    text = human_bytes(total)
+    if unsized:
+        n = len(unsized)
+        text += f" plus {n:,} {plural(n, 'file')} of unknown size"
+    return text
+
+
+def _family_policy_text(
+    reason: Any,
+    window: Any | None,
+    *,
+    since: datetime | None,
+    until: datetime | None,
+    default_spec: str,
+    history: tuple[datetime, str] | None,
+    journal: bool,
+) -> str:
+    """One family's time policy, as the window resolver decided it.
+
+    ``reason`` is the resolver's own record for the family. A journal provider
+    has no capture in a dry run, so its active default is stated as the rule
+    the capture applies, never as an exact window. A family the resolver gave
+    no window is never shown an invented span.
+    """
+    from sigwood.common.loader import WindowPolicyReason as Reason
+
+    if reason is Reason.EXPLICIT:
+        return f"explicit window: {_explicit_window_text(since, until)}"
+    if reason is Reason.ALL:
+        return "full input (--all)"
+    if reason is Reason.DEFAULT_DISABLED:
+        return "full input (default window disabled)"
+    if journal:
+        return (
+            f"default {default_spec}: the {default_spec} before the journal's "
+            "newest entry, set when the journal is read"
+        )
+    if reason is Reason.NAMED_FILES:
+        return "full input (named files only)"
+    if reason is Reason.EXEMPT:
+        return "full input (this source takes no default window)"
+    if reason is Reason.RESOLVED and window is not None:
+        if window.trim_span is None and window.select_window is None:
+            # A window with neither bound nor trim reads everything; say so
+            # rather than describe a trim that does not exist.
+            return "full input (no default window resolved)"
+        if window.trim_span is None:
+            # The dated floor is midnight UTC of the earliest selected date
+            # directory, so its UTC date names that directory exactly.
+            floor = window.select_window[0]
+            text = (
+                f"default {default_spec}: date directories from "
+                f"{floor.astimezone(timezone.utc).date().isoformat()} onward "
+                f"(rows from {fmt_timestamp(floor)}), with any non-date "
+                "subdirectories"
+            )
+        elif window.select_window is None:
+            text = (
+                f"default {default_spec}: loads in full, then keeps the last "
+                f"{default_spec} of this source's newest data"
+            )
+        else:
+            text = (
+                f"default {default_spec}: keeps the last {default_spec} of this "
+                "source's newest data after loading"
+            )
+        if history is not None:
+            text += (
+                f"; file selection reaches back to {fmt_timestamp(history[0])} "
+                f"for {history[1]}'s history"
+            )
+        return text
+    return "full input (no default window resolved)"
+
+
+def _print_family_preview(
+    source: str,
+    configured: Sequence[Path],
+    *,
+    used: bool,
+    preview: "_DryRunPreview | None",
+    since: datetime | None,
+    until: datetime | None,
+    default_spec: str,
+    journal: bool = False,
+) -> None:
+    """The policy and file lines under one family block of the dry run.
+
+    A family no runnable detector reads is labelled unused, never described as
+    outside a window. Counts are the family's files after the union of its
+    patterns; a file no selection takes is stated with the full count even when
+    the path list is abbreviated.
+    """
+    pad = _BANNER_LABEL_WIDTH - 2
+    if not used:
+        if configured or journal:
+            print(f"  {'':<{pad}}  not used by any detector that can run")
+        return
+    if preview is None:
+        return
+    window = next(
+        (w for w in preview.windows.load_windows if w.source == source), None,
+    )
+    policy = _family_policy_text(
+        preview.windows.policies.get(source),
+        window,
+        since=since,
+        until=until,
+        default_spec=default_spec,
+        history=preview.windows.history_floors.get(source),
+        journal=journal,
+    )
+    print(f"  {'policy:':<{pad}}  {strip_control(policy)}")
+    family = preview.families.get(source)
+    if family is None:
+        return
+    print(
+        f"  {'files:':<{pad}}  {len(family.discovered):,} discovered "
+        f"({_size_text(family.discovered_bytes, family.discovered_unsized)}); "
+        f"{len(family.selected):,} selected "
+        f"({_size_text(family.selected_bytes, family.selected_unsized)})"
+    )
+    if family.not_selected:
+        n = len(family.not_selected)
+        print(
+            f"  {'not selected:':<{pad}}  {n:,} {plural(n, 'file')} outside this "
+            f"run's window ({_compact_path_list(family.not_selected)})"
+        )
+
+
 def _print_dry_run(
     zeek_dir: Path | list[Path] | None,
     syslog_dir: Path | list[Path] | None,
@@ -3485,6 +3947,9 @@ def _print_dry_run(
     opt_in: Sequence[str] = (),
     syslog_intent: SyslogIntent | None = None,
     syslog_probe: SyslogProbeDecision | None = None,
+    preview: "_DryRunPreview | None" = None,
+    default_spec: str = "7d",
+    used_sources: Collection[str] = frozenset(),
 ) -> None:
     print("sigwood  ·  threat hunt  ·  dry run")
     print(_SEP_DOUBLE)
@@ -3496,7 +3961,21 @@ def _print_dry_run(
     # entries under that value column. Boundary accepts scalar Path / list / None
     # - same normalization shape as build_run_plan, so test callers passing
     # scalar Path or None work without juggling the wire shape.
-    _print_family_block("zeek_dir", _as_path_list(zeek_dir), _zeek_entry_display)
+    def family(source: str, paths: Sequence[Path], *, journal: bool = False) -> None:
+        _print_family_preview(
+            source,
+            paths,
+            used=source in used_sources,
+            preview=preview,
+            since=since,
+            until=until,
+            default_spec=default_spec,
+            journal=journal,
+        )
+
+    zeek_paths = _as_path_list(zeek_dir)
+    _print_family_block("zeek_dir", zeek_paths, _status_entry_display)
+    family("zeek_dir", zeek_paths)
     if (
         syslog_intent is not None
         and syslog_probe is not None
@@ -3509,31 +3988,42 @@ def _print_dry_run(
                 f"{'system fallback:':<{_BANNER_LABEL_WIDTH}}  "
                 f"{strip_control(fallback)}"
             )
+        if syslog_probe.provider is SyslogProvider.JOURNAL:
+            family("journal", (), journal=True)
+        elif syslog_probe.provider is SyslogProvider.FILES:
+            family("syslog_dir", _as_path_list(syslog_dir))
     else:
-        _print_family_block(
-            "syslog_dir", _as_path_list(syslog_dir), _status_entry_display
-        )
-    _print_family_block("pihole_dir", _as_path_list(pihole_dir), _status_entry_display)
-    _print_family_block(
-        "cloudtrail_dir", _as_path_list(cloudtrail_dir), _status_entry_display,
-    )
+        syslog_paths = _as_path_list(syslog_dir)
+        _print_family_block("syslog_dir", syslog_paths, _status_entry_display)
+        family("syslog_dir", syslog_paths)
+    pihole_paths = _as_path_list(pihole_dir)
+    _print_family_block("pihole_dir", pihole_paths, _status_entry_display)
+    family("pihole_dir", pihole_paths)
+    cloudtrail_paths = _as_path_list(cloudtrail_dir)
+    _print_family_block("cloudtrail_dir", cloudtrail_paths, _status_entry_display)
+    family("cloudtrail_dir", cloudtrail_paths)
 
     if load_all:
         window_value = "all available data (--all)"
-    elif since and until:
-        window_value = fmt_window((since, until))
     elif since or until:
-        since_str = fmt_timestamp(since) if since else "beginning of data"
-        until_str = fmt_timestamp(until) if until else "end of data"
-        window_value = f"{since_str} → {until_str}"
+        window_value = _explicit_window_text(since, until)
+    elif parse_window_span(default_spec) is None:
+        window_value = "all available data (default window disabled)"
     else:
-        window_value = "all available data"
+        # Configured is all the run-level row can say; each family's own line
+        # states whether the default applies to it.
+        window_value = f"{strip_control(default_spec)} default configured"
+        if used_sources:
+            window_value += "; each source above states its own policy"
     print(f"{'window:':<{_BANNER_LABEL_WIDTH}}  {window_value}")
 
     if will_run:
         print(f"{'detectors:':<{_BANNER_LABEL_WIDTH}}  {'  '.join(will_run)}")
     elif skipped:
-        print(f"{'detectors:':<{_BANNER_LABEL_WIDTH}}  (none - required logs unavailable)")
+        print(
+            f"{'detectors:':<{_BANNER_LABEL_WIDTH}}  "
+            "(none can run - required logs unavailable; a real run exits 1)"
+        )
     else:
         print(f"{'detectors:':<{_BANNER_LABEL_WIDTH}}  (none - detect spec selected none)")
 
@@ -3809,8 +4299,15 @@ def _permission_skip_notes(
 
 def _directory_skip_notes(plan: RunPlan) -> list[str]:
     """Return one bounded report note per unlistable source family."""
+    return _render_directory_skips(plan.directory_skips)
+
+
+def _render_directory_skips(
+    records: Mapping[tuple[str, Path], DirectorySkipInfo],
+) -> list[str]:
+    """One bounded note per source family over the given denial records."""
     grouped: dict[str, list[Path]] = {}
-    for info in plan.directory_skips.values():
+    for info in records.values():
         grouped.setdefault(info.source_key, []).append(info.path)
 
     out: list[str] = []
@@ -3830,6 +4327,518 @@ def _directory_skip_notes(plan: RunPlan) -> list[str]:
                 f"({rendered})"
             )
     return out
+
+
+# ── Directory coverage disclosure (analyze discovery inventory) ─────────────
+#
+# The loader-owned inventory decides, family by family, what each input's
+# selection left unread and builds those facts. This composer only coordinates
+# them with the statements other owners already make, qualifies unsearched
+# children against the run's other inputs, and renders bounded text. Facts that
+# already have an owner are left to it: directory listing denials
+# (DirectorySkipInfo / _directory_skip_notes), load-time file denials
+# (_permission_skip_notes), the loader's flat-family silent-miss warnings, and
+# the single-input "not found" skip reason. Values are filesystem paths and
+# counts only; every path goes through _compact_path_list, which strips controls
+# and bounds length.
+
+
+def _relative_to(path: Path, root: Path) -> Path:
+    """``path`` relative to ``root`` when it is beneath it, else unchanged."""
+    try:
+        return path.relative_to(root)
+    except ValueError:
+        return path
+
+
+def _qualify_unsearched(
+    fact: DiscoveryFact, selected_reals: Sequence[Path],
+) -> DiscoveryFact:
+    """Count the listed children that are, or contain, another input of the run.
+
+    Neither count claims the child was searched: another input starting at or
+    below a child says nothing about the rest of that child's subtree.
+    """
+    own_real = _safe_real(fact.root)
+    others = [real for real in selected_reals if real != own_real]
+    also_selected = 0
+    contains_selected = 0
+    for child in fact.paths:
+        real = _safe_real(child)
+        if real in others:
+            also_selected += 1
+        elif any(real in other.parents for other in others):
+            contains_selected += 1
+    return replace(
+        fact, also_selected=also_selected, contains_selected=contains_selected,
+    )
+
+
+def _safe_real(path: Path) -> Path:
+    """Realpath for comparison; the path itself when it cannot be resolved."""
+    try:
+        return path.resolve()
+    except (OSError, RuntimeError):
+        return path
+
+
+def _merge_facts(facts: Sequence[DiscoveryFact]) -> list[DiscoveryFact]:
+    """Merge same-kind facts about one root and cause into one, keeping order."""
+    merged: dict[tuple[Any, ...], DiscoveryFact] = {}
+    for fact in facts:
+        if fact.kind in (
+            DiscoveryFactKind.UNSEARCHED_CHILDREN,
+            DiscoveryFactKind.EMPTY_DIRECTORY,
+            DiscoveryFactKind.UNSUPPORTED_FILES,
+            DiscoveryFactKind.MISSING_INPUT,
+        ):
+            key: tuple[Any, ...] = (fact.kind, fact.source_key, fact.root, id(fact))
+        else:
+            key = (fact.kind, fact.source_key, fact.root, fact.detail)
+        prior = merged.get(key)
+        if prior is None:
+            merged[key] = fact
+            continue
+        paths = tuple(dict.fromkeys((*prior.paths, *fact.paths)))
+        merged[key] = replace(prior, paths=paths, count=len(paths))
+    return list(merged.values())
+
+
+def _render_coverage_fact(fact: DiscoveryFact) -> str:
+    """One bounded, control-safe coverage line for one fact."""
+    label = _pattern_human_label(fact.source_key, "")
+    root = _compact_path_list([fact.root])
+    n = fact.count
+    kind = fact.kind
+    cause = f" ({strip_control(fact.detail)})" if fact.detail else ""
+    if kind is DiscoveryFactKind.EMPTY_DIRECTORY:
+        return f"{label}: {root} is empty - nothing to read there"
+    if kind is DiscoveryFactKind.UNSUPPORTED_FILES:
+        return (
+            f"{label}: {root} holds {n:,} {plural(n, 'file')}, none recognized "
+            f"as {label} logs"
+        )
+    if kind is DiscoveryFactKind.MISSING_INPUT:
+        return f"{label}: {root} was not found - its contents are absent from this run"
+    if kind is DiscoveryFactKind.UNSEARCHED_CHILDREN:
+        names = _compact_path_list([Path(child.name) for child in fact.paths])
+        qualifiers = []
+        if fact.also_selected:
+            verb = "is" if fact.also_selected == 1 else "are"
+            qualifiers.append(f"{fact.also_selected} {verb} also an input of this run")
+        if fact.contains_selected:
+            verb = "contains" if fact.contains_selected == 1 else "contain"
+            qualifiers.append(f"{fact.contains_selected} {verb} another input")
+        qualifier = "; " + ", ".join(qualifiers) if qualifiers else ""
+        return (
+            f"{label}: {root} has {n:,} {plural(n, 'subdirectory', 'subdirectories')} "
+            f"this run did not search ({names}{qualifier}) - pass a subdirectory or "
+            "its files directly to include them"
+        )
+    rel = _compact_path_list([_relative_to(p, fact.root) for p in fact.paths])
+    if kind is DiscoveryFactKind.LISTING_ERROR:
+        if fact.paths == (fact.root,):
+            return (
+                f"{label}: {root} could not be read{cause} - its contents are "
+                "absent from this run"
+            )
+        return (
+            f"{label}: {n:,} {plural(n, 'subdirectory', 'subdirectories')} under "
+            f"{root} could not be read{cause} - their contents are absent from "
+            f"this run ({rel})"
+        )
+    if kind is DiscoveryFactKind.ENTRY_ERROR:
+        return (
+            f"{label}: {n:,} {plural(n, 'entry', 'entries')} under {root} could not "
+            f"be inspected{cause} - not read ({rel})"
+        )
+    if kind is DiscoveryFactKind.NONREGULAR_MATCH:
+        verb = "is" if n == 1 else "are"
+        return (
+            f"{label}: skipped {n:,} {plural(n, 'entry', 'entries')} under {root} "
+            f"that {verb} not a regular file ({rel})"
+        )
+    if kind is DiscoveryFactKind.BROKEN_LINK:
+        return (
+            f"{label}: skipped {n:,} broken {plural(n, 'link')} under {root} ({rel})"
+        )
+    if kind is DiscoveryFactKind.LINKED_DIRECTORY_OMITTED:
+        return (
+            f"{label}: did not follow {n:,} linked "
+            f"{plural(n, 'subdirectory', 'subdirectories')} under {root} ({rel}) - "
+            "pass a linked directory directly to include it"
+        )
+    if kind is DiscoveryFactKind.ZEEK_DEEPER_THAN_LAYOUT:
+        verb = "sits" if n == 1 else "sit"
+        return (
+            f"{label}: {n:,} {plural(n, 'file')} under dated directory {root} "
+            f"{verb} deeper than its dated layout reads - not read as {label} "
+            f"({rel})"
+        )
+    if kind is DiscoveryFactKind.ZEEK_ROOT_FILES_EXCLUDED:
+        verb = "is" if n == 1 else "are"
+        return (
+            f"{label}: {n:,} {plural(n, 'file')} at the top of dated directory "
+            f"{root} {verb} not read - a dated layout reads only its "
+            f"subdirectories ({rel})"
+        )
+    return f"{label}: {root} has an unrecognized coverage fact"
+
+
+def _discovery_coverage_lines(
+    discovery: Any,
+    plan: RunPlan,
+    source_map: Mapping[str, Sequence[Path]],
+    *,
+    default_span: timedelta | None = None,
+    dry_run: bool = False,
+    recursive_retry: str | None = None,
+) -> list[str]:
+    """The run's directory coverage lines, one per fact, in input order.
+
+    Covers every input of every source a selected detector declares, which is
+    exactly what planning observed; a family no selected detector reads is
+    never reported. Nothing here lists a directory or reads a file beyond what
+    the inventory already observed.
+
+    A recursive run first states what each positional walk could not read or
+    use, owned by the root the operator supplied, and after the family facts
+    names any flat logical root that sends a family to the full-read policy
+    (``default_span`` set only when the default window governs) and any file
+    two in-plan families both hold as a candidate.
+
+    ``recursive_retry`` is the CLI's checked retry command. It is offered once,
+    after every notice, when at least one kept notice says an input the
+    invocation supplied has subdirectories this run did not search; a
+    configured input's notice never offers it.
+    """
+    inventory = discovery.inventory
+    lines: list[str] = []
+    retry_applies = False
+    if discovery.recursive:
+        lines.extend(_root_fact_lines(inventory.root_facts(), plan, dry_run=dry_run))
+    declared = _declared_source_patterns(plan.selected, plan.detectors)
+    selected_reals = [
+        _safe_real(path)
+        for source in declared
+        if inventory.supports(source)
+        for path in source_map.get(source, [])
+    ]
+    facts: list[DiscoveryFact] = []
+    for source, patterns in declared.items():
+        if not inventory.supports(source):
+            continue
+        inputs = list(source_map.get(source, []))
+        loaded = next(
+            (p for p, s in plan.needed_logs.items() if s == source), None,
+        ) if plan.will_run else None
+        for path in inputs:
+            invocation = discovery.provenance(source, path) != "configured"
+            for fact in inventory.input_facts(
+                source, path, patterns, invocation=invocation,
+            ):
+                kind = fact.kind
+                if kind is DiscoveryFactKind.MISSING_INPUT and len(inputs) == 1 and any(
+                    reason == _not_found_reason(source, path)
+                    for reason in plan.skipped.values()
+                ):
+                    continue  # the single-input skip reason states it
+                if (
+                    kind is DiscoveryFactKind.UNSUPPORTED_FILES
+                    and loaded is not None
+                    and inventory.silent_miss_states(source, path, loaded, inputs)
+                ):
+                    continue  # the loader's silent-miss warning states it
+                if kind is DiscoveryFactKind.UNSEARCHED_CHILDREN:
+                    fact = _qualify_unsearched(fact, selected_reals)
+                    retry_applies = retry_applies or invocation
+                facts.append(fact)
+    lines.extend(_render_coverage_fact(fact) for fact in _merge_facts(facts))
+    if discovery.recursive:
+        lines.extend(_layout_policy_lines(inventory, plan, source_map, default_span))
+        lines.extend(_shared_candidate_lines(inventory, plan, source_map))
+    if recursive_retry is not None and retry_applies:
+        lines.append(
+            "discovery: to search those subdirectories as well, rerun with "
+            f"--recursive: {recursive_retry}"
+        )
+    return lines
+
+
+def _root_fact_lines(
+    facts: Sequence[RootFact], plan: RunPlan, *, dry_run: bool,
+) -> list[str]:
+    """Render positional-root facts, minus what a canonical owner states here.
+
+    A listing denial that a declared family also met is that family's
+    ``DirectorySkipInfo``, which every route renders: the report note on a
+    successful run, stderr on a dry or all-skipped run. A file a family's gate
+    kept despite a failed read is the load's to disclose, but only on a route
+    that loads that family.
+    """
+    denied = {key[1] for key in plan.directory_skips}
+    loads = set(plan.needed_logs.values()) if plan.will_run and not dry_run else set()
+    out: list[str] = []
+    for fact in facts:
+        if fact.kind is RootFactKind.ROOT_UNLISTABLE and _safe_real(fact.root) in denied:
+            continue
+        if fact.kind is RootFactKind.SUBDIRS_UNLISTABLE and fact.permission_denied:
+            kept = tuple(p for p in fact.paths if _safe_real(p) not in denied)
+            if not kept:
+                continue
+            fact = replace(fact, paths=kept, count=len(kept))
+        if fact.kind is RootFactKind.UNREADABLE_FILES and fact.family in loads:
+            continue
+        out.append(_render_root_fact(fact, dry_run=dry_run))
+    return out
+
+
+def _unselected_retained_lines(
+    discovery: Any, plan: RunPlan, load_result: "loader.LoadResult",
+) -> list[str]:
+    """Kept-but-unreadable files the load never selected, stated after it.
+
+    A file a family's gate kept despite a failed read belongs to the load once
+    the load selects it: it then states the denial or the corruption on its own
+    route. A file the run's time window left unselected has no such owner, so
+    the failure discovery observed is stated here, with that disposition and no
+    claim about rows in the selected window.
+    """
+    loads = set(plan.needed_logs.values()) if plan.will_run else set()
+    selected = {
+        _safe_real(fact.path)
+        for pattern in plan.needed_logs
+        for fact in load_result.availability.get(pattern, ())
+    }
+    out: list[str] = []
+    for fact in discovery.inventory.root_facts():
+        if fact.kind is not RootFactKind.UNREADABLE_FILES or fact.family not in loads:
+            continue
+        kept = tuple(path for path in fact.paths if _safe_real(path) not in selected)
+        if kept:
+            out.append(_render_root_fact(
+                replace(fact, paths=kept, count=len(kept)), dry_run=False, unselected=True,
+            ))
+    return out
+
+
+def _layout_policy_lines(
+    inventory: Any,
+    plan: RunPlan,
+    source_map: Mapping[str, Sequence[Path]],
+    default_span: timedelta | None,
+) -> list[str]:
+    """Name the flat logical roots that send a family to the full-read policy.
+
+    Read from the same contribution result the window and every load pass use,
+    over the final plan's patterns, so a duplicate flat root or a pattern no
+    detector loads cannot claim the policy.
+    """
+    if default_span is None:
+        return []
+    out: list[str] = []
+    span = fmt_compact_span(default_span)
+    for source in dict.fromkeys(plan.needed_logs.values()):
+        patterns = [p for p, s in plan.needed_logs.items() if s == source]
+        contribution = inventory.layout_contribution(
+            source, list(source_map.get(source, [])), patterns,
+        )
+        if not (contribution.dated and contribution.flat):
+            continue
+        label = _pattern_human_label(source, "")
+        n = len(contribution.flat)
+        noun = "flat directory sits" if n == 1 else "flat directories sit"
+        out.append(
+            f"{label}: {n:,} {noun} beside dated directories "
+            f"({_compact_path_list(list(contribution.flat))}) - all {label} logs "
+            f"load in full and only the newest {span} is kept after loading"
+        )
+    return out
+
+
+def _shared_candidate_lines(
+    inventory: Any,
+    plan: RunPlan,
+    source_map: Mapping[str, Sequence[Path]],
+) -> list[str]:
+    """Files that two in-plan families both hold as candidates.
+
+    Membership is window-blind, so the line says candidates: a window may still
+    keep either family from reading a shared file.
+    """
+    out: list[str] = []
+    for first, second, paths in inventory.shared_candidates(plan.needed_logs, source_map):
+        n = len(paths)
+        noun = "file is a candidate" if n == 1 else "files are candidates"
+        out.append(
+            f"shared files: {n:,} {noun} for both "
+            f"{_pattern_human_label(first, '')} and {_pattern_human_label(second, '')} "
+            f"({_compact_path_list(list(paths))})"
+        )
+    return out
+
+
+_OUTCOME_PHRASES: dict[FileOutcomeKind, tuple[str, str]] = {
+    FileOutcomeKind.OUTSIDE: ("file of another log type", "files of other log types"),
+    FileOutcomeKind.EMPTY: ("empty file", "empty files"),
+    FileOutcomeKind.EXCLUDED: ("file excluded by name", "files excluded by name"),
+    FileOutcomeKind.UNRECOGNIZED: ("unrecognized file", "unrecognized files"),
+    FileOutcomeKind.REJECTED: (
+        "file named outside its family's patterns",
+        "files named outside their family's patterns",
+    ),
+    FileOutcomeKind.UNREADABLE: ("unreadable file", "unreadable files"),
+}
+
+
+def _render_root_fact(
+    fact: RootFact, *, dry_run: bool, unselected: bool = False,
+) -> str:
+    """One bounded, control-safe line for one positional-root fact."""
+    root = _compact_path_list([fact.root])
+    n = fact.count
+    rel = _compact_path_list([_relative_to(p, fact.root) for p in fact.paths])
+    cause = "permission denied" if fact.permission_denied else strip_control(fact.cause or "")
+    one = n == 1
+    kind = fact.kind
+    if kind is RootFactKind.ROOT_UNLISTABLE:
+        return (
+            f"discovery: {root} could not be listed ({cause}) - nothing beneath "
+            "it was searched"
+        )
+    if kind is RootFactKind.SUBDIRS_UNLISTABLE:
+        noun = plural(n, "subdirectory", "subdirectories")
+        whose = "its contents are" if one else "their contents are"
+        return (
+            f"discovery: {n:,} {noun} under {root} could not be listed ({cause}) - "
+            f"{whose} absent from this run ({rel})"
+        )
+    if kind is RootFactKind.ENTRY_ERROR:
+        return (
+            f"discovery: {n:,} {plural(n, 'entry', 'entries')} under {root} could "
+            f"not be inspected ({cause}) - not read ({rel})"
+        )
+    if kind is RootFactKind.UNREADABLE_FILES:
+        head = (
+            f"discovery: {n:,} {plural(n, 'file')} under {root} could not be "
+            f"read ({cause})"
+        )
+        if fact.family is None:
+            tail = (
+                "its log type is unknown, so it was not loaded" if one
+                else "their log type is unknown, so they were not loaded"
+            )
+            return f"{head} - {tail} ({rel})"
+        label = _pattern_human_label(fact.family, "")
+        kept = f"kept as {'a possible' if one else 'possible'} {label} {plural(n, 'file')}"
+        if dry_run:
+            return f"{head} - {kept} for a full run to try ({rel})"
+        if unselected:
+            it = "it" if one else "them"
+            return f"{head} - {kept}, but this run's time window did not select {it} ({rel})"
+        return f"{head} - {kept}, but no detector that reads them ran ({rel})"
+    if kind is RootFactKind.LINKED_DIRECTORY_OMITTED:
+        return (
+            f"discovery: did not follow {n:,} linked "
+            f"{plural(n, 'subdirectory', 'subdirectories')} under {root} ({rel}) - "
+            "pass a linked directory directly to include it"
+        )
+    if kind is RootFactKind.BROKEN_LINK:
+        return f"discovery: skipped {n:,} broken {plural(n, 'link')} under {root} ({rel})"
+    if kind is RootFactKind.NONREGULAR_MATCH:
+        verb = "is" if one else "are"
+        return (
+            f"discovery: skipped {n:,} {plural(n, 'entry', 'entries')} under {root} "
+            f"that {verb} not a regular file ({rel})"
+        )
+    if kind is RootFactKind.UNRECOGNIZED_FILES:
+        verb = "is" if one else "are"
+        return (
+            f"discovery: {n:,} {plural(n, 'file')} under {root} {verb} not "
+            f"recognized as any log this run reads ({rel})"
+        )
+    if kind is RootFactKind.REJECTED_FILES:
+        label = _pattern_human_label(fact.family or "", "")
+        patterns = strip_control(", ".join(fact.patterns))
+        looks = "looks" if one else "look"
+        names = "its name does" if one else "their names do"
+        return (
+            f"discovery: {n:,} {plural(n, 'file')} under {root} {looks} like "
+            f"{label} logs, but {names} not match {patterns} ({rel})"
+        )
+    if kind is RootFactKind.LINKED_LAYOUT_NOT_READ:
+        label = _pattern_human_label(fact.family or "", "")
+        verb = f"is not a {label} log" if one else f"are not {label} logs"
+        was = "was" if one else "were"
+        return (
+            f"discovery: {n:,} {plural(n, 'file')} in linked {label} subdirectories "
+            f"under {root} {verb} this run reads and {was} not read ({rel}) - pass "
+            "the linked directory directly to include it"
+        )
+    if kind is RootFactKind.NO_FILES:
+        if fact.incomplete:
+            return (
+                f"discovery: no files were found under {root} in the parts that "
+                "could be searched - nothing to read there"
+            )
+        return f"discovery: {root} holds no files - nothing to read there"
+    if kind is RootFactKind.NOTHING_READ:
+        parts = [
+            f"{count:,} {_OUTCOME_PHRASES[outcome][0 if count == 1 else 1]}"
+            for outcome, count in fact.parts
+        ]
+        joined = (
+            parts[0] if len(parts) == 1
+            else ", ".join(parts[:-1]) + " and " + parts[-1]
+        )
+        where = " in the parts that could be searched" if fact.incomplete else ""
+        return (
+            f"discovery: nothing under {root} is read by this run - it holds "
+            f"{joined}{where}"
+        )
+    return f"discovery: {root} has an unrecognized coverage fact"
+
+
+def _denial_owned_keys(
+    plan: RunPlan, source_map: Mapping[str, Sequence[Path]],
+) -> set[tuple[str, Path]]:
+    """Denial records a detector skip reason already states, by sink key.
+
+    ``_directory_denial_reason`` names the denied configured inputs of one
+    source; when that exact reason is a skip reason, those records are owned.
+    """
+    owned: set[tuple[str, Path]] = set()
+    for source, paths in source_map.items():
+        reason = _directory_denial_reason(source, list(paths), plan.directory_skips)
+        if reason is None or reason not in plan.skipped.values():
+            continue
+        configured: set[Path] = set()
+        for path in paths:
+            try:
+                configured.add(path.resolve())
+            except OSError:
+                configured.add(path)
+        owned.update(
+            key for key in plan.directory_skips
+            if key[0] == source and key[1] in configured
+        )
+    return owned
+
+
+def _unowned_directory_skip_lines(
+    plan: RunPlan, source_map: Mapping[str, Sequence[Path]],
+) -> list[str]:
+    """Directory-denial notes for a run that renders no report.
+
+    On a successful run the report carries ``_directory_skip_notes``. When no
+    detector can run, or on a dry run, there is no report, so the same notes go
+    to stderr, minus the denials a skip reason already names.
+    """
+    owned = _denial_owned_keys(plan, source_map)
+    remaining = {
+        key: info for key, info in plan.directory_skips.items() if key not in owned
+    }
+    return _render_directory_skips(remaining)
 
 
 def _rotation_fallback_line(label: str, info: "loader.RotationSkipInfo") -> str:
@@ -3909,23 +4918,6 @@ def _rotation_fallback_lines(
             label = _pattern_human_label(plan.needed_logs[pattern], pattern)
             out.append(_rotation_fallback_line(label, info))
     return out
-
-
-_PATH_DISPLAY_CAP = 3
-_PATH_CHAR_CAP = 256
-
-
-def _compact_path_list(paths: Sequence[Path]) -> str:
-    """Render a bounded, terminal-safe path list."""
-    rendered = [
-        strip_control(compact_home(path))[:_PATH_CHAR_CAP]
-        for path in paths[:_PATH_DISPLAY_CAP]
-    ]
-    text = ", ".join(rendered)
-    omitted = len(paths) - len(rendered)
-    if omitted > 0:
-        text += f" (+{omitted} more)"
-    return text
 
 
 def _bounded_warning_rider(warnings: Sequence[str]) -> str | None:

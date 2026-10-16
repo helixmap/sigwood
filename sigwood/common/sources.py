@@ -30,10 +30,10 @@ import fnmatch
 import heapq
 import os
 import stat
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Any, Mapping, NamedTuple, Sequence
+from typing import Any, Collection, Mapping, NamedTuple, Sequence
 
 from sigwood.common.journal_probe import (
     MAX_JOURNAL_DIAGNOSTIC_CHARS,
@@ -41,6 +41,7 @@ from sigwood.common.journal_probe import (
     JournalProbeResult,
 )
 from sigwood.common.loader import (
+    DiscoveryInventory,
     JournalCaptureOutcome,
     JournalError,
     JournalExecutableMissingError,
@@ -571,6 +572,35 @@ def syslog_lane_detectors(
         if any(req.get("source") in LOCAL_SYSLOG_SOURCES for req in requirements):
             lane_detectors.append(name)
     return lane_detectors
+
+
+def declared_source_patterns(
+    names: Sequence[str],
+    detectors: Mapping[str, Any],
+    virtual_sources: Collection[tuple[str, str]] = frozenset(),
+) -> dict[str, list[str]]:
+    """Every (source, pattern) the named detectors declare, in declaration order.
+
+    Read from each module's REQUIRED_LOGS and OPTIONAL_LOGS, so no family list
+    lives here. Virtual sources (a dry-run journal candidate) are excluded. A
+    name with no imported module (an import failure) contributes nothing.
+    """
+    out: dict[str, list[str]] = {}
+    for name in names:
+        mod = detectors.get(name)
+        if mod is None:
+            continue
+        for req in [
+            *getattr(mod, "REQUIRED_LOGS", []),
+            *getattr(mod, "OPTIONAL_LOGS", []),
+        ]:
+            source, pattern = req.get("source"), req.get("pattern")
+            if not source or not pattern or (source, pattern) in virtual_sources:
+                continue
+            patterns = out.setdefault(source, [])
+            if pattern not in patterns:
+                patterns.append(pattern)
+    return out
 
 
 def _scope_with_syslog(
@@ -1328,3 +1358,151 @@ def route_positional_source(
     origin = result.origin
     candidate = f"{origin}_dir" if origin else None
     return candidate if candidate in optional else default
+
+
+@dataclass(frozen=True)
+class PositionalInput:
+    """One positional PATH as the operator typed it and as it was routed."""
+
+    raw: str
+    path: Path
+    source_key: str
+
+
+@dataclass(frozen=True)
+class AnalyzeDiscovery:
+    """The analyze run's shared discovery context, built at the routing seam.
+
+    ``inventory`` is the one memoized observation store every analyze consumer
+    reads. ``positionals`` and ``overrides`` record which inputs the operator
+    supplied on this invocation, resolved through ``_resolve_one`` so they
+    compare equal to the resolver's own paths. Any other input of a run came
+    from configuration: ``resolve_sources`` gives a family either its explicit
+    inputs or its configured value, never both.
+    """
+
+    inventory: DiscoveryInventory
+    positionals: tuple[PositionalInput, ...] = ()
+    overrides: Mapping[str, tuple[Path, ...]] = field(default_factory=dict)
+    recursive: bool = False
+
+    def invocation_paths(self, source_key: str) -> tuple[Path, ...]:
+        """Inputs of ``source_key`` that this invocation supplied, in order."""
+        out = [p.path for p in self.positionals if p.source_key == source_key]
+        out.extend(self.overrides.get(source_key, ()))
+        return tuple(out)
+
+    def provenance(self, source_key: str, path: Path) -> str:
+        """``positional``, ``override`` or ``configured`` for one run input."""
+        if any(p.source_key == source_key and p.path == path for p in self.positionals):
+            return "positional"
+        if path in self.overrides.get(source_key, ()):
+            return "override"
+        return "configured"
+
+
+def invocation_has_directory(
+    paths: Sequence[str],
+    overrides: Mapping[str, str | Path | Sequence[str | Path] | None],
+) -> bool:
+    """Whether this invocation supplied at least one existing directory."""
+    candidates = [*paths]
+    for value in overrides.values():
+        candidates.extend(_normalize_overrides(value))
+    for raw in candidates:
+        resolved = _resolve_one(raw, None, "")
+        if resolved is not None and resolved.is_dir():
+            return True
+    return False
+
+
+def prepare_analyze_discovery(
+    paths: Sequence[str],
+    *,
+    detector_module: Any | None,
+    overrides: Mapping[str, str | Path | Sequence[str | Path] | None],
+    recursive: bool = False,
+    declared_patterns: Mapping[str, Sequence[str]] | None = None,
+) -> tuple[dict[str, list[str]], dict[str, DirectoryVote], AnalyzeDiscovery]:
+    """Route positionals and open the run's discovery context.
+
+    Returns ``(buckets, votes, discovery)``. ``buckets`` is the
+    ``{family: [positional, ...]}`` routing; ``votes`` holds each mixed or
+    truncated directory vote keyed by the expanded positional, for the caller
+    to disclose. ``discovery`` carries the inventory and the invocation's input
+    provenance.
+
+    Without ``recursive`` nothing is observed here, because the system-log
+    provider is not decided yet, and every positional takes
+    ``route_positional_source``. With it, every supplied directory is walked
+    now, because routing needs what it holds: a positional directory joins the
+    bucket of each family its partition gave files to (``declared_patterns``,
+    the families and patterns the selected detectors read, bound the
+    partition), and a ``--<family>-dir`` directory is walked under its own
+    family's gate. Positional files keep their ordinary routing, and the
+    buckets keep the order the operator typed.
+    """
+    inventory = DiscoveryInventory()
+    if recursive:
+        inventory.enable_recursion(declared_patterns or {})
+    resolved_inputs = [(raw, _resolve_one(raw, None, "")) for raw in paths]
+    walked: set[Path] = set()
+    if recursive:
+        for raw, resolved in resolved_inputs:
+            if resolved is not None and resolved.is_dir() and resolved not in walked:
+                walked.add(resolved)
+                inventory.register_partition_root(str(raw), resolved)
+
+    override_paths: dict[str, tuple[Path, ...]] = {}
+    for key, value in overrides.items():
+        resolved_list = tuple(
+            path for path in (
+                _resolve_one(item, None, "") for item in _normalize_overrides(value)
+            )
+            if path is not None
+        )
+        if resolved_list:
+            override_paths[key] = resolved_list
+
+    votes: dict[str, DirectoryVote] = {}
+    routes: dict[int, str] = {}
+    if recursive:
+        # Explicit files are routed first: the ones this run will read supply
+        # their content before ownership is decided, so another name for the
+        # same file is an overlap rather than an omission.
+        for index, (raw, resolved) in enumerate(resolved_inputs):
+            if resolved is not None and resolved in walked:
+                continue
+            routes[index] = route_positional_source(
+                raw, detector_module=detector_module, _vote_sink=votes,
+            )
+            if resolved is not None and resolved.is_file():
+                inventory.register_supplied_input(routes[index], resolved)
+        for key, resolved_list in override_paths.items():
+            for path in dict.fromkeys(resolved_list):
+                if path.is_dir():
+                    inventory.register_declared_root(key, str(path), path)
+                elif path.is_file():
+                    inventory.register_supplied_input(key, path)
+        inventory.close_recursion()
+
+    buckets: dict[str, list[str]] = {}
+    positionals: list[PositionalInput] = []
+    for index, (raw, resolved) in enumerate(resolved_inputs):
+        if recursive and resolved is not None and resolved in walked:
+            for family in inventory.root_families(resolved):
+                buckets.setdefault(family, []).append(raw)
+                positionals.append(PositionalInput(str(raw), resolved, family))
+            continue
+        routed = routes.get(index)
+        if routed is None:
+            routed = route_positional_source(
+                raw, detector_module=detector_module, _vote_sink=votes,
+            )
+        buckets.setdefault(routed, []).append(raw)
+        if resolved is not None:
+            positionals.append(PositionalInput(str(raw), resolved, routed))
+    discovery = AnalyzeDiscovery(
+        inventory, tuple(positionals), override_paths, recursive=recursive,
+    )
+    return buckets, votes, discovery

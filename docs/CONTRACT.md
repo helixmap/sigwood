@@ -65,6 +65,7 @@ The full inventory, with whether each takes a value:
 | `--detect` | `-d` | yes (`LIST`) |
 | `--format` | `-f` | yes (`FORMAT`) |
 | `--syslog-source` | | yes (`MODE`) |
+| `--recursive` | | no |
 | `--zeek-dir` | | yes (`PATH`) |
 | `--pihole-dir` | | yes (`PATH`) |
 | `--syslog-dir` | | yes (`PATH`) |
@@ -72,6 +73,24 @@ The full inventory, with whether each takes a value:
 
 `--syslog-source` is accepted by `hunt`, `auth`, and `syslog`; among the
 single-detector verbs, exactly `auth` and `syslog` own the local system-log lane.
+
+`--recursive` is analysis-only (implicit or explicit `hunt` and named analysis
+commands). It needs a directory supplied as a positional argument or a source-directory
+override; configured sources alone do not satisfy it. It has no short form or config
+key and does not change the input contracts of `digest`, `graph` or `era`.
+
+On analysis commands, `--dry-run` shows source eligibility, per-family window policy,
+and discovered/selected candidate counts and on-disk sizes. Counts are deduplicated
+within each family; sizes use file metadata and disclose unknown sizes. They are not
+parsed-record, I/O or memory totals. Preview may sniff files, peek at timestamps and
+probe journal capability, but does not load analysis frames, run detectors, capture the
+journal, write reports or validate and hash export content.
+
+An applicable shallow-input notice may offer the original command with `--recursive`
+added and shell-quoted arguments. At most one command is offered per run; it is omitted
+if a token changes under control stripping or the complete quoted command exceeds 4096
+characters. Relative paths require the original working directory. The ordinary notices
+remain when the command is omitted.
 
 If an ordinary single-valued flag is repeated, the last occurrence wins. `-vv` is the
 exception: it is its own registered token rather than two `-v`s, and it selects the
@@ -335,6 +354,13 @@ defaults.
   night was not clean.
 - **130:** interrupted (Ctrl-C).
 - **141:** a downstream reader closed the pipe, as in `sigwood hunt | head`.
+
+A source omission does not by itself force exit 1 when another usable input lets the
+selected analysis run. Coverage notices describe the omitted input. If no detector can
+run because the required logs are unavailable, the analysis exits 1. A dry-run preview
+of those unavailable inputs retains exit 0: the preview itself completed.
+A valid detector selection that selects none also exits 0; it is distinct from required
+logs being unavailable.
 
 If you schedule sigwood, branch on the exit code, not on whether output appeared.
 

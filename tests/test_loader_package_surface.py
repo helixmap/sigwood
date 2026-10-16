@@ -54,6 +54,9 @@ _SURFACE = [
     # windowing - B+D named window model
     "LoadWindow", "apply_default_window",
     # discovery
+    # analyze discovery inventory and its observation types
+    "DiscoveryInventory", "CandidatePopulation", "DirectoryEntry", "EntryKind",
+    "DiscoveryFact", "DiscoveryFactKind", "FileOutcomeKind", "RootFact", "RootFactKind",
     "discover_files", "_DATE_DIR_RE", "_zeek_date_subdirs", "_file_matches_pattern",
     "discover_zeek_files", "_syslog_files", "_discover_syslog_files",
     "_dir_has_regular_files", "discover_cloudtrail_files", "_stem_hostname",
@@ -76,6 +79,8 @@ _SURFACE = [
     "_events_from_whole_document", "_syslog_should_skip", "_pihole_should_skip",
     "_syslog_warn_undecodable", "_pihole_warn_undecodable",
     "_NORMALIZER_MAP", "resolve_load_windows",
+    # dry-run preview, consumed by the runner
+    "preview_required_files", "on_disk_bytes", "PatternPreview", "WindowPolicyReason",
     # Journal producer/strategy surface; the strategy has no public route.
     "JournalError", "JournalUnavailableError", "JournalExecutableMissingError",
     "JournalProcessError",

@@ -1743,10 +1743,14 @@ def test_glob_family_explicit_files_bypass_denied_parent_probe(
     assert skips == {}
 
 
-def test_cloudtrail_deep_listing_denial_remains_undisclosed_known_gap(
+def test_cloudtrail_helper_records_only_a_denied_input_root(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The input-root probe cannot observe a denial swallowed inside rglob."""
+    """The discovery helper records a denied root, never a denied descendant.
+
+    A denied descendant contributes no files and no record here; the analyze
+    inventory, which reads the same walk, is what discloses it.
+    """
     root = tmp_path / "cloudtrail"
     nested = root / "AWSLogs" / "000000000000" / "CloudTrail"
     nested.mkdir(parents=True)
@@ -1757,16 +1761,7 @@ def test_cloudtrail_deep_listing_denial_remains_undisclosed_known_gap(
             raise PermissionError(13, "synthetic nested denial")
         return real_iterdir(path)
 
-    def _swallow_nested_denial(path: Path, pattern: str):
-        if path == root:
-            try:
-                next(iter(nested.iterdir()), None)
-            except PermissionError:
-                return iter(())
-        return iter(())
-
     monkeypatch.setattr(Path, "iterdir", _deny_nested)
-    monkeypatch.setattr(Path, "rglob", _swallow_nested_denial)
     skips = {}
 
     assert discover_cloudtrail_files(root, _directory_skips=skips) == []

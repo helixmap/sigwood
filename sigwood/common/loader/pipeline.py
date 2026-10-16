@@ -39,15 +39,37 @@ from sigwood.common.loader.diagnostics import (
     _zeek_no_records_warning,
 )
 from sigwood.common.loader.discovery import (
+    _INPUT_FILE,
+    _INPUT_MISSING,
     _default_resolve_window,
     _dir_has_regular_files,
     _discover_syslog_files,
     _flat_resolve_window,
+    _observed_has_regular_files,
     _stem_hostname,
     _syslog_files,
     _zeek_resolve_window,
+    apply_observation_denials,
+    cloudtrail_coverage,
+    cloudtrail_recursive_admit,
+    cloudtrail_recursive_excludes,
     discover_cloudtrail_files,
     discover_zeek_files,
+    observe_cloudtrail_input,
+    observe_pihole_input,
+    observe_syslog_input,
+    observe_zeek_input,
+    pihole_coverage,
+    pihole_recursive_admit,
+    select_cloudtrail_files,
+    select_pihole_files,
+    select_syslog_files,
+    select_zeek_files,
+    syslog_coverage,
+    syslog_recursive_admit,
+    syslog_recursive_excludes,
+    zeek_coverage,
+    zeek_recursive_admit,
 )
 from sigwood.common.loader.io import (
     BoundedLogicalRecordReader,
@@ -79,6 +101,7 @@ from sigwood.common.loader.types import (
     _CLOUDTRAIL_COLUMNS,
     _PIHOLE_COLUMNS,
     _SYSLOG_COLUMNS,
+    CandidatePopulation,
     CoverageTracker,
     DirectorySkipInfo,
     FileSpan,
@@ -89,6 +112,7 @@ from sigwood.common.loader.types import (
     MAX_CHUNK_ROWS,
     MAX_LOGICAL_DOCUMENT_BYTES,
     LoadResult,
+    PatternPreview,
     PermissionSkipInfo,
     RotationSkipInfo,
     PreparedStatus,
@@ -97,6 +121,7 @@ from sigwood.common.loader.types import (
     SourceFileQuality,
     SourceSnapshot,
     SourceCoverage,
+    WindowPolicyReason,
     _coerce_usable_ts,
     _data_window,
     _is_infinite_ts,
@@ -180,6 +205,17 @@ class SourceLoader:
       - ``wall_clock_row(row)``: optional total row-local predicate identifying
         timestamps whose source grammar relies on wall-clock year inference.
         It is diagnostic-only and is evaluated only when a warning sink exists.
+      - ``observe(path)`` / ``select_observed(observation, pattern, since,
+        until)``: optional split of ``discover`` into enumerating one input once
+        and choosing files from that record. A strategy declaring both can be
+        fed an already-observed population (``discovered_candidates``) and
+        observation-aware window resolution; one declaring neither always runs
+        ``discover``. The built-in filesystem families declare both, and their
+        ``discover`` is the composition of the two.
+      - ``coverage(observation, patterns)``: optional, with the two above. What
+        the strategy's own selection leaves unread in one observation (children
+        it never enters, entries it met but could not use), so the family that
+        decides selection is the one that names its omissions.
     """
 
     discover: Callable[[Path, str, datetime | None, datetime | None], list[Path]]
@@ -232,6 +268,26 @@ class SourceLoader:
     # document (the reader's max_document_bytes). None keeps the per-line limit
     # for everything - only cloudtrail declares one.
     max_document_bytes: int | None = None
+    # Enumerate one input once / choose files from that record. Both or neither.
+    observe: Callable[[Path], Any] | None = None
+    select_observed: Callable[..., list[Path]] | None = None
+    coverage: Callable[..., Any] | None = None
+    # Recursive admission. A recursive positional directory's partition offers
+    # each file to its sniffed family's gate, then unclassified content to the
+    # families that claim it by name, then anything still unplaced to the
+    # families with a content fallthrough gate; a declared recursive directory
+    # applies its own family's gate to every file. ``recursive_excludes`` names
+    # files never worth a read for any family. A strategy declaring none of
+    # these is never offered a recursively discovered file.
+    recursive_admit: Callable[[Path, Any, Sequence[str]], Any] | None = None
+    recursive_excludes: Callable[[Path], bool] | None = None
+    claims_unclassified: bool = False
+    content_fallthrough: bool = False
+
+    @property
+    def observes(self) -> bool:
+        """Whether this strategy accepts an observed population."""
+        return self.observe is not None and self.select_observed is not None
 
     def discover_paths(
         self,
@@ -1417,6 +1473,13 @@ _SOURCE_LOADERS: dict[str, SourceLoader] = {
         # Dated dirs → precise window, no trim; flat / mixed → load full + trim.
         resolve_window=_zeek_resolve_window,
         records_directory_denials=True,
+        observe=observe_zeek_input,
+        select_observed=select_zeek_files,
+        coverage=zeek_coverage,
+        recursive_admit=zeek_recursive_admit,
+        # Zeek alone may claim unclassified content by its primary log name:
+        # its ssl/x509 sniffers require a path directive the loader can do without.
+        claims_unclassified=True,
     ),
     "syslog_dir": SourceLoader(
         # Content-gated discovery - the strategy lambda only adapts the
@@ -1436,6 +1499,14 @@ _SOURCE_LOADERS: dict[str, SourceLoader] = {
         resolve_window=_flat_resolve_window,
         records_directory_denials=True,
         wall_clock_row=_syslog_wall_clock_row,
+        observe=observe_syslog_input,
+        select_observed=select_syslog_files,
+        coverage=syslog_coverage,
+        recursive_admit=syslog_recursive_admit,
+        recursive_excludes=syslog_recursive_excludes,
+        # The content gate is the last chance for a file no other lane took:
+        # forwarded dnsmasq lines in an rsyslog file are syslog content.
+        content_fallthrough=True,
     ),
     "pihole_dir": SourceLoader(
         discover=lambda p, pattern, since, until, *, _directory_skips=None: (
@@ -1452,6 +1523,10 @@ _SOURCE_LOADERS: dict[str, SourceLoader] = {
         resolve_window=_flat_resolve_window,
         records_directory_denials=True,
         wall_clock_row=_pihole_wall_clock_row,
+        observe=observe_pihole_input,
+        select_observed=select_pihole_files,
+        coverage=pihole_coverage,
+        recursive_admit=pihole_recursive_admit,
     ),
     "cloudtrail_dir": SourceLoader(
         discover=lambda p, pattern, since, until, *, _directory_skips=None: (
@@ -1470,6 +1545,11 @@ _SOURCE_LOADERS: dict[str, SourceLoader] = {
         # A native delivery is ONE `{"Records":[...]}` line, routinely several
         # MiB decoded - the per-line limit would skip it before the sniff.
         max_document_bytes=MAX_LOGICAL_DOCUMENT_BYTES,
+        observe=observe_cloudtrail_input,
+        select_observed=select_cloudtrail_files,
+        coverage=cloudtrail_coverage,
+        recursive_admit=cloudtrail_recursive_admit,
+        recursive_excludes=cloudtrail_recursive_excludes,
     ),
     "journal": SourceLoader(
         # The producer's lock-protected active-capture registry is the gate;
@@ -1647,6 +1727,282 @@ def load_cloudtrail(
     )
 
 
+def _checked_population(
+    population: CandidatePopulation | None,
+    pattern: str,
+    source: str,
+    paths: Sequence[Path],
+) -> dict[Path, Any] | None:
+    """Validate one supplied population; return its observations by input.
+
+    A population built for another provider, or for a different set of inputs,
+    is refused rather than loaded: the caller publishes populations from the
+    final post-arbitration plan, and a mismatch means that ordering broke.
+    """
+    if population is None:
+        return None
+    if population.source != source:
+        raise ValueError(
+            f"discovered candidates for {pattern!r} belong to "
+            f"{population.source!r}, not {source!r}"
+        )
+    supplied = [path for path, _ in population.inputs]
+    if supplied != list(paths):
+        raise ValueError(
+            f"discovered candidates for {pattern!r} do not match the run's "
+            f"{source} inputs"
+        )
+    strategy = _SOURCE_LOADERS.get(source)
+    if strategy is None or not strategy.observes:
+        raise ValueError(
+            f"discovered candidates were supplied for {source!r}, which does not "
+            "select from observations"
+        )
+    return dict(population.inputs)
+
+
+def _select_observed(
+    strategy: SourceLoader,
+    obs: Any,
+    pattern: str,
+    since: datetime | None,
+    until: datetime | None,
+    sink: dict[tuple[str, Path], DirectorySkipInfo] | None,
+) -> list[Path]:
+    """Select from one observation and record any denial it newly learned."""
+    assert strategy.select_observed is not None
+    files = strategy.select_observed(obs, pattern, since, until)
+    apply_observation_denials(obs, sink)
+    return files
+
+
+@dataclass(frozen=True)
+class _PatternInputs:
+    """One planned pattern's inputs, checked before any file is selected."""
+
+    paths: list[Path]
+    trusted: list[Path]
+    prepared_snapshot: SourceSnapshot | None
+    observed: dict[Path, Any] | None
+    strategy: SourceLoader
+
+
+def _pattern_inputs(
+    pattern: str,
+    source: str,
+    *,
+    source_dirs: dict[str, list[Path]],
+    trusted_files: Mapping[str, Sequence[Path]],
+    prepared_snapshots: Mapping[str, SourceSnapshot],
+    discovered_candidates: Mapping[str, CandidatePopulation],
+    warnings: list[str],
+) -> _PatternInputs | None:
+    """Check one pattern's inputs, or return ``None`` when it has none this run.
+
+    The order is the load's own: a supplied population is checked against the
+    run's inputs first, a family with no inputs is reported and skipped, a
+    reserved path is refused, and an unknown source raises.
+    """
+    paths = source_dirs.get(source) or []
+    trusted = list(trusted_files.get(pattern, ()))
+    prepared_snapshot = prepared_snapshots.get(pattern)
+    observed = _checked_population(
+        discovered_candidates.get(pattern), pattern, source, paths,
+    )
+    if not paths and not trusted and prepared_snapshot is None:
+        warnings.append(f"{source} not configured - {pattern} not loaded")
+        return None
+
+    # Explicit paths bypass parts of filename-based discovery by design,
+    # but the provenance namespace is never log input.  Enforce that
+    # exception before source-specific routing so flat-file inputs cannot
+    # slip past the discovery-layer guard.
+    for explicit_path in [*paths, *trusted]:
+        reject_explicit_reserved_path(explicit_path)
+
+    strategy = _SOURCE_LOADERS.get(source)
+    if strategy is None:
+        raise ValueError(
+            f"unknown source key {source!r} for pattern {pattern!r} - "
+            "no loader is registered for it"
+        )
+
+    return _PatternInputs(paths, trusted, prepared_snapshot, observed, strategy)
+
+
+def _select_pattern_files(
+    pattern: str,
+    source: str,
+    inputs: _PatternInputs,
+    *,
+    since: datetime | None,
+    until: datetime | None,
+    source_windows: Mapping[str, tuple[datetime | None, datetime | None]],
+    file_select_windows: Mapping[str, tuple[datetime | None, datetime | None]],
+    verbose: bool,
+    warnings: list[str],
+    _directory_skips: dict[tuple[str, Path], DirectorySkipInfo] | None,
+) -> tuple[list[Path], RotationSkipInfo | None, datetime | None, datetime | None]:
+    """Select the files one pattern loads, exactly as the load selects them.
+
+    Returns the selected files, the rotation result, and the precise window
+    that rows are filtered to. The load and the preview both call this, so a
+    preview cannot select differently from the run it describes. It never
+    parses, hashes or captures a file: its only reads are the discovery sniffs
+    and rotation peeks the load itself performs.
+    """
+    paths = inputs.paths
+    trusted = inputs.trusted
+    prepared_snapshot = inputs.prepared_snapshot
+    observed = inputs.observed
+    strategy = inputs.strategy
+
+    s_since, s_until = source_windows.get(source, (since, until))
+
+    skip_info: RotationSkipInfo | None = None
+    if prepared_snapshot is not None:
+        if prepared_snapshot.source != source:
+            raise ValueError(
+                f"prepared snapshot for {pattern!r} belongs to "
+                f"{prepared_snapshot.source!r}, not {source!r}"
+            )
+        files = [item.path for item in prepared_snapshot.files]
+        resolved_files = {_safe_resolve(path) for path in files}
+        unexpected_trusted = [
+            path for path in trusted if _safe_resolve(path) not in resolved_files
+        ]
+        if unexpected_trusted:
+            raise ValueError(
+                f"trusted file is outside prepared snapshot for {pattern!r}"
+            )
+    elif strategy.window_select is None:
+        # Zeek / CloudTrail: normal inputs retain their existing discovery
+        # behavior. Trusted explicit files bypass only a discovery name-gate
+        # (for example, an arbitrarily named but sniff-approved Zeek file),
+        # then converge on the same deduped run_load path.
+        trusted_resolved = {_safe_resolve(p) for p in trusted}
+        files_per_input = [
+            [p] if _safe_resolve(p) in trusted_resolved
+            else (
+                _select_observed(
+                    strategy, observed[p], pattern, s_since, s_until,
+                    _directory_skips,
+                )
+                if observed is not None
+                else strategy.discover_paths(
+                    p,
+                    pattern,
+                    s_since,
+                    s_until,
+                    _directory_skips=_directory_skips,
+                )
+            )
+            for p in paths
+        ]
+        input_resolved = {_safe_resolve(p) for p in paths}
+        extra_trusted = [
+            p for p in trusted if _safe_resolve(p) not in input_resolved
+        ]
+        files = _union_dedupe([*files_per_input, extra_trusted])
+    else:
+        # Flat (syslog / pihole) - ordinal-rotation peek-prune of the
+        # directory-discovered candidates. Explicit FILES the operator named
+        # are partitioned out, protected from BOTH the windowing input and
+        # the skip count, and always loaded.
+        if observed is not None:
+            # An observed input keeps the kind it was observed with. A
+            # directory that disappears after discovery still offers its
+            # selected candidates, and the read loop then reports each one,
+            # instead of the input silently vanishing from the run.
+            file_inputs = _union_dedupe([
+                [p for p in paths if observed[p].kind == _INPUT_FILE],
+                trusted,
+            ])
+            dir_inputs = [
+                p for p in paths
+                if observed[p].kind not in (_INPUT_FILE, _INPUT_MISSING)
+            ]
+        else:
+            file_inputs = _union_dedupe([
+                [p for p in paths if p.is_file()],
+                trusted,
+            ])
+            dir_inputs = [p for p in paths if p.is_dir()]
+        dir_candidates = _union_dedupe([
+            _select_observed(
+                strategy, observed[d], pattern, s_since, s_until,
+                _directory_skips,
+            )
+            if observed is not None
+            else strategy.discover_paths(
+                d,
+                pattern,
+                s_since,
+                s_until,
+                _directory_skips=_directory_skips,
+            )
+            for d in dir_inputs
+        ])
+        # Silent-miss disclosure, forked by source. syslog discovery is
+        # content-gated, so "zero candidates from a dir that holds files"
+        # means nothing matched a supported syslog format - distinct from
+        # pihole's
+        # filename-pattern mismatch. Either way a security tool must not
+        # swallow it silently. Explicit files load regardless and never
+        # reach this check.
+        if dir_inputs and not dir_candidates:
+            if source == "syslog_dir":
+                # Cheap iterdir presence check (NO sniff, NO `*.log*` test) so
+                # an extensionless-only dir is disclosed, not dropped silently.
+                # Directory path(s) only - never a per-file name list.
+                offending = [
+                    d for d in dir_inputs
+                    if (
+                        _observed_has_regular_files(observed[d])
+                        if observed is not None
+                        else _dir_has_regular_files(d)
+                    )
+                ]
+                if offending:
+                    names = ", ".join(str(d) for d in offending)
+                    warnings.append(
+                        f"syslog_dir: nothing in {names} looks like syslog "
+                        f"(RFC 3164 or ISO-8601) - nothing loaded "
+                        f"(check the path)."
+                    )
+            elif any(
+                (
+                    select_pihole_files(observed[d], "*.log*")
+                    if observed is not None
+                    else _syslog_files(d, "*.log*")
+                )
+                for d in dir_inputs
+            ):
+                warnings.append(
+                    f"{source}: directory has .log files but none match "
+                    f"{pattern!r} - not loaded (check the log file naming)."
+                )
+        explicit_resolved = {_safe_resolve(p) for p in file_inputs}
+        dir_for_window = [
+            p for p in dir_candidates
+            if _safe_resolve(p) not in explicit_resolved
+        ]
+        # The rotation-peek selects FILES off the conservative file-selection
+        # floor (the flat default-window floor); run_load below row-filters on
+        # the PRECISE window only. A source absent from file_select_windows
+        # falls back to its precise window, so explicit operator windows peek
+        # and row-filter on the same tuple (byte-identical to before).
+        fs_since, fs_until = file_select_windows.get(source, (s_since, s_until))
+        if (fs_since or fs_until) and dir_for_window:
+            selected_dir, skip_info = strategy.window_select(
+                dir_for_window, fs_since, fs_until, verbose=verbose
+            )
+        else:
+            selected_dir = dir_for_window
+        files = _union_dedupe([file_inputs, selected_dir])
+    return files, skip_info, s_since, s_until
+
+
 def load_required_logs(
     needed_logs: dict[str, str],
     source_dirs: dict[str, list[Path]],
@@ -1663,6 +2019,7 @@ def load_required_logs(
     _directory_skips: (
         dict[tuple[str, Path], DirectorySkipInfo] | None
     ) = None,
+    discovered_candidates: Mapping[str, CandidatePopulation] | None = None,
 ) -> LoadResult:
     """Load all patterns required by a run plan and return data plus metadata.
 
@@ -1703,7 +2060,18 @@ def load_required_logs(
 
     ``_directory_skips`` is the caller-owned plan sink for pre-candidate input-root
     listing denials. Discovery updates it by ``(source, realpath)``; it is not
-    copied into ``LoadResult``. CloudTrail does not claim recursive-child coverage.
+    copied into ``LoadResult``. Legacy CloudTrail discovery does not claim
+    recursive-child coverage; an observed population records denied descendants.
+
+    ``discovered_candidates`` supplies an already-observed population per
+    pattern, published by the caller after source arbitration. A present value
+    is authoritative, empty included: the loader skips enumeration for that
+    pattern and runs the strategy's ``select_observed`` over the supplied
+    observations instead, so windowed selection, rotation selection, parsing,
+    warnings, coverage and accounting are unchanged. The value must name the
+    plan's source for the pattern and exactly that source's inputs; anything
+    else raises before any file is touched. An absent pattern keeps ordinary
+    discovery. A prepared snapshot still decides the files for its pattern.
     """
     logs: dict[str, pd.DataFrame] = {}
     record_counts: dict[str, int] = {}
@@ -1728,132 +2096,34 @@ def load_required_logs(
         tuple[str, tuple[Path, ...], datetime | None, datetime | None],
         SourceSnapshot,
     ] = {}
+    discovered_candidates = discovered_candidates or {}
 
     for pattern, source in needed_logs.items():
-        paths = source_dirs.get(source) or []
-        trusted = list(trusted_files.get(pattern, ()))
-        prepared_snapshot = prepared_snapshots.get(pattern)
-        if not paths and not trusted and prepared_snapshot is None:
-            warnings.append(f"{source} not configured - {pattern} not loaded")
+        inputs = _pattern_inputs(
+            pattern,
+            source,
+            source_dirs=source_dirs,
+            trusted_files=trusted_files,
+            prepared_snapshots=prepared_snapshots,
+            discovered_candidates=discovered_candidates,
+            warnings=warnings,
+        )
+        if inputs is None:
             continue
-
-        # Explicit paths bypass parts of filename-based discovery by design,
-        # but the provenance namespace is never log input.  Enforce that
-        # exception before source-specific routing so flat-file inputs cannot
-        # slip past the discovery-layer guard.
-        for explicit_path in [*paths, *trusted]:
-            reject_explicit_reserved_path(explicit_path)
-
-        strategy = _SOURCE_LOADERS.get(source)
-        if strategy is None:
-            raise ValueError(
-                f"unknown source key {source!r} for pattern {pattern!r} - "
-                "no loader is registered for it"
-            )
-
-        s_since, s_until = source_windows.get(source, (since, until))
-
-        skip_info: RotationSkipInfo | None = None
-        if prepared_snapshot is not None:
-            if prepared_snapshot.source != source:
-                raise ValueError(
-                    f"prepared snapshot for {pattern!r} belongs to "
-                    f"{prepared_snapshot.source!r}, not {source!r}"
-                )
-            files = [item.path for item in prepared_snapshot.files]
-            resolved_files = {_safe_resolve(path) for path in files}
-            unexpected_trusted = [
-                path for path in trusted if _safe_resolve(path) not in resolved_files
-            ]
-            if unexpected_trusted:
-                raise ValueError(
-                    f"trusted file is outside prepared snapshot for {pattern!r}"
-                )
-        elif strategy.window_select is None:
-            # Zeek / CloudTrail: normal inputs retain their existing discovery
-            # behavior. Trusted explicit files bypass only a discovery name-gate
-            # (for example, an arbitrarily named but sniff-approved Zeek file),
-            # then converge on the same deduped run_load path.
-            trusted_resolved = {_safe_resolve(p) for p in trusted}
-            files_per_input = [
-                [p] if _safe_resolve(p) in trusted_resolved
-                else strategy.discover_paths(
-                    p,
-                    pattern,
-                    s_since,
-                    s_until,
-                    _directory_skips=_directory_skips,
-                )
-                for p in paths
-            ]
-            input_resolved = {_safe_resolve(p) for p in paths}
-            extra_trusted = [
-                p for p in trusted if _safe_resolve(p) not in input_resolved
-            ]
-            files = _union_dedupe([*files_per_input, extra_trusted])
-        else:
-            # Flat (syslog / pihole) - ordinal-rotation peek-prune of the
-            # directory-discovered candidates. Explicit FILES the operator named
-            # are partitioned out, protected from BOTH the windowing input and
-            # the skip count, and always loaded.
-            file_inputs = _union_dedupe([
-                [p for p in paths if p.is_file()],
-                trusted,
-            ])
-            dir_inputs = [p for p in paths if p.is_dir()]
-            dir_candidates = _union_dedupe([
-                strategy.discover_paths(
-                    d,
-                    pattern,
-                    s_since,
-                    s_until,
-                    _directory_skips=_directory_skips,
-                )
-                for d in dir_inputs
-            ])
-            # Silent-miss disclosure, forked by source. syslog discovery is
-            # content-gated, so "zero candidates from a dir that holds files"
-            # means nothing matched a supported syslog format - distinct from
-            # pihole's
-            # filename-pattern mismatch. Either way a security tool must not
-            # swallow it silently. Explicit files load regardless and never
-            # reach this check.
-            if dir_inputs and not dir_candidates:
-                if source == "syslog_dir":
-                    # Cheap iterdir presence check (NO sniff, NO `*.log*` test) so
-                    # an extensionless-only dir is disclosed, not dropped silently.
-                    # Directory path(s) only - never a per-file name list.
-                    offending = [d for d in dir_inputs if _dir_has_regular_files(d)]
-                    if offending:
-                        names = ", ".join(str(d) for d in offending)
-                        warnings.append(
-                            f"syslog_dir: nothing in {names} looks like syslog "
-                            f"(RFC 3164 or ISO-8601) - nothing loaded "
-                            f"(check the path)."
-                        )
-                elif any(_syslog_files(d, "*.log*") for d in dir_inputs):
-                    warnings.append(
-                        f"{source}: directory has .log files but none match "
-                        f"{pattern!r} - not loaded (check the log file naming)."
-                    )
-            explicit_resolved = {_safe_resolve(p) for p in file_inputs}
-            dir_for_window = [
-                p for p in dir_candidates
-                if _safe_resolve(p) not in explicit_resolved
-            ]
-            # The rotation-peek selects FILES off the conservative file-selection
-            # floor (the flat default-window floor); run_load below row-filters on
-            # the PRECISE window only. A source absent from file_select_windows
-            # falls back to its precise window, so explicit operator windows peek
-            # and row-filter on the same tuple (byte-identical to before).
-            fs_since, fs_until = file_select_windows.get(source, (s_since, s_until))
-            if (fs_since or fs_until) and dir_for_window:
-                selected_dir, skip_info = strategy.window_select(
-                    dir_for_window, fs_since, fs_until, verbose=verbose
-                )
-            else:
-                selected_dir = dir_for_window
-            files = _union_dedupe([file_inputs, selected_dir])
+        strategy = inputs.strategy
+        prepared_snapshot = inputs.prepared_snapshot
+        files, skip_info, s_since, s_until = _select_pattern_files(
+            pattern,
+            source,
+            inputs,
+            since=since,
+            until=until,
+            source_windows=source_windows,
+            file_select_windows=file_select_windows,
+            verbose=verbose,
+            warnings=warnings,
+            _directory_skips=_directory_skips,
+        )
 
         availability[pattern] = validate_selected_files(files)
 
@@ -2008,6 +2278,110 @@ def load_required_logs(
     )
 
 
+def preview_required_files(
+    needed_logs: Mapping[str, str],
+    source_dirs: dict[str, list[Path]],
+    since: datetime | None = None,
+    until: datetime | None = None,
+    *,
+    source_windows: Mapping[str, tuple[datetime | None, datetime | None]] | None = None,
+    file_select_windows: (
+        Mapping[str, tuple[datetime | None, datetime | None]] | None
+    ) = None,
+    discovered_candidates: Mapping[str, CandidatePopulation] | None = None,
+    verbose: bool = False,
+    _directory_skips: (
+        dict[tuple[str, Path], DirectorySkipInfo] | None
+    ) = None,
+) -> dict[str, PatternPreview]:
+    """Select each planned pattern's files the way the load would, without loading.
+
+    Arguments mean what they mean to :func:`load_required_logs`. Each pattern's
+    ``selected`` files come from the load's own selector under the run's windows,
+    and its ``discovered`` files from the same selector with no time windows, so
+    a preview and its run share one owner for both. A preview has no trusted
+    files and no prepared snapshots. Nothing is parsed, hashed, validated
+    against a provenance manifest or captured into a snapshot: those acts belong
+    to the load.
+    """
+    source_windows = source_windows or {}
+    file_select_windows = file_select_windows or {}
+    discovered_candidates = discovered_candidates or {}
+    previews: dict[str, PatternPreview] = {}
+    for pattern, source in needed_logs.items():
+        warnings: list[str] = []
+        inputs = _pattern_inputs(
+            pattern,
+            source,
+            source_dirs=source_dirs,
+            trusted_files={},
+            prepared_snapshots={},
+            discovered_candidates=discovered_candidates,
+            warnings=warnings,
+        )
+        if inputs is None:
+            previews[pattern] = PatternPreview(source, (), (), None, tuple(warnings))
+            continue
+        # The unwindowed pass repeats warnings the windowed pass gives, so its
+        # own are discarded; denials are recorded idempotently by both.
+        discovered, _, _, _ = _select_pattern_files(
+            pattern,
+            source,
+            inputs,
+            since=None,
+            until=None,
+            source_windows={},
+            file_select_windows={},
+            verbose=False,
+            warnings=[],
+            _directory_skips=_directory_skips,
+        )
+        selected, skip_info, _, _ = _select_pattern_files(
+            pattern,
+            source,
+            inputs,
+            since=since,
+            until=until,
+            source_windows=source_windows,
+            file_select_windows=file_select_windows,
+            verbose=verbose,
+            warnings=warnings,
+            _directory_skips=_directory_skips,
+        )
+        previews[pattern] = PatternPreview(
+            source=source,
+            discovered=tuple(discovered),
+            selected=tuple(selected),
+            rotation_skip=skip_info,
+            warnings=tuple(warnings),
+        )
+    return previews
+
+
+def on_disk_bytes(files: Iterable[Path]) -> tuple[int, tuple[Path, ...]]:
+    """Total on-disk bytes of ``files``, and the files that could not be sized.
+
+    Sizes come from ``stat`` alone, as the load's own accounting reads them. A
+    path that is no longer a regular file, or whose ``stat`` fails, is returned
+    as unsized rather than counted as zero bytes.
+    """
+    total = 0
+    unsized: list[Path] = []
+    for path in files:
+        try:
+            if path.is_file():
+                total += path.stat().st_size
+                continue
+        except OSError:
+            pass
+        unsized.append(path)
+    return total, tuple(unsized)
+
+
+# The built-in resolvers that can read already-observed inputs.
+_OBSERVATION_RESOLVERS = frozenset({_zeek_resolve_window, _flat_resolve_window})
+
+
 def resolve_load_windows(
     needed_sources: dict[str, str],
     source_dirs: dict[str, list[Path]],
@@ -2020,6 +2394,8 @@ def resolve_load_windows(
     _directory_skips: (
         dict[tuple[str, Path], DirectorySkipInfo] | None
     ) = None,
+    _discovery: Mapping[str, CandidatePopulation] | None = None,
+    _policies: dict[str, WindowPolicyReason] | None = None,
 ) -> list[LoadWindow]:
     """Resolve the universal default window into ONE ``LoadWindow`` per family.
 
@@ -2044,11 +2420,38 @@ def resolve_load_windows(
     ``_directory_skips`` is the same caller-owned sink used at plan and load
     time; denial-aware resolvers update it without changing custom strategy
     call signatures.
+
+    ``_discovery`` is the published pattern-keyed population the loader will
+    receive. Each family's observations reach the two built-in resolvers, which
+    then read layout and candidates without listing again; the arithmetic is
+    the same either way, and a custom resolver is called exactly as before.
+
+    ``_policies`` is an optional caller-owned sink. It receives one
+    :class:`WindowPolicyReason` per planned family, decided by the same checks
+    and in the same order as the windows themselves, so a caller can say why a
+    family has the time policy it has without deriving it again.
     """
+    # Families present in the plan, stable order, deduped.
+    planned_sources: list[str] = []
+    for src in needed_sources.values():
+        if src not in planned_sources:
+            planned_sources.append(src)
+
+    def record(source: str, reason: WindowPolicyReason) -> None:
+        if _policies is not None:
+            _policies[source] = reason
+
     if load_all or since is not None or until is not None:
+        for source in planned_sources:
+            record(
+                source,
+                WindowPolicyReason.ALL if load_all else WindowPolicyReason.EXPLICIT,
+            )
         return []
     span = parse_window_span(default_spec)
     if span is None:
+        for source in planned_sources:
+            record(source, WindowPolicyReason.DEFAULT_DISABLED)
         return []
     injected = dict(pre_resolved_windows or {})
     invalid_keys = set(injected) - {"journal"}
@@ -2060,17 +2463,22 @@ def resolve_load_windows(
     ):
         raise ValueError("pre-resolved journal window has the wrong source")
 
-    # Families present in the plan, stable order, deduped.
-    planned_sources: list[str] = []
-    for src in needed_sources.values():
-        if src not in planned_sources:
-            planned_sources.append(src)
-
     if "journal" in injected:
         if "journal" not in planned_sources or not source_dirs.get("journal"):
             raise ValueError(
                 "pre-resolved journal window requires an in-plan configured source"
             )
+
+    observations: dict[str, dict[Path, Any]] = {}
+    for pattern, population in (_discovery or {}).items():
+        source = needed_sources.get(pattern)
+        if source is None:
+            continue
+        checked = _checked_population(
+            population, pattern, source, source_dirs.get(source) or [],
+        )
+        if checked is not None:
+            observations.setdefault(source, checked)
 
     windows: list[LoadWindow] = []
     for source in planned_sources:
@@ -2079,14 +2487,22 @@ def resolve_load_windows(
             # The producer's exact default window wins before the temporary
             # explicit capture is classified as bounded. Preserve object identity.
             windows.append(injected[source])
+            record(source, WindowPolicyReason.PRE_RESOLVED)
             continue
-        if not dirs or is_bounded(dirs):
+        if not dirs:
+            record(source, WindowPolicyReason.NOT_CONFIGURED)
+            continue
+        if is_bounded(dirs):
+            record(source, WindowPolicyReason.NAMED_FILES)
             continue
         strategy = _SOURCE_LOADERS.get(source)
         # Declared opt-out: CloudTrail (baseline-relative) produces NO default
         # window → loads full on unqualified runs. Explicit windows still apply
         # (handled before this function via the since/until short-circuit).
-        if strategy is None or not strategy.default_window_eligible:
+        if strategy is None:
+            continue
+        if not strategy.default_window_eligible:
+            record(source, WindowPolicyReason.EXEMPT)
             continue
         # First pattern per family - matches the prior name-ladder; the flat
         # resolver anchors its conservative floor from DIRECTORY candidates only.
@@ -2094,20 +2510,16 @@ def resolve_load_windows(
             (p for p, s in needed_sources.items() if s == source), "*.log*"
         )
         resolver = strategy.resolve_window or _default_resolve_window
-        if (
-            _directory_skips is None
-            or not strategy.records_directory_denials
-        ):
-            # Preserve the callable contract for programmatic/custom strategies.
-            select_window, trim_span = resolver(strategy, dirs, pattern, span)
-        else:
-            select_window, trim_span = resolver(
-                strategy,
-                dirs,
-                pattern,
-                span,
-                _directory_skips=_directory_skips,
-            )
+        resolver_kwargs: dict[str, Any] = {}
+        if _directory_skips is not None and strategy.records_directory_denials:
+            resolver_kwargs["_directory_skips"] = _directory_skips
+        if source in observations and resolver in _OBSERVATION_RESOLVERS:
+            resolver_kwargs["_observations"] = observations[source]
+        # A custom strategy's resolver receives exactly its historical arguments.
+        select_window, trim_span = resolver(
+            strategy, dirs, pattern, span, **resolver_kwargs,
+        )
         keep_null = strategy.ts_policy == "keep"
         windows.append(LoadWindow(source, select_window, trim_span, keep_null))
+        record(source, WindowPolicyReason.RESOLVED)
     return windows

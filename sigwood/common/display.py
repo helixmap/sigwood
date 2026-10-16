@@ -346,6 +346,31 @@ def human_bytes(n: float) -> str:
     return f"{n / (1024 ** 4):.1f} TB"
 
 
+# The one bounded, terminal-safe path list: at most this many paths, each cut to
+# this many characters after home compaction and control stripping.
+PATH_DISPLAY_CAP = 3
+PATH_CHAR_CAP = 256
+
+
+def compact_path_list(paths: "Iterable[str | Path]") -> str:
+    """Render a bounded, terminal-safe path list.
+
+    The first ``PATH_DISPLAY_CAP`` paths are selected FIRST; each survivor is
+    then home-compacted, control-stripped and cut to ``PATH_CHAR_CAP``
+    characters, and the remainder is counted as ``(+N more)``.
+    """
+    items = list(paths)
+    rendered = [
+        strip_control(compact_home(path))[:PATH_CHAR_CAP]
+        for path in items[:PATH_DISPLAY_CAP]
+    ]
+    text = ", ".join(rendered)
+    omitted = len(items) - len(rendered)
+    if omitted > 0:
+        text += f" (+{omitted} more)"
+    return text
+
+
 def compact_home(path: "str | Path") -> str:
     """Return ``path`` as a string with the user's home prefix replaced by ``~``.
 

@@ -477,7 +477,9 @@ def test_mixed_directory_positional_prints_vote_advisory(
         encoding="utf-8",
     )
 
-    buckets = cli._build_positional_buckets([str(log_dir)], detector_module=None)
+    buckets, _discovery = cli._build_positional_buckets(
+        [str(log_dir)], detector_module=None,
+    )
 
     err = capsys.readouterr().err
     assert buckets == {"zeek_dir": [str(log_dir)]}
@@ -501,7 +503,9 @@ def test_truncated_directory_positional_discloses_unexamined_files(
         )
     (log_dir / "zz-messages").write_text(_FLAT_SYSLOG_LINE, encoding="utf-8")
 
-    buckets = cli._build_positional_buckets([str(log_dir)], detector_module=None)
+    buckets, _discovery = cli._build_positional_buckets(
+        [str(log_dir)], detector_module=None,
+    )
 
     assert buckets == {"zeek_dir": [str(log_dir)]}
     err = capsys.readouterr().err

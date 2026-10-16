@@ -442,6 +442,26 @@ requires a new measured design rather than turning on hidden code.
 
 ## Ingestion and windows
 
+**A preview describes candidates, not a verified load.** `--dry-run` reports per-family
+file selection, on-disk sizes and window policy using the run's selection rules. It can
+sniff and peek at files, but does not parse analysis frames, validate export content or
+hash whole files. A selected file may later fail to load; an unknown size stays unknown.
+The totals do not establish memory fit or the exact row window after default trimming,
+and the filesystem can change between preview and execution.
+
+**Flat date-partitioned files can all be read before rows are trimmed.** For example,
+`host/YYYY-MM-DD/messages` gives the rotation selector separate singleton groups. A
+default window or explicit lower bound can keep every file selected and read in full,
+then retain only recent rows. This does not apply to every dated layout, and an upper
+bound can prune files. Preview selected bytes help show the input amount; they do not
+include a measurement of discovery sniffs, peeks or decompression cost.
+
+**The default row window is per source family, not per host.** When flat inputs from
+several hosts share a family, the family's newest data anchors its default trim. An older
+host can contribute no retained rows while the family remains nonempty, without a
+per-host warning. `--all` or explicit bounds can retain that history, with the corresponding
+input cost; naming a lower bound alone need not reduce full-file reads.
+
 **An implicit `dnsblock` run can read more Pi-hole rotations than its report window.** The
 detector needs earlier history to decide whether blocked activity is new, so a peekable
 directory may select 21 additional days of files while reporting only rows inside the configured
@@ -450,15 +470,22 @@ report span by duration, not necessarily four times the file count. Rotation lay
 number of files. Unpeekable sources already load in full, and explicit time bounds or `--all`
 retain their ordinary meanings.
 
-**A folder *inside* a CloudTrail tree that you lack permission to read is skipped without saying
-so.** If permissions stop sigwood listing the CloudTrail directory you configured, it now
-reports that and carries on. Native CloudTrail archives can use a nested tree, though -
-`AWSLogs/<account>/CloudTrail/<region>/<year>/...` - and sigwood searches downward with a
-recursive match that silently returns nothing for any folder it cannot open. So a permissions
-problem on a folder *below* the one you configured produces no error and no note: those events
-are simply missing, and the run looks normal. The permission check covers the directory you
-configured, not the folders beneath it. If your CloudTrail results seem short, check that every
-folder under the configured directory is readable by the user running sigwood.
+**A partial input can still produce a successful report.** On the CLI analysis routes,
+sigwood discloses directories it could not list and entries it could not inspect, then
+continues with readable inputs. This includes unreadable descendants in a CloudTrail tree
+and unreadable Zeek date children. Check the report's coverage notes as well as the findings;
+recursive positional walks put listing failures on stderr and in saved report notes.
+Listing denials owned by configured or `--<family>-dir` sources retain the existing report
+note on successful runs; dry runs and runs with no runnable detector state those denials
+alongside the skip reasons. A shared denial is reported once by its existing owner. A run with no runnable
+detector still exits 1. Programmatic callers using the legacy discovery helpers retain
+their earlier behavior; they do not acquire the CLI's inventory and coverage notices
+automatically. A failure observed during recursive discovery remains visible even
+when a time window later excludes the file from loading. A selected file's existing
+load warning keeps its own route: corrupt compressed-file warnings are stderr-only,
+so a saved report alone does not contain every read failure. Discovery is not a
+filesystem snapshot; a selected file or directory that disappears before loading is
+reported when the read is attempted.
 
 **A single CloudTrail document over 64 MiB decoded is skipped whole.** A CloudTrail
 delivery file is one JSON document, and sigwood admits a document up to 64 MiB after
@@ -575,17 +602,18 @@ on-disk archive. This is deliberate: reading both and reconciling them would dou
 still could not prove which copy is more complete. A very large `journalctl` query (for example
 `--all` on a big archive) can take a while and has no built-in timeout; press Ctrl-C to stop it.
 
-**A directory positional is hunted as one log family.** When you pass a directory to
-`sigwood hunt` (or to `dns`/`syslog`, the two-source detectors), sigwood samples up to
-32 files, takes a majority vote on what family the directory is (Zeek, syslog, Pi-hole,
-CloudTrail), and hunts it as that family - files of a losing family in the same
-directory aren't hunted as their own kind on that run (sigwood says so at run time, both
-when the sample is mixed and when the vote was taken on a sample rather than the whole
-directory). The other single-detector verbs (`beacon`, `scan`, `exfil`,
-`aws`) don't sample at all: the verb itself decides the family, with no mixed-content
-notice. A parent directory whose log families live in subdirectories (`case/zeek/`,
-`case/pihole/`) isn't recursively inventoried either. Pass the files themselves, one
-directory per family, or set the per-family source dirs in config.
+**A directory positional without `--recursive` is hunted as one log family.** On
+routes that infer a directory's family, sigwood samples up to 32 files and takes a
+majority vote (Zeek, syslog, Pi-hole or CloudTrail). Losing families are not hunted as
+their own kind; a mixed or truncated sample is disclosed. Single-source detector verbs
+use their own family instead. A shallow input names unsearched children, including
+when its top-level logs let analysis succeed.
+
+Use `--recursive` to walk invocation-supplied trees and partition their files among
+the families the selected detectors read, including minority families beyond that old
+routing sample. Configured sources keep their existing rules. Alternatively, pass
+service directories or named files directly. See [Sources and discovery](MANUAL.md#sources-and-discovery)
+for the dated/current layout, filename gates and directory-link boundaries.
 
 **zstd-compressed logs aren't supported yet.** sigwood transparently reads `.gz`,
 `.bz2`, and `.xz`. `.zst` needs a decoder that isn't in the Python standard library
@@ -594,9 +622,12 @@ before 3.14, so it's deferred for now - decompress those files first.
 **Peak memory runs to a multiple of the largest log loaded.** sigwood reads each log fully
 into memory (pandas) rather than streaming, so peak memory tracks the biggest single file it
 opens, not the total on disk - a ~560 MB `conn.log` peaked near 6 GB in one measurement. The
-default window keeps a live directory from being read end to end, but one very large file, or
-`--all` over a big archive, can exhaust a small box before the run finishes. Narrow the window
-(`--since`/`--days`), point at a single file, or run where there's headroom; streaming
+default window can prune files where the layout and rotation rules support it; it does
+not guarantee that a directory avoids full reads. One very large file, or `--all` over
+a big archive, can exhaust a small box before the run finishes. Narrowing the row window
+(`--since`/`--days`) need not reduce selected bytes. Select smaller inputs or run where
+there's headroom. The large-record confirmation comes after loading, so it is not a memory
+guard. Streaming
 ingestion for the large-single-file case is on the list. The install has real weight too:
 the scientific-Python stack underneath (pandas, numpy, the clustering backend) puts a fresh
 virtualenv at roughly 450 MB on disk - light to operate, not light to install.

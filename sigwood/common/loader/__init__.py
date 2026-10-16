@@ -17,6 +17,8 @@ Submodule layout (acyclic; ``limits`` is the hard-budget leaf):
 - ``pipeline``    - ``run_load`` + the ``_SOURCE_LOADERS`` registry + the
                     public ``load_*`` shims + registry-policy accessors.
 - ``fold``        - content-stable snapshots + transactional sink execution.
+- ``inventory``   - the analyze discovery inventory: one observation per
+                    (family, input), shared by planning, windows and loading.
 
 Canonical connection record schema
 ───────────────────────────────────
@@ -50,6 +52,16 @@ from sigwood.common.loader.io import (
 from sigwood.common.loader.types import (
     AvailabilityReason,
     AvailabilityState,
+    CandidatePopulation,
+    DirectoryEntry,
+    DiscoveryFact,
+    DiscoveryFactKind,
+    EntryKind,
+    FileOutcomeKind,
+    PatternPreview,
+    RootFact,
+    RootFactKind,
+    WindowPolicyReason,
     _CLOUDTRAIL_COLUMNS,
     _LOG_SUFFIXES,
     _PIHOLE_COLUMNS,
@@ -214,7 +226,10 @@ from sigwood.common.loader.pipeline import (
     load_required_logs,
     load_syslog,
     load_zeek_log,
+    on_disk_bytes,
+    preview_required_files,
     resolve_load_windows,
     run_load,
     run_folded_source,
 )
+from sigwood.common.loader.inventory import DiscoveryInventory

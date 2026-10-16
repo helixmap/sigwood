@@ -265,6 +265,233 @@ class DirectorySkipInfo:
     path: Path
 
 
+class EntryKind(str, Enum):
+    """What inspecting one directory entry established about it.
+
+    A broken symbolic link and a successfully inspected non-regular entry (a
+    FIFO, socket or device) are different facts, and an entry whose inspection
+    itself failed is a third: it keeps the cause rather than being guessed into
+    either of the others.
+    """
+
+    REGULAR = "regular"
+    DIRECTORY = "directory"
+    NONREGULAR = "nonregular"
+    BROKEN_LINK = "broken_link"
+    ERROR = "error"
+
+
+@dataclass(frozen=True)
+class DirectoryEntry:
+    """One immediate child of a listed directory, classified once.
+
+    ``kind`` follows symbolic links, so a link to a regular file is
+    ``REGULAR`` and a link to a directory is ``DIRECTORY`` with
+    ``is_symlink`` set. ``error`` carries the errno name when the entry's
+    inspection failed (``ERROR``) or its link target could not be reached
+    (``BROKEN_LINK``).
+    """
+
+    path: Path
+    kind: EntryKind
+    is_symlink: bool = False
+    error: str | None = None
+
+
+class DiscoveryFactKind(str, Enum):
+    """Coverage facts the analyze inventory discloses beside the shipped owners.
+
+    Directory listing denials are deliberately absent: they are
+    ``DirectorySkipInfo`` records with their own renderer.
+    """
+
+    EMPTY_DIRECTORY = "empty_directory"
+    UNSUPPORTED_FILES = "unsupported_files"
+    UNSEARCHED_CHILDREN = "unsearched_children"
+    MISSING_INPUT = "missing_input"
+    LISTING_ERROR = "listing_error"
+    ENTRY_ERROR = "entry_error"
+    NONREGULAR_MATCH = "nonregular_match"
+    BROKEN_LINK = "broken_link"
+    LINKED_DIRECTORY_OMITTED = "linked_directory_omitted"
+    ZEEK_DEEPER_THAN_LAYOUT = "zeek_deeper_than_layout"
+    ZEEK_ROOT_FILES_EXCLUDED = "zeek_root_files_excluded"
+
+
+@dataclass(frozen=True)
+class DiscoveryFact:
+    """One coverage fact about one input root: paths and counts, never content.
+
+    ``paths`` holds the affected entries or child directories in deterministic
+    order; ``count`` is the complete number even when a renderer abbreviates
+    ``paths``. ``detail`` is a tool-derived token such as an errno name.
+    ``also_selected`` and ``contains_selected`` qualify an unsearched-children
+    fact: how many listed children are themselves inputs of this run, and how
+    many contain one, without claiming either was searched.
+    """
+
+    kind: DiscoveryFactKind
+    source_key: str
+    root: Path
+    paths: tuple[Path, ...] = ()
+    count: int = 0
+    detail: str | None = None
+    also_selected: int = 0
+    contains_selected: int = 0
+
+
+class Admission(str, Enum):
+    """A family gate's answer for one file met by a recursive walk.
+
+    ``OUTSIDE`` says the file belongs to the family but to a log type this run
+    does not read; ``REJECT`` says the family recognizes the content but its own
+    name rule refuses the file.
+    """
+
+    ADMIT = "admit"
+    OUTSIDE = "outside"
+    REJECT = "reject"
+
+
+class FileOutcomeKind(str, Enum):
+    """What a recursive positional partition decided for one spelling of a file.
+
+    ``SUPPLIED`` is a spelling whose content another spelling, an explicit file
+    or a family declaration already supplies: it is read once, elsewhere, and is
+    neither an omission nor an empty input.
+    """
+
+    ADMITTED = "admitted"
+    SUPPLIED = "supplied"
+    EMPTY = "empty"
+    EXCLUDED = "excluded"
+    UNREADABLE = "unreadable"
+    OUTSIDE = "outside"
+    REJECTED = "rejected"
+    UNRECOGNIZED = "unrecognized"
+
+
+@dataclass(frozen=True)
+class FileOutcome:
+    """One spelling's partition outcome: at most one family per file, and why.
+
+    ``path`` is the entry as a walk spelled it and ``resolved`` the physical
+    file's identity, so two spellings of one file keep their own names.
+    ``family`` is the admitting family for ``ADMITTED``, the family reading the
+    content for ``SUPPLIED`` (absent when an explicit file or a declaration
+    supplies it), the rejecting family for ``REJECTED`` and the recognized
+    family for ``OUTSIDE``. ``cause`` is the tool-derived token of a failed read
+    (an errno or exception type name); a file that could not be read keeps it
+    even when a family gate retained the file.
+    """
+
+    path: Path
+    resolved: Path
+    kind: FileOutcomeKind
+    family: str | None = None
+    cause: str | None = None
+
+
+class RootFactKind(str, Enum):
+    """Coverage facts owned by a recursive positional root, before any family.
+
+    A partition walk can fail or omit content before a file has a family, so
+    these facts belong to the root the operator supplied rather than to a
+    family's ``DiscoveryFact`` or ``DirectorySkipInfo``.
+    """
+
+    ROOT_UNLISTABLE = "root_unlistable"
+    SUBDIRS_UNLISTABLE = "subdirs_unlistable"
+    ENTRY_ERROR = "entry_error"
+    UNREADABLE_FILES = "unreadable_files"
+    LINKED_DIRECTORY_OMITTED = "linked_directory_omitted"
+    BROKEN_LINK = "broken_link"
+    NONREGULAR_MATCH = "nonregular_match"
+    UNRECOGNIZED_FILES = "unrecognized_files"
+    REJECTED_FILES = "rejected_files"
+    LINKED_LAYOUT_NOT_READ = "linked_layout_not_read"
+    NO_FILES = "no_files"
+    NOTHING_READ = "nothing_read"
+
+
+@dataclass(frozen=True)
+class RootFact:
+    """One family-neutral coverage fact about one recursive positional root.
+
+    ``paths`` and ``count`` follow ``DiscoveryFact``: deterministic order and a
+    complete count. ``cause`` is a read or listing failure token, with
+    ``permission_denied`` marking a denial. ``family`` names the family a
+    ``REJECTED_FILES`` fact concerns, the family whose conservative gate kept an
+    unreadable file, or the family whose directory layout followed the links a
+    ``LINKED_LAYOUT_NOT_READ`` fact names. ``parts`` holds the observed outcome counts a
+    ``NOTHING_READ`` fact reports, and ``incomplete`` says part of the tree could
+    not be searched.
+    """
+
+    kind: RootFactKind
+    root: Path
+    paths: tuple[Path, ...] = ()
+    count: int = 0
+    cause: str | None = None
+    permission_denied: bool = False
+    family: str | None = None
+    patterns: tuple[str, ...] = ()
+    parts: tuple[tuple[FileOutcomeKind, int], ...] = ()
+    incomplete: bool = False
+
+
+@dataclass(frozen=True)
+class CandidatePopulation:
+    """One pattern's discovered population, published after source arbitration.
+
+    ``source`` must equal the plan's source for the pattern, and ``inputs``
+    must name exactly the run's inputs for that source; the loader refuses a
+    mismatch rather than load a population built for another provider. Each
+    input carries the observation its family's selection reads, so the loader
+    skips enumeration only: windowed selection, rotation selection, parsing
+    and accounting still run.
+    """
+
+    source: str
+    inputs: tuple[tuple[Path, Any], ...]
+
+
+class WindowPolicyReason(str, Enum):
+    """Why one planned source family has the time policy it has.
+
+    The window resolver records one reason per planned family, in its own check
+    order, so a caller can report the resolver's decision instead of deriving it
+    again.
+    """
+
+    EXPLICIT = "explicit"  # an explicit --since or --until bounds every family
+    ALL = "all"  # --all reads every family in full
+    DEFAULT_DISABLED = "default_disabled"  # default_window is empty or "all"
+    PRE_RESOLVED = "pre_resolved"  # a producer supplied the family's window
+    NOT_CONFIGURED = "not_configured"  # the family has no inputs this run
+    NAMED_FILES = "named_files"  # every input is a file, so it is read in full
+    EXEMPT = "exempt"  # the family declares no default window
+    RESOLVED = "resolved"  # a default LoadWindow was built
+
+
+@dataclass(frozen=True)
+class PatternPreview:
+    """One pattern's discovered and selected files, chosen without reading content.
+
+    ``discovered`` is every candidate before time selection. ``selected`` is what
+    the run's windows select, from the same selector the load uses, so the two
+    cannot disagree about which files a run reads. ``rotation_skip`` is that
+    selection's rotation result, and ``warnings`` the selection warnings the
+    load would print.
+    """
+
+    source: str
+    discovered: tuple[Path, ...]
+    selected: tuple[Path, ...]
+    rotation_skip: RotationSkipInfo | None = None
+    warnings: tuple[str, ...] = ()
+
+
 @dataclass(frozen=True)
 class FileSpan:
     """Finite timestamp extrema of one file's kept rows."""

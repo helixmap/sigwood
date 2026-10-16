@@ -1436,7 +1436,7 @@ def test_detect_empty_string_is_absent_falls_back_to_default(
     cli.main(["hunt", "--detect=", "--dry-run", f"--config={probe}"])
 
     out = capsys.readouterr().out
-    assert "(none - required logs unavailable)" in out
+    assert "(none can run - required logs unavailable; a real run exits 1)" in out
     assert "skipped:" in out
     skipped_lines = [line for line in out.splitlines() if line.startswith("skipped:")]
     assert any("exfil" in line for line in skipped_lines)

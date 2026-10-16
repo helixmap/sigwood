@@ -25,16 +25,21 @@ import re
 import shlex
 import stat
 import sys
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator, Sequence
 
 from sigwood.common import config as cfg
 from sigwood.common.display import (
     compact_home,
+    compact_path_list,
+    hidden_cursor,
+    liveness,
     plural,
     set_display_utc,
+    set_narration_enabled,
     to_display_timezone,
     version_string,
 )
@@ -118,6 +123,8 @@ _FLAG_LIST: tuple[FlagSpec, ...] = (
              "hours-ago range (e.g. 0-2); order-insensitive"),
     FlagSpec("utc",              "--utc",              None, False, "",
              "display times in UTC; naive --since/--until and --days read as UTC"),
+    FlagSpec("recursive",        "--recursive",        None, False, "",
+             "also search subdirectories of directories named on this run"),
     FlagSpec("zeek_dir",         "--zeek-dir",         None, True,  "PATH",
              "Zeek log directory (overrides config)"),
     FlagSpec("pihole_dir",       "--pihole-dir",       None, True,  "PATH",
@@ -154,7 +161,8 @@ class VerbSpec:
 _ANALYZE_ALLOWED: frozenset[str] = frozenset({
     "help", "verbose", "yes", "all", "quiet", "out", "config", "since", "detect",
     "dry_run", "no_allowlist", "format", "until", "days", "hours", "utc",
-    "zeek_dir", "pihole_dir", "syslog_dir", "syslog_source", "cloudtrail_dir",
+    "recursive", "zeek_dir", "pihole_dir", "syslog_dir", "syslog_source",
+    "cloudtrail_dir",
 })
 _SINGLE_DET_ALLOWED: frozenset[str] = _ANALYZE_ALLOWED - {
     "detect", "syslog_source",
@@ -354,9 +362,19 @@ def _main(argv: list[str] | None = None) -> int:
         return 0
 
     invocation = shlex.join(["sigwood", *args])
+    # The operator's own argv with --recursive inserted after an explicit verb,
+    # or after the program name for an implicit hunt. _runner_kwargs checks and
+    # quotes it; the runner only ever receives the finished command.
+    retry_argv = (
+        ("sigwood", "--recursive", *args)
+        if require_target
+        else ("sigwood", args[0], "--recursive", *args[1:])
+    )
 
     if verb in _SINGLE_DETECTOR_COMMANDS:
-        return _run_single_detector(verb, rest, invocation=invocation) or 0
+        return _run_single_detector(
+            verb, rest, invocation=invocation, retry_argv=retry_argv,
+        ) or 0
     elif verb == "digest":
         return _run_digest(rest) or 0
     elif verb == "graph":
@@ -375,6 +393,7 @@ def _main(argv: list[str] | None = None) -> int:
             require_target=require_target,
             leading_flag=leading_flag,
             invocation=invocation,
+            retry_argv=retry_argv,
         ) or 0
     return 0
 
@@ -908,32 +927,49 @@ def _merge_family_value(
 
 
 def _build_positional_buckets(
-    paths: list[str], *, detector_module: Any | None,
-) -> dict[str, list[str]]:
+    paths: list[str],
+    *,
+    detector_module: Any | None,
+    parsed: dict[str, Any] | None = None,
+    declared_patterns: dict[str, list[str]] | None = None,
+) -> tuple[dict[str, list[str]], Any]:
     """Sniff-classify each positional into its source-family bucket.
 
-    Returns ``{family_key: [positional, …]}`` for the families touched.
-    ``detector_module=None`` triggers the router's content-sniff mode
-    (detect=all / unknown selector). Empty input → empty dict.
+    Returns ``({family_key: [positional, …]}, discovery)``: the families
+    touched, and the run's discovery context (``AnalyzeDiscovery``) carrying
+    the invocation's positional and ``--<family>-dir`` provenance read from
+    ``parsed``. ``detector_module=None`` triggers the router's content-sniff
+    mode (detect=all / unknown selector). Empty input → empty buckets.
 
     A DIRECTORY positional whose bounded sample is mixed or truncated is
     routed to the winning family only. Losing families and unexamined files are
     disclosed on stderr per directory (status lines, not errors; the run
     proceeds).
+
+    Under ``--recursive`` a directory positional instead joins every family its
+    walk supplied files to, and ``declared_patterns`` (the selected detectors'
+    sources and patterns) bounds which families its files may go to; no vote
+    runs, so nothing is reported here.
     """
     from sigwood.common.sources import (
         _DIR_SNIFF_SAMPLE_LIMIT,
-        DirectoryVote,
-        route_positional_source,
+        prepare_analyze_discovery,
     )
 
-    buckets: dict[str, list[str]] = {}
-    mixed_votes: dict[str, DirectoryVote] = {}
+    flags = parsed or {}
+    buckets, mixed_votes, discovery = prepare_analyze_discovery(
+        paths,
+        detector_module=detector_module,
+        overrides={key: flags.get(key) for key in _ANALYZE_SOURCE_KEYS},
+        recursive=bool(flags.get("recursive")),
+        declared_patterns=declared_patterns,
+    )
     for p in paths:
-        routed = route_positional_source(
-            p, detector_module=detector_module, _vote_sink=mixed_votes,
-        )
-        buckets.setdefault(routed, []).append(p)
+        # A recursive root that supplied no family is in no bucket; it ran no
+        # vote, and its outcome is a coverage fact the runner states.
+        routed = next((key for key, items in buckets.items() if p in items), None)
+        if routed is None:
+            continue
         if vote := mixed_votes.pop(str(Path(p).expanduser()), None):
             tally = ", ".join(
                 f"{origin} {n}" for origin, n in vote.votes.items()
@@ -954,7 +990,7 @@ def _build_positional_buckets(
                     f"so pass other log types directly to include them",
                     file=sys.stderr,
                 )
-    return buckets
+    return buckets, discovery
 
 
 def _cli_syslog_mode(parsed: dict[str, Any]) -> SyslogMode | None:
@@ -967,6 +1003,47 @@ def _cli_syslog_mode(parsed: dict[str, Any]) -> SyslogMode | None:
         raise UsageError(str(exc)) from exc
 
 
+def _require_recursive_directory(paths: list[str], parsed: dict[str, Any]) -> None:
+    """``--recursive`` needs at least one directory supplied on this run."""
+    from sigwood.common.sources import invocation_has_directory
+
+    overrides = {key: parsed.get(key) for key in _ANALYZE_SOURCE_KEYS}
+    if not invocation_has_directory(paths, overrides):
+        raise UsageError(
+            "--recursive needs a directory on this run - pass a directory PATH "
+            "or a --<family>-dir that is a directory"
+        )
+
+
+def _recursive_patterns(selection: Any) -> dict[str, list[str]]:
+    """The sources and patterns the selected detectors read, for the partition."""
+    from sigwood.common.sources import declared_source_patterns
+
+    return declared_source_patterns(selection.selected, selection.detectors)
+
+
+@contextmanager
+def _recursive_walk_scope(
+    parsed: dict[str, Any], config: dict[str, Any],
+) -> Iterator[None]:
+    """Narration and cursor scope for the walk ``--recursive`` runs here.
+
+    The walk runs before the runner, so it takes the same delayed liveness line,
+    the same hidden cursor (restored on any exit, an interrupt included) and the
+    same quiet resolution the runner's own discovery phase uses.
+    """
+    if not parsed.get("recursive"):
+        yield
+        return
+    quiet = bool(parsed.get("quiet")) or bool(
+        config.get("sigwood", {}).get("quiet", False)
+    )
+    set_narration_enabled(not quiet)
+    with hidden_cursor():
+        with liveness("finding log files", delay=0.5, enabled=not quiet):
+            yield
+
+
 def _runner_kwargs(
     parsed: dict[str, Any],
     config: dict[str, Any],
@@ -975,6 +1052,8 @@ def _runner_kwargs(
     source_buckets: dict[str, list[str]] | None = None,
     detector_selection: Any | None = None,
     invocation: str | None = None,
+    discovery: Any | None = None,
+    retry_argv: Sequence[str] | None = None,
 ) -> dict[str, Any]:
     """Build the kwargs dict for runner.run() from parsed CLI args and loaded config.
 
@@ -1017,6 +1096,15 @@ def _runner_kwargs(
         mode in (SyslogMode.JOURNAL, SyslogMode.OFF)
         and family_values["syslog_dir"]
     ):
+        found = (
+            discovery.inventory.partition_files("syslog_dir")
+            if discovery is not None else ()
+        )
+        if found:
+            raise UsageError(
+                f"--syslog-source={mode.value} cannot be combined with syslog "
+                f"files found by --recursive ({compact_path_list(found)})"
+            )
         raise UsageError(
             f"--syslog-source={mode.value} cannot be combined with a syslog "
             "PATH or --syslog-dir"
@@ -1071,7 +1159,33 @@ def _runner_kwargs(
         kwargs["syslog_source"] = parsed["syslog_source"]
     if detector_selection is not None:
         kwargs["_detector_selection"] = detector_selection
+    if discovery is not None:
+        kwargs["discovery"] = discovery
+    if retry_argv is not None and not parsed.get("recursive"):
+        command = _recursive_retry_command(retry_argv)
+        if command is not None:
+            kwargs["recursive_retry"] = command
     return kwargs
+
+
+# The longest retry command a coverage notice offers. Past it the notice keeps
+# its bounded path list and offers no command, because a shortened command
+# would run something other than what the operator typed.
+_RECURSIVE_RETRY_LIMIT = 4096
+
+
+def _recursive_retry_command(argv: Sequence[str]) -> str | None:
+    """The operator's own invocation with ``--recursive``, ready to paste, or ``None``.
+
+    Every token is checked before quoting: if removing control characters would
+    change any token, the command is withheld rather than offered with a
+    different target. A command longer than the limit is withheld whole, never
+    shortened or stripped of tokens.
+    """
+    if any(strip_control(token) != token for token in argv):
+        return None
+    command = shlex.join(argv)
+    return command if len(command) <= _RECURSIVE_RETRY_LIMIT else None
 
 
 # ── verb runners ──────────────────────────────────────────────────────────────
@@ -1192,6 +1306,7 @@ def _run_hunt(
     require_target: bool = False,
     leading_flag: bool = False,
     invocation: str | None = None,
+    retry_argv: Sequence[str] | None = None,
 ) -> int:
     """Parse args and invoke the runner for the default hunt.
 
@@ -1260,17 +1375,28 @@ def _run_hunt(
     if leading_flag:
         _leading_flag_verb_hint(paths, args)
     _require_positionals_exist(paths)
-    if paths:
-        mod = _named_detector_module(parsed.get("detect"))
-        buckets = _build_positional_buckets(paths, detector_module=mod)
-        scope: frozenset[str] | None = frozenset(buckets) if buckets else None
-    else:
-        buckets = {}
-        scope = None
+    patterns = None
+    if parsed.get("recursive"):
+        _require_recursive_directory(paths, parsed)
+        if selection is None:
+            selection = runner.select_detectors(
+                parsed["detect"]
+                if "detect" in parsed
+                else config.get("sigwood", {}).get("detect", cfg.DEFAULT_DETECT_SPEC)
+            )
+        patterns = _recursive_patterns(selection)
+    mod = _named_detector_module(parsed.get("detect")) if paths else None
+    with _recursive_walk_scope(parsed, config):
+        buckets, discovery = _build_positional_buckets(
+            paths, detector_module=mod, parsed=parsed, declared_patterns=patterns,
+        )
+    # Supplying a positional scopes the run; what routing found never unscopes it.
+    scope: frozenset[str] | None = frozenset(buckets) if paths else None
 
     return runner.run(**_runner_kwargs(
         parsed, config, scope=scope, source_buckets=buckets,
         detector_selection=selection, invocation=invocation,
+        discovery=discovery, retry_argv=retry_argv,
     ))
 
 
@@ -1279,6 +1405,7 @@ def _run_single_detector(
     args: list[str],
     *,
     invocation: str | None = None,
+    retry_argv: Sequence[str] | None = None,
 ) -> int:
     """Parse args and invoke runner constrained to a single detector.
 
@@ -1307,17 +1434,24 @@ def _run_single_detector(
 
     paths = parsed.get("paths") or []
     _require_positionals_exist(paths)
-    if paths:
-        mod = _named_detector_module(detector)
-        buckets = _build_positional_buckets(paths, detector_module=mod)
-        scope: frozenset[str] | None = frozenset(buckets) if buckets else None
-    else:
-        buckets = {}
-        scope = None
+    patterns = None
+    if parsed.get("recursive"):
+        _require_recursive_directory(paths, parsed)
+        if selection is None:
+            selection = runner.select_detectors(detector)
+        patterns = _recursive_patterns(selection)
+    mod = _named_detector_module(detector) if paths else None
+    with _recursive_walk_scope(parsed, config):
+        buckets, discovery = _build_positional_buckets(
+            paths, detector_module=mod, parsed=parsed, declared_patterns=patterns,
+        )
+    # Supplying a positional scopes the run; what routing found never unscopes it.
+    scope: frozenset[str] | None = frozenset(buckets) if paths else None
 
     return runner.run(**_runner_kwargs(
         parsed, config, detect=detector, scope=scope, source_buckets=buckets,
         detector_selection=selection, invocation=invocation,
+        discovery=discovery, retry_argv=retry_argv,
     ))
 
 

@@ -6,6 +6,45 @@ All notable changes to sigwood are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Analysis dry runs show each used file family's discovered and selected candidate
+  counts, on-disk sizes and effective window policy. They disclose unknown sizes and
+  extra history selection without loading analysis frames or validating export content.
+- Shallow-input notices can include the original command with `--recursive` added and
+  shell-quoted arguments. Commands with stripped controls or over 4096 characters are
+  omitted whole; notices remain, including in quiet mode and saved reports.
+- Analysis commands accept `--recursive` to search supplied directory trees. Positional
+  trees can supply multiple log families, with content and filename gates, regular-file
+  deduplication, and Zeek's dated/current layout preserved. Coverage notes disclose
+  omitted links, unreadable entries and deeper Zeek files outside that layout.
+- CLI analysis reports unsearched subdirectories for shallow inputs supplied on the command
+  line, including successful runs with useful top-level logs. It distinguishes empty or
+  unsupported inputs from inspection failures and retains the new notices with quiet mode
+  and in saved text, JSON, HTML and PDF reports.
+- A delayed progress indicator covers source discovery.
+
+### Changed
+
+- CLI planning, default-window selection and loading reuse one discovery inventory.
+  Without `--recursive`, source selection and row windows retain their existing behavior.
+  Recursive analysis walks supplied roots before routing; final candidate populations
+  still follow provider selection. Journal arbitration retains its existing behavior.
+- CLI analysis can continue with readable siblings after an input enumeration failure and
+  discloses the omitted input. CloudTrail descendant denials and omitted directory links,
+  Zeek date-child denials, and entry inspection failures are accounted for. Directory denials
+  also reach the operator on dry runs and runs where no detector can run.
+- Syslog candidates with equal rotation keys have a deterministic path order.
+
+### Fixed
+
+- An unqualified analysis preview no longer says all available data when a default
+  window is configured. It states the configured default and each used family's policy.
+- Analysis previews now show the selection warnings that real loads would emit,
+  including a supplied syslog directory with no matching logs beside a usable input.
+- Pi-hole directory discovery excludes named pipes, directories and other nonregular
+  matches, preventing a matching pipe from hanging analysis or graph generation.
+
 ## [1.1.0] - 2026-10-13
 
 ### Added

@@ -148,10 +148,65 @@ sigwood syslog --syslog-source=files --syslog-dir=/var/log
 sigwood aws --cloudtrail-dir=/srv/cloudtrail
 ```
 
-A single named file is read in full unless you give an explicit time bound. A directory is
-discovered by source family, rotation, and compression, then windowed as described in the
-next chapter. Missing input does not become an empty successful analysis: the affected
-detector prints a skip line, and a run where nothing can execute exits nonzero.
+When every input for a source family is a named file, that family is read in full unless
+you give an explicit time bound. For an eligible family with the default window enabled,
+adding a directory makes that window apply to its named files too. A directory is discovered
+by source family, rotation, and
+compression, then windowed as described in the next chapter. Missing input does not become
+an empty successful analysis: the affected detector prints a skip line, and a run where
+nothing can execute exits nonzero.
+
+Without `--recursive`, flat syslog, Pi-hole and Zeek directories read their immediate
+files. A directory you pass gets a notice for children this run leaves unsearched, even
+when its top-level logs let analysis succeed. A configured directory gets this notice
+when it supplies no matching files. Zeek's dated/current layout and CloudTrail's
+existing traversal retain their own rules.
+
+When useful, a shallow-input notice includes your command with `--recursive` added.
+It preserves your arguments and quotes them for the shell. Relative paths require the
+original working directory, including when you copy the command from a saved report.
+If an argument contains a stripped control character or the quoted command would exceed
+4096 characters, sigwood keeps the notice and omits the command.
+
+Use `--recursive` to search the directory trees you supply on this command:
+
+```bash
+sigwood hunt /srv/log-export --recursive --dry-run
+sigwood hunt /srv/log-export --recursive
+sigwood syslog /srv/hosts --recursive
+sigwood beacon --zeek-dir=/srv/sensors --recursive
+```
+
+The flag needs at least one directory argument or directory-valued source override.
+It does not recurse through additional configured sources, and it is available only on
+analysis commands. Digest, graph and era keep their existing input rules. A positional
+directory can supply several log families: each file is offered to the families the
+selected detectors read, applying content and filename gates before loading. A source
+override declares the family to use. Named files retain their existing behavior. An empty
+or unusable positional result does not silently restore omitted configured families.
+
+Directory links encountered during the ordinary walk are omitted; supply the linked
+directory itself to include it. Links to regular files remain eligible, and resolved
+paths are deduplicated within each family. Zeek's dated layout still reads its direct
+child directories, including a linked `current` spool. Deeper Zeek logs under those
+children are disclosed rather than treated as new flat inputs; another selected family
+can still use its own files there. Files at the top of a dated Zeek root remain outside
+that layout's selection.
+
+Recursive coverage distinguishes unreadable entries, empty files, unsupported content
+and recognized files outside the selected analysis. Notices describe what was observed;
+inaccessible portions are not counted as known empty. Explicit family declarations can
+share candidate files, which the report identifies. Candidate membership does not mean
+both families ultimately selected or read a file.
+
+An empty directory, unsupported files and a failed inspection are different outcomes.
+New discovery notices remain on stderr with `--quiet` and in saved text, JSON, HTML
+and PDF reports. Recursive positional walks report listing failures in these notices.
+Listing denials owned by a configured or `--<family>-dir` source use the existing report
+notes instead; on dry runs and runs with no runnable detector, those denials appear
+alongside the skip reasons. A shared denial is reported by its existing owner once.
+CSV contains findings only. A successful run can still cover only part of the input,
+so read the coverage notices as well as the findings.
 
 Discovery also reports files it cannot parse or read instead of silently counting them as
 empty. If a configured directory and an explicit positional path disagree, the positional
@@ -173,12 +228,26 @@ select the stream each requested detector declares. Pointing at an explicit file
 the file is the source you chose, and a nonexistent positional path fails immediately instead
 of falling through to directory discovery.
 
+A dated Zeek root is recognized by date-named child directories, even when a dated
+child is empty. Its live `current` spool stays part of that layout. With recursion,
+logical roots are resolved across the supplied trees before choosing a window. Empty
+or duplicate-only roots do not change the policy. With the default directory window,
+if both flat and dated Zeek directories contribute files, sigwood names the flat
+contributors: the family loads in full, then keeps the configured lookback relative
+to that family's newest data. Explicit time bounds and `--all` retain their meanings.
+Recursive discovery can still sniff candidate contents in dates later excluded from
+the full analysis load.
+
 ### Pi-hole and dnsmasq
 
 Pi-hole contributes the flat query log at `/var/log/pihole/pihole.log` and its rotated
 siblings. Pi-hole v6 still uses that path; the `dns.queryLogging` Pi-hole setting controls
 whether the file is populated. sigwood reads this flat log, not the FTL long-term database.
 If it is missing or empty, enable query logging before treating a quiet analysis as evidence.
+
+Directory discovery reads regular files, including links to regular files. It skips named
+pipes and other special entries even when their names match a log pattern. The Pi-hole graph
+route uses the same regular-file rule.
 
 On a Pi-hole-only run, dns clusters the per-domain aggregate directly, while dnsblock reads
 the blocked disposition and measures first activity, bursts, and recurrence. When Zeek DNS
@@ -216,6 +285,10 @@ CloudTrail input is local JSON, including compressed files. The exporter can fir
 from S3, but detection reads the resulting local files. AWS credentials remain in the ambient
 boto3 chain; the analysis path does not ask for or store them.
 
+CloudTrail discovery searches nested directories. An unreadable descendant is disclosed
+while readable files remain eligible. Discovered directory links are not followed; pass a
+linked directory directly if you intend to include it.
+
 When you do not know what a file is, start with `sigwood digest PATH`. Digest content-sniffs
 connection, DNS, system-log, and CloudTrail shapes. Unrecognized text falls back to a bounded
 byte profile rather than being assigned a detector schema. Digest reads before suppression,
@@ -225,12 +298,15 @@ hunt whose source choice or row volume surprises you.
 ## Windows, time, and scale
 
 After this chapter you can select an exact analysis interval, predict how a directory differs
-from a file, line up displayed dates with your query bounds, and avoid loading more data than
-your machine can hold.
+from a file, line up displayed dates with your query bounds, and assess the cost of the
+selected input.
 
-An unqualified directory run uses the configured lookback for that source's own data. A
-single file is read in full. `--all` widens to the complete available archive. Explicit
-bounds override the ordinary directory lookback:
+An eligible directory-bearing family uses the enabled configured lookback for its own
+data on an unqualified run. A family containing only named files is read in full. A mixed
+file/directory family takes that default window, including its named files; mixing a named
+file with dated Zeek roots loads the family in full before trimming its rows. `--all` widens to the complete
+available archive. Setting `default_window` to `""` or `"all"` disables the default.
+Explicit bounds override the ordinary directory lookback:
 
 ```bash
 sigwood hunt --since=7d /srv/zeek
@@ -243,7 +319,15 @@ sigwood hunt --all /srv/zeek
 The endpoints in `--days=N-M` and `--hours=N-M` are order-insensitive. A single-value form is
 rejected because it does not state a range. For rotated flat logs, sigwood peeks
 at each candidate file's first timestamp and can stop before decompressing older rotations.
-An input it cannot peek is already loaded in full, so no later shortcut can recover that I/O.
+When peeks cannot safely select a smaller set, more or all files remain selected for loading.
+
+Directory names alone do not make flat files cheap to window. A tree such as
+`host/YYYY-MM-DD/messages` can leave every singleton file selected and read in full,
+then discard older rows. An explicit lower bound can reduce rows without reducing those
+reads. The default row window uses the newest data in the whole source family, so a newer
+host can put every row from an older host outside the window without a per-host warning.
+Use `--all` or explicit bounds when you need that older history, and check the selected
+input size before committing to a large run.
 
 dnsblock needs history to decide whether blocked activity is new or recurring. On a peekable
 Pi-hole directory it may select 21 additional days of rotated files while keeping reported
@@ -263,8 +347,9 @@ stamp while the report window still names its zone.
 
 Before analyzing a very large loaded population, sigwood asks for confirmation at the
 configured warning boundary. `--yes` accepts advisory prompts for unattended work; disabling
-that boundary in config suppresses the prompt. The loader is not a streaming engine: each log
-is represented in memory, so a very large file or a wide unsuppressed window can exhaust a
+that boundary in config suppresses the prompt. This confirmation comes after loading and
+is not a memory guard. The loader is not a streaming engine: each log is represented in
+memory, so a very large file or a wide unsuppressed window can exhaust a
 small host. Narrow the time range, select the needed detector, or run on a machine with more
 headroom.
 
@@ -278,10 +363,27 @@ orders. Reported findings were stable in the measured runs, but a domain at a bo
 guaranteed to repeat. Keep suppression enabled for ordinary work and inspect borderline cases
 directly when repeatability matters.
 
-Use `--dry-run` when you want to inspect source selection, detector eligibility, and window
-planning without running analysis or writing output. It is especially useful before widening
-a dated archive or changing several source overrides at once. `-q` suppresses runner-owned
-progress and the ordinary window advisory, but it never suppresses warnings, prompts, errors,
+Use `--dry-run` to inspect sources, detector eligibility and window policy. Each used file
+family shows discovered candidates before time selection, selected candidates afterward,
+and their on-disk sizes. Files are counted once per family by resolved path, even if several
+patterns use them. These are candidate counts, not parsed records; bytes come from file
+metadata, not a measurement of I/O or memory. A file whose size cannot be read is counted
+with an unknown size. A configured source no runnable detector uses is labelled unused,
+not excluded by the window.
+
+The preview states each family's policy, including full input, explicit bounds, dated
+selection, default trimming and any extra history selected for dnsblock. A default trim's
+exact final row window is known only after loading. Journal preview states the selected
+provider and policy without inventing capture counts or bytes. Discovery coverage and
+selection warnings remain visible.
+
+Preview still performs discovery sniffs, timestamp peeks and the bounded journal capability
+probe when applicable. It does not load analysis frames, run detectors, capture the journal,
+write reports, hash whole files or validate export content. It cannot certify readability,
+integrity or memory fit, and the filesystem may change before the real run.
+Discovery and preview planning may show a delayed progress indicator; Ctrl-C restores the
+cursor and exits 130. `-q` suppresses runner-owned progress and the ordinary window advisory,
+but it never suppresses warnings, prompts, errors,
 or the report itself. In automation, combine explicit bounds with `--yes` only after you have
 decided that the large-data advisory is expected; accepting a prompt does not change how much
 memory the chosen source requires.

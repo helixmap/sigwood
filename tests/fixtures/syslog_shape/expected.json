@@ -1,0 +1,3611 @@
+{
+  "cases": {
+    "flat": {
+      "loader": {
+        "logs": {
+          "*.log*": {
+            "columns": [
+              "ts",
+              "host",
+              "program",
+              "raw",
+              "message"
+            ],
+            "column_names": [
+              null
+            ],
+            "dtypes": [
+              "float64",
+              "object",
+              "object",
+              "object",
+              "object"
+            ],
+            "index": [
+              0,
+              1,
+              2,
+              3,
+              4,
+              5
+            ],
+            "index_dtype": "int64",
+            "index_type": "RangeIndex",
+            "index_names": [
+              null
+            ],
+            "values": [
+              [
+                {
+                  "float": "0x1.ab3dbb0000000p+30"
+                },
+                "host.example",
+                "worker",
+                "Oct 14 12:00:00 host.example worker: task finished alpha",
+                "worker: task finished alpha"
+              ],
+              [
+                {
+                  "float": "0x1.ab3dbbf000000p+30"
+                },
+                "host.example",
+                "worker",
+                "Oct 14 12:01:00 host.example worker: task finished beta",
+                "worker: task finished beta"
+              ],
+              [
+                {
+                  "float": "0x1.ab3dbce000000p+30"
+                },
+                "host.example",
+                "kernel",
+                "Oct 14 12:02:00 host.example kernel: Linux version synthetic",
+                "kernel: Linux version synthetic"
+              ],
+              [
+                {
+                  "float": "0x1.ab3dbdd000000p+30"
+                },
+                "host.example",
+                "sshd",
+                "Oct 14 12:03:00 host.example sshd[123]: Accepted publickey for user from 192.0.2.10 port 2222 ssh2",
+                "sshd[*]: Accepted publickey for user from 192.0.2.10 port 2222 ssh2"
+              ],
+              [
+                {
+                  "float": "0x1.ab3dbec000000p+30"
+                },
+                "host.example",
+                "sudo",
+                "Oct 14 12:04:00 host.example sudo[124]: user : COMMAND=/usr/bin/true",
+                "sudo[*]: user : COMMAND=/usr/bin/true"
+              ],
+              [
+                {
+                  "float": "0x1.ab3dbfb000000p+30"
+                },
+                "host.example",
+                "sshd",
+                "Oct 14 12:05:00 host.example sshd[123]: pam_unix(sshd:session): session closed for user user",
+                "sshd[*]: pam_unix(sshd:session): session closed for user user"
+              ]
+            ],
+            "nulls": [
+              [
+                false,
+                false,
+                false,
+                false,
+                false
+              ],
+              [
+                false,
+                false,
+                false,
+                false,
+                false
+              ],
+              [
+                false,
+                false,
+                false,
+                false,
+                false
+              ],
+              [
+                false,
+                false,
+                false,
+                false,
+                false
+              ],
+              [
+                false,
+                false,
+                false,
+                false,
+                false
+              ],
+              [
+                false,
+                false,
+                false,
+                false,
+                false
+              ]
+            ],
+            "attrs": {}
+          }
+        },
+        "record_counts": {
+          "*.log*": 6
+        },
+        "data_window": [
+          {
+            "datetime": "2026-10-14T12:00:00+00:00"
+          },
+          {
+            "datetime": "2026-10-14T12:05:00+00:00"
+          }
+        ],
+        "warnings": [],
+        "data_size_bytes": 435,
+        "coverage": {},
+        "rotation_skips": {},
+        "permission_skips": {},
+        "file_spans": {
+          "*.log*": [
+            {
+              "path": "<root>/messages.log",
+              "first_ts": {
+                "float": "0x1.ab3dbb0000000p+30"
+              },
+              "last_ts": {
+                "float": "0x1.ab3dbfb000000p+30"
+              }
+            }
+          ]
+        },
+        "quality": {
+          "*.log*": {
+            "attempted_files": 1,
+            "committed_files": 1,
+            "decoded_records": 6,
+            "decoded_bytes": 435,
+            "skipped_oversize": 0
+          }
+        }
+      },
+      "findings": [
+        {
+          "detector": "syslog",
+          "severity": "I",
+          "title": "host.example",
+          "description": "A reboot signal observed on this host.",
+          "evidence": {
+            "tier": "reboot",
+            "host": "host.example",
+            "reboot_ts": "2026-10-14T12:02:00+00:00",
+            "signal_count": 1,
+            "label": "rebooted",
+            "host_total": 6
+          },
+          "next_steps": [
+            "Review system logs around the reboot time for pre-reboot anomalies"
+          ],
+          "ts_generated": {
+            "datetime": "2026-10-18T12:00:00+00:00"
+          },
+          "data_window": [
+            {
+              "datetime": "2026-10-14T00:00:00+00:00"
+            },
+            {
+              "datetime": "2026-10-18T12:00:00+00:00"
+            }
+          ]
+        },
+        {
+          "detector": "syslog",
+          "severity": "M",
+          "title": "host.example",
+          "description": "Recognized administrative session activity grouped from contemporaneous syslog findings.",
+          "evidence": {
+            "tier": "transaction",
+            "label": "admin session",
+            "host": "host.example",
+            "member_count": 3,
+            "represented_line_count": 3,
+            "start_ts": {
+              "float": "0x1.ab3dbdd000000p+30"
+            },
+            "end_ts": {
+              "float": "0x1.ab3dbfb000000p+30"
+            },
+            "first_seen": "2026-10-14T12:03:00+00:00",
+            "span_seconds": {
+              "float": "0x1.e000000000000p+6"
+            },
+            "program_mix": [
+              [
+                "sshd",
+                2
+              ],
+              [
+                "sudo",
+                1
+              ]
+            ],
+            "member_fragments": [
+              "tokens: Accepted publickey for user from 192.0.2.10 port 2222 ssh2 : COMMAND=/usr/bin/true pam_unix(sshd:session): session closed"
+            ],
+            "members": [
+              {
+                "severity": "medium",
+                "represented_line_count": 1,
+                "title": "Oct 14 12:03:00 host.example sshd[123]: Accepted publickey for user from 192.0.2.10 port 2222 ssh2",
+                "first_seen": "2026-10-14T12:03:00+00:00",
+                "program": "sshd",
+                "privileged": true
+              },
+              {
+                "severity": "medium",
+                "represented_line_count": 1,
+                "title": "Oct 14 12:04:00 host.example sudo[124]: user : COMMAND=/usr/bin/true",
+                "first_seen": "2026-10-14T12:04:00+00:00",
+                "program": "sudo",
+                "privileged": true
+              },
+              {
+                "severity": "medium",
+                "represented_line_count": 1,
+                "title": "Oct 14 12:05:00 host.example sshd[123]: pam_unix(sshd:session): session closed for user user",
+                "first_seen": "2026-10-14T12:05:00+00:00",
+                "program": "sshd",
+                "privileged": true
+              }
+            ],
+            "privileged": true,
+            "host_total": 6
+          },
+          "next_steps": [
+            "Review the grouped lines for unexpected activity"
+          ],
+          "ts_generated": {
+            "datetime": "2026-10-18T12:00:00+00:00"
+          },
+          "data_window": [
+            {
+              "datetime": "2026-10-14T00:00:00+00:00"
+            },
+            {
+              "datetime": "2026-10-18T12:00:00+00:00"
+            }
+          ]
+        }
+      ],
+      "input_after_sibling": {
+        "columns": [
+          "ts",
+          "host",
+          "program",
+          "raw",
+          "message"
+        ],
+        "column_names": [
+          null
+        ],
+        "dtypes": [
+          "float64",
+          "object",
+          "object",
+          "object",
+          "object"
+        ],
+        "index": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5
+        ],
+        "index_dtype": "int64",
+        "index_type": "RangeIndex",
+        "index_names": [
+          null
+        ],
+        "values": [
+          [
+            {
+              "float": "0x1.ab3dbb0000000p+30"
+            },
+            "host.example",
+            "worker",
+            "Oct 14 12:00:00 host.example worker: task finished alpha",
+            "worker: task finished alpha"
+          ],
+          [
+            {
+              "float": "0x1.ab3dbbf000000p+30"
+            },
+            "host.example",
+            "worker",
+            "Oct 14 12:01:00 host.example worker: task finished beta",
+            "worker: task finished beta"
+          ],
+          [
+            {
+              "float": "0x1.ab3dbce000000p+30"
+            },
+            "host.example",
+            "kernel",
+            "Oct 14 12:02:00 host.example kernel: Linux version synthetic",
+            "kernel: Linux version synthetic"
+          ],
+          [
+            {
+              "float": "0x1.ab3dbdd000000p+30"
+            },
+            "host.example",
+            "sshd",
+            "Oct 14 12:03:00 host.example sshd[123]: Accepted publickey for user from 192.0.2.10 port 2222 ssh2",
+            "sshd[*]: Accepted publickey for user from 192.0.2.10 port 2222 ssh2"
+          ],
+          [
+            {
+              "float": "0x1.ab3dbec000000p+30"
+            },
+            "host.example",
+            "sudo",
+            "Oct 14 12:04:00 host.example sudo[124]: user : COMMAND=/usr/bin/true",
+            "sudo[*]: user : COMMAND=/usr/bin/true"
+          ],
+          [
+            {
+              "float": "0x1.ab3dbfb000000p+30"
+            },
+            "host.example",
+            "sshd",
+            "Oct 14 12:05:00 host.example sshd[123]: pam_unix(sshd:session): session closed for user user",
+            "sshd[*]: pam_unix(sshd:session): session closed for user user"
+          ]
+        ],
+        "nulls": [
+          [
+            false,
+            false,
+            false,
+            false,
+            false
+          ],
+          [
+            false,
+            false,
+            false,
+            false,
+            false
+          ],
+          [
+            false,
+            false,
+            false,
+            false,
+            false
+          ],
+          [
+            false,
+            false,
+            false,
+            false,
+            false
+          ],
+          [
+            false,
+            false,
+            false,
+            false,
+            false
+          ],
+          [
+            false,
+            false,
+            false,
+            false,
+            false
+          ]
+        ],
+        "attrs": {}
+      }
+    },
+    "corrupt": {
+      "loader": {
+        "logs": {
+          "*.log*": {
+            "columns": [
+              "ts",
+              "host",
+              "program",
+              "raw",
+              "message"
+            ],
+            "column_names": [
+              null
+            ],
+            "dtypes": [
+              "float64",
+              "object",
+              "object",
+              "object",
+              "object"
+            ],
+            "index": [
+              0,
+              1,
+              2,
+              3,
+              4,
+              5,
+              6,
+              7,
+              8,
+              9,
+              10,
+              11
+            ],
+            "index_dtype": "int64",
+            "index_type": "RangeIndex",
+            "index_names": [
+              null
+            ],
+            "values": [
+              [
+                {
+                  "float": "0x1.ab3dbb0000000p+30"
+                },
+                "host.example",
+                "worker",
+                "Oct 14 12:00:00 host.example worker: task finished alpha",
+                "worker: task finished alpha"
+              ],
+              [
+                {
+                  "float": "0x1.ab3dbbf000000p+30"
+                },
+                "host.example",
+                "worker",
+                "Oct 14 12:01:00 host.example worker: task finished beta",
+                "worker: task finished beta"
+              ],
+              [
+                {
+                  "float": "0x1.ab3dbce000000p+30"
+                },
+                "host.example",
+                "kernel",
+                "Oct 14 12:02:00 host.example kernel: Linux version synthetic",
+                "kernel: Linux version synthetic"
+              ],
+              [
+                {
+                  "float": "0x1.ab3dbdd000000p+30"
+                },
+                "host.example",
+                "sshd",
+                "Oct 14 12:03:00 host.example sshd[123]: Accepted publickey for user from 192.0.2.10 port 2222 ssh2",
+                "sshd[*]: Accepted publickey for user from 192.0.2.10 port 2222 ssh2"
+              ],
+              [
+                {
+                  "float": "0x1.ab3dbec000000p+30"
+                },
+                "host.example",
+                "sudo",
+                "Oct 14 12:04:00 host.example sudo[124]: user : COMMAND=/usr/bin/true",
+                "sudo[*]: user : COMMAND=/usr/bin/true"
+              ],
+              [
+                {
+                  "float": "0x1.ab3dbfb000000p+30"
+                },
+                "host.example",
+                "sshd",
+                "Oct 14 12:05:00 host.example sshd[123]: pam_unix(sshd:session): session closed for user user",
+                "sshd[*]: pam_unix(sshd:session): session closed for user user"
+              ],
+              [
+                {
+                  "float": "0x1.ab3dbb0000000p+30"
+                },
+                "host.example",
+                "worker",
+                "Oct 14 12:00:00 host.example worker: task finished alpha",
+                "worker: task finished alpha"
+              ],
+              [
+                {
+                  "float": "0x1.ab3dbbf000000p+30"
+                },
+                "host.example",
+                "worker",
+                "Oct 14 12:01:00 host.example worker: task finished beta",
+                "worker: task finished beta"
+              ],
+              [
+                {
+                  "float": "0x1.ab3dbce000000p+30"
+                },
+                "host.example",
+                "kernel",
+                "Oct 14 12:02:00 host.example kernel: Linux version synthetic",
+                "kernel: Linux version synthetic"
+              ],
+              [
+                {
+                  "float": "0x1.ab3dbdd000000p+30"
+                },
+                "host.example",
+                "sshd",
+                "Oct 14 12:03:00 host.example sshd[123]: Accepted publickey for user from 192.0.2.10 port 2222 ssh2",
+                "sshd[*]: Accepted publickey for user from 192.0.2.10 port 2222 ssh2"
+              ],
+              [
+                {
+                  "float": "0x1.ab3dbec000000p+30"
+                },
+                "host.example",
+                "sudo",
+                "Oct 14 12:04:00 host.example sudo[124]: user : COMMAND=/usr/bin/true",
+                "sudo[*]: user : COMMAND=/usr/bin/true"
+              ],
+              [
+                {
+                  "float": "0x1.ab3dbfb000000p+30"
+                },
+                "host.example",
+                "sshd",
+                "Oct 14 12:05:00 host.example sshd[123]: pam_unix(sshd:session): session closed for user user",
+                "sshd[*]: pam_unix(sshd:session): session closed for user user"
+              ]
+            ],
+            "nulls": [
+              [
+                false,
+                false,
+                false,
+                false,
+                false
+              ],
+              [
+                false,
+                false,
+                false,
+                false,
+                false
+              ],
+              [
+                false,
+                false,
+                false,
+                false,
+                false
+              ],
+              [
+                false,
+                false,
+                false,
+                false,
+                false
+              ],
+              [
+                false,
+                false,
+                false,
+                false,
+                false
+              ],
+              [
+                false,
+                false,
+                false,
+                false,
+                false
+              ],
+              [
+                false,
+                false,
+                false,
+                false,
+                false
+              ],
+              [
+                false,
+                false,
+                false,
+                false,
+                false
+              ],
+              [
+                false,
+                false,
+                false,
+                false,
+                false
+              ],
+              [
+                false,
+                false,
+                false,
+                false,
+                false
+              ],
+              [
+                false,
+                false,
+                false,
+                false,
+                false
+              ],
+              [
+                false,
+                false,
+                false,
+                false,
+                false
+              ]
+            ],
+            "attrs": {}
+          }
+        },
+        "record_counts": {
+          "*.log*": 12
+        },
+        "data_window": [
+          {
+            "datetime": "2026-10-14T12:00:00+00:00"
+          },
+          {
+            "datetime": "2026-10-14T12:05:00+00:00"
+          }
+        ],
+        "warnings": [
+          "messages.log.1.gz could not be read - compressed file is incomplete or corrupt; skipping"
+        ],
+        "data_size_bytes": 6833,
+        "coverage": {},
+        "rotation_skips": {},
+        "permission_skips": {},
+        "file_spans": {
+          "*.log*": [
+            {
+              "path": "<root>/messages.log",
+              "first_ts": {
+                "float": "0x1.ab3dbb0000000p+30"
+              },
+              "last_ts": {
+                "float": "0x1.ab3dbfb000000p+30"
+              }
+            },
+            {
+              "path": "<root>/later-messages.log",
+              "first_ts": {
+                "float": "0x1.ab3dbb0000000p+30"
+              },
+              "last_ts": {
+                "float": "0x1.ab3dbfb000000p+30"
+              }
+            }
+          ]
+        },
+        "quality": {
+          "*.log*": {
+            "attempted_files": 3,
+            "committed_files": 2,
+            "decoded_records": 12,
+            "decoded_bytes": 870,
+            "skipped_oversize": 0
+          }
+        }
+      },
+      "findings": [
+        {
+          "detector": "syslog",
+          "severity": "I",
+          "title": "host.example",
+          "description": "A reboot signal observed on this host.",
+          "evidence": {
+            "tier": "reboot",
+            "host": "host.example",
+            "reboot_ts": "2026-10-14T12:02:00+00:00",
+            "signal_count": 2,
+            "label": "rebooted",
+            "host_total": 12
+          },
+          "next_steps": [
+            "Review system logs around the reboot time for pre-reboot anomalies"
+          ],
+          "ts_generated": {
+            "datetime": "2026-10-18T12:00:00+00:00"
+          },
+          "data_window": [
+            {
+              "datetime": "2026-10-14T00:00:00+00:00"
+            },
+            {
+              "datetime": "2026-10-18T12:00:00+00:00"
+            }
+          ]
+        }
+      ],
+      "input_after_sibling": {
+        "columns": [
+          "ts",
+          "host",
+          "program",
+          "raw",
+          "message"
+        ],
+        "column_names": [
+          null
+        ],
+        "dtypes": [
+          "float64",
+          "object",
+          "object",
+          "object",
+          "object"
+        ],
+        "index": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6,
+          7,
+          8,
+          9,
+          10,
+          11
+        ],
+        "index_dtype": "int64",
+        "index_type": "RangeIndex",
+        "index_names": [
+          null
+        ],
+        "values": [
+          [
+            {
+              "float": "0x1.ab3dbb0000000p+30"
+            },
+            "host.example",
+            "worker",
+            "Oct 14 12:00:00 host.example worker: task finished alpha",
+            "worker: task finished alpha"
+          ],
+          [
+            {
+              "float": "0x1.ab3dbbf000000p+30"
+            },
+            "host.example",
+            "worker",
+            "Oct 14 12:01:00 host.example worker: task finished beta",
+            "worker: task finished beta"
+          ],
+          [
+            {
+              "float": "0x1.ab3dbce000000p+30"
+            },
+            "host.example",
+            "kernel",
+            "Oct 14 12:02:00 host.example kernel: Linux version synthetic",
+            "kernel: Linux version synthetic"
+          ],
+          [
+            {
+              "float": "0x1.ab3dbdd000000p+30"
+            },
+            "host.example",
+            "sshd",
+            "Oct 14 12:03:00 host.example sshd[123]: Accepted publickey for user from 192.0.2.10 port 2222 ssh2",
+            "sshd[*]: Accepted publickey for user from 192.0.2.10 port 2222 ssh2"
+          ],
+          [
+            {
+              "float": "0x1.ab3dbec000000p+30"
+            },
+            "host.example",
+            "sudo",
+            "Oct 14 12:04:00 host.example sudo[124]: user : COMMAND=/usr/bin/true",
+            "sudo[*]: user : COMMAND=/usr/bin/true"
+          ],
+          [
+            {
+              "float": "0x1.ab3dbfb000000p+30"
+            },
+            "host.example",
+            "sshd",
+            "Oct 14 12:05:00 host.example sshd[123]: pam_unix(sshd:session): session closed for user user",
+            "sshd[*]: pam_unix(sshd:session): session closed for user user"
+          ],
+          [
+            {
+              "float": "0x1.ab3dbb0000000p+30"
+            },
+            "host.example",
+            "worker",
+            "Oct 14 12:00:00 host.example worker: task finished alpha",
+            "worker: task finished alpha"
+          ],
+          [
+            {
+              "float": "0x1.ab3dbbf000000p+30"
+            },
+            "host.example",
+            "worker",
+            "Oct 14 12:01:00 host.example worker: task finished beta",
+            "worker: task finished beta"
+          ],
+          [
+            {
+              "float": "0x1.ab3dbce000000p+30"
+            },
+            "host.example",
+            "kernel",
+            "Oct 14 12:02:00 host.example kernel: Linux version synthetic",
+            "kernel: Linux version synthetic"
+          ],
+          [
+            {
+              "float": "0x1.ab3dbdd000000p+30"
+            },
+            "host.example",
+            "sshd",
+            "Oct 14 12:03:00 host.example sshd[123]: Accepted publickey for user from 192.0.2.10 port 2222 ssh2",
+            "sshd[*]: Accepted publickey for user from 192.0.2.10 port 2222 ssh2"
+          ],
+          [
+            {
+              "float": "0x1.ab3dbec000000p+30"
+            },
+            "host.example",
+            "sudo",
+            "Oct 14 12:04:00 host.example sudo[124]: user : COMMAND=/usr/bin/true",
+            "sudo[*]: user : COMMAND=/usr/bin/true"
+          ],
+          [
+            {
+              "float": "0x1.ab3dbfb000000p+30"
+            },
+            "host.example",
+            "sshd",
+            "Oct 14 12:05:00 host.example sshd[123]: pam_unix(sshd:session): session closed for user user",
+            "sshd[*]: pam_unix(sshd:session): session closed for user user"
+          ]
+        ],
+        "nulls": [
+          [
+            false,
+            false,
+            false,
+            false,
+            false
+          ],
+          [
+            false,
+            false,
+            false,
+            false,
+            false
+          ],
+          [
+            false,
+            false,
+            false,
+            false,
+            false
+          ],
+          [
+            false,
+            false,
+            false,
+            false,
+            false
+          ],
+          [
+            false,
+            false,
+            false,
+            false,
+            false
+          ],
+          [
+            false,
+            false,
+            false,
+            false,
+            false
+          ],
+          [
+            false,
+            false,
+            false,
+            false,
+            false
+          ],
+          [
+            false,
+            false,
+            false,
+            false,
+            false
+          ],
+          [
+            false,
+            false,
+            false,
+            false,
+            false
+          ],
+          [
+            false,
+            false,
+            false,
+            false,
+            false
+          ],
+          [
+            false,
+            false,
+            false,
+            false,
+            false
+          ],
+          [
+            false,
+            false,
+            false,
+            false,
+            false
+          ]
+        ],
+        "attrs": {}
+      }
+    },
+    "window": {
+      "loader": {
+        "logs": {
+          "*.log*": {
+            "columns": [
+              "ts",
+              "host",
+              "program",
+              "raw",
+              "message"
+            ],
+            "column_names": [
+              null
+            ],
+            "dtypes": [
+              "float64",
+              "object",
+              "object",
+              "object",
+              "object"
+            ],
+            "index": [
+              0,
+              1,
+              2,
+              3
+            ],
+            "index_dtype": "int64",
+            "index_type": "RangeIndex",
+            "index_names": [
+              null
+            ],
+            "values": [
+              [
+                {
+                  "float": "0x1.ab3dbce000000p+30"
+                },
+                "host.example",
+                "kernel",
+                "Oct 14 12:02:00 host.example kernel: Linux version synthetic",
+                "kernel: Linux version synthetic"
+              ],
+              [
+                {
+                  "float": "0x1.ab3dbdd000000p+30"
+                },
+                "host.example",
+                "sshd",
+                "Oct 14 12:03:00 host.example sshd[123]: Accepted publickey for user from 192.0.2.10 port 2222 ssh2",
+                "sshd[*]: Accepted publickey for user from 192.0.2.10 port 2222 ssh2"
+              ],
+              [
+                {
+                  "float": "0x1.ab3dbec000000p+30"
+                },
+                "host.example",
+                "sudo",
+                "Oct 14 12:04:00 host.example sudo[124]: user : COMMAND=/usr/bin/true",
+                "sudo[*]: user : COMMAND=/usr/bin/true"
+              ],
+              [
+                {
+                  "float": "0x1.ab3dbfb000000p+30"
+                },
+                "host.example",
+                "sshd",
+                "Oct 14 12:05:00 host.example sshd[123]: pam_unix(sshd:session): session closed for user user",
+                "sshd[*]: pam_unix(sshd:session): session closed for user user"
+              ]
+            ],
+            "nulls": [
+              [
+                false,
+                false,
+                false,
+                false,
+                false
+              ],
+              [
+                false,
+                false,
+                false,
+                false,
+                false
+              ],
+              [
+                false,
+                false,
+                false,
+                false,
+                false
+              ],
+              [
+                false,
+                false,
+                false,
+                false,
+                false
+              ]
+            ],
+            "attrs": {}
+          }
+        },
+        "record_counts": {
+          "*.log*": 4
+        },
+        "data_window": [
+          {
+            "datetime": "2026-10-14T12:02:00+00:00"
+          },
+          {
+            "datetime": "2026-10-14T12:05:00+00:00"
+          }
+        ],
+        "warnings": [],
+        "data_size_bytes": 435,
+        "coverage": {},
+        "rotation_skips": {},
+        "permission_skips": {},
+        "file_spans": {
+          "*.log*": [
+            {
+              "path": "<root>/messages.log",
+              "first_ts": {
+                "float": "0x1.ab3dbce000000p+30"
+              },
+              "last_ts": {
+                "float": "0x1.ab3dbfb000000p+30"
+              }
+            }
+          ]
+        },
+        "quality": {
+          "*.log*": {
+            "attempted_files": 1,
+            "committed_files": 1,
+            "decoded_records": 6,
+            "decoded_bytes": 435,
+            "skipped_oversize": 0
+          }
+        }
+      },
+      "findings": [
+        {
+          "detector": "syslog",
+          "severity": "I",
+          "title": "host.example",
+          "description": "A reboot signal observed on this host.",
+          "evidence": {
+            "tier": "reboot",
+            "host": "host.example",
+            "reboot_ts": "2026-10-14T12:02:00+00:00",
+            "signal_count": 1,
+            "label": "rebooted",
+            "host_total": 4
+          },
+          "next_steps": [
+            "Review system logs around the reboot time for pre-reboot anomalies"
+          ],
+          "ts_generated": {
+            "datetime": "2026-10-18T12:00:00+00:00"
+          },
+          "data_window": [
+            {
+              "datetime": "2026-10-14T00:00:00+00:00"
+            },
+            {
+              "datetime": "2026-10-18T12:00:00+00:00"
+            }
+          ]
+        },
+        {
+          "detector": "syslog",
+          "severity": "M",
+          "title": "host.example",
+          "description": "Recognized administrative session activity grouped from contemporaneous syslog findings.",
+          "evidence": {
+            "tier": "transaction",
+            "label": "admin session",
+            "host": "host.example",
+            "member_count": 3,
+            "represented_line_count": 3,
+            "start_ts": {
+              "float": "0x1.ab3dbdd000000p+30"
+            },
+            "end_ts": {
+              "float": "0x1.ab3dbfb000000p+30"
+            },
+            "first_seen": "2026-10-14T12:03:00+00:00",
+            "span_seconds": {
+              "float": "0x1.e000000000000p+6"
+            },
+            "program_mix": [
+              [
+                "sshd",
+                2
+              ],
+              [
+                "sudo",
+                1
+              ]
+            ],
+            "member_fragments": [
+              "tokens: Accepted publickey for user from 192.0.2.10 port 2222 ssh2 : COMMAND=/usr/bin/true pam_unix(sshd:session): session closed"
+            ],
+            "members": [
+              {
+                "severity": "medium",
+                "represented_line_count": 1,
+                "title": "Oct 14 12:03:00 host.example sshd[123]: Accepted publickey for user from 192.0.2.10 port 2222 ssh2",
+                "first_seen": "2026-10-14T12:03:00+00:00",
+                "program": "sshd",
+                "privileged": true
+              },
+              {
+                "severity": "medium",
+                "represented_line_count": 1,
+                "title": "Oct 14 12:04:00 host.example sudo[124]: user : COMMAND=/usr/bin/true",
+                "first_seen": "2026-10-14T12:04:00+00:00",
+                "program": "sudo",
+                "privileged": true
+              },
+              {
+                "severity": "medium",
+                "represented_line_count": 1,
+                "title": "Oct 14 12:05:00 host.example sshd[123]: pam_unix(sshd:session): session closed for user user",
+                "first_seen": "2026-10-14T12:05:00+00:00",
+                "program": "sshd",
+                "privileged": true
+              }
+            ],
+            "privileged": true,
+            "host_total": 4
+          },
+          "next_steps": [
+            "Review the grouped lines for unexpected activity"
+          ],
+          "ts_generated": {
+            "datetime": "2026-10-18T12:00:00+00:00"
+          },
+          "data_window": [
+            {
+              "datetime": "2026-10-14T00:00:00+00:00"
+            },
+            {
+              "datetime": "2026-10-18T12:00:00+00:00"
+            }
+          ]
+        }
+      ],
+      "input_after_sibling": {
+        "columns": [
+          "ts",
+          "host",
+          "program",
+          "raw",
+          "message"
+        ],
+        "column_names": [
+          null
+        ],
+        "dtypes": [
+          "float64",
+          "object",
+          "object",
+          "object",
+          "object"
+        ],
+        "index": [
+          0,
+          1,
+          2,
+          3
+        ],
+        "index_dtype": "int64",
+        "index_type": "RangeIndex",
+        "index_names": [
+          null
+        ],
+        "values": [
+          [
+            {
+              "float": "0x1.ab3dbce000000p+30"
+            },
+            "host.example",
+            "kernel",
+            "Oct 14 12:02:00 host.example kernel: Linux version synthetic",
+            "kernel: Linux version synthetic"
+          ],
+          [
+            {
+              "float": "0x1.ab3dbdd000000p+30"
+            },
+            "host.example",
+            "sshd",
+            "Oct 14 12:03:00 host.example sshd[123]: Accepted publickey for user from 192.0.2.10 port 2222 ssh2",
+            "sshd[*]: Accepted publickey for user from 192.0.2.10 port 2222 ssh2"
+          ],
+          [
+            {
+              "float": "0x1.ab3dbec000000p+30"
+            },
+            "host.example",
+            "sudo",
+            "Oct 14 12:04:00 host.example sudo[124]: user : COMMAND=/usr/bin/true",
+            "sudo[*]: user : COMMAND=/usr/bin/true"
+          ],
+          [
+            {
+              "float": "0x1.ab3dbfb000000p+30"
+            },
+            "host.example",
+            "sshd",
+            "Oct 14 12:05:00 host.example sshd[123]: pam_unix(sshd:session): session closed for user user",
+            "sshd[*]: pam_unix(sshd:session): session closed for user user"
+          ]
+        ],
+        "nulls": [
+          [
+            false,
+            false,
+            false,
+            false,
+            false
+          ],
+          [
+            false,
+            false,
+            false,
+            false,
+            false
+          ],
+          [
+            false,
+            false,
+            false,
+            false,
+            false
+          ],
+          [
+            false,
+            false,
+            false,
+            false,
+            false
+          ]
+        ],
+        "attrs": {}
+      }
+    },
+    "nan": {
+      "loader": {
+        "logs": {
+          "*.log*": {
+            "columns": [
+              "ts",
+              "host",
+              "program",
+              "raw",
+              "message"
+            ],
+            "column_names": [
+              null
+            ],
+            "dtypes": [
+              "float64",
+              "object",
+              "object",
+              "object",
+              "object"
+            ],
+            "index": [
+              0,
+              1,
+              2,
+              3,
+              4,
+              5,
+              6
+            ],
+            "index_dtype": "int64",
+            "index_type": "RangeIndex",
+            "index_names": [
+              null
+            ],
+            "values": [
+              [
+                {
+                  "float": "0x1.ab3dbb0000000p+30"
+                },
+                "host.example",
+                "worker",
+                "Oct 14 12:00:00 host.example worker: task finished alpha",
+                "worker: task finished alpha"
+              ],
+              [
+                {
+                  "float": "0x1.ab3dbbf000000p+30"
+                },
+                "host.example",
+                "worker",
+                "Oct 14 12:01:00 host.example worker: task finished beta",
+                "worker: task finished beta"
+              ],
+              [
+                {
+                  "float": "0x1.ab3dbce000000p+30"
+                },
+                "host.example",
+                "kernel",
+                "Oct 14 12:02:00 host.example kernel: Linux version synthetic",
+                "kernel: Linux version synthetic"
+              ],
+              [
+                {
+                  "float": "0x1.ab3dbdd000000p+30"
+                },
+                "host.example",
+                "sshd",
+                "Oct 14 12:03:00 host.example sshd[123]: Accepted publickey for user from 192.0.2.10 port 2222 ssh2",
+                "sshd[*]: Accepted publickey for user from 192.0.2.10 port 2222 ssh2"
+              ],
+              [
+                {
+                  "float": "0x1.ab3dbec000000p+30"
+                },
+                "host.example",
+                "sudo",
+                "Oct 14 12:04:00 host.example sudo[124]: user : COMMAND=/usr/bin/true",
+                "sudo[*]: user : COMMAND=/usr/bin/true"
+              ],
+              [
+                {
+                  "float": "0x1.ab3dbfb000000p+30"
+                },
+                "host.example",
+                "sshd",
+                "Oct 14 12:05:00 host.example sshd[123]: pam_unix(sshd:session): session closed for user user",
+                "sshd[*]: pam_unix(sshd:session): session closed for user user"
+              ],
+              [
+                {
+                  "float": "nan"
+                },
+                "something",
+                "unparseable",
+                "unparseable timestamp worker: something happened",
+                "unparseable timestamp worker: something happened"
+              ]
+            ],
+            "nulls": [
+              [
+                false,
+                false,
+                false,
+                false,
+                false
+              ],
+              [
+                false,
+                false,
+                false,
+                false,
+                false
+              ],
+              [
+                false,
+                false,
+                false,
+                false,
+                false
+              ],
+              [
+                false,
+                false,
+                false,
+                false,
+                false
+              ],
+              [
+                false,
+                false,
+                false,
+                false,
+                false
+              ],
+              [
+                false,
+                false,
+                false,
+                false,
+                false
+              ],
+              [
+                true,
+                false,
+                false,
+                false,
+                false
+              ]
+            ],
+            "attrs": {}
+          }
+        },
+        "record_counts": {
+          "*.log*": 7
+        },
+        "data_window": [
+          {
+            "datetime": "2026-10-14T12:00:00+00:00"
+          },
+          {
+            "datetime": "2026-10-14T12:05:00+00:00"
+          }
+        ],
+        "warnings": [],
+        "data_size_bytes": 484,
+        "coverage": {},
+        "rotation_skips": {},
+        "permission_skips": {},
+        "file_spans": {
+          "*.log*": [
+            {
+              "path": "<root>/messages.log",
+              "first_ts": {
+                "float": "0x1.ab3dbb0000000p+30"
+              },
+              "last_ts": {
+                "float": "0x1.ab3dbfb000000p+30"
+              }
+            }
+          ]
+        },
+        "quality": {
+          "*.log*": {
+            "attempted_files": 1,
+            "committed_files": 1,
+            "decoded_records": 7,
+            "decoded_bytes": 484,
+            "skipped_oversize": 0
+          }
+        }
+      },
+      "findings": [
+        {
+          "detector": "syslog",
+          "severity": "I",
+          "title": "host.example",
+          "description": "A reboot signal observed on this host.",
+          "evidence": {
+            "tier": "reboot",
+            "host": "host.example",
+            "reboot_ts": "2026-10-14T12:02:00+00:00",
+            "signal_count": 1,
+            "label": "rebooted",
+            "host_total": 6
+          },
+          "next_steps": [
+            "Review system logs around the reboot time for pre-reboot anomalies"
+          ],
+          "ts_generated": {
+            "datetime": "2026-10-18T12:00:00+00:00"
+          },
+          "data_window": [
+            {
+              "datetime": "2026-10-14T00:00:00+00:00"
+            },
+            {
+              "datetime": "2026-10-18T12:00:00+00:00"
+            }
+          ]
+        },
+        {
+          "detector": "syslog",
+          "severity": "M",
+          "title": "host.example",
+          "description": "Recognized administrative session activity grouped from contemporaneous syslog findings.",
+          "evidence": {
+            "tier": "transaction",
+            "label": "admin session",
+            "host": "host.example",
+            "member_count": 3,
+            "represented_line_count": 3,
+            "start_ts": {
+              "float": "0x1.ab3dbdd000000p+30"
+            },
+            "end_ts": {
+              "float": "0x1.ab3dbfb000000p+30"
+            },
+            "first_seen": "2026-10-14T12:03:00+00:00",
+            "span_seconds": {
+              "float": "0x1.e000000000000p+6"
+            },
+            "program_mix": [
+              [
+                "sshd",
+                2
+              ],
+              [
+                "sudo",
+                1
+              ]
+            ],
+            "member_fragments": [
+              "tokens: Accepted publickey for user from 192.0.2.10 port 2222 ssh2 : COMMAND=/usr/bin/true pam_unix(sshd:session): session closed"
+            ],
+            "members": [
+              {
+                "severity": "medium",
+                "represented_line_count": 1,
+                "title": "Oct 14 12:03:00 host.example sshd[123]: Accepted publickey for user from 192.0.2.10 port 2222 ssh2",
+                "first_seen": "2026-10-14T12:03:00+00:00",
+                "program": "sshd",
+                "privileged": true
+              },
+              {
+                "severity": "medium",
+                "represented_line_count": 1,
+                "title": "Oct 14 12:04:00 host.example sudo[124]: user : COMMAND=/usr/bin/true",
+                "first_seen": "2026-10-14T12:04:00+00:00",
+                "program": "sudo",
+                "privileged": true
+              },
+              {
+                "severity": "medium",
+                "represented_line_count": 1,
+                "title": "Oct 14 12:05:00 host.example sshd[123]: pam_unix(sshd:session): session closed for user user",
+                "first_seen": "2026-10-14T12:05:00+00:00",
+                "program": "sshd",
+                "privileged": true
+              }
+            ],
+            "privileged": true,
+            "host_total": 6
+          },
+          "next_steps": [
+            "Review the grouped lines for unexpected activity"
+          ],
+          "ts_generated": {
+            "datetime": "2026-10-18T12:00:00+00:00"
+          },
+          "data_window": [
+            {
+              "datetime": "2026-10-14T00:00:00+00:00"
+            },
+            {
+              "datetime": "2026-10-18T12:00:00+00:00"
+            }
+          ]
+        },
+        {
+          "detector": "syslog",
+          "severity": "L",
+          "title": "unparseable timestamp worker: something happened",
+          "description": "This log pattern appeared at most 1 time in this run.",
+          "evidence": {
+            "host": "something",
+            "program": "unparseable",
+            "program_total": 1,
+            "template_id": 6,
+            "template_str": "unparseable timestamp worker: something happened",
+            "count": 1,
+            "threshold": 1,
+            "first_seen": null,
+            "self_stamped": false
+          },
+          "next_steps": [
+            "Review surrounding log context for this host",
+            "Check if template appears in recent incidents"
+          ],
+          "ts_generated": {
+            "datetime": "2026-10-18T12:00:00+00:00"
+          },
+          "data_window": [
+            {
+              "datetime": "2026-10-14T00:00:00+00:00"
+            },
+            {
+              "datetime": "2026-10-18T12:00:00+00:00"
+            }
+          ]
+        }
+      ],
+      "input_after_sibling": {
+        "columns": [
+          "ts",
+          "host",
+          "program",
+          "raw",
+          "message"
+        ],
+        "column_names": [
+          null
+        ],
+        "dtypes": [
+          "float64",
+          "object",
+          "object",
+          "object",
+          "object"
+        ],
+        "index": [
+          0,
+          1,
+          2,
+          3,
+          4,
+          5,
+          6
+        ],
+        "index_dtype": "int64",
+        "index_type": "RangeIndex",
+        "index_names": [
+          null
+        ],
+        "values": [
+          [
+            {
+              "float": "0x1.ab3dbb0000000p+30"
+            },
+            "host.example",
+            "worker",
+            "Oct 14 12:00:00 host.example worker: task finished alpha",
+            "worker: task finished alpha"
+          ],
+          [
+            {
+              "float": "0x1.ab3dbbf000000p+30"
+            },
+            "host.example",
+            "worker",
+            "Oct 14 12:01:00 host.example worker: task finished beta",
+            "worker: task finished beta"
+          ],
+          [
+            {
+              "float": "0x1.ab3dbce000000p+30"
+            },
+            "host.example",
+            "kernel",
+            "Oct 14 12:02:00 host.example kernel: Linux version synthetic",
+            "kernel: Linux version synthetic"
+          ],
+          [
+            {
+              "float": "0x1.ab3dbdd000000p+30"
+            },
+            "host.example",
+            "sshd",
+            "Oct 14 12:03:00 host.example sshd[123]: Accepted publickey for user from 192.0.2.10 port 2222 ssh2",
+            "sshd[*]: Accepted publickey for user from 192.0.2.10 port 2222 ssh2"
+          ],
+          [
+            {
+              "float": "0x1.ab3dbec000000p+30"
+            },
+            "host.example",
+            "sudo",
+            "Oct 14 12:04:00 host.example sudo[124]: user : COMMAND=/usr/bin/true",
+            "sudo[*]: user : COMMAND=/usr/bin/true"
+          ],
+          [
+            {
+              "float": "0x1.ab3dbfb000000p+30"
+            },
+            "host.example",
+            "sshd",
+            "Oct 14 12:05:00 host.example sshd[123]: pam_unix(sshd:session): session closed for user user",
+            "sshd[*]: pam_unix(sshd:session): session closed for user user"
+          ],
+          [
+            {
+              "float": "nan"
+            },
+            "something",
+            "unparseable",
+            "unparseable timestamp worker: something happened",
+            "unparseable timestamp worker: something happened"
+          ]
+        ],
+        "nulls": [
+          [
+            false,
+            false,
+            false,
+            false,
+            false
+          ],
+          [
+            false,
+            false,
+            false,
+            false,
+            false
+          ],
+          [
+            false,
+            false,
+            false,
+            false,
+            false
+          ],
+          [
+            false,
+            false,
+            false,
+            false,
+            false
+          ],
+          [
+            false,
+            false,
+            false,
+            false,
+            false
+          ],
+          [
+            false,
+            false,
+            false,
+            false,
+            false
+          ],
+          [
+            true,
+            false,
+            false,
+            false,
+            false
+          ]
+        ],
+        "attrs": {}
+      }
+    },
+    "empty": {
+      "loader": {
+        "logs": {
+          "*.log*": {
+            "columns": [
+              "ts",
+              "host",
+              "program",
+              "raw",
+              "message"
+            ],
+            "column_names": [
+              null
+            ],
+            "dtypes": [
+              "object",
+              "object",
+              "object",
+              "object",
+              "object"
+            ],
+            "index": [],
+            "index_dtype": "int64",
+            "index_type": "RangeIndex",
+            "index_names": [
+              null
+            ],
+            "values": [],
+            "nulls": [],
+            "attrs": {}
+          }
+        },
+        "record_counts": {},
+        "data_window": null,
+        "warnings": [],
+        "data_size_bytes": 0,
+        "coverage": {
+          "*.log*": {
+            "full_rows": 0,
+            "full_span": null
+          }
+        },
+        "rotation_skips": {},
+        "permission_skips": {},
+        "file_spans": {},
+        "quality": {
+          "*.log*": {
+            "attempted_files": 1,
+            "committed_files": 1,
+            "decoded_records": 0,
+            "decoded_bytes": 0,
+            "skipped_oversize": 0
+          }
+        }
+      },
+      "findings": [],
+      "input_after_sibling": {
+        "columns": [
+          "ts",
+          "host",
+          "program",
+          "raw",
+          "message"
+        ],
+        "column_names": [
+          null
+        ],
+        "dtypes": [
+          "object",
+          "object",
+          "object",
+          "object",
+          "object"
+        ],
+        "index": [],
+        "index_dtype": "int64",
+        "index_type": "RangeIndex",
+        "index_names": [
+          null
+        ],
+        "values": [],
+        "nulls": [],
+        "attrs": {}
+      }
+    },
+    "filtered": {
+      "loader": {
+        "logs": {
+          "*.log*": {
+            "columns": [
+              "ts",
+              "host",
+              "program",
+              "raw",
+              "message"
+            ],
+            "column_names": [
+              null
+            ],
+            "dtypes": [
+              "object",
+              "object",
+              "object",
+              "object",
+              "object"
+            ],
+            "index": [],
+            "index_dtype": "int64",
+            "index_type": "RangeIndex",
+            "index_names": [
+              null
+            ],
+            "values": [],
+            "nulls": [],
+            "attrs": {}
+          }
+        },
+        "record_counts": {},
+        "data_window": null,
+        "warnings": [],
+        "data_size_bytes": 435,
+        "coverage": {
+          "*.log*": {
+            "full_rows": 6,
+            "full_span": [
+              {
+                "datetime": "2026-10-14T12:00:00+00:00"
+              },
+              {
+                "datetime": "2026-10-14T12:05:00+00:00"
+              }
+            ]
+          }
+        },
+        "rotation_skips": {},
+        "permission_skips": {},
+        "file_spans": {},
+        "quality": {
+          "*.log*": {
+            "attempted_files": 1,
+            "committed_files": 1,
+            "decoded_records": 6,
+            "decoded_bytes": 435,
+            "skipped_oversize": 0
+          }
+        }
+      },
+      "findings": [],
+      "input_after_sibling": {
+        "columns": [
+          "ts",
+          "host",
+          "program",
+          "raw",
+          "message"
+        ],
+        "column_names": [
+          null
+        ],
+        "dtypes": [
+          "object",
+          "object",
+          "object",
+          "object",
+          "object"
+        ],
+        "index": [],
+        "index_dtype": "int64",
+        "index_type": "RangeIndex",
+        "index_names": [
+          null
+        ],
+        "values": [],
+        "nulls": [],
+        "attrs": {}
+      }
+    },
+    "journal": {
+      "loader": {
+        "logs": {
+          "*.log*": {
+            "columns": [
+              "ts",
+              "host",
+              "program",
+              "raw",
+              "message"
+            ],
+            "column_names": [
+              null
+            ],
+            "dtypes": [
+              "float64",
+              "object",
+              "object",
+              "object",
+              "object"
+            ],
+            "index": [
+              0,
+              1
+            ],
+            "index_dtype": "int64",
+            "index_type": "RangeIndex",
+            "index_names": [
+              null
+            ],
+            "values": [
+              [
+                {
+                  "float": "0x1.ab3dbb0000000p+30"
+                },
+                "host.example",
+                "worker",
+                "task finished alpha",
+                "worker: task finished alpha"
+              ],
+              [
+                {
+                  "float": "0x1.ab3dbb0400000p+30"
+                },
+                "host.example",
+                "worker",
+                "task finished beta",
+                "worker: task finished beta"
+              ]
+            ],
+            "nulls": [
+              [
+                false,
+                false,
+                false,
+                false,
+                false
+              ],
+              [
+                false,
+                false,
+                false,
+                false,
+                false
+              ]
+            ],
+            "attrs": {}
+          }
+        },
+        "record_counts": {
+          "*.log*": 2
+        },
+        "data_window": [
+          {
+            "datetime": "2026-10-14T12:00:00+00:00"
+          },
+          {
+            "datetime": "2026-10-14T12:00:01+00:00"
+          }
+        ],
+        "warnings": [],
+        "data_size_bytes": 277,
+        "coverage": {},
+        "rotation_skips": {},
+        "permission_skips": {},
+        "file_spans": {},
+        "quality": {
+          "*.log*": {
+            "attempted_files": 1,
+            "committed_files": 1,
+            "decoded_records": 2,
+            "decoded_bytes": 277,
+            "skipped_oversize": 0
+          }
+        }
+      },
+      "findings": [],
+      "input_after_sibling": {
+        "columns": [
+          "ts",
+          "host",
+          "program",
+          "raw",
+          "message"
+        ],
+        "column_names": [
+          null
+        ],
+        "dtypes": [
+          "float64",
+          "object",
+          "object",
+          "object",
+          "object"
+        ],
+        "index": [
+          0,
+          1
+        ],
+        "index_dtype": "int64",
+        "index_type": "RangeIndex",
+        "index_names": [
+          null
+        ],
+        "values": [
+          [
+            {
+              "float": "0x1.ab3dbb0000000p+30"
+            },
+            "host.example",
+            "worker",
+            "task finished alpha",
+            "worker: task finished alpha"
+          ],
+          [
+            {
+              "float": "0x1.ab3dbb0400000p+30"
+            },
+            "host.example",
+            "worker",
+            "task finished beta",
+            "worker: task finished beta"
+          ]
+        ],
+        "nulls": [
+          [
+            false,
+            false,
+            false,
+            false,
+            false
+          ],
+          [
+            false,
+            false,
+            false,
+            false,
+            false
+          ]
+        ],
+        "attrs": {}
+      }
+    },
+    "zeek": {
+      "loader": {
+        "logs": {
+          "syslog*.log*": {
+            "columns": [
+              "ts",
+              "host",
+              "program",
+              "raw",
+              "message",
+              "facility",
+              "severity"
+            ],
+            "column_names": [
+              null
+            ],
+            "dtypes": [
+              "float64",
+              "object",
+              "object",
+              "object",
+              "object",
+              "object",
+              "object"
+            ],
+            "index": [
+              0,
+              1
+            ],
+            "index_dtype": "int64",
+            "index_type": "Index",
+            "index_names": [
+              null
+            ],
+            "values": [
+              [
+                {
+                  "float": "0x1.ab3dbb0000000p+30"
+                },
+                "unknown",
+                "task",
+                "task finished alpha",
+                "task finished alpha",
+                "USER",
+                "INFO"
+              ],
+              [
+                {
+                  "float": "0x1.ab3dbb0400000p+30"
+                },
+                "unknown",
+                "task",
+                "task finished beta",
+                "task finished beta",
+                "USER",
+                "INFO"
+              ]
+            ],
+            "nulls": [
+              [
+                false,
+                false,
+                false,
+                false,
+                false,
+                false,
+                false
+              ],
+              [
+                false,
+                false,
+                false,
+                false,
+                false,
+                false,
+                false
+              ]
+            ],
+            "attrs": {}
+          }
+        },
+        "record_counts": {
+          "syslog*.log*": 2
+        },
+        "data_window": [
+          {
+            "datetime": "2026-10-14T12:00:00+00:00"
+          },
+          {
+            "datetime": "2026-10-14T12:00:01+00:00"
+          }
+        ],
+        "warnings": [],
+        "data_size_bytes": 275,
+        "coverage": {},
+        "rotation_skips": {},
+        "permission_skips": {},
+        "file_spans": {
+          "syslog*.log*": [
+            {
+              "path": "<root>/syslog.log",
+              "first_ts": {
+                "float": "0x1.ab3dbb0000000p+30"
+              },
+              "last_ts": {
+                "float": "0x1.ab3dbb0400000p+30"
+              }
+            }
+          ]
+        },
+        "quality": {
+          "syslog*.log*": {
+            "attempted_files": 1,
+            "committed_files": 1,
+            "decoded_records": 2,
+            "decoded_bytes": 275,
+            "skipped_oversize": 0
+          }
+        }
+      },
+      "findings": [],
+      "input_after_sibling": {
+        "columns": [
+          "ts",
+          "host",
+          "program",
+          "raw",
+          "message",
+          "facility",
+          "severity"
+        ],
+        "column_names": [
+          null
+        ],
+        "dtypes": [
+          "float64",
+          "object",
+          "object",
+          "object",
+          "object",
+          "object",
+          "object"
+        ],
+        "index": [
+          0,
+          1
+        ],
+        "index_dtype": "int64",
+        "index_type": "Index",
+        "index_names": [
+          null
+        ],
+        "values": [
+          [
+            {
+              "float": "0x1.ab3dbb0000000p+30"
+            },
+            "unknown",
+            "task",
+            "task finished alpha",
+            "task finished alpha",
+            "USER",
+            "INFO"
+          ],
+          [
+            {
+              "float": "0x1.ab3dbb0400000p+30"
+            },
+            "unknown",
+            "task",
+            "task finished beta",
+            "task finished beta",
+            "USER",
+            "INFO"
+          ]
+        ],
+        "nulls": [
+          [
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false
+          ],
+          [
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false
+          ]
+        ],
+        "attrs": {}
+      }
+    },
+    "mixed": {
+      "findings": [
+        {
+          "detector": "syslog",
+          "severity": "info",
+          "title": "host.example",
+          "description": "A reboot signal observed on this host.",
+          "next_steps": [
+            "Review system logs around the reboot time for pre-reboot anomalies"
+          ],
+          "evidence": {
+            "tier": "reboot",
+            "host": "host.example",
+            "reboot_ts": "2026-10-14T12:02:00+00:00",
+            "signal_count": 1,
+            "label": "rebooted",
+            "host_total": 6
+          },
+          "ts_generated": "2026-10-18T12:00:00+00:00",
+          "data_window": [
+            "2026-10-14T12:00:00+00:00",
+            "2026-10-14T12:05:00+00:00"
+          ]
+        },
+        {
+          "detector": "syslog",
+          "severity": "medium",
+          "title": "host.example",
+          "description": "Recognized administrative session activity grouped from contemporaneous syslog findings.",
+          "next_steps": [
+            "Review the grouped lines for unexpected activity"
+          ],
+          "evidence": {
+            "tier": "transaction",
+            "label": "admin session",
+            "host": "host.example",
+            "member_count": 3,
+            "represented_line_count": 3,
+            "start_ts": {
+              "float": "0x1.ab3dbdd000000p+30"
+            },
+            "end_ts": {
+              "float": "0x1.ab3dbfb000000p+30"
+            },
+            "first_seen": "2026-10-14T12:03:00+00:00",
+            "span_seconds": {
+              "float": "0x1.e000000000000p+6"
+            },
+            "program_mix": [
+              [
+                "sshd",
+                2
+              ],
+              [
+                "sudo",
+                1
+              ]
+            ],
+            "member_fragments": [
+              "tokens: Accepted publickey for user from 192.0.2.10 port 2222 ssh2 : COMMAND=/usr/bin/true pam_unix(sshd:session): session closed"
+            ],
+            "members": [
+              {
+                "severity": "medium",
+                "represented_line_count": 1,
+                "title": "Oct 14 12:03:00 host.example sshd[123]: Accepted publickey for user from 192.0.2.10 port 2222 ssh2",
+                "first_seen": "2026-10-14T12:03:00+00:00",
+                "program": "sshd",
+                "privileged": true
+              },
+              {
+                "severity": "medium",
+                "represented_line_count": 1,
+                "title": "Oct 14 12:04:00 host.example sudo[124]: user : COMMAND=/usr/bin/true",
+                "first_seen": "2026-10-14T12:04:00+00:00",
+                "program": "sudo",
+                "privileged": true
+              },
+              {
+                "severity": "medium",
+                "represented_line_count": 1,
+                "title": "Oct 14 12:05:00 host.example sshd[123]: pam_unix(sshd:session): session closed for user user",
+                "first_seen": "2026-10-14T12:05:00+00:00",
+                "program": "sshd",
+                "privileged": true
+              }
+            ],
+            "privileged": true,
+            "host_total": 6
+          },
+          "ts_generated": "2026-10-18T12:00:00+00:00",
+          "data_window": [
+            "2026-10-14T12:00:00+00:00",
+            "2026-10-14T12:05:00+00:00"
+          ]
+        }
+      ],
+      "summary": {
+        "record_counts": {
+          "*.log*": 6,
+          "syslog*.log*": 2
+        },
+        "record_labels": {
+          "*.log*": "syslog",
+          "syslog*.log*": "Zeek syslog"
+        },
+        "data_size_bytes": 710,
+        "data_window": [
+          "2026-10-14T12:00:00+00:00",
+          "2026-10-14T12:05:00+00:00"
+        ],
+        "detectors_run": [
+          "syslog"
+        ],
+        "detectors_skipped": {},
+        "detectors_failed": {},
+        "notes": [
+          "system logs: files <root>/flat/messages.log (explicit)"
+        ]
+      }
+    },
+    "hunt": {
+      "findings": [
+        {
+          "detector": "syslog",
+          "severity": "info",
+          "title": "host.example",
+          "description": "A reboot signal observed on this host.",
+          "next_steps": [
+            "Review system logs around the reboot time for pre-reboot anomalies"
+          ],
+          "evidence": {
+            "tier": "reboot",
+            "host": "host.example",
+            "reboot_ts": "2026-10-14T12:02:00+00:00",
+            "signal_count": 1,
+            "label": "rebooted",
+            "host_total": 6
+          },
+          "ts_generated": "2026-10-18T12:00:00+00:00",
+          "data_window": [
+            "2026-10-14T12:00:00+00:00",
+            "2026-10-14T12:05:00+00:00"
+          ]
+        },
+        {
+          "detector": "syslog",
+          "severity": "medium",
+          "title": "host.example",
+          "description": "Recognized administrative session activity grouped from contemporaneous syslog findings.",
+          "next_steps": [
+            "Review the grouped lines for unexpected activity"
+          ],
+          "evidence": {
+            "tier": "transaction",
+            "label": "admin session",
+            "host": "host.example",
+            "member_count": 3,
+            "represented_line_count": 3,
+            "start_ts": {
+              "float": "0x1.ab3dbdd000000p+30"
+            },
+            "end_ts": {
+              "float": "0x1.ab3dbfb000000p+30"
+            },
+            "first_seen": "2026-10-14T12:03:00+00:00",
+            "span_seconds": {
+              "float": "0x1.e000000000000p+6"
+            },
+            "program_mix": [
+              [
+                "sshd",
+                2
+              ],
+              [
+                "sudo",
+                1
+              ]
+            ],
+            "member_fragments": [
+              "tokens: Accepted publickey for user from 192.0.2.10 port 2222 ssh2 : COMMAND=/usr/bin/true pam_unix(sshd:session): session closed"
+            ],
+            "members": [
+              {
+                "severity": "medium",
+                "represented_line_count": 1,
+                "title": "Oct 14 12:03:00 host.example sshd[123]: Accepted publickey for user from 192.0.2.10 port 2222 ssh2",
+                "first_seen": "2026-10-14T12:03:00+00:00",
+                "program": "sshd",
+                "privileged": true
+              },
+              {
+                "severity": "medium",
+                "represented_line_count": 1,
+                "title": "Oct 14 12:04:00 host.example sudo[124]: user : COMMAND=/usr/bin/true",
+                "first_seen": "2026-10-14T12:04:00+00:00",
+                "program": "sudo",
+                "privileged": true
+              },
+              {
+                "severity": "medium",
+                "represented_line_count": 1,
+                "title": "Oct 14 12:05:00 host.example sshd[123]: pam_unix(sshd:session): session closed for user user",
+                "first_seen": "2026-10-14T12:05:00+00:00",
+                "program": "sshd",
+                "privileged": true
+              }
+            ],
+            "privileged": true,
+            "host_total": 6
+          },
+          "ts_generated": "2026-10-18T12:00:00+00:00",
+          "data_window": [
+            "2026-10-14T12:00:00+00:00",
+            "2026-10-14T12:05:00+00:00"
+          ]
+        }
+      ],
+      "summary": {
+        "record_counts": {
+          "*.log*": 6,
+          "syslog*.log*": 2
+        },
+        "record_labels": {
+          "*.log*": "syslog",
+          "syslog*.log*": "Zeek syslog"
+        },
+        "data_size_bytes": 710,
+        "data_window": [
+          "2026-10-14T12:00:00+00:00",
+          "2026-10-14T12:05:00+00:00"
+        ],
+        "detectors_run": [
+          "syslog",
+          "auth"
+        ],
+        "detectors_skipped": {},
+        "detectors_failed": {},
+        "notes": [
+          "auth: 8 log observations; 1 eligible authentication record across 1 identity group and 1 service - five lenses evaluated; counts are decision records as each source logged them; a host reporting through more than one source can record one event in each",
+          "auth allowlist: 1 remote source address extracted; system-log suppression covers whole hosts, not individual source addresses",
+          "system logs: files <root>/flat/messages.log (explicit)"
+        ]
+      }
+    },
+    "mutation": {
+      "loader": null,
+      "findings": [
+        {
+          "detector": "syslog",
+          "severity": "L",
+          "title": "worker: task finished alpha",
+          "description": "This log pattern appeared at most 2 times in this run.",
+          "evidence": {
+            "host": "192.0.2.1",
+            "program": "worker",
+            "program_total": 1,
+            "template_id": 1,
+            "template_str": "worker: task finished alpha",
+            "count": 2,
+            "threshold": 2,
+            "first_seen": "2026-10-14T12:00:00+00:00",
+            "self_stamped": false
+          },
+          "next_steps": [
+            "Review surrounding log context for this host",
+            "Check if template appears in recent incidents"
+          ],
+          "ts_generated": {
+            "datetime": "2026-10-18T12:00:00+00:00"
+          },
+          "data_window": [
+            {
+              "datetime": "2026-10-14T00:00:00+00:00"
+            },
+            {
+              "datetime": "2026-10-18T12:00:00+00:00"
+            }
+          ]
+        },
+        {
+          "detector": "syslog",
+          "severity": "L",
+          "title": "worker: task finished beta",
+          "description": "This log pattern appeared at most 2 times in this run.",
+          "evidence": {
+            "host": "192.0.2.2",
+            "program": "worker",
+            "program_total": 1,
+            "template_id": 1,
+            "template_str": "worker: task finished <*>",
+            "count": 2,
+            "threshold": 2,
+            "first_seen": "2026-10-14T13:00:00+00:00",
+            "self_stamped": false
+          },
+          "next_steps": [
+            "Review surrounding log context for this host",
+            "Check if template appears in recent incidents"
+          ],
+          "ts_generated": {
+            "datetime": "2026-10-18T12:00:00+00:00"
+          },
+          "data_window": [
+            {
+              "datetime": "2026-10-14T00:00:00+00:00"
+            },
+            {
+              "datetime": "2026-10-18T12:00:00+00:00"
+            }
+          ]
+        }
+      ],
+      "input_after_sibling": {
+        "columns": [
+          "ts",
+          "host",
+          "program",
+          "raw",
+          "message"
+        ],
+        "column_names": [
+          null
+        ],
+        "dtypes": [
+          "float64",
+          "object",
+          "object",
+          "object",
+          "object"
+        ],
+        "index": [
+          0,
+          1
+        ],
+        "index_dtype": "int64",
+        "index_type": "RangeIndex",
+        "index_names": [
+          null
+        ],
+        "values": [
+          [
+            {
+              "float": "0x1.ab3dbb0000000p+30"
+            },
+            "192.0.2.1",
+            "worker",
+            "worker: task finished alpha",
+            "worker: task finished alpha"
+          ],
+          [
+            {
+              "float": "0x1.ab3df34000000p+30"
+            },
+            "192.0.2.2",
+            "worker",
+            "worker: task finished beta",
+            "worker: task finished beta"
+          ]
+        ],
+        "nulls": [
+          [
+            false,
+            false,
+            false,
+            false,
+            false
+          ],
+          [
+            false,
+            false,
+            false,
+            false,
+            false
+          ]
+        ],
+        "attrs": {}
+      }
+    },
+    "pihole": {
+      "logs": {
+        "pihole.log*": {
+          "columns": [
+            "ts",
+            "src",
+            "query",
+            "event_type",
+            "qtype",
+            "host"
+          ],
+          "column_names": [
+            null
+          ],
+          "dtypes": [
+            "float64",
+            "object",
+            "object",
+            "object",
+            "object",
+            "object"
+          ],
+          "index": [
+            0
+          ],
+          "index_dtype": "int64",
+          "index_type": "RangeIndex",
+          "index_names": [
+            null
+          ],
+          "values": [
+            [
+              {
+                "float": "0x1.ab3dbb0000000p+30"
+              },
+              "192.0.2.1",
+              "host.example",
+              "query",
+              "A",
+              "pihole"
+            ]
+          ],
+          "nulls": [
+            [
+              false,
+              false,
+              false,
+              false,
+              false,
+              false
+            ]
+          ],
+          "attrs": {}
+        }
+      },
+      "record_counts": {
+        "pihole.log*": 1
+      },
+      "data_window": [
+        {
+          "datetime": "2026-10-14T12:00:00+00:00"
+        },
+        {
+          "datetime": "2026-10-14T12:00:00+00:00"
+        }
+      ],
+      "warnings": [],
+      "data_size_bytes": 65,
+      "coverage": {},
+      "rotation_skips": {},
+      "permission_skips": {},
+      "file_spans": {
+        "pihole.log*": [
+          {
+            "path": "<root>/pihole.log",
+            "first_ts": {
+              "float": "0x1.ab3dbb0000000p+30"
+            },
+            "last_ts": {
+              "float": "0x1.ab3dbb0000000p+30"
+            }
+          }
+        ]
+      },
+      "quality": {
+        "pihole.log*": {
+          "attempted_files": 1,
+          "committed_files": 1,
+          "decoded_records": 1,
+          "decoded_bytes": 65,
+          "skipped_oversize": 0
+        }
+      }
+    },
+    "pihole_missing": {
+      "logs": {
+        "pihole.log*": {
+          "columns": [
+            "ts",
+            "src",
+            "query",
+            "event_type",
+            "qtype",
+            "host"
+          ],
+          "column_names": [
+            null
+          ],
+          "dtypes": [
+            "float64",
+            "object",
+            "object",
+            "object",
+            "object",
+            "object"
+          ],
+          "index": [
+            0,
+            1
+          ],
+          "index_dtype": "int64",
+          "index_type": "RangeIndex",
+          "index_names": [
+            null
+          ],
+          "values": [
+            [
+              {
+                "float": "0x1.ab3dbb0000000p+30"
+              },
+              "192.0.2.1",
+              "host.example",
+              "query",
+              "A",
+              "pihole"
+            ],
+            [
+              {
+                "float": "0x1.ab3dbb0400000p+30"
+              },
+              null,
+              "host.example",
+              "cached",
+              null,
+              "pihole"
+            ]
+          ],
+          "nulls": [
+            [
+              false,
+              false,
+              false,
+              false,
+              false,
+              false
+            ],
+            [
+              false,
+              true,
+              false,
+              false,
+              true,
+              false
+            ]
+          ],
+          "attrs": {}
+        }
+      },
+      "record_counts": {
+        "pihole.log*": 2
+      },
+      "data_window": [
+        {
+          "datetime": "2026-10-14T12:00:00+00:00"
+        },
+        {
+          "datetime": "2026-10-14T12:00:01+00:00"
+        }
+      ],
+      "warnings": [],
+      "data_size_bytes": 126,
+      "coverage": {},
+      "rotation_skips": {},
+      "permission_skips": {},
+      "file_spans": {
+        "pihole.log*": [
+          {
+            "path": "<root>/pihole.log",
+            "first_ts": {
+              "float": "0x1.ab3dbb0000000p+30"
+            },
+            "last_ts": {
+              "float": "0x1.ab3dbb0400000p+30"
+            }
+          }
+        ]
+      },
+      "quality": {
+        "pihole.log*": {
+          "attempted_files": 1,
+          "committed_files": 1,
+          "decoded_records": 2,
+          "decoded_bytes": 126,
+          "skipped_oversize": 0
+        }
+      }
+    },
+    "pihole_nan": {
+      "logs": {
+        "pihole.log*": {
+          "columns": [
+            "ts",
+            "src",
+            "query",
+            "event_type",
+            "qtype",
+            "host"
+          ],
+          "column_names": [
+            null
+          ],
+          "dtypes": [
+            "object",
+            "object",
+            "object",
+            "object",
+            "object",
+            "object"
+          ],
+          "index": [],
+          "index_dtype": "int64",
+          "index_type": "RangeIndex",
+          "index_names": [
+            null
+          ],
+          "values": [],
+          "nulls": [],
+          "attrs": {}
+        }
+      },
+      "record_counts": {},
+      "data_window": null,
+      "warnings": [],
+      "data_size_bytes": 59,
+      "coverage": {
+        "pihole.log*": {
+          "full_rows": 0,
+          "full_span": null
+        }
+      },
+      "rotation_skips": {},
+      "permission_skips": {},
+      "file_spans": {},
+      "quality": {
+        "pihole.log*": {
+          "attempted_files": 1,
+          "committed_files": 1,
+          "decoded_records": 1,
+          "decoded_bytes": 59,
+          "skipped_oversize": 0
+        }
+      }
+    },
+    "pihole_corrupt": {
+      "logs": {
+        "pihole.log*": {
+          "columns": [
+            "ts",
+            "src",
+            "query",
+            "event_type",
+            "qtype",
+            "host"
+          ],
+          "column_names": [
+            null
+          ],
+          "dtypes": [
+            "float64",
+            "object",
+            "object",
+            "object",
+            "object",
+            "object"
+          ],
+          "index": [
+            0,
+            1
+          ],
+          "index_dtype": "int64",
+          "index_type": "RangeIndex",
+          "index_names": [
+            null
+          ],
+          "values": [
+            [
+              {
+                "float": "0x1.ab3dbb0000000p+30"
+              },
+              "192.0.2.1",
+              "host.example",
+              "query",
+              "A",
+              "pihole"
+            ],
+            [
+              {
+                "float": "0x1.ab3dbb0000000p+30"
+              },
+              "192.0.2.1",
+              "host.example",
+              "query",
+              "A",
+              "later-pihole"
+            ]
+          ],
+          "nulls": [
+            [
+              false,
+              false,
+              false,
+              false,
+              false,
+              false
+            ],
+            [
+              false,
+              false,
+              false,
+              false,
+              false,
+              false
+            ]
+          ],
+          "attrs": {}
+        }
+      },
+      "record_counts": {
+        "pihole.log*": 2
+      },
+      "data_window": [
+        {
+          "datetime": "2026-10-14T12:00:00+00:00"
+        },
+        {
+          "datetime": "2026-10-14T12:00:00+00:00"
+        }
+      ],
+      "warnings": [
+        "pihole.log.1.gz could not be read - compressed file is incomplete or corrupt; skipping"
+      ],
+      "data_size_bytes": 891,
+      "coverage": {},
+      "rotation_skips": {},
+      "permission_skips": {},
+      "file_spans": {
+        "pihole.log*": [
+          {
+            "path": "<root>/pihole.log",
+            "first_ts": {
+              "float": "0x1.ab3dbb0000000p+30"
+            },
+            "last_ts": {
+              "float": "0x1.ab3dbb0000000p+30"
+            }
+          },
+          {
+            "path": "<root>/later-pihole.log",
+            "first_ts": {
+              "float": "0x1.ab3dbb0000000p+30"
+            },
+            "last_ts": {
+              "float": "0x1.ab3dbb0000000p+30"
+            }
+          }
+        ]
+      },
+      "quality": {
+        "pihole.log*": {
+          "attempted_files": 3,
+          "committed_files": 2,
+          "decoded_records": 2,
+          "decoded_bytes": 130,
+          "skipped_oversize": 0
+        }
+      }
+    },
+    "cloudtrail": {
+      "logs": {
+        "*.json*": {
+          "columns": [
+            "ts",
+            "principal",
+            "lane",
+            "read_write",
+            "event_source",
+            "event_name",
+            "identity_type",
+            "source_ip",
+            "error_code",
+            "aws_region",
+            "event_id",
+            "raw"
+          ],
+          "column_names": [
+            null
+          ],
+          "dtypes": [
+            "float64",
+            "object",
+            "object",
+            "object",
+            "object",
+            "object",
+            "object",
+            "object",
+            "object",
+            "object",
+            "object",
+            "object"
+          ],
+          "index": [
+            0
+          ],
+          "index_dtype": "int64",
+          "index_type": "RangeIndex",
+          "index_names": [
+            null
+          ],
+          "values": [
+            [
+              {
+                "float": "0x1.ab3dbb0000000p+30"
+              },
+              "example-user",
+              "interactive",
+              "read",
+              "s3.amazonaws.com",
+              "GetObject",
+              "IAMUser",
+              "192.0.2.10",
+              null,
+              null,
+              null,
+              {
+                "eventTime": "2026-10-14T12:00:00Z",
+                "eventSource": "s3.amazonaws.com",
+                "eventName": "GetObject",
+                "sourceIPAddress": "192.0.2.10",
+                "userIdentity": {
+                  "type": "IAMUser",
+                  "userName": "example-user"
+                }
+              }
+            ]
+          ],
+          "nulls": [
+            [
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              true,
+              true,
+              true,
+              false
+            ]
+          ],
+          "attrs": {}
+        }
+      },
+      "record_counts": {
+        "*.json*": 1
+      },
+      "data_window": [
+        {
+          "datetime": "2026-10-14T12:00:00+00:00"
+        },
+        {
+          "datetime": "2026-10-14T12:00:00+00:00"
+        }
+      ],
+      "warnings": [],
+      "data_size_bytes": 197,
+      "coverage": {},
+      "rotation_skips": {},
+      "permission_skips": {},
+      "file_spans": {
+        "*.json*": [
+          {
+            "path": "<root>/events.json",
+            "first_ts": {
+              "float": "0x1.ab3dbb0000000p+30"
+            },
+            "last_ts": {
+              "float": "0x1.ab3dbb0000000p+30"
+            }
+          }
+        ]
+      },
+      "quality": {
+        "*.json*": {
+          "attempted_files": 1,
+          "committed_files": 1,
+          "decoded_records": 1,
+          "decoded_bytes": 197,
+          "skipped_oversize": 0
+        }
+      }
+    },
+    "cloudtrail_missing": {
+      "logs": {
+        "*.json*": {
+          "columns": [
+            "ts",
+            "principal",
+            "lane",
+            "read_write",
+            "event_source",
+            "event_name",
+            "identity_type",
+            "source_ip",
+            "error_code",
+            "aws_region",
+            "event_id",
+            "raw"
+          ],
+          "column_names": [
+            null
+          ],
+          "dtypes": [
+            "float64",
+            "object",
+            "object",
+            "object",
+            "object",
+            "object",
+            "object",
+            "object",
+            "object",
+            "object",
+            "object",
+            "object"
+          ],
+          "index": [
+            0
+          ],
+          "index_dtype": "int64",
+          "index_type": "RangeIndex",
+          "index_names": [
+            null
+          ],
+          "values": [
+            [
+              {
+                "float": "0x1.ab3dbb0000000p+30"
+              },
+              "unknown",
+              "interactive",
+              "read",
+              "s3.amazonaws.com",
+              "GetObject",
+              null,
+              null,
+              null,
+              null,
+              null,
+              {
+                "eventTime": "2026-10-14T12:00:00Z",
+                "eventSource": "s3.amazonaws.com",
+                "eventName": "GetObject"
+              }
+            ]
+          ],
+          "nulls": [
+            [
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              true,
+              true,
+              true,
+              true,
+              true,
+              false
+            ]
+          ],
+          "attrs": {}
+        }
+      },
+      "record_counts": {
+        "*.json*": 1
+      },
+      "data_window": [
+        {
+          "datetime": "2026-10-14T12:00:00+00:00"
+        },
+        {
+          "datetime": "2026-10-14T12:00:00+00:00"
+        }
+      ],
+      "warnings": [],
+      "data_size_bytes": 99,
+      "coverage": {},
+      "rotation_skips": {},
+      "permission_skips": {},
+      "file_spans": {
+        "*.json*": [
+          {
+            "path": "<root>/events.json",
+            "first_ts": {
+              "float": "0x1.ab3dbb0000000p+30"
+            },
+            "last_ts": {
+              "float": "0x1.ab3dbb0000000p+30"
+            }
+          }
+        ]
+      },
+      "quality": {
+        "*.json*": {
+          "attempted_files": 1,
+          "committed_files": 1,
+          "decoded_records": 1,
+          "decoded_bytes": 99,
+          "skipped_oversize": 0
+        }
+      }
+    },
+    "cloudtrail_nan": {
+      "logs": {
+        "*.json*": {
+          "columns": [
+            "ts",
+            "principal",
+            "lane",
+            "read_write",
+            "event_source",
+            "event_name",
+            "identity_type",
+            "source_ip",
+            "error_code",
+            "aws_region",
+            "event_id",
+            "raw"
+          ],
+          "column_names": [
+            null
+          ],
+          "dtypes": [
+            "object",
+            "object",
+            "object",
+            "object",
+            "object",
+            "object",
+            "object",
+            "object",
+            "object",
+            "object",
+            "object",
+            "object"
+          ],
+          "index": [],
+          "index_dtype": "int64",
+          "index_type": "RangeIndex",
+          "index_names": [
+            null
+          ],
+          "values": [],
+          "nulls": [],
+          "attrs": {}
+        }
+      },
+      "record_counts": {},
+      "data_window": null,
+      "warnings": [],
+      "data_size_bytes": 184,
+      "coverage": {
+        "*.json*": {
+          "full_rows": 0,
+          "full_span": null
+        }
+      },
+      "rotation_skips": {},
+      "permission_skips": {},
+      "file_spans": {},
+      "quality": {
+        "*.json*": {
+          "attempted_files": 1,
+          "committed_files": 1,
+          "decoded_records": 1,
+          "decoded_bytes": 184,
+          "skipped_oversize": 0
+        }
+      }
+    },
+    "cloudtrail_corrupt": {
+      "logs": {
+        "*.json*": {
+          "columns": [
+            "ts",
+            "principal",
+            "lane",
+            "read_write",
+            "event_source",
+            "event_name",
+            "identity_type",
+            "source_ip",
+            "error_code",
+            "aws_region",
+            "event_id",
+            "raw"
+          ],
+          "column_names": [
+            null
+          ],
+          "dtypes": [
+            "float64",
+            "object",
+            "object",
+            "object",
+            "object",
+            "object",
+            "object",
+            "object",
+            "object",
+            "object",
+            "object",
+            "object"
+          ],
+          "index": [
+            0,
+            1
+          ],
+          "index_dtype": "int64",
+          "index_type": "RangeIndex",
+          "index_names": [
+            null
+          ],
+          "values": [
+            [
+              {
+                "float": "0x1.ab3dbb0000000p+30"
+              },
+              "example-user",
+              "interactive",
+              "read",
+              "s3.amazonaws.com",
+              "GetObject",
+              "IAMUser",
+              "192.0.2.10",
+              null,
+              null,
+              null,
+              {
+                "eventTime": "2026-10-14T12:00:00Z",
+                "eventSource": "s3.amazonaws.com",
+                "eventName": "GetObject",
+                "sourceIPAddress": "192.0.2.10",
+                "userIdentity": {
+                  "type": "IAMUser",
+                  "userName": "example-user"
+                }
+              }
+            ],
+            [
+              {
+                "float": "0x1.ab3dbb0000000p+30"
+              },
+              "example-user",
+              "interactive",
+              "read",
+              "s3.amazonaws.com",
+              "GetObject",
+              "IAMUser",
+              "192.0.2.10",
+              null,
+              null,
+              null,
+              {
+                "eventTime": "2026-10-14T12:00:00Z",
+                "eventSource": "s3.amazonaws.com",
+                "eventName": "GetObject",
+                "sourceIPAddress": "192.0.2.10",
+                "userIdentity": {
+                  "type": "IAMUser",
+                  "userName": "example-user"
+                }
+              }
+            ]
+          ],
+          "nulls": [
+            [
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              true,
+              true,
+              true,
+              false
+            ],
+            [
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              true,
+              true,
+              true,
+              false
+            ]
+          ],
+          "attrs": {}
+        }
+      },
+      "record_counts": {
+        "*.json*": 2
+      },
+      "data_window": [
+        {
+          "datetime": "2026-10-14T12:00:00+00:00"
+        },
+        {
+          "datetime": "2026-10-14T12:00:00+00:00"
+        }
+      ],
+      "warnings": [
+        "events.json.1.gz could not be read - compressed file is incomplete or corrupt; skipping"
+      ],
+      "data_size_bytes": 2871,
+      "coverage": {},
+      "rotation_skips": {},
+      "permission_skips": {},
+      "file_spans": {
+        "*.json*": [
+          {
+            "path": "<root>/events.json",
+            "first_ts": {
+              "float": "0x1.ab3dbb0000000p+30"
+            },
+            "last_ts": {
+              "float": "0x1.ab3dbb0000000p+30"
+            }
+          },
+          {
+            "path": "<root>/later-events.json",
+            "first_ts": {
+              "float": "0x1.ab3dbb0000000p+30"
+            },
+            "last_ts": {
+              "float": "0x1.ab3dbb0000000p+30"
+            }
+          }
+        ]
+      },
+      "quality": {
+        "*.json*": {
+          "attempted_files": 3,
+          "committed_files": 2,
+          "decoded_records": 2,
+          "decoded_bytes": 394,
+          "skipped_oversize": 0
+        }
+      }
+    }
+  }
+}

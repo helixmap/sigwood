@@ -363,7 +363,10 @@ def test_bare_short_value_flag_short_lead_message(
         cli.main(["-o"])
     assert exc.value.code == 1
     err = capsys.readouterr().err
-    assert "sigwood: --out (-o) needs a value: -o=… or --out=…" in err
+    assert (
+        "sigwood: --out (-o) needs a value: --out=PATH, -o=PATH, or --out PATH; "
+        "use = for values starting with -"
+    ) in err
 
 
 # ── --detect/-d on single-detector verbs raises wrong-verb ───────────────────

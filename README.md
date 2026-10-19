@@ -55,27 +55,23 @@ output, not real network data):
 
 ```
 dns - 1 finding · 1 high
-Finds domain names that stand apart from the rest, including
-machine-generated-looking names of the sort malware uses for disposable
-command domains, and large batches of related lookups. You decide how
-machine-generated a name must look, and how large a batch of lookups counts.
+domain names that stand apart from the rest, including machine-generated-looking
+names of the sort malware uses for disposable command domains, and large batches
+of related lookups
 ────────────────────────────────────────────────────────────────────────────────
 groups (1)
           names  entropy score  queries  clients
   high       16  2.10-1.85          418        1  k7x2p9qz3f.example
 
 beacon - 2 findings · 2 medium
-Finds outbound connections that keep a regular rhythm, a pattern worth checking
-for automated check-ins. You decide how strict the rhythm has to be before it
-surfaces.
+outbound connections that keep a regular rhythm
 ────────────────────────────────────────────────────────────────────────────────
 medium  192.168.1.37  →  198.51.100.20:443/tcp    period=3.0m    rhythm=0.624   480 conns
 medium  192.168.1.37  →  203.0.113.50:8443/tcp    period=10.0m   rhythm=0.606   144 conns
 
 syslog - 1 finding · 1 medium
-Finds rare log patterns and recorded reboots or administrative runs, so changes
-on a machine do not disappear into routine logs. You decide how seldom a
-pattern must appear to count as rare.
+rare log patterns, and recorded reboots or administrative runs, so changes on a
+machine do not disappear into routine logs
 ────────────────────────────────────────────────────────────────────────────────
 privileged (1)
   medium  Accepted password for root from 198.51.100.20 port 51900 ssh2
@@ -236,7 +232,8 @@ it - sigwood is for the box where the logs already live.
 
 - the `sigwood` command and its verbs: `hunt`, the ten detector names, `digest`,
   `graph`, `era`, `export`, `init`, `allowlist`
-- flag syntax: `--flag=value`, and `-f=value` for the short forms
+- flag syntax: `--flag=value` or `--flag value`, and `-f=value` or `-f value`
+  for the short forms; command examples use `=`
 - the five output formats stay available and selectable, though `json` and `csv` are the
   ones carrying machine contracts. `json` is a single object with its own
   `schema_version` (currently 1) that bumps only on a breaking change; `csv` is a fixed

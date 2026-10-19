@@ -172,11 +172,9 @@ def test_usage_advertises_cloudtrail_dir(capsys) -> None:
 
 # ── Bare source-dir flag (no =value) → actionable CLI error ──────────────────
 #
-# _parse_args records a bare ``--zeek-dir`` (no =value) as
-# parsed["zeek_dir"] = True. ``Path(True)`` downstream must not raise a raw
-# TypeError that escapes the CLI error boundary as a traceback, so
-# _coerce_source_dir catches the boolean at the seam and raises an actionable
-# ``sigwood:`` ValueError with exit 1.
+# _parse_args rejects a value-taking flag with neither an equals value nor a
+# following value token. It must raise an actionable usage error before a
+# boolean or missing value can reach path handling.
 
 @pytest.mark.parametrize(
     "flag", ["--zeek-dir", "--syslog-dir", "--pihole-dir", "--cloudtrail-dir"],
@@ -194,7 +192,10 @@ def test_bare_source_dir_flag_in_detect_raises_actionable_error(
 
     assert exc.value.code == 1
     captured = capsys.readouterr()
-    assert f"sigwood: {flag} needs a value: {flag}=…" in captured.err
+    assert (
+        f"sigwood: {flag} needs a value: {flag}=PATH or {flag} PATH; "
+        "use = for values starting with -"
+    ) in captured.err
     assert "run 'sigwood --help' for usage" in captured.err
 
 
@@ -218,7 +219,10 @@ def test_bare_zeek_dir_flag_in_bare_digest_raises_actionable_error(
 
     assert exc.value.code == 1
     captured = capsys.readouterr()
-    assert "sigwood: --zeek-dir needs a value: --zeek-dir=…" in captured.err
+    assert (
+        "sigwood: --zeek-dir needs a value: --zeek-dir=PATH or --zeek-dir PATH; "
+        "use = for values starting with -"
+    ) in captured.err
 
 
 def test_bare_value_flag_with_short_form_mentions_short(
@@ -232,7 +236,10 @@ def test_bare_value_flag_with_short_form_mentions_short(
 
     assert exc.value.code == 1
     captured = capsys.readouterr()
-    assert "sigwood: --out (-o) needs a value: -o=… or --out=…" in captured.err
+    assert (
+        "sigwood: --out (-o) needs a value: --out=PATH, -o=PATH, or --out PATH; "
+        "use = for values starting with -"
+    ) in captured.err
 
 
 # The dns routing intent (content-sniff routes Zeek dns → zeek_dir, Pi-hole →

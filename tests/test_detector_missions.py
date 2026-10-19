@@ -22,47 +22,43 @@ _NOW = datetime(2026, 8, 28, tzinfo=timezone.utc)
 
 _EXPECTED_SHIPPED_MISSIONS = {
     "auth": (
-        "Finds failed logins concentrated around a source, account, service, or set "
-        "of hosts, including a success after a sustained run of failures."
+        "failed logins concentrated around a source, account, service or set "
+        "of hosts, including a success after a sustained run of failures"
     ),
     "aws": (
-        "Finds CloudTrail principals whose activity stands out in the loaded window, "
-        "or that add several first-seen actions close together. You decide how far a "
-        "principal must stand out, and how many actions count as several."
+        "CloudTrail principals whose activity stands out in the loaded "
+        "window, or that add several first-seen actions close together"
     ),
     "beacon": (
-        "Finds outbound connections that keep a regular rhythm, a pattern worth "
-        "checking for automated check-ins. You decide how strict the rhythm has to be "
-        "before it surfaces."
+        "outbound connections that keep a regular rhythm"
     ),
     "dns": (
-        "Finds domain names that stand apart from the rest, including machine-generated-"
-        "looking names of the sort malware uses for disposable command domains, and "
-        "large batches of related lookups. You decide how machine-generated a name must "
-        "look, and how large a batch of lookups counts."
+        "domain names that stand apart from the rest, including "
+        "machine-generated-looking names of the sort malware uses for "
+        "disposable command domains, and large batches of related lookups"
     ),
     "dnsblock": (
-        "Finds clients newly or suddenly busy against names your own blocklists already "
-        "block."
+        "clients newly or suddenly busy against names your own blocklists "
+        "already block"
     ),
     "exfil": (
-        "Finds large outbound transfers to hosts outside your network. You decide how "
-        "big a transfer has to be to count as large."
+        "large outbound transfers to hosts outside your network"
     ),
     "protocol": (
-        "Looks for a connection whose protocol does not match the port it used, and for a port "
-        "that is normally labeled starting to carry traffic Zeek could not label. You decide "
-        "how many connections a pair needs before it counts."
+        "connections whose protocol does not match the port they used, and a "
+        "normally labeled port starting to carry traffic Zeek could not label"
     ),
     "scan": (
-        "Finds one host reaching for many ports or many hosts - the shape of something "
-        "looking around. You decide how many ports or hosts count as many."
+        "one host reaching for many ports or many hosts, the shape of "
+        "something looking around"
     ),
-    "ssl": "Finds outbound TLS sessions whose setup looks unlike the rest of your estate.",
+    "ssl": (
+        "outbound TLS sessions whose setup looks unlike the rest of your "
+        "estate"
+    ),
     "syslog": (
-        "Finds rare log patterns and recorded reboots or administrative runs, so changes "
-        "on a machine do not disappear into routine logs. You decide how seldom a pattern "
-        "must appear to count as rare."
+        "rare log patterns, and recorded reboots or administrative runs, so "
+        "changes on a machine do not disappear into routine logs"
     ),
 }
 

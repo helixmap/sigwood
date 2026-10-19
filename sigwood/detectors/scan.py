@@ -82,8 +82,8 @@ def validate_config(cfg: dict) -> None:
 
 DETECTOR_METHOD = MethodTag("pattern", named=False)
 DETECTOR_MISSION: str = (
-    "Finds one host reaching for many ports or many hosts - the shape of "
-    "something looking around. You decide how many ports or hosts count as many."
+    "one host reaching for many ports or many hosts, the shape of something "
+    "looking around"
 )
 
 # ── Domain-knowledge constants ────────────────────────────────────────────────

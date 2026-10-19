@@ -39,8 +39,7 @@ DEFAULT_CONFIG = {
 
 DETECTOR_METHOD = MethodTag("heuristics", named=False)
 DETECTOR_MISSION: str = (
-    "Finds large outbound transfers to hosts outside your network. You decide how big "
-    "a transfer has to be to count as large."
+    "large outbound transfers to hosts outside your network"
 )
 
 _REQUIRED_SCORING_COLUMNS = ("src", "dst", "bytes", "resp_bytes")

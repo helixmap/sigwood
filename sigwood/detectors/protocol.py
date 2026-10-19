@@ -27,9 +27,8 @@ OPTIONAL_LOGS: list[dict] = []
 DEFAULT_CONFIG = {"min_connections": 3}
 DETECTOR_METHOD = MethodTag("expectation", named=False)
 DETECTOR_MISSION = (
-    "Looks for a connection whose protocol does not match the port it used, and for a port "
-    "that is normally labeled starting to carry traffic Zeek could not label. You decide how "
-    "many connections a pair needs before it counts."
+    "connections whose protocol does not match the port they used, and a "
+    "normally labeled port starting to carry traffic Zeek could not label"
 )
 
 _PROTOCOL_FOLD_COUNT = 4

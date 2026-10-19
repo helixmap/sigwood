@@ -190,6 +190,17 @@ own right.
 
 ### syslog
 
+**A large explicit syslog file can exhaust memory.** An explicitly named file gets no
+default time window, so its whole population is loaded unless you supply time bounds.
+Memory grows with the rows kept. On one macOS machine, a synthetic file of 800,000
+syslog lines had a median whole-process peak of about 924 MB across three runs,
+about 1.16 kB per line in decimal units. That per-line figure includes process overhead
+and describes this corpus and machine only; other files and machines can need different
+amounts. `--since` and `--until` can reduce the timestamped rows retained and the memory
+they need. Local-file rows whose timestamps could not be parsed are still kept, the
+whole file may still be read, and narrowing the window changes the population used to
+judge rarity.
+
 **Cross-feed syslog arbitration keeps the local rows - two narrow edges remain.** The
 syslog detector reads up to two feeds in one run: local system logs (files or the
 journal) and Zeek's own `syslog.log`. A host present in the local feed keeps its
@@ -631,6 +642,8 @@ guard. Streaming
 ingestion for the large-single-file case is on the list. The install has real weight too:
 the scientific-Python stack underneath (pandas, numpy, the clustering backend) puts a fresh
 virtualenv at roughly 450 MB on disk - light to operate, not light to install.
+The [syslog memory entry](#syslog) gives a measured per-line figure and the limits of
+time-window advice for an explicit syslog file.
 
 ## Digest and output
 

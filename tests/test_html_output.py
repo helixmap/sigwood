@@ -254,8 +254,8 @@ def test_dns_copy_cue_is_explicit_escaped_and_absent_from_beacon() -> None:
     escaped = html_stdlib.escape(hostile_domain, quote=True)
 
     assert out.count('<td class="copyable">') == 2
-    assert f'<td class="copyable">{escaped}</td>' in out
-    assert '<td class="copyable">single.example</td>' in out
+    assert f'<td class="copyable">{escaped.replace(".", ".<wbr>")}</td>' in out
+    assert '<td class="copyable">single.<wbr>example</td>' in out
     assert '<td class="copyable">192.0.2.10</td>' not in out
     assert "<script>alert(1)</script>" not in out
     assert "href=" not in out

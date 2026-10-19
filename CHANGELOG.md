@@ -8,6 +8,9 @@ All notable changes to sigwood are recorded here. The format follows
 
 ### Added
 
+- Value-taking flags accept a space before the value, including short flags. The
+  `=` spelling remains available; values starting with `-` other than a bare `-`
+  use `=`.
 - Analysis dry runs show each used file family's discovered and selected candidate
   counts, on-disk sizes and effective window policy. They disclose unknown sizes and
   extra history selection without loading analysis frames or validating export content.
@@ -26,6 +29,14 @@ All notable changes to sigwood are recorded here. The format follows
 
 ### Changed
 
+- Detector mission lines read as concise labels, without introductory finding verbs
+  or sentences about which thresholds the reader controls.
+- Syslog analysis uses less memory on large files. The stream loader builds its frame
+  column-wise and shares equal host and program strings within one load. The detector
+  shares equal online template text and avoids redundant full-frame copies. Findings,
+  evidence and loader metadata are unchanged. Measured peak memory fell by about a
+  quarter on a synthetic 800,000-line file, with no measured runtime regression, and
+  by about a fifth on one real syslog file.
 - CLI planning, default-window selection and loading reuse one discovery inventory.
   Without `--recursive`, source selection and row windows retain their existing behavior.
   Recursive analysis walks supplied roots before routing; final candidate populations
@@ -38,6 +49,11 @@ All notable changes to sigwood are recorded here. The format follows
 
 ### Fixed
 
+- HTML and PDF reports keep displayed IP address tokens on one line. Wide HTML tables
+  scroll within the window. Flow cells stay together on screen; PDF flows can break
+  between intact addresses. DNS names and AWS principals gain separator wrap
+  opportunities. PDF findings tables use smaller type and narrower gutters without
+  changing the syslog layout. Text, csv and json output are unchanged.
 - An unqualified analysis preview no longer says all available data when a default
   window is configured. It states the configured default and each used family's policy.
 - Analysis previews now show the selection warnings that real loads would emit,

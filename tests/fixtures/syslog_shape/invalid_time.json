@@ -1,0 +1,234 @@
+{
+  "cases": {
+    "all_nan": {
+      "loader": {
+        "logs": {
+          "*.log*": {
+            "columns": [
+              "ts",
+              "host",
+              "program",
+              "raw",
+              "message"
+            ],
+            "column_names": [
+              null
+            ],
+            "dtypes": [
+              "float64",
+              "object",
+              "object",
+              "object",
+              "object"
+            ],
+            "index": [
+              0
+            ],
+            "index_dtype": "int64",
+            "index_type": "RangeIndex",
+            "index_names": [
+              null
+            ],
+            "values": [
+              [
+                {
+                  "float": "nan"
+                },
+                "host.example",
+                "worker",
+                "Feb 30 12:00:00 host.example worker: task finished alpha",
+                "worker: task finished alpha"
+              ]
+            ],
+            "nulls": [
+              [
+                true,
+                false,
+                false,
+                false,
+                false
+              ]
+            ],
+            "attrs": {}
+          }
+        },
+        "record_counts": {
+          "*.log*": 1
+        },
+        "data_window": null,
+        "warnings": [],
+        "data_size_bytes": 57,
+        "coverage": {},
+        "rotation_skips": {},
+        "permission_skips": {},
+        "file_spans": {},
+        "quality": {
+          "*.log*": {
+            "attempted_files": 1,
+            "committed_files": 1,
+            "decoded_records": 1,
+            "decoded_bytes": 57,
+            "skipped_oversize": 0
+          }
+        }
+      },
+      "findings": [
+        {
+          "detector": "syslog",
+          "severity": "L",
+          "title": "Feb 30 12:00:00 host.example worker: task finished alpha",
+          "description": "This log pattern appeared at most 1 time in this run.",
+          "evidence": {
+            "host": "host.example",
+            "program": "worker",
+            "program_total": 1,
+            "template_id": 1,
+            "template_str": "worker: task finished alpha",
+            "count": 1,
+            "threshold": 1,
+            "first_seen": null,
+            "self_stamped": false
+          },
+          "next_steps": [
+            "Review surrounding log context for this host",
+            "Check if template appears in recent incidents"
+          ],
+          "ts_generated": {
+            "datetime": "2026-10-18T12:00:00+00:00"
+          },
+          "data_window": [
+            {
+              "datetime": "2026-10-14T00:00:00+00:00"
+            },
+            {
+              "datetime": "2026-10-18T12:00:00+00:00"
+            }
+          ]
+        }
+      ],
+      "input_after_sibling": {
+        "columns": [
+          "ts",
+          "host",
+          "program",
+          "raw",
+          "message"
+        ],
+        "column_names": [
+          null
+        ],
+        "dtypes": [
+          "float64",
+          "object",
+          "object",
+          "object",
+          "object"
+        ],
+        "index": [
+          0
+        ],
+        "index_dtype": "int64",
+        "index_type": "RangeIndex",
+        "index_names": [
+          null
+        ],
+        "values": [
+          [
+            {
+              "float": "nan"
+            },
+            "host.example",
+            "worker",
+            "Feb 30 12:00:00 host.example worker: task finished alpha",
+            "worker: task finished alpha"
+          ]
+        ],
+        "nulls": [
+          [
+            true,
+            false,
+            false,
+            false,
+            false
+          ]
+        ],
+        "attrs": {}
+      }
+    },
+    "pihole_all_nan": {
+      "logs": {
+        "pihole.log*": {
+          "columns": [
+            "ts",
+            "src",
+            "query",
+            "event_type",
+            "qtype",
+            "host"
+          ],
+          "column_names": [
+            null
+          ],
+          "dtypes": [
+            "float64",
+            "object",
+            "object",
+            "object",
+            "object",
+            "object"
+          ],
+          "index": [
+            0
+          ],
+          "index_dtype": "int64",
+          "index_type": "RangeIndex",
+          "index_names": [
+            null
+          ],
+          "values": [
+            [
+              {
+                "float": "nan"
+              },
+              "192.0.2.1",
+              "host.example",
+              "query",
+              "A",
+              "pihole"
+            ]
+          ],
+          "nulls": [
+            [
+              true,
+              false,
+              false,
+              false,
+              false,
+              false
+            ]
+          ],
+          "attrs": {}
+        }
+      },
+      "record_counts": {
+        "pihole.log*": 1
+      },
+      "data_window": null,
+      "warnings": [],
+      "data_size_bytes": 65,
+      "coverage": {},
+      "rotation_skips": {},
+      "permission_skips": {},
+      "file_spans": {},
+      "quality": {
+        "pihole.log*": {
+          "attempted_files": 1,
+          "committed_files": 1,
+          "decoded_records": 1,
+          "decoded_bytes": 65,
+          "skipped_oversize": 0
+        }
+      }
+    }
+  }
+}

@@ -851,205 +851,227 @@ def run_load(
             return None
         return strip_control(f"{path.parent.name}/{path.name}")
 
-    rows: list[dict] = []
+    column_data: dict[str, list] = {
+        name: [] for name in (strategy.columns or ())
+    }
+    kept_rows = 0
+    missing_value = float("nan")
     frames: list[pd.DataFrame] = []
     attempted = 0
     permission_paths: list[Path] = []
 
-    for path in files:
-        file_rows: list[dict] = []
-        file_first_ts: float | None = None
-        file_last_ts: float | None = None
-        eligible_observed_max: float | None = None
-        file_span: FileSpan | None = None
-        attempted_this_file = False
-        try:
-            # warn_skip (flat binary/undecodable) runs BEFORE should_skip, inside
-            # the try so a corrupt-during-peek read lands on the corruption rail.
-            # Unlike should_skip it is DEFAULT-VISIBLE (a load_result.warnings
-            # entry, not a verbose-only stderr line); like should_skip it does NOT
-            # call note_file_read, so coverage stays honest.
-            if strategy.warn_skip is not None:
-                warn_msg = strategy.warn_skip(path)
-                if warn_msg is not None:
-                    if _warnings is not None:
-                        _warnings.append(warn_msg)
-                    continue
-            # should_skip is inside the try so a corrupt compressed file
-            # caught during its head sniff lands on the read-corruption rail,
-            # not a raw traceback.
-            if strategy.should_skip is not None:
-                skip_msg = strategy.should_skip(path)
-                if skip_msg is not None:
-                    # Quiet default - print only under verbose. Preserves the
-                    # NDJSON/Zeek-TSV skip-message tests. ``note_file_read``
-                    # is NOT fired for a skipped file so the coverage
-                    # disclosure doesn't mislead.
-                    if verbose:
-                        print(strip_control(skip_msg), file=sys.stderr)
-                    continue
-            attempted_this_file = True
-            attempted += 1
-            tracker.note_file_read()
-            with _loader._open_log(path) as fh:
-                line_iter = BoundedLogicalRecordReader(
-                    _loader.progress(
-                        fh,
-                        desc=(
-                            "loaded "
-                            + strip_control(
-                                strategy.display_label
-                                or _qualified_label(path)
-                                or path.name
-                            )
-                        ),
-                        show_progress=show_progress,
-                        unit=strategy.unit,
-                    ),
-                    max_document_bytes=strategy.max_document_bytes,
-                )
-                if strategy.mode == "stream":
-                    for row in strategy.parse(
-                        line_iter, path=path, warnings=_warnings
-                    ):
-                        kept_ts: float | None = None
-                        ts = row["ts"]
-                        if _is_infinite_ts(ts):
-                            # Infinity is invalid at every policy boundary. It
-                            # is distinct from a NaN timestamp, which a
-                            # keep-policy source intentionally retains.
-                            continue
-                        if _missing_ts(ts):
-                            tracker.observe(None)
-                            if strategy.ts_policy == "drop":
-                                continue
-                            # keep policy - NaN-ts row bypasses the window
-                            # (an unfilterable line stays in the frame).
-                        else:
-                            if _is_out_of_range_ts(ts):
-                                continue
-                            normalized_ts = _coerce_usable_ts(ts)
-                            if normalized_ts is None:
-                                continue
-                            row["ts"] = normalized_ts
-                            tracker.observe(normalized_ts)
-                            if (
-                                _warnings is not None
-                                and strategy.wall_clock_row is not None
-                                and strategy.wall_clock_row(row)
-                                and (
-                                    eligible_observed_max is None
-                                    or normalized_ts > eligible_observed_max
-                                )
-                            ):
-                                eligible_observed_max = normalized_ts
-                            if since_ts is not None and normalized_ts < since_ts:
-                                continue
-                            if until_ts is not None and normalized_ts > until_ts:
-                                continue
-                            kept_ts = normalized_ts
-                        file_rows.append(row)
-                        if strategy.records_file_spans and kept_ts is not None:
-                            if file_first_ts is None or kept_ts < file_first_ts:
-                                file_first_ts = kept_ts
-                            if file_last_ts is None or kept_ts > file_last_ts:
-                                file_last_ts = kept_ts
-                        tracker.mark_kept()
-                else:  # frame mode
-                    try:
-                        pre = strategy.parse(
-                            line_iter, path=path, warnings=_warnings
-                        )
-                    except (ValueError, OverflowError) as exc:
-                        # A malformed frame-mode file (e.g. a live/mid-write
-                        # Zeek TSV, or one with a broken header) skips THIS
-                        # file only - never aborts the run. The skip is
-                        # unconditional; only the warning is sink-gated.
-                        if _warnings is not None:
-                            _warnings.append(_zeek_file_parse_warning(path, exc))
-                        continue
-                    if _log_type(pattern) == "conn":
-                        pre = _attach_conn_source_flags(
-                            pre,
-                            pre.attrs.get("zeek_source_fields", pre.columns),
-                        )
-                    tracker.observe_frame(pre)
-                    post = _apply_ts_filter(pre, since, until)
-                    if not post.empty:
-                        frames.append(post)
-                        if strategy.records_file_spans:
-                            file_span = FileSpan(
-                                path,
-                                float(post["ts"].min()),
-                                float(post["ts"].max()),
-                            )
-                        tracker.mark_kept()
-                if _quality is not None:
-                    _quality.decoded_records += line_iter.decoded_records
-                    _quality.decoded_bytes += line_iter.decoded_bytes
-                    _quality.skipped_oversize += line_iter.skipped_oversize
-                if line_iter.skipped_oversize and _warnings is not None:
-                    noun = "record" if line_iter.skipped_oversize == 1 else "records"
-                    _warnings.append(
-                        f"{strip_control(path.name)}: skipped "
-                        f"{line_iter.skipped_oversize} oversized logical {noun} "
-                        f"({line_iter.limit_note})"
-                    )
-        except PermissionError as exc:
-            if strategy.read_error_factory is not None:
-                raise strategy.read_error_factory(exc) from None
-            if not attempted_this_file:
-                attempted += 1
-            permission_paths.append(path)
-            if _warnings is not None:
-                _warnings.append(_permission_denied_message(path))
-            continue
-        except (EOFError, gzip.BadGzipFile, lzma.LZMAError, OSError) as exc:
-            if strategy.read_error_factory is not None:
-                raise strategy.read_error_factory(exc) from None
-            # ``_open_log`` returns a lazy reader; corruption may surface only
-            # at the trailer after many valid-looking lines. Discard the
-            # per-file buffer so the warning is honest (a "skipped with
-            # warning" file MUST contribute zero rows), and skip with the
-            # standard read-warning. Distinct from CloudTrail's content-parse
-            # warning rail (``_cloudtrail_parse_warning``).
-            if _warnings is not None:
-                _warnings.append(
-                    _zeek_file_read_warning(
-                        path,
-                        exc,
-                        display_label=strategy.display_label or _qualified_label(path),
-                    )
-                )
-            continue
-        if _warnings is not None and eligible_observed_max is not None:
+    identities: dict[str, str] = {}
+
+    def _identity_rows(line_iter, path):
+        for row in strategy.parse(line_iter, path=path, warnings=_warnings):
+            for name in ("host", "program"):
+                value = row.get(name)
+                if type(value) is str:
+                    row[name] = identities.setdefault(value, value)
+            yield row
+
+    try:
+        for path in files:
+            file_columns: dict[str, list] = {name: [] for name in column_data}
+            file_row_count = 0
+            file_first_ts: float | None = None
+            file_last_ts: float | None = None
+            eligible_observed_max: float | None = None
+            file_span: FileSpan | None = None
+            attempted_this_file = False
             try:
-                mtime = path.stat().st_mtime
-            except OSError:
-                pass
-            else:
-                if is_redate_suspect(eligible_observed_max, mtime):
-                    _warnings.append(
-                        _redate_warning(
-                            path,
-                            redate_days(eligible_observed_max, mtime),
-                            display_label=(
-                                strategy.display_label or _qualified_label(path)
+                # warn_skip (flat binary/undecodable) runs BEFORE should_skip, inside
+                # the try so a corrupt-during-peek read lands on the corruption rail.
+                # Unlike should_skip it is DEFAULT-VISIBLE (a load_result.warnings
+                # entry, not a verbose-only stderr line); like should_skip it does NOT
+                # call note_file_read, so coverage stays honest.
+                if strategy.warn_skip is not None:
+                    warn_msg = strategy.warn_skip(path)
+                    if warn_msg is not None:
+                        if _warnings is not None:
+                            _warnings.append(warn_msg)
+                        continue
+                # should_skip is inside the try so a corrupt compressed file
+                # caught during its head sniff lands on the read-corruption rail,
+                # not a raw traceback.
+                if strategy.should_skip is not None:
+                    skip_msg = strategy.should_skip(path)
+                    if skip_msg is not None:
+                        # Quiet default - print only under verbose. Preserves the
+                        # NDJSON/Zeek-TSV skip-message tests. ``note_file_read``
+                        # is NOT fired for a skipped file so the coverage
+                        # disclosure doesn't mislead.
+                        if verbose:
+                            print(strip_control(skip_msg), file=sys.stderr)
+                        continue
+                attempted_this_file = True
+                attempted += 1
+                tracker.note_file_read()
+                with _loader._open_log(path) as fh:
+                    line_iter = BoundedLogicalRecordReader(
+                        _loader.progress(
+                            fh,
+                            desc=(
+                                "loaded "
+                                + strip_control(
+                                    strategy.display_label
+                                    or _qualified_label(path)
+                                    or path.name
+                                )
                             ),
+                            show_progress=show_progress,
+                            unit=strategy.unit,
+                        ),
+                        max_document_bytes=strategy.max_document_bytes,
+                    )
+                    if strategy.mode == "stream":
+                        for row in _identity_rows(line_iter, path):
+                            kept_ts: float | None = None
+                            ts = row["ts"]
+                            if _is_infinite_ts(ts):
+                                # Infinity is invalid at every policy boundary. It
+                                # is distinct from a NaN timestamp, which a
+                                # keep-policy source intentionally retains.
+                                continue
+                            if _missing_ts(ts):
+                                tracker.observe(None)
+                                if strategy.ts_policy == "drop":
+                                    continue
+                                # keep policy - NaN-ts row bypasses the window
+                                # (an unfilterable line stays in the frame).
+                            else:
+                                if _is_out_of_range_ts(ts):
+                                    continue
+                                normalized_ts = _coerce_usable_ts(ts)
+                                if normalized_ts is None:
+                                    continue
+                                row["ts"] = normalized_ts
+                                tracker.observe(normalized_ts)
+                                if (
+                                    _warnings is not None
+                                    and strategy.wall_clock_row is not None
+                                    and strategy.wall_clock_row(row)
+                                    and (
+                                        eligible_observed_max is None
+                                        or normalized_ts > eligible_observed_max
+                                    )
+                                ):
+                                    eligible_observed_max = normalized_ts
+                                if since_ts is not None and normalized_ts < since_ts:
+                                    continue
+                                if until_ts is not None and normalized_ts > until_ts:
+                                    continue
+                                kept_ts = normalized_ts
+                            for name, values in file_columns.items():
+                                values.append(row.get(name, missing_value))
+                            file_row_count += 1
+                            if strategy.records_file_spans and kept_ts is not None:
+                                if file_first_ts is None or kept_ts < file_first_ts:
+                                    file_first_ts = kept_ts
+                                if file_last_ts is None or kept_ts > file_last_ts:
+                                    file_last_ts = kept_ts
+                            tracker.mark_kept()
+                    else:  # frame mode
+                        try:
+                            pre = strategy.parse(
+                                line_iter, path=path, warnings=_warnings
+                            )
+                        except (ValueError, OverflowError) as exc:
+                            # A malformed frame-mode file (e.g. a live/mid-write
+                            # Zeek TSV, or one with a broken header) skips THIS
+                            # file only - never aborts the run. The skip is
+                            # unconditional; only the warning is sink-gated.
+                            if _warnings is not None:
+                                _warnings.append(_zeek_file_parse_warning(path, exc))
+                            continue
+                        if _log_type(pattern) == "conn":
+                            pre = _attach_conn_source_flags(
+                                pre,
+                                pre.attrs.get("zeek_source_fields", pre.columns),
+                            )
+                        tracker.observe_frame(pre)
+                        post = _apply_ts_filter(pre, since, until)
+                        if not post.empty:
+                            frames.append(post)
+                            if strategy.records_file_spans:
+                                file_span = FileSpan(
+                                    path,
+                                    float(post["ts"].min()),
+                                    float(post["ts"].max()),
+                                )
+                            tracker.mark_kept()
+                    if _quality is not None:
+                        _quality.decoded_records += line_iter.decoded_records
+                        _quality.decoded_bytes += line_iter.decoded_bytes
+                        _quality.skipped_oversize += line_iter.skipped_oversize
+                    if line_iter.skipped_oversize and _warnings is not None:
+                        noun = "record" if line_iter.skipped_oversize == 1 else "records"
+                        _warnings.append(
+                            f"{strip_control(path.name)}: skipped "
+                            f"{line_iter.skipped_oversize} oversized logical {noun} "
+                            f"({line_iter.limit_note})"
+                        )
+            except PermissionError as exc:
+                if strategy.read_error_factory is not None:
+                    raise strategy.read_error_factory(exc) from None
+                if not attempted_this_file:
+                    attempted += 1
+                permission_paths.append(path)
+                if _warnings is not None:
+                    _warnings.append(_permission_denied_message(path))
+                continue
+            except (EOFError, gzip.BadGzipFile, lzma.LZMAError, OSError) as exc:
+                if strategy.read_error_factory is not None:
+                    raise strategy.read_error_factory(exc) from None
+                # ``_open_log`` returns a lazy reader; corruption may surface only
+                # at the trailer after many valid-looking lines. Discard the
+                # per-file buffer so the warning is honest (a "skipped with
+                # warning" file MUST contribute zero rows), and skip with the
+                # standard read-warning. Distinct from CloudTrail's content-parse
+                # warning rail (``_cloudtrail_parse_warning``).
+                if _warnings is not None:
+                    _warnings.append(
+                        _zeek_file_read_warning(
+                            path,
+                            exc,
+                            display_label=strategy.display_label or _qualified_label(path),
                         )
                     )
-        if _quality is not None:
-            _quality.committed_files += 1
-        if strategy.mode == "stream":
-            if (
-                strategy.records_file_spans
-                and file_first_ts is not None
-                and file_last_ts is not None
-            ):
-                file_span = FileSpan(path, file_first_ts, file_last_ts)
-            rows.extend(file_rows)
-        if _file_spans is not None and file_span is not None:
-            _file_spans.append(file_span)
+                continue
+            if _warnings is not None and eligible_observed_max is not None:
+                try:
+                    mtime = path.stat().st_mtime
+                except OSError:
+                    pass
+                else:
+                    if is_redate_suspect(eligible_observed_max, mtime):
+                        _warnings.append(
+                            _redate_warning(
+                                path,
+                                redate_days(eligible_observed_max, mtime),
+                                display_label=(
+                                    strategy.display_label or _qualified_label(path)
+                                ),
+                            )
+                        )
+            if _quality is not None:
+                _quality.committed_files += 1
+            if strategy.mode == "stream":
+                if (
+                    strategy.records_file_spans
+                    and file_first_ts is not None
+                    and file_last_ts is not None
+                ):
+                    file_span = FileSpan(path, file_first_ts, file_last_ts)
+                for name, values in column_data.items():
+                    values.extend(file_columns[name])
+                kept_rows += file_row_count
+                file_columns.clear()
+            if _file_spans is not None and file_span is not None:
+                _file_spans.append(file_span)
+
+    finally:
+        identities.clear()
 
     if _permission_skips is not None and permission_paths:
         _permission_skips[pattern] = PermissionSkipInfo(
@@ -1061,7 +1083,9 @@ def run_load(
         _quality.attempted_files += attempted
 
     if strategy.mode == "stream":
-        if not rows:
+        # A corrupt final file has not contributed any columns to the result.
+        file_columns.clear()
+        if not kept_rows:
             if _coverage is not None:
                 sc = tracker.coverage(True)
                 if sc is not None:
@@ -1071,7 +1095,7 @@ def run_load(
             sc = tracker.coverage(False)
             if sc is not None:
                 _coverage["coverage"] = sc
-        return pd.DataFrame(rows, columns=strategy.columns)
+        return pd.DataFrame(column_data, columns=strategy.columns, index=range(kept_rows))
 
     # Frame mode (Zeek): concat parsed frames. Empty conn results use the
     # declared canonical aperture; other Zeek families stay bare-empty.

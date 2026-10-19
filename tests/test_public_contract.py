@@ -276,7 +276,9 @@ def test_contract_page_tracks_the_atomic_auth_surface_inventory() -> None:
 def test_cli_value_grammar_and_duplicate_semantics() -> None:
     assert cli._parse_args(["--out=first", "--out=second"], "hunt")["out"] == "second"
     assert cli._parse_args(["-o=report.txt"], "hunt")["out"] == "report.txt"
-    for args in (["--out", "report.txt"], ["-oreport.txt"], ["-vy"]):
+    assert cli._parse_args(["--out", "report.txt"], "hunt")["out"] == "report.txt"
+    assert cli._parse_args(["-o", "report.txt"], "hunt")["out"] == "report.txt"
+    for args in (["-oreport.txt"], ["-vy"]):
         with pytest.raises(cli.UsageError):
             cli._parse_args(list(args), "hunt")
     with pytest.raises(cli.UsageError):

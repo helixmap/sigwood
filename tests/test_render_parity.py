@@ -73,6 +73,8 @@ def _html_text(findings, level=0):
         verbose_level=level,
         max_findings_per_detector=100,
     )
+    # Inline address spans and soft breaks do not insert visible whitespace.
+    raw = re.sub(r'<span class="tok">([^<]*)</span>', r"\1", raw).replace("<wbr>", "")
     stripped = re.sub(r"<[^>]+>", " ", raw)
     return _htmllib.unescape(stripped)
 
@@ -416,7 +418,10 @@ def test_ssl_projection_renders_the_three_reason_shapes(
     ) < screen_block.index(
         ".findings-table td.col-reason { white-space: normal; }"
     )
-    assert "td.col-reason" not in html_out[print_start:]
+    # The whole-cell whitespace override is screen-only; print may fold the
+    # named prose column while retaining short keyed data and address tokens.
+    assert ".findings-table td.col-reason { white-space: normal; }" not in html_out[print_start:]
+    assert ".findings-table td.col-reason { overflow-wrap: anywhere; }" in html_out[print_start:]
 
 
 def test_ssl_reason_wrap_rule_does_not_move_non_ssl_html() -> None:

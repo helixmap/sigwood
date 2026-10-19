@@ -82,8 +82,12 @@ def _observe_scored_population() -> Iterator[list[int]]:
         frame: Any,
         rarity_pct: int,
         max_count: int,
+        *,
+        copy_frame: bool = True,
     ) -> tuple[Any, int, dict[int, int]]:
-        scored, threshold, frequencies = original(frame, rarity_pct, max_count)
+        scored, threshold, frequencies = original(
+            frame, rarity_pct, max_count, copy_frame=copy_frame
+        )
         reboot_mask = scored["message"].astype(str).str.contains(
             REBOOT_SIGNALS_RE, na=False
         )

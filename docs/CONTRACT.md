@@ -36,9 +36,11 @@ refused rather than written as binary.
 
 ## Flags
 
-One value syntax everywhere: `--flag=value`, and `-f=value` for the short forms.
-There is no space-separated form (`--out report.txt`), no attached short form
-(`-oreport.txt`), and no boolean bundling (`-vy`).
+Value-taking flags accept `--flag=value` or `--flag value`, and `-f=value` or
+`-f value` for the short forms. The `=` form stays canonical in command examples.
+A space-separated value may be the bare `-`; other values starting with `-` need
+`=`. Boolean flags never consume the next token. There is no attached short form
+(`-oreport.txt`) and no boolean bundling (`-vy`).
 
 Eleven flags carry a single-letter short: `-h` `-V` `-v` `-y` `-a` `-q` `-o` `-c`
 `-s` `-d` `-f`. `-V` is the only capital and it is `--version`; `-v` is `--verbose`.

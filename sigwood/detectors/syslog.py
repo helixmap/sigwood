@@ -39,7 +39,7 @@ import sys
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
 from numbers import Real
-from typing import Iterable, Mapping, NamedTuple
+from typing import Callable, Iterable, Mapping, NamedTuple
 
 import pandas as pd
 from tqdm import tqdm
@@ -60,6 +60,9 @@ from sigwood.parsers.syslog import (
 DETECTOR_NAME = "syslog"
 STATUS = "available"
 IN_DEFAULT_HUNT: bool = True
+
+# Optional allocation instrumentation. Ordinary detection leaves this unset.
+_MEMORY_PROBE: Callable[[str], None] | None = None
 
 # syslog is fidelity-aware: flat rsyslog, the live system journal, or Zeek's
 # own syslog.log. At least one must be present; satisfiable feeds
@@ -240,9 +243,8 @@ def validate_config(cfg: dict) -> None:
 
 DETECTOR_METHOD = MethodTag("drain3", named=True)
 DETECTOR_MISSION: str = (
-    "Finds rare log patterns and recorded reboots or administrative runs, so "
-    "changes on a machine do not disappear into routine logs. You decide how seldom a "
-    "pattern must appear to count as rare."
+    "rare log patterns, and recorded reboots or administrative runs, so "
+    "changes on a machine do not disappear into routine logs"
 )
 
 
@@ -441,6 +443,8 @@ def run(context: DetectorContext) -> list[Finding]:
     if not frames:
         return []
     df = frames[0] if len(frames) == 1 else pd.concat(frames, ignore_index=True)
+    if _MEMORY_PROBE is not None:
+        _MEMORY_PROBE("concat")
 
     cfg = context.config
     sim_thresh  = cfg.get("sim_thresh",          DEFAULT_CONFIG["sim_thresh"])
@@ -461,7 +465,11 @@ def run(context: DetectorContext) -> list[Finding]:
     )
 
     df = _run_drain3(df, sim_thresh, depth, parametrize)
-    df, threshold, freq = _score_rarity(df, rarity_pct, max_count)
+    if _MEMORY_PROBE is not None:
+        _MEMORY_PROBE("drain3")
+    df, threshold, freq = _score_rarity(df, rarity_pct, max_count, copy_frame=False)
+    if _MEMORY_PROBE is not None:
+        _MEMORY_PROBE("rarity")
 
     now = datetime.now(timezone.utc)
 
@@ -476,18 +484,25 @@ def run(context: DetectorContext) -> list[Finding]:
     reboot_mask = df["message"].astype(str).str.contains(REBOOT_SIGNALS_RE, na=False)
     boot_events = _detect_boot_events(df[reboot_mask], cluster_seconds=cluster_seconds)
     boot_windows = _boot_anchor_suppression_windows(boot_events)
+    if _MEMORY_PROBE is not None:
+        _MEMORY_PROBE("reboot")
 
     transaction_events = (
         _detect_transaction_events(df, boot_windows=boot_windows)
         if recognize_transactions
         else []
     )
+    if _MEMORY_PROBE is not None:
+        _MEMORY_PROBE("transactions")
 
     rare_df = df[df["is_anomaly"] & ~reboot_mask].copy()
 
     # The magnitude anchor is the FULL loaded population for each canonical
     # (host, program) identity, not the rare subset, family size, or sample cap.
-    identity_df = _normalize_identity_columns(df)
+    identity_columns = [column for column in ("host", "program") if column in df.columns]
+    identity_df = _normalize_identity_columns(df[identity_columns])
+    if _MEMORY_PROBE is not None:
+        _MEMORY_PROBE("identity")
     program_totals = {
         (host, program): int(len(group))
         for (host, program), group in identity_df.groupby(
@@ -513,6 +528,8 @@ def run(context: DetectorContext) -> list[Finding]:
     member_mask = programs.isin(eligible_programs)
     member_df = rare_df.loc[member_mask].copy()
     sieve_df = rare_df.loc[~member_mask].copy()
+    if _MEMORY_PROBE is not None:
+        _MEMORY_PROBE("partition")
 
     burst_pairs, isolated_remainder = _collapse_bursts(
         sieve_df,
@@ -520,6 +537,8 @@ def run(context: DetectorContext) -> list[Finding]:
         now=now, data_window=context.data_window, display_max_count=max_count,
     )
     _decorate_burst_first_seen(burst_pairs)
+    if _MEMORY_PROBE is not None:
+        _MEMORY_PROBE("bursts")
     sieve_pairs = _collapse_families(
         isolated_remainder, freq, threshold,
         min_size=family_min_size, now=now, data_window=context.data_window,
@@ -532,6 +551,8 @@ def run(context: DetectorContext) -> list[Finding]:
         severity=Severity.MEDIUM, privileged=True, program_totals=program_totals,
         line_trim_limit=line_trim_limit, display_max_count=max_count,
     )
+    if _MEMORY_PROBE is not None:
+        _MEMORY_PROBE("families")
     pairs = _reconcile(
         boot_events, [*burst_pairs, *sieve_pairs, *member_pairs],
         gap_seconds=gap_seconds, now=now, data_window=context.data_window,
@@ -545,6 +566,8 @@ def run(context: DetectorContext) -> list[Finding]:
             data_window=context.data_window,
         )
     _decorate_host_totals(pairs, host_totals)
+    if _MEMORY_PROBE is not None:
+        _MEMORY_PROBE("reconcile")
     # run() owns the SINGLE final cross-channel output sort; the helpers keep their
     # own internal stable ts sorts but return unsorted pairs.
     pairs.sort(key=lambda pair: pair[0])
@@ -637,6 +660,7 @@ def mine_templates(
     miner = TemplateMiner(config=cfg)
     template_ids: list[int] = []
     template_strs: list[str] = []
+    template_texts: dict[str, str] = {}
     template_changed_total = 0
     changed_cluster_ids: set[int] = set()
 
@@ -657,7 +681,9 @@ def mine_templates(
     ):
         result = miner.add_log_message(msg)
         template_ids.append(result["cluster_id"])
-        template_strs.append(result["template_mined"])
+        # Share equal online snapshots without replacing earlier arrival text.
+        template_text = result["template_mined"]
+        template_strs.append(template_texts.setdefault(template_text, template_text))
         if result["change_type"] == "cluster_template_changed":
             template_changed_total += 1
             changed_cluster_ids.add(result["cluster_id"])
@@ -675,8 +701,10 @@ def _score_rarity(
     df: pd.DataFrame,
     rarity_pct: int,
     max_count: int,
+    *,
+    copy_frame: bool = True,
 ) -> tuple[pd.DataFrame, int, dict[int, int]]:
-    """Add is_anomaly column; return (df, effective_threshold, freq_dict)."""
+    """Add is_anomaly; copy input unless the caller already owns the frame."""
     freq: dict[int, int] = {
         int(k): int(v) for k, v in df["template_id"].value_counts().items()
     }
@@ -688,7 +716,8 @@ def _score_rarity(
 
     rare_ids = {tid for tid, count in freq.items() if count <= threshold}
 
-    df = df.copy()
+    if copy_frame:
+        df = df.copy()
     df["is_anomaly"] = df["template_id"].map(lambda tid: int(tid) in rare_ids)
     return df, threshold, freq
 
@@ -769,7 +798,7 @@ def _transaction_source(df: pd.DataFrame) -> pd.DataFrame:
     """Return a positional, timed, concrete-host copy for recognition."""
     if df.empty or not {"ts", "host", "message"}.issubset(df.columns):
         return pd.DataFrame()
-    work = df.reset_index(drop=True).copy()
+    work = df.reset_index(drop=True)
     work["ts"] = pd.to_numeric(work["ts"], errors="coerce")
     concrete = (
         work["ts"].notna()

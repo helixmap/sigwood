@@ -427,7 +427,8 @@ class Cell:
     conditionally drops (dns ``blocked``). ``full_width`` marks a single
     spanning prose row (aws ``ranked_summary``). ``copyable`` is an explicit,
     default-false HTML affordance marker; renderers must never infer it from
-    position or key shape."""
+    position or key shape. ``address_tokens`` names ordered address occurrences
+    for HTML/PDF; ``nowrap`` keeps the whole cell together on screen only."""
 
     key: str | None
     value: str
@@ -435,6 +436,8 @@ class Cell:
     optional: bool = False
     full_width: bool = False
     copyable: bool = False
+    address_tokens: tuple[str, ...] = ()
+    nowrap: bool = False
 
 
 def html_cell_value(cell: Cell) -> str:
@@ -460,6 +463,11 @@ def html_cell_value(cell: Cell) -> str:
     return cell.value
 
 
+def _address_tokens(*values: object) -> tuple[str, ...]:
+    """Missing evidence names no token; renderers never infer address grammar."""
+    return tuple(str(value) for value in values if value is not None and str(value))
+
+
 def _aws_span_str(seconds: float) -> str:
     """Compact span used by burst rows: 45s / 7m / 3h / 2d."""
     s = int(seconds)
@@ -476,9 +484,9 @@ def _project_beacon(f: Finding) -> list[Cell]:
     ev = f.evidence
     dst = f"{ev.get('dst_ip', '')}:{ev.get('dst_port', '')}/{ev.get('proto', '')}"
     return [
-        Cell(None, ev.get("src_ip", "")),
-        Cell(None, "→"),
-        Cell(None, dst),
+        Cell(None, ev.get("src_ip", ""), address_tokens=_address_tokens(ev.get("src_ip")), nowrap=True),
+        Cell(None, "→", nowrap=True),
+        Cell(None, dst, address_tokens=_address_tokens(ev.get("dst_ip")), nowrap=True),
         Cell("period", f"period={ev.get('period_str', '?')}"),
         Cell("rhythm", f"rhythm={ev.get('beacon_score', 0):.3f}"),
         Cell("conns", f"{ev.get('conn_count', 0):,} conns", align="right"),
@@ -540,7 +548,7 @@ def _project_scan(f: Finding) -> list[Cell]:
             else ""
         )
         return [
-            Cell(None, ev.get("src", "")),
+            Cell(None, ev.get("src", ""), address_tokens=_address_tokens(ev.get("src")), nowrap=True),
             Cell("middle", "→ *"),
             Cell("type", scan_type),
             Cell("outcome", outcome),
@@ -559,8 +567,8 @@ def _project_scan(f: Finding) -> list[Cell]:
         middle = ""
         metric = f"{ev.get('distinct_ports', 0)} ports/{ev.get('active_buckets', 0)} win"
     return [
-        Cell(None, ev.get("src", "")),
-        Cell("middle", middle),
+        Cell(None, ev.get("src", ""), address_tokens=_address_tokens(ev.get("src")), nowrap=True),
+        Cell("middle", middle, address_tokens=_address_tokens(ev.get("dst")) if scan_type == "vertical" else ()),
         Cell("type", scan_type),
         Cell("outcome", f"{ev.get('scan_state_ratio', 0):.0%} no normal close seen"),
         Cell("metric", metric, align="right"),
@@ -692,9 +700,10 @@ def _project_exfil(f: Finding) -> list[Cell]:
         else ""
     )
     return [
-        Cell(None, ev.get("src", "")),
-        Cell(None, "→"),
-        Cell(None, ev.get("destination_network", ev.get("dst", ""))),
+        Cell(None, ev.get("src", ""), address_tokens=_address_tokens(ev.get("src")), nowrap=True),
+        Cell(None, "→", nowrap=True),
+        Cell(None, ev.get("destination_network", ev.get("dst", "")),
+             address_tokens=_address_tokens(ev.get("destination_network", ev.get("dst"))), nowrap=True),
         Cell("dsts", destination_col, align="right", optional=True),
         Cell("out", f"out={human_bytes(float(ev.get('orig_bytes_total', 0)))}", align="right"),
         Cell("sent", f"{float(ev.get('orig_share', 0)):.2%} sent", align="right"),
@@ -737,9 +746,9 @@ def _project_ssl(f: Finding) -> list[Cell]:
         version_col = max(versions.items(), key=lambda i: (i[1], str(i[0])))[0]
     first = ev.get("first_seen")
     return [
-        Cell(None, str(ev.get("src", ""))),
-        Cell(None, "→"),
-        Cell(None, str(ev.get("dst", ""))),
+        Cell(None, str(ev.get("src", "")), address_tokens=_address_tokens(ev.get("src")), nowrap=True),
+        Cell(None, "→", nowrap=True),
+        Cell(None, str(ev.get("dst", "")), address_tokens=_address_tokens(ev.get("dst")), nowrap=True),
         Cell("conns", f"conns={int(ev.get('conn_count', 0)):,}", align="right"),
         Cell("tls", "" if not version_col else f"tls={version_col}", optional=True),
         Cell(
@@ -823,7 +832,8 @@ def _project_auth(f: Finding) -> list[Cell]:
     related_count = len(overlaps) if isinstance(overlaps, (list, tuple)) else 0
     span = max(0.0, float(ev.get("span_seconds", 0.0)))
     cells = [
-        Cell(None, f.title),
+        Cell(None, f.title, address_tokens=_address_tokens(ev.get("source"))
+             if f.title == ev.get("source") else (), nowrap=True),
         Cell("shape", shape),
         Cell(
             "failed",
@@ -935,7 +945,8 @@ def _project_dnsblock(f: Finding) -> list[Cell]:
         return [Cell(None, title, full_width=True)]
     if kind == "arrival_fold":
         return [
-            Cell(None, str(ev.get("address", f.title))),
+            Cell(None, str(ev.get("address", f.title)),
+                 address_tokens=_address_tokens(ev.get("address")), nowrap=True),
             Cell("members", f"{int(ev.get('member_count', 0))} members", align="right"),
             Cell("first", _dnsblock_time(ev.get("earliest_first_associated_period"))),
             Cell("history", _dnsblock_history(ev.get("history_seconds")), align="right", optional=True),
@@ -944,7 +955,7 @@ def _project_dnsblock(f: Finding) -> list[Cell]:
         peak = int(ev.get("peak_count", 0))
         baseline_twice = int(ev.get("baseline_median_twice", 0))
         return [
-            Cell(None, f.title),
+            Cell(None, f.title, address_tokens=_address_tokens(ev.get("address"))),
             Cell("peak", f"peak={peak:,}", align="right"),
             Cell("median", f"median={_half_integer(baseline_twice)}", align="right"),
             Cell("multiple", _closed_multiplier(peak, baseline_twice), align="right"),
@@ -959,7 +970,7 @@ def _project_dnsblock(f: Finding) -> list[Cell]:
     else:
         prior = f"prior={ev.get('prior_other_address_count', 0)}"
     return [
-        Cell(None, f.title),
+        Cell(None, f.title, address_tokens=_address_tokens(ev.get("address"))),
         Cell("names", f"{int(ev.get('qualifying_name_count', 0)):,} names", align="right"),
         Cell("queries", f"{int(ev.get('attributed_query_count', 0)):,} queries", align="right"),
         Cell("days", _dnsblock_days(ev), align="right"),
@@ -990,7 +1001,7 @@ def _project_protocol(f: Finding) -> list[Cell]:
     first = _protocol_time(ev.get("first_seen"))
     if kind == "unlabeled":
         return [
-            Cell(None, f.title),
+            Cell(None, f.title, address_tokens=_address_tokens(ev.get("src"), ev.get("dst")), nowrap=True),
             Cell("services", f"services={services}" if services else "", optional=True),
             Cell("mismatch", "", optional=True),
             Cell("unlabeled", f"unlabeled={int(ev.get('eligible_unlabeled_conns', 0))}", align="right", optional=True),
@@ -1008,7 +1019,7 @@ def _project_protocol(f: Finding) -> list[Cell]:
         suffix = f"+{conv}" if conv else ""
         parts.append(f"{label}:{registered}{suffix}")
     return [
-        Cell(None, f.title),
+        Cell(None, f.title, address_tokens=_address_tokens(ev.get("src"), ev.get("dst")), nowrap=True),
         Cell("services", f"services={services}"),
         Cell("mismatch", f"mismatch={','.join(map(str, ev.get('mismatched_services', ())))}"),
         Cell("unlabeled", "", optional=True),
@@ -1037,7 +1048,16 @@ def project_row(finding: Finding) -> list[Cell]:
     """The per-finding headline-signal cells (no severity). Empty list for an
     unknown detector (the generic fallback renders ``finding.title`` alone)."""
     projector = _PROJECTORS.get(finding.detector)
-    return projector(finding) if projector else []
+    cells = projector(finding) if projector else []
+    for cell in cells:
+        value = html_cell_value(cell)
+        offset = 0
+        for token in cell.address_tokens:
+            start = value.find(token, offset) if token else -1
+            if start < 0:
+                raise ValueError("address token must occur in order in the displayed cell")
+            offset = start + len(token)
+    return cells
 
 
 # ── per-section column plan ──────────────────────────────────────────────────

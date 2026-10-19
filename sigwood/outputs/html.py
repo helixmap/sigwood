@@ -44,6 +44,7 @@ from sigwood.outputs._evidence import (
     sample_bound_note,
 )
 from sigwood.outputs._render_model import (
+    Cell,
     ColumnSpec,
     DetectorRenderable,
     Section,
@@ -81,6 +82,32 @@ def _cell(value: Any) -> str:
     the shared ``jsonable_to_human`` so the csv worklist and the html report
     can't drift on value rendering."""
     return _esc(jsonable_to_human(to_jsonable(value), item_sep=", ", kv_sep=": "))
+
+
+def _projected_cell(cell: Cell, detector: str) -> str:
+    """Escape original slices once; only constant markup surrounds named tokens.
+
+    Declarations are ordered occurrences, not replacements in previously emitted
+    HTML. This also keeps equal endpoints and prefix-related tokens independent.
+    """
+    value = html_cell_value(cell)
+    parts: list[str] = []
+    offset = 0
+    for token in cell.address_tokens:
+        start = value.find(token, offset) if token else -1
+        if start < 0:
+            raise ValueError("address token must occur in order in the displayed cell")
+        parts.extend((_esc(value[offset:start]), '<span class="tok">', _esc(token), "</span>"))
+        offset = start + len(token)
+    parts.append(_esc(value[offset:]))
+    rendered = "".join(parts)
+    if cell.key is None and not cell.full_width and not cell.address_tokens:
+        # Insert only after escaping. None of these separators occurs in an HTML
+        # character reference, and the inserted markup contains no source data.
+        separators = "." if detector == "dns" else "./:" if detector == "aws" else ""
+        for separator in separators:
+            rendered = rendered.replace(separator, separator + "<wbr>")
+    return rendered
 
 
 # --------------------------------------------------------------------------- #
@@ -531,7 +558,7 @@ def _render_finding_row(
     if not cells:
         # No projector for this detector - show the title (generic fallback,
         # matching text's `{tag}  {finding.title}`), never a bare pill.
-        data = f'<td colspan="{colspan}">{_esc(finding.title)}</td>'
+        data = f'<td class="nowrap" colspan="{colspan}">{_esc(finding.title)}</td>'
     elif cells[0].full_width:
         # Syslog uses full_width structurally for self-stamped needles and
         # null-timestamp aggregates; keep those in the default monospace cell.
@@ -546,19 +573,20 @@ def _render_finding_row(
         # it so a long value wraps across the full width instead of defining a
         # narrow first column that squeezes structured sibling rows. Kept on the
         # default monospace td - NOT the sans `full-width` prose class.
-        data = f'<td colspan="{colspan}">{_esc(cells[0].value)}</td>'
+        cls = ' class="nowrap"' if cells[0].nowrap else ""
+        data = f'<td{cls} colspan="{colspan}">{_projected_cell(cells[0], finding.detector)}</td>'
     else:
         tds = []
         for i, spec in keep:
             # A keyed column carries its label in the `<th>` header, so strip the
             # redundant in-value label (`period=61.5m` → `61.5m`) - text keeps the
             # labeled form. A missing/bare cell renders "" / its value unchanged.
-            value = html_cell_value(cells[i]) if i < len(cells) else ""
             # Keyed columns are short data tokens (dur / bps / counts / states):
             # mark them `data` so CSS can nowrap them - they must never mid-break
             # (`54bps` → `54bp`/`s`) or wrap at a space when a long flow squeezes
             # the row. Keyless entity/flow cells keep the default break-word so a
-            # long IPv6 / domain can still fold. `num` still right-justifies.
+            # domain can fold at its explicit opportunities. Named addresses
+            # and screen-only whole-cell protection are separate affordances.
             classes = []
             if spec.align == "right":
                 classes.append("num")
@@ -570,8 +598,10 @@ def _render_finding_row(
                     classes.append("col-reason")
             if i < len(cells) and cells[i].copyable:
                 classes.append("copyable")
+            if i < len(cells) and cells[i].nowrap:
+                classes.append("nowrap")
             cls = f' class="{" ".join(classes)}"' if classes else ""
-            rendered = _esc(value)
+            rendered = _projected_cell(cells[i], finding.detector) if i < len(cells) else ""
             if finding.detector == "syslog" and spec.key is None:
                 rendered = f'<div class="clip">{rendered}</div>'
             tds.append(f"<td{cls}>{rendered}</td>")
@@ -624,7 +654,8 @@ def _render_section(
         table_class = f"findings-table syslog-table{stamp_class}"
     else:
         table_class = "findings-table"
-    parts.append(f'<table class="{table_class}">{thead}<tbody>{rows}</tbody></table>')
+    table = f'<table class="{table_class}">{thead}<tbody>{rows}</tbody></table>'
+    parts.append(table if detector == "syslog" else f'<div class="table-scroll">{table}</div>')
     return "".join(parts)
 
 
@@ -784,11 +815,12 @@ header { border-bottom: 2px solid var(--border); padding-bottom: 18px; margin-bo
 .kv { border-collapse: collapse; margin: 8px 0 2px; width: 100%; }
 .kv td { vertical-align: top; padding: 2px 10px 2px 0; font-size: 14px; }
 .kv .k { color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; white-space: nowrap; }
-.kv .v { word-break: break-word; }
+.kv .v { overflow-wrap: break-word; }
 .section-label { color: var(--muted); font-size: 13px; margin: 12px 0 4px; }
 .findings-table { border-collapse: collapse; width: 100%; margin: 4px 0 14px; font-size: 14px; }
 .findings-table th { text-align: left; color: var(--muted); font-weight: 600; font-size: 12px; padding: 4px 12px 4px 0; border-bottom: 1px solid var(--border); white-space: nowrap; }
-.findings-table td { padding: 5px 12px 5px 0; border-bottom: 1px solid var(--border); vertical-align: top; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; word-break: break-word; }
+.findings-table td { padding: 5px 12px 5px 0; border-bottom: 1px solid var(--border); vertical-align: top; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: break-word; }
+span.tok { white-space: nowrap; }
 .findings-table th.num, .findings-table td.num { text-align: right; }
 .findings-table .sev-col, .findings-table .sev-cell { width: 1%; padding-right: 10px; white-space: nowrap; }
 .findings-table .full-width { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
@@ -819,9 +851,11 @@ header { border-bottom: 2px solid var(--border); padding-bottom: 18px; margin-bo
 @media screen {
   /* Screen-only: short data tokens (dur/bps/counts/states) never mid-break on
      screen. In PRINT this is ABSENT, so td.data falls back to the base
-     word-break: break-word and WRAPS - the page wraps instead of clipping wide
+     overflow-wrap: break-word and WRAPS - the page wraps instead of clipping wide
      tables (the correctness floor; paged media has no horizontal scroll). */
   .findings-table td.data { white-space: nowrap; }
+  .findings-table td.nowrap { white-space: nowrap; }
+  .table-scroll { overflow-x: auto; }
   .findings-table td.copyable {
     -webkit-user-select: all;
     user-select: all;
@@ -851,6 +885,10 @@ header { border-bottom: 2px solid var(--border); padding-bottom: 18px; margin-bo
 @media print {
   @page { size: __SIGWOOD_PAGE_SIZE__; margin: 1.5cm; }
   body { padding: 0; max-width: none; }
+  .findings-table td:not(.data), .kv .v, .findings-table td.col-reason { overflow-wrap: anywhere; }
+  .findings-table:not(.syslog-table) { font-size: 12px; }
+  .findings-table:not(.syslog-table) th, .findings-table:not(.syslog-table) td { padding-right: 6px; }
+  .findings-table .kv .k { padding-right: 10px; }
   .sev-card { break-inside: avoid; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
   .findings-table tr { break-inside: avoid; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
   .group-head, .section-label { break-after: avoid; }

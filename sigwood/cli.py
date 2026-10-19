@@ -468,6 +468,7 @@ def _global_usage_text(no_config: bool = False) -> str:
         "  sigwood era [DIR]                measure a whole dated Zeek archive (allowlist-blind)",
         "",
         "Common options (short forms shown for the frequently-typed flags):",
+        "  values follow the flag as --flag=value or --flag value",
         "  --help, -h         --version, -V      --verbose, -v      --yes, -y",
         "  --all, -a          --quiet, -q        --out, -o=PATH     --config, -c=FILE",
         "  --since, -s=…      --detect, -d=LIST",
@@ -497,7 +498,10 @@ def _render_verb_help(verb: str) -> str:
     vs = _VERBS[verb]
     cmd = "sigwood" + (f" {verb}" if verb else "")
     shape = f" {vs.positional_shape}" if vs.positional_shape else ""
-    lines = [f"Usage: {cmd} [options]{shape}".rstrip(), "", vs.summary, "", "Options:"]
+    lines = [
+        f"Usage: {cmd} [options]{shape}".rstrip(), "", vs.summary, "", "Options:",
+        "  values follow the flag as --flag=value or --flag value",
+    ]
     # Preserve display order from _FLAG_LIST so output is stable.
     for spec in _FLAG_LIST:
         if spec.key not in vs.allowed:
@@ -554,8 +558,15 @@ def _parse_args(args: list[str], verb: str) -> dict[str, Any]:
 
     def _needs_value(spec: FlagSpec) -> str:
         alias = f" (-{spec.short})" if spec.short else ""
-        short_hint = f"-{spec.short}=… or " if spec.short else ""
-        return f"{spec.long}{alias} needs a value: {short_hint}{spec.long}=…"
+        forms = [f"{spec.long}={spec.metavar}"]
+        if spec.short:
+            forms.append(f"-{spec.short}={spec.metavar}")
+        examples = ", ".join(forms)
+        separator = ", or " if spec.short else " or "
+        return (
+            f"{spec.long}{alias} needs a value: {examples}{separator}"
+            f"{spec.long} {spec.metavar}; use = for values starting with -"
+        )
 
     def _no_value(spec: FlagSpec) -> str:
         alias = f" (-{spec.short})" if spec.short else ""
@@ -564,7 +575,15 @@ def _parse_args(args: list[str], verb: str) -> dict[str, Any]:
     result: dict[str, Any] = {}
     positionals: list[str] = []
 
-    for arg in args:
+    tokens = iter(args)
+
+    def _next_value(spec: FlagSpec) -> str:
+        value = next(tokens, None)
+        if value is None or (value.startswith("-") and value != "-"):
+            raise UsageError(_needs_value(spec))
+        return value
+
+    for arg in tokens:
         # `-vv` is a SINGLE explicitly-registered literal token - the one-off
         # spelling for verbose-level 2. Recognized BEFORE the normal short-flag
         # branch so the bundling-refusal lattice ("can't be combined") never
@@ -593,9 +612,7 @@ def _parse_args(args: list[str], verb: str) -> dict[str, Any]:
                     raise UsageError(_no_value(spec))
                 result[spec.key] = val
             else:
-                if spec.takes_value:
-                    raise UsageError(_needs_value(spec))
-                result[spec.key] = True
+                result[spec.key] = _next_value(spec) if spec.takes_value else True
         elif arg.startswith("-") and arg != "-":
             stripped = arg[1:]
             body, eq, val = stripped.partition("=")
@@ -611,9 +628,7 @@ def _parse_args(args: list[str], verb: str) -> dict[str, Any]:
                         raise UsageError(_no_value(spec))
                     result[spec.key] = val
                 else:
-                    if spec.takes_value:
-                        raise UsageError(_needs_value(spec))
-                    result[spec.key] = True
+                    result[spec.key] = _next_value(spec) if spec.takes_value else True
             elif len(body) > 1:
                 # Bundling attempt - deliberately declined. Surface kindly when
                 # every char is a known short; otherwise plain unknown-flag.

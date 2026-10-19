@@ -40,12 +40,14 @@ def test_era_rejects_hunt_only_flags() -> None:
         ("-f=text", "format", "text"),
     ],
 )
-def test_era_value_options_remain_equals_only(token: str, key: str, value: str) -> None:
-    assert cli._parse_args([token], "era")[key] == value
+def test_era_value_options_accept_both_forms(token: str, key: str, value: str) -> None:
+    expected = {key: value}
+    assert cli._parse_args([token], "era") == expected
+    assert cli._parse_args(token.split("=", 1), "era") == expected
 
 
 @pytest.mark.parametrize("token", ("--config", "-c", "--out", "-o", "--format", "-f"))
-def test_era_value_options_reject_space_separated_values(token: str) -> None:
+def test_era_value_options_require_a_value(token: str) -> None:
     with pytest.raises(cli.UsageError, match="needs a value"):
         cli._parse_args([token], "era")
 

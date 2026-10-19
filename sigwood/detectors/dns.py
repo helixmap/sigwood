@@ -193,10 +193,9 @@ DETECTOR_METHOD = MethodTag(
     named=True,
 )
 DETECTOR_MISSION: str = (
-    "Finds domain names that stand apart from the rest, including machine-generated-"
-    "looking names of the sort malware uses for disposable command domains, and large "
-    "batches of related lookups. You decide how machine-generated a name must look, "
-    "and how large a batch of lookups counts."
+    "domain names that stand apart from the rest, including "
+    "machine-generated-looking names of the sort malware uses for disposable "
+    "command domains, and large batches of related lookups"
 )
 
 _NXDOMAIN_MAJORITY = 0.5

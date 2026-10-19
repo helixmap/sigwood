@@ -59,9 +59,8 @@ OPTIONAL_LOGS: list[dict] = []
 
 DETECTOR_METHOD = MethodTag("statistical", named=False)
 DETECTOR_MISSION: str = (
-    "Finds CloudTrail principals whose activity stands out in the loaded window, or "
-    "that add several first-seen actions close together. You decide how far a "
-    "principal must stand out, and how many actions count as several."
+    "CloudTrail principals whose activity stands out in the loaded window, or "
+    "that add several first-seen actions close together"
 )
 
 DEFAULT_CONFIG = {

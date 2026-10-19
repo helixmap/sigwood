@@ -277,9 +277,9 @@ def test_docs_url_and_pyproject_urls_point_at_helixmap() -> None:
 
 # ── docs-example flag form tripwire ───────────────────────────────────────────
 #
-# The parser accepts ONE value syntax: --flag=value / -x=value. A docs example
-# showing the space form (`-f html`) teaches a command that exits 1, so every
-# sigwood command example in the public docs must use the = form. The flag
+# The parser accepts both equals and space-separated values. Public command
+# examples use --flag=value / -x=value uniformly so a reader meets one spelling.
+# This is a documentation style rule, not a parser correctness guard. The flag
 # set derives from cli._FLAG_LIST (takes_value=True), so a future value flag
 # inherits enforcement without touching this test.
 

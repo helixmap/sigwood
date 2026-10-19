@@ -254,7 +254,7 @@ def test_legacy_dnsblock_reading_bytes_pin_the_reviewed_mission_chrome(pin_tz) -
     legacy.evidence.pop("history_seconds")
     expected = {
         TextHandler: "3c1347a2c142d609c9b9f109e5fa96cf8196538ab5f9449239c5b3b6c88abcc4",
-        HtmlHandler: "0712f416763064c8684b02b25f8e89bf1188ab7f9c45ef3e146cfdf80bb3fa6f",
+        HtmlHandler: "f1d64e73963077e58502a8b300639cabcb7371488e65a2bea355c8a498a03ef7",
     }
     pin_tz("America/Chicago")
     for handler_type, digest in expected.items():
@@ -343,6 +343,8 @@ def test_all_five_handlers_receive_dnsblock_and_keep_machine_surfaces_uncapped(
     recurring = _finding("recurring_activity", pair_count=1)
     hostile = '=SUM(1,1)<script>&"\x1b\x7f'
     arrival.title = hostile
+    # Preserve the detector's title/address identity while attacking each sink.
+    arrival.evidence["address"] = hostile
     findings = [arrival, recurring]
 
     text = io.StringIO()

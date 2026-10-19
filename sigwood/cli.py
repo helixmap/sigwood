@@ -425,6 +425,8 @@ def _looks_like_path(s: str) -> bool:
 
 # ── usage / help generation ───────────────────────────────────────────────────
 
+_MANUAL_URL = "https://github.com/helixmap/sigwood/blob/main/docs/MANUAL.md"
+
 
 def _global_usage_text(no_config: bool = False) -> str:
     """Compose the bare-sigwood / --help screen from the spec.
@@ -479,6 +481,8 @@ def _global_usage_text(no_config: bool = False) -> str:
         "",
         "Run 'sigwood <command> --help' for command-specific options.",
         "",
+        f"Manual: {_MANUAL_URL}",
+        "",
     ]
     return "\n".join(lines)
 
@@ -524,6 +528,7 @@ def _render_verb_help(verb: str) -> str:
         elif verb == "era" and spec.key == "utc":
             help_text = "display Era timestamps and output dates in UTC"
         lines.append(f"{head:<32} {help_text}".rstrip())
+    lines.extend(["", f"Manual: {_MANUAL_URL}"])
     return "\n".join(lines) + "\n"
 
 

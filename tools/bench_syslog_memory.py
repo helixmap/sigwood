@@ -78,16 +78,38 @@ def effective_environment() -> dict[str, str]:
     return env
 
 
+# Start the measured process from a fresh, small interpreter. On Linux the RSS
+# of a large launching parent can become the child's pre-exec high-water mark.
+# Measure the grandchild, not this supervisor, and never import detector modules
+# here. Keep this code in the harness so its hash covers the measurement route.
+_PEAK_SUPERVISOR = '''
+import json
+import os
+import subprocess
+import sys
+import time
+
+started = time.perf_counter()
+child = subprocess.Popen(sys.argv[2:])
+_, status, usage = os.wait4(child.pid, 0)
+child.returncode = os.waitstatus_to_exitcode(status)
+with open(sys.argv[1], 'w') as stream:
+    json.dump({'exit_status': child.returncode, 'peak_rss_raw': usage.ru_maxrss,
+               'elapsed_seconds': time.perf_counter() - started}, stream)
+'''
+
+
 def measure_child(command, *, cwd: Path, env: dict, stdout, stderr) -> dict:
-    """Reap exactly one child and preserve that child's resource high-water."""
-    started = time.perf_counter()
-    child = subprocess.Popen(command, cwd=cwd, env=env, stdin=subprocess.DEVNULL,
-                             stdout=stdout, stderr=stderr)
-    _, status, usage = os.wait4(child.pid, 0)
-    child.returncode = os.waitstatus_to_exitcode(status)
-    return {'exit_status': child.returncode, 'peak_rss_raw': usage.ru_maxrss,
-            'peak_rss_bytes': rss_bytes(usage.ru_maxrss, platform.system()),
-            'elapsed_seconds': time.perf_counter() - started}
+    """Reap one measured child through an isolated, lightweight supervisor."""
+    with tempfile.TemporaryDirectory(prefix='syslog-peak-') as temp:
+        result = Path(temp) / 'usage.json'
+        subprocess.run([sys.executable, '-I', '-c', _PEAK_SUPERVISOR,
+                        str(result), *command], cwd=cwd, env=env,
+                       stdin=subprocess.DEVNULL, stdout=stdout, stderr=stderr,
+                       check=True)
+        measured = json.loads(result.read_text())
+    measured['peak_rss_bytes'] = rss_bytes(measured['peak_rss_raw'], platform.system())
+    return measured
 
 
 def peak(args, settings: dict) -> dict:

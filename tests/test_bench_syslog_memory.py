@@ -18,6 +18,10 @@ def test_peak_units():
 
 
 def test_independent_child_peak_and_exit(tmp_path):
+    # Reproduce a large pytest/loaded-detector parent even in a focused run.
+    # Keep these resident pages alive through both child measurements.
+    parent_memory = bytearray(384 * 1024 * 1024)
+    parent_memory[::4096] = b'x' * (len(parent_memory) // 4096)
     args = dict(cwd=tmp_path, env=dict(os.environ), stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL)
     first = bench.measure_child([sys.executable, '-c', 'x = bytearray(256 * 1024 * 1024)'], **args)
@@ -25,6 +29,29 @@ def test_independent_child_peak_and_exit(tmp_path):
     assert first['exit_status'] == 0
     assert second['exit_status'] == 7
     assert first['peak_rss_bytes'] > second['peak_rss_bytes'] + 128 * 1024 * 1024
+    assert len(parent_memory) == 384 * 1024 * 1024
+
+
+def test_child_context_and_streams(tmp_path):
+    env = dict(os.environ, BENCH_TEST_VALUE='inherited')
+    with (tmp_path / 'stdout').open('wb') as stdout, (tmp_path / 'stderr').open('wb') as stderr:
+        result = bench.measure_child(
+            [sys.executable, '-c',
+             'import os, sys; from os import read; print(os.environ["BENCH_TEST_VALUE"]); '
+             'print(os.getcwd(), file=sys.stderr); assert read(0, 1) == b""'],
+            cwd=tmp_path, env=env, stdout=stdout, stderr=stderr)
+    assert result['exit_status'] == 0
+    assert (tmp_path / 'stdout').read_text().strip() == 'inherited'
+    assert (tmp_path / 'stderr').read_text().strip() == str(tmp_path.resolve())
+
+
+def test_child_signal_status(tmp_path):
+    import signal
+    result = bench.measure_child(
+        [sys.executable, '-c', 'import os, signal; os.kill(os.getpid(), signal.SIGTERM)'],
+        cwd=tmp_path, env=dict(os.environ), stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL)
+    assert result['exit_status'] == -signal.SIGTERM
 
 
 def test_corpus_floor_uses_mined_population(tmp_path):

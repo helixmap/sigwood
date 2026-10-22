@@ -46,6 +46,7 @@ from sigwood.common.display import progress
 from sigwood.common.loader.io import (
     BoundedLogicalRecordReader,
     _open_log,
+    _open_log_bytes,
     _safe_resolve,
     _union_dedupe,
 )
@@ -53,12 +54,14 @@ from sigwood.common.loader.types import (
     AvailabilityReason,
     AvailabilityState,
     CandidatePopulation,
+    PatternContribution,
     DirectoryEntry,
     DiscoveryFact,
     DiscoveryFactKind,
     EntryKind,
     FileOutcomeKind,
     PatternPreview,
+    PopulationEstimate,
     RootFact,
     RootFactKind,
     WindowPolicyReason,
@@ -93,6 +96,7 @@ from sigwood.common.loader.types import (
     SinkPlan,
     SnapshotFile,
     SourceFileQuality,
+    FileOutcomes,
     SourceSnapshot,
     SourceCoverage,
     _data_window,
@@ -227,9 +231,12 @@ from sigwood.common.loader.pipeline import (
     load_syslog,
     load_zeek_log,
     on_disk_bytes,
+    estimate_population,
     preview_required_files,
     resolve_load_windows,
     run_load,
     run_folded_source,
 )
 from sigwood.common.loader.inventory import DiscoveryInventory
+
+from sigwood.common.loader.recovery import replace_pattern_load

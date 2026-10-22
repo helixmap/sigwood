@@ -73,6 +73,7 @@ from sigwood.common.loader.discovery import (
 )
 from sigwood.common.loader.io import (
     BoundedLogicalRecordReader,
+    _compression_suffix,
     _safe_resolve,
     _union_dedupe,
 )
@@ -113,9 +114,14 @@ from sigwood.common.loader.types import (
     MAX_LOGICAL_DOCUMENT_BYTES,
     LoadResult,
     PatternPreview,
+    PopulationEstimate,
     PermissionSkipInfo,
     RotationSkipInfo,
     PreparedStatus,
+    PopulationFacts,
+    FileOutcomes,
+    _population_metadata,
+    PatternContribution,
     SinkPlan,
     SnapshotFile,
     SourceFileQuality,
@@ -123,7 +129,6 @@ from sigwood.common.loader.types import (
     SourceCoverage,
     WindowPolicyReason,
     _coerce_usable_ts,
-    _data_window,
     _is_infinite_ts,
     _is_out_of_range_ts,
 )
@@ -248,6 +253,7 @@ class SourceLoader:
     # verbose-only wrong-family skip), so a misnamed binary never becomes drain3
     # "soup". Trailing/defaulted → existing constructions unaffected; None = no hook.
     warn_skip: Callable[[Path], str | None] | None = None
+    fold_warn_skip: Callable[[Path], str | None] | None = None
     # Optional operator-facing identity for private/internal materializations.
     # The pipeline owns the descriptor because display.progress has no strategy
     # context. None preserves the path-name wording for every existing source.
@@ -785,6 +791,26 @@ def _pihole_warn_undecodable(path: Path) -> str | None:
     return _flat_warn_undecodable("pihole_dir", path)
 
 
+def _share_row_identities(row: dict, identities: dict[str, str]) -> dict:
+    """Canonicalize immutable identities within one load, preserving other values."""
+    for name in ("host", "program"):
+        value = row.get(name)
+        if type(value) is str:
+            row[name] = identities.setdefault(value, value)
+    return row
+
+
+def _qualified_file_labels(files: Sequence[Path]) -> dict[Path, str | None]:
+    """Disambiguate repeated basenames across one load, before any skips."""
+    stripped_names = [strip_control(path.name) for path in files]
+    ambiguous = len(set(stripped_names)) != len(stripped_names)
+    return {
+        path: (strip_control(f"{path.parent.name}/{path.name}")
+               if ambiguous and path.parent.name else None)
+        for path in files
+    }
+
+
 def run_load(
     strategy: SourceLoader,
     files: list[Path],
@@ -793,6 +819,7 @@ def run_load(
     until: datetime | None,
     *,
     show_progress: bool = True,
+    progress_verb: str = "loaded",
     verbose: bool = False,
     _warnings: list[str] | None = None,
     _coverage: dict | None = None,
@@ -841,15 +868,7 @@ def run_load(
     since_ts = since.timestamp() if since else None
     until_ts = until.timestamp() if until else None
 
-    # The full pre-skip list owns one rendered-label decision for the call;
-    # basename identity stays exact after control stripping.
-    stripped_names = [strip_control(path.name) for path in files]
-    ambiguous = len(set(stripped_names)) != len(stripped_names)
-
-    def _qualified_label(path: Path) -> str | None:
-        if not ambiguous or not path.parent.name:
-            return None
-        return strip_control(f"{path.parent.name}/{path.name}")
+    qualified_labels = _qualified_file_labels(files)
 
     column_data: dict[str, list] = {
         name: [] for name in (strategy.columns or ())
@@ -864,11 +883,7 @@ def run_load(
 
     def _identity_rows(line_iter, path):
         for row in strategy.parse(line_iter, path=path, warnings=_warnings):
-            for name in ("host", "program"):
-                value = row.get(name)
-                if type(value) is str:
-                    row[name] = identities.setdefault(value, value)
-            yield row
+            yield _share_row_identities(row, identities)
 
     try:
         for path in files:
@@ -912,10 +927,10 @@ def run_load(
                         _loader.progress(
                             fh,
                             desc=(
-                                "loaded "
+                                strip_control(progress_verb) + " "
                                 + strip_control(
                                     strategy.display_label
-                                    or _qualified_label(path)
+                                    or qualified_labels[path]
                                     or path.name
                                 )
                             ),
@@ -1034,7 +1049,7 @@ def run_load(
                         _zeek_file_read_warning(
                             path,
                             exc,
-                            display_label=strategy.display_label or _qualified_label(path),
+                            display_label=strategy.display_label or qualified_labels[path],
                         )
                     )
                 continue
@@ -1050,7 +1065,7 @@ def run_load(
                                 path,
                                 redate_days(eligible_observed_max, mtime),
                                 display_label=(
-                                    strategy.display_label or _qualified_label(path)
+                                    strategy.display_label or qualified_labels[path]
                                 ),
                             )
                         )
@@ -1152,11 +1167,18 @@ def _fold_stream_chunks(
     window: DualWindow,
     warnings: list[str],
     quality_out: dict[Path, SourceFileQuality],
+    show_progress: bool = False,
+    progress_verb: str = "loaded",
+    identities: dict[str, str] | None = None,
+    display_label: str | None = None,
 ) -> Iterator[DecodedChunk]:
     """Parse a stream strategy once and emit canonical bounded chunks."""
     with open_snapshot_text(item) as handle:
         reader = BoundedLogicalRecordReader(
-            handle, max_document_bytes=strategy.max_document_bytes
+            _loader.progress(
+                handle, desc=f"{strip_control(progress_verb)} {strip_control(strategy.display_label or display_label or item.path.name)}",
+                show_progress=show_progress, unit=strategy.unit,
+            ), max_document_bytes=strategy.max_document_bytes
         )
         parsed = iter(strategy.parse(reader, path=item.path, warnings=warnings))
         prior_bytes = 0
@@ -1177,7 +1199,7 @@ def _fold_stream_chunks(
                     if normalized is None:
                         continue
                     row["ts"] = normalized
-                yield row, consumed
+                yield _share_row_identities(row, identities) if identities is not None else row, consumed
 
         yield from chunks_from_rows(
             rows(),
@@ -1439,16 +1461,35 @@ def run_folded_source(
     plan: SinkPlan,
     *,
     warnings: list[str] | None = None,
+    show_progress: bool = False,
+    verbose: bool = False,
+    progress_verb: str = "loaded",
 ) -> FoldExecution:
     """Run one snapshot through independent frame/fold sinks transactionally."""
     warning_sink = warnings if warnings is not None else []
     file_quality: dict[Path, SourceFileQuality] = {}
     message_value_drops: dict[Path, int] = {}
+    identities: dict[str, str] = {}
+    qualified_labels = _qualified_file_labels([item.path for item in snapshot.files])
 
     def chunks(item: SnapshotFile) -> Iterable[DecodedChunk]:
+        from sigwood.common.loader.fold import _SkippedSourceFile
+        if strategy.fold_warn_skip is not None:
+            warning = strategy.fold_warn_skip(item.path)
+            if warning is not None:
+                warning_sink.append(warning)
+                raise _SkippedSourceFile()
+        if strategy.should_skip is not None:
+            message = strategy.should_skip(item.path)
+            if message is not None:
+                if verbose:
+                    print(strip_control(message), file=sys.stderr)
+                raise _SkippedSourceFile()
         if strategy.mode == "stream":
             return _fold_stream_chunks(
-                strategy, item, window, warning_sink, file_quality
+                strategy, item, window, warning_sink, file_quality,
+                show_progress, progress_verb, identities,
+                qualified_labels[item.path],
             )
         return _fold_zeek_chunks(
             strategy,
@@ -1460,8 +1501,11 @@ def run_folded_source(
             message_value_drops,
         )
 
-    execution = execute_sink_plan(snapshot, plan, chunks)
-    if execution.frame.empty and _log_type(pattern) == "conn":
+    try:
+        execution = execute_sink_plan(snapshot, plan, chunks)
+    finally:
+        identities.clear()
+    if plan.admit is None and execution.frame.empty and _log_type(pattern) == "conn":
         execution.frame = empty_canonical_frame("conn")
     total_message_drops = sum(message_value_drops.values())
     if total_message_drops:
@@ -1517,6 +1561,7 @@ _SOURCE_LOADERS: dict[str, SourceLoader] = {
         columns=_SYSLOG_COLUMNS,
         should_skip=_syslog_should_skip,
         warn_skip=_syslog_warn_undecodable,
+        fold_warn_skip=_syslog_warn_undecodable,
         normalize=None,
         window_select=_rotation_windowed_files,
         # Peek rotation candidates → conservative (floor, None) + post-load trim.
@@ -1885,6 +1930,7 @@ def _select_pattern_files(
 
     skip_info: RotationSkipInfo | None = None
     if prepared_snapshot is not None:
+        skip_info = prepared_snapshot.selection
         if prepared_snapshot.source != source:
             raise ValueError(
                 f"prepared snapshot for {pattern!r} belongs to "
@@ -2044,6 +2090,8 @@ def load_required_logs(
         dict[tuple[str, Path], DirectorySkipInfo] | None
     ) = None,
     discovered_candidates: Mapping[str, CandidatePopulation] | None = None,
+    snapshot_tail_policies: Mapping[str, str] | None = None,
+    progress_verb: str = "loaded",
 ) -> LoadResult:
     """Load all patterns required by a run plan and return data plus metadata.
 
@@ -2098,8 +2146,10 @@ def load_required_logs(
     discovery. A prepared snapshot still decides the files for its pattern.
     """
     logs: dict[str, pd.DataFrame] = {}
-    record_counts: dict[str, int] = {}
+    population: dict[str, PopulationFacts] = {}
+    file_outcomes: dict[str, FileOutcomes] = {}
     warnings: list[str] = []
+    contributions: dict[str, PatternContribution] = {}
     data_size_bytes = 0
     coverage: dict[str, SourceCoverage] = {}
     rotation_skips: dict[str, RotationSkipInfo] = {}
@@ -2123,6 +2173,8 @@ def load_required_logs(
     discovered_candidates = discovered_candidates or {}
 
     for pattern, source in needed_logs.items():
+        warning_start = len(warnings)
+        bytes_start = data_size_bytes
         inputs = _pattern_inputs(
             pattern,
             source,
@@ -2133,6 +2185,7 @@ def load_required_logs(
             warnings=warnings,
         )
         if inputs is None:
+            contributions[pattern] = PatternContribution(0, tuple(warnings[warning_start:]))
             continue
         strategy = inputs.strategy
         prepared_snapshot = inputs.prepared_snapshot
@@ -2191,7 +2244,9 @@ def load_required_logs(
                     files,
                     source,
                     scan_interval=(s_since, s_until),
+                    tail_policy=(snapshot_tail_policies or {}).get(pattern, "prefix"),
                 )
+                snapshot = replace(snapshot, selection=skip_info)
                 snapshot_cache[snapshot_key] = snapshot
             execution = run_folded_source(
                 strategy,
@@ -2200,6 +2255,7 @@ def load_required_logs(
                 dual_window,
                 sink_plan,
                 warnings=warnings,
+                show_progress=show_progress, progress_verb=progress_verb, verbose=verbose,
             )
             quality_snapshot = replace(
                 snapshot,
@@ -2216,19 +2272,26 @@ def load_required_logs(
             )
             snapshots[pattern] = quality_snapshot
             fold_results[pattern] = execution.results
+            file_outcomes[pattern] = execution.file_outcomes
             for channel, status in execution.statuses.items():
                 if channel in prepared_status:
                     raise ValueError(f"duplicate fold channel {channel!r}")
                 prepared_status[channel] = status
             warnings.extend(execution.file_errors)
             df = execution.frame
+            if execution.population is not None:
+                population[pattern] = execution.population
             if strategy.records_file_spans:
                 pattern_spans.extend(
                     FileSpan(path, span[0], span[1])
                     for path, span in execution.file_spans.items()
                 )
-            if df.empty:
-                if not snapshot.files:
+            population_empty = (
+                execution.population.rows == 0
+                if execution.population is not None else df.empty
+            )
+            if population_empty:
+                if not snapshot.files or execution.attempted_files == 0:
                     cov_dict["coverage"] = SourceCoverage(None, None)
                 elif execution.observed_valid_rows == 0:
                     cov_dict["coverage"] = SourceCoverage(0, None)
@@ -2260,7 +2323,7 @@ def load_required_logs(
         else:
             df = run_load(
                 strategy, files, pattern, s_since, s_until,
-                show_progress=show_progress, verbose=verbose,
+                show_progress=show_progress, verbose=verbose, progress_verb=progress_verb,
                 _warnings=warnings, _coverage=cov_dict,
                 _permission_skips=permission_skips,
                 _file_spans=pattern_spans,
@@ -2274,8 +2337,6 @@ def load_required_logs(
             rotation_skips[pattern] = skip_info
 
         logs[pattern] = df
-        if not df.empty:
-            record_counts[pattern] = len(df)
 
         if "coverage" in cov_dict:
             coverage[pattern] = cov_dict["coverage"]
@@ -2284,10 +2345,15 @@ def load_required_logs(
         if warning:
             warnings.append(warning)
 
+        contributions[pattern] = PatternContribution(
+            data_size_bytes - bytes_start, tuple(warnings[warning_start:]),
+        )
+
+    record_counts, data_window = _population_metadata(logs, population)
     return LoadResult(
         logs=logs,
         record_counts=record_counts,
-        data_window=_data_window(logs),
+        data_window=data_window,
         warnings=warnings,
         data_size_bytes=data_size_bytes,
         coverage=coverage,
@@ -2297,8 +2363,11 @@ def load_required_logs(
         quality=quality,
         snapshots=snapshots,
         fold_results=fold_results,
+        file_outcomes=file_outcomes,
         prepared_status=prepared_status,
         availability=availability,
+        population=population,
+        contributions=contributions,
     )
 
 
@@ -2380,6 +2449,152 @@ def preview_required_files(
             warnings=tuple(warnings),
         )
     return previews
+
+
+def _sample_line_counts(data: bytes, *, eof: bool) -> tuple[int, int]:
+    """Return counted lines and bytes belonging to complete sampled lines."""
+    end = len(data) if eof else max(data.rfind(b"\n"), data.rfind(b"\r")) + 1
+    complete = data[:end]
+    lines = complete.count(b"\n") + complete.count(b"\r") - complete.count(b"\r\n")
+    if eof and complete and not complete.endswith((b"\n", b"\r")):
+        lines += 1
+    return lines, end
+
+
+class _CappedRawRead:
+    """Keep a decompressor's read-ahead out of the compressed-ratio sample."""
+
+    def __init__(self, raw):
+        self.raw = raw
+
+    def read(self, size: int = -1) -> bytes:
+        # gzip asks its file object for more compressed bytes than a bounded
+        # decompressed read needs. That otherwise understates the expansion
+        # ratio (and the estimated record population) by an order of magnitude.
+        return self.raw.read(min(size, 256) if size >= 0 else 256)
+
+    def __getattr__(self, name):
+        return getattr(self.raw, name)
+
+
+def estimate_population(
+    previews: Mapping[str, PatternPreview], *, sample_files: int = 32,
+    sample_bytes: int = 65536,
+) -> dict[str, PopulationEstimate]:
+    """Estimate selected records with bounded decompressed sampling.
+
+    Only a complete set of regular plain-file stats is an upper byte bound.
+    Counts and compressed sizes are advisory; an unreadable file is uncounted.
+    """
+    if sample_files < 0 or sample_bytes <= 0:
+        raise ValueError("sample_files must be non-negative and sample_bytes positive")
+    result: dict[str, PopulationEstimate] = {}
+    for pattern, preview in previews.items():
+        sizes: dict[Path, int | None] = {}
+        plain_total = 0
+        disk_total = 0
+        bounded = True
+        for path in preview.selected:
+            try:
+                info = path.stat()
+                size = info.st_size if path.is_file() else None
+            except OSError:
+                size = None
+            sizes[path] = size
+            if size is None:
+                bounded = False
+                continue
+            disk_total += size
+            if _compression_suffix(path):
+                bounded = False
+            else:
+                plain_total += size
+
+        sampled = sorted(preview.selected, key=lambda p: (
+            -(sizes[p] if sizes[p] is not None else -1), str(p)
+        ))[:sample_files]
+        exact_records = 0
+        estimated_sizes: list[int] = []
+        complete_bytes = complete_lines = 0
+        compressed_decoded = compressed_consumed = 0
+        uncounted = 0
+        all_exact = len(sampled) == len(preview.selected)
+        sampled_set = set(sampled)
+        for path in sampled:
+            size = sizes[path]
+            if size is None:
+                uncounted += 1
+                all_exact = False
+                continue
+            try:
+                with path.open("rb") as raw:
+                    compressed = bool(_compression_suffix(path))
+                    source = _CappedRawRead(raw) if compressed else raw
+                    with _loader._open_log_bytes(path, raw=source) as stream:
+                        data = stream.read(sample_bytes)
+                        consumed = raw.tell()
+                eof = len(data) < sample_bytes or (not compressed and size == len(data))
+            except (OSError, EOFError, ValueError, lzma.LZMAError):
+                uncounted += 1
+                all_exact = False
+                continue
+            if preview.source == "cloudtrail_dir":
+                if not eof:
+                    uncounted += 1
+                    all_exact = False
+                    continue
+                try:
+                    doc = json.loads(data.decode("utf-8", errors="replace"))
+                    entries = doc.get("Records") if isinstance(doc, dict) else None
+                    if not isinstance(entries, list):
+                        raise ValueError("CloudTrail record array absent")
+                    exact_records += len(entries)
+                except (UnicodeError, ValueError, TypeError):
+                    uncounted += 1
+                    all_exact = False
+                continue
+            if compressed and data and consumed:
+                compressed_decoded += len(data)
+                compressed_consumed += consumed
+            lines, used = _sample_line_counts(data, eof=eof)
+            complete_bytes += used
+            complete_lines += lines
+            if eof:
+                exact_records += lines
+            else:
+                all_exact = False
+                if compressed:
+                    estimated_sizes.append(max(len(data), round(size * len(data) / max(consumed, 1))))
+                else:
+                    estimated_sizes.append(size)
+        for path in preview.selected:
+            if path in sampled_set:
+                continue
+            all_exact = False
+            size = sizes[path]
+            if size is None or preview.source == "cloudtrail_dir":
+                uncounted += 1
+            elif _compression_suffix(path):
+                if compressed_consumed:
+                    estimated_sizes.append(round(size * compressed_decoded / compressed_consumed))
+                else:
+                    uncounted += 1
+            else:
+                estimated_sizes.append(size)
+        if complete_lines:
+            estimated = round(sum(estimated_sizes) * complete_lines / complete_bytes)
+        else:
+            estimated = 0
+            uncounted += len(estimated_sizes)
+        result[pattern] = PopulationEstimate(
+            exact_records + estimated,
+            "exact" if all_exact and uncounted == 0 else "estimated",
+            uncounted,
+            plain_total if bounded else None,
+            disk_total,
+            len(preview.selected),
+        )
+    return result
 
 
 def on_disk_bytes(files: Iterable[Path]) -> tuple[int, tuple[Path, ...]]:

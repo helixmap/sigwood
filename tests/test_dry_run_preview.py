@@ -541,9 +541,14 @@ def test_each_forbidden_seam_is_one_a_real_run_reaches(sw, tmp_path, monkeypatch
         raise AssertionError(f"reached {seam}")
 
     monkeypatch.setattr(getattr(loader, module_name), attr, fail)
-    with pytest.raises(AssertionError):
-        cli._main([*(paths.get(a, a) for a in argv), f"--config={sw.config}", "-q",
-                   "--format=json", f"--out={tmp_path / 'o.json'}"])
+    command = [*(paths.get(a, a) for a in argv), f"--config={sw.config}", "-q",
+               "--format=json", f"--out={tmp_path / 'o.json'}"]
+    if seam == "pipeline.build_source_snapshot":
+        # The nonrecoverable prepared detector contains this as a prep failure.
+        assert cli._main(command) == 1
+    else:
+        with pytest.raises(AssertionError):
+            cli._main(command)
     assert reached == [seam]
 
 

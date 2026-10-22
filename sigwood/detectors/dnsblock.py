@@ -11,6 +11,7 @@ import hashlib
 import ipaddress
 import json
 import math
+import time
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timedelta, timezone
@@ -21,7 +22,10 @@ import numpy as np
 import pandas as pd
 
 from sigwood.common.display import fmt_compact_span
-from sigwood.common.finding import DetectorContext, Finding, MethodTag, Severity
+from sigwood.common.finding import (
+    DetectorContext, FinalResult, Finding, MethodTag, Preparation,
+    PreparationHost, PreparedPopulation, Severity,
+)
 from sigwood.common.loader import (
     CoverageDecision,
     CoverageLane,
@@ -33,6 +37,7 @@ from sigwood.common.loader import (
     PositionalMask,
     PreparedState,
     PreparedStatus,
+    SinkPlan,
 )
 from sigwood.common.tld import roll_domain
 
@@ -947,8 +952,12 @@ def make_population_sink(
         )
         selected = chunk.frame.iloc[kept_positions].copy()
         selected["chunk_pos"] = kept_positions
+        # Every mask that indexes a frame is cast to bool: an empty object-dtype
+        # mask is read by pandas as column selection, which drops every column.
         selected_in_window = selected[
-            selected["chunk_pos"].map(lambda pos: bool(window_array[int(pos)]))
+            selected["chunk_pos"]
+            .map(lambda pos: bool(window_array[int(pos)]))
+            .astype(bool)
         ]
         state.event_counts.update(
             {
@@ -961,15 +970,17 @@ def make_population_sink(
         ].copy()
         relevant["in_report"] = relevant["chunk_pos"].map(
             lambda pos: bool(report_array[int(pos)])
-        )
+        ).astype(bool)
         relevant["in_context"] = relevant["chunk_pos"].map(
             lambda pos: bool(context_array[int(pos)])
-        )
+        ).astype(bool)
         relevant["numeric_ts"] = pd.to_numeric(relevant["ts"], errors="coerce")
-        finite = relevant["numeric_ts"].notna() & np.isfinite(relevant["numeric_ts"])
+        finite = (
+            relevant["numeric_ts"].notna() & np.isfinite(relevant["numeric_ts"])
+        ).astype(bool)
         state.drops[DropReason.INVALID_TIMESTAMP.value] += int((~finite).sum())
         relevant = relevant[finite]
-        in_window = relevant["in_report"] | relevant["in_context"]
+        in_window = (relevant["in_report"] | relevant["in_context"]).astype(bool)
         state.drops[DropReason.OUTSIDE_WINDOW.value] += int((~in_window).sum())
         relevant = relevant[in_window]
 
@@ -2146,6 +2157,151 @@ def _build_analysis(
         a1_rows_by_address=tuple(sorted(state.a1_rows_by_address.items())),
         notes=notes,
     )
+
+
+def _pack_cadence_batches(
+    worklist: tuple[tuple[str, str], ...],
+    upper_bounds: Mapping[tuple[str, str], int], *, limit: int,
+) -> tuple[tuple[tuple[str, str], ...], ...]:
+    """Conserve the ordered worklist under the retained-gap bound."""
+    if limit <= 0:
+        raise ValueError("dnsblock cadence batch limit must be positive")
+    batches: list[tuple[tuple[str, str], ...]] = []
+    current: list[tuple[str, str]] = []
+    total = 0
+    for pair in worklist:
+        if pair not in upper_bounds:
+            raise ValueError("dnsblock cadence upper bounds do not conserve worklist")
+        bound = int(upper_bounds[pair])
+        if bound < 0:
+            raise ValueError("dnsblock cadence upper bound must be non-negative")
+        if bound > limit:
+            if current:
+                batches.append(tuple(current))
+                current, total = [], 0
+            batches.append((pair,))
+            continue
+        if current and total + bound > limit:
+            batches.append(tuple(current))
+            current, total = [], 0
+        current.append(pair)
+        total += bound
+    if current:
+        batches.append(tuple(current))
+    if tuple(pair for batch in batches for pair in batch) != worklist:
+        raise ValueError("dnsblock cadence batching did not conserve worklist order")
+    return tuple(batches)
+
+
+def prepare(host: PreparationHost) -> Preparation:
+    """Index blocks, then register the sole authoritative population pass."""
+    pattern = host.pattern
+    broad_window = DualWindow((
+        datetime.min.replace(tzinfo=timezone.utc),
+        datetime.max.replace(tzinfo=timezone.utc),
+    ))
+    times: dict[str, float] = {}
+    started = time.monotonic()
+    first = host.fold(SinkPlan((make_anchor_block_sink(host.mask),),
+                               preserve_frame=False), broad_window,
+                      tail_policy="prefix")
+    times["anchor_block"] = time.monotonic() - started
+    snapshot = first.snapshots.get(pattern)
+    facts = first.fold_results.get(pattern, {}).get("dnsblock.anchor_blocks")
+    anchor = facts.anchor if facts is not None else None
+    available_start = (
+        datetime.fromtimestamp(anchor.minimum_ts, timezone.utc)
+        if anchor is not None and anchor.minimum_ts is not None else None
+    )
+    available_end = (
+        datetime.fromtimestamp(anchor.maximum_ts, timezone.utc)
+        if anchor is not None and anchor.maximum_ts is not None else None
+    )
+    window, interval = host.window(available_start, available_end)
+    if snapshot is None:
+        raise ValueError("dnsblock could not establish a source snapshot")
+    block_status = first.prepared_status.get(
+        "dnsblock.anchor_blocks",
+        PreparedStatus(PreparedState.FAILED, "anchor/block pass unavailable"),
+    )
+    inventory = None
+    if block_status.state is PreparedState.READY and facts is not None:
+        try:
+            inventory = finalize_block_inventory(facts.blocks, interval)
+        except FoldAbstention as exc:
+            block_status = PreparedStatus(PreparedState.ABSTAINED, str(exc))
+    host.progress(snapshot_identity=snapshot.identity_sha256,
+                  report_interval=interval, block_status=block_status,
+                  pass_wall_seconds=tuple(sorted(times.items())))
+    population_inventory = inventory or BlockInventory()
+    host.final(SinkPlan((make_population_sink(population_inventory, window, host.mask),),
+                        preserve_frame=host.sibling_needs_frame), window,
+               prepared_snapshot=snapshot)
+
+    def finish(context: DetectorContext, final: FinalResult) -> DnsblockPrepared:
+        times["population"] = host.final_wall_seconds
+        coverage = host.coverage(final.availability, interval)
+        population_status = final.prepared_status.get(
+            "dnsblock.population",
+            PreparedStatus(PreparedState.FAILED, "population pass unavailable"),
+        )
+        prepared = build_prepared(
+            snapshot_identity=snapshot.identity_sha256,
+            window=window,
+            coverage=coverage,
+            block_status=block_status,
+            population_status=population_status,
+            blocks=inventory,
+            population=final.fold_results.get("dnsblock.population"),
+            pass_wall_seconds=tuple(sorted(times.items())),
+        )
+        if (prepared.preflight.state is not PreparedState.READY
+                or prepared.analysis is None
+                or not prepared.analysis.cadence_worklist):
+            return prepared
+        results: dict[tuple[str, str], Any] = {}
+        cadence_status = PreparedStatus(PreparedState.READY)
+        upper_bounds = {
+            (address, family): count for address, family, count in
+            prepared.analysis.cadence_query_event_upper_bounds
+        }
+        started = time.monotonic()
+        for batch in _pack_cadence_batches(
+            prepared.analysis.cadence_worklist, upper_bounds,
+            limit=LIMITS.cadence_gaps,
+        ):
+            over_bound = len(batch) == 1 and upper_bounds[batch[0]] > LIMITS.cadence_gaps
+            sink = (make_cadence_sink(batch[0], population_inventory, host.mask)
+                    if over_bound else
+                    make_cadence_batch_sink(batch, population_inventory, host.mask))
+            cadence_load = host.fold(SinkPlan((sink,), preserve_frame=False), window,
+                                     prepared_snapshot=snapshot)
+            pair_status = cadence_load.prepared_status.get(
+                sink.channel,
+                PreparedStatus(PreparedState.FAILED, "cadence pass unavailable"),
+            )
+            if pair_status.state is not PreparedState.READY:
+                cadence_status = pair_status
+                break
+            part = cadence_load.fold_results.get(pattern, {}).get(sink.channel)
+            if part is None:
+                cadence_status = PreparedStatus(
+                    PreparedState.FAILED, "cadence pass produced no reducer state")
+                break
+            if over_bound:
+                results[batch[0]] = part
+            else:
+                results.update({pair: part.states.get(pair, CadenceState())
+                                for pair in batch})
+        times["cadence"] = time.monotonic() - started
+        return finalize_cadence(prepared, status=cadence_status, results=results,
+                                pass_wall_seconds=tuple(sorted(times.items())))
+
+    return Preparation(finish)
+
+
+PREPARED_POPULATION = PreparedPopulation(REQUIRED_LOGS[0]["pattern"],
+                                         prepare, recoverable=False)
 
 
 def build_prepared(

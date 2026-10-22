@@ -345,13 +345,16 @@ machine feed does not change with display preference. CSV uses ISO-8601 with the
 offset. Grouped syslog rows are the human-output exception: they lead with a syslog-shaped
 stamp while the report window still names its zone.
 
-Before analyzing a very large loaded population, sigwood asks for confirmation at the
-configured warning boundary. `--yes` accepts advisory prompts for unattended work; disabling
-that boundary in config suppresses the prompt. This confirmation comes after loading and
-is not a memory guard. The loader is not a streaming engine: each log is represented in
-memory, so a very large file or a wide unsuppressed window can exhaust a
-small host. Narrow the time range, select the needed detector, or run on a machine with more
-headroom.
+Before the large read, sigwood estimates records in the selected files and asks for
+confirmation above `warn_above` (default 50,000,000). The estimate uses bounded samples;
+the prompt labels estimated counts and discloses files it could not count. It describes
+selected input, so a directory's later default-window trim can leave fewer loaded rows.
+If an underestimate missed the pre-read prompt, a loaded-count backstop may ask after
+loading; a run never asks twice. `warn_above = 0` disables both arms, and `--yes` accepts
+advisory prompts for unattended work. This is not a memory guard. Eligible larger local
+syslog inputs can take a lower-memory two-read route; other sources and ineligible routes
+can still retain every row. A very large file or a wide unsuppressed window can exhaust a
+small host. Narrow the time range, select the needed detector, or run with more headroom.
 
 DNS clustering is the clearest measured example. On one seven-day estate containing about
 1.7 million Zeek DNS rows and 3.8 million Pi-hole rows, a DNS-only pass without suppression
@@ -691,7 +694,7 @@ file remains the owner of values.
 
 | section | keys and purpose |
 | --- | --- |
-| `[sigwood]` | `root` resolves relative paths; `detect` selects analysis; `zeek_dir`, `syslog_source`, `syslog_dir`, `pihole_dir`, and `cloudtrail_dir` select inputs; `home_net` defines traffic direction; `report_dir` and `export_dir` select write roots; `output_format`, `quiet`, and `use_utc` select presentation; `default_window` and `warn_above` bound ordinary loading; `max_findings_per_detector` caps reading views. |
+| `[sigwood]` | `root` resolves relative paths; `detect` selects analysis; `zeek_dir`, `syslog_source`, `syslog_dir`, `pihole_dir`, and `cloudtrail_dir` select inputs; `home_net` defines traffic direction; `report_dir` and `export_dir` select write roots; `output_format`, `quiet`, and `use_utc` select presentation; `default_window` selects ordinary rows; `warn_above` sets the estimated selected-input prompt threshold (default 50,000,000; 0 disables); `max_findings_per_detector` caps reading views. |
 | `[graph]` | `target_bins` bounds time detail; `top_hosts` and `top_services` bound visible categories; `domain_level` selects name aggregation. |
 | `[allowlist]` | `enabled` controls the entire suppression pass; `domain_patterns` and `connection_rules` point outside the drop-in directory; `allowlist_dir` locates drop-ins. Under `[allowlist.lists]`, `common`, `devices`, and `homelab` toggle the shipped domain sets. |
 | `[export.splunk]` | `host` and `port` locate Splunk; `verify_tls` controls certificate verification; the backend-qualified `export_dir` selects its literal destination. Each `[export.splunk.query.<name>]` uses `spl`, `output_basename`, and the query-qualified `export_dir`. |

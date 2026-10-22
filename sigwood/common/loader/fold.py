@@ -16,15 +16,18 @@ import json
 import lzma
 import math
 from contextlib import contextmanager
-from dataclasses import dataclass, field
-from datetime import datetime
+from copy import deepcopy
+from dataclasses import dataclass, field, replace
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Iterable, Iterator
+from numbers import Integral
+from typing import Any, Callable, Iterable, Iterator, Literal
 
 import pandas as pd
 
 from sigwood.common.loader.io import _safe_resolve, _union_dedupe
 from sigwood.common.loader.types import (
+    AdmitSink,
     DecodedChunk,
     DualWindow,
     FoldAbstention,
@@ -32,12 +35,14 @@ from sigwood.common.loader.types import (
     MAX_CHUNK_DECODED_BYTES,
     MAX_CHUNK_ROWS,
     MAX_FILE_DELTA_BYTES,
+    PopulationFacts,
     PositionalMask,
     PreparedState,
     PreparedStatus,
     SinkPlan,
     SnapshotFile,
     SourceFileQuality,
+    FileOutcomes,
     SourceSnapshot,
 )
 from sigwood.common.sanitize import strip_control
@@ -63,11 +68,20 @@ class FoldExecution:
     observed_span: tuple[float, float] | None = None
     attempted_files: int = 0
     committed_files: int = 0
+    file_outcomes: FileOutcomes = field(default_factory=FileOutcomes)
+    population: PopulationFacts | None = None
 
 
 def _bounded_reason(exc: BaseException) -> str:
     first = str(exc).splitlines()[0] if str(exc) else type(exc).__name__
     return strip_control(first)[:240]
+
+
+def _file_delta_limit_label(limit: int) -> str:
+    for unit, size in (("GiB", 1024**3), ("MiB", 1024**2), ("KiB", 1024)):
+        if limit >= size and limit % size == 0:
+            return f"{limit // size} {unit}"
+    return f"{limit} bytes"
 
 
 def _hash_prefix(path: Path, length: int) -> str:
@@ -114,8 +128,11 @@ def build_source_snapshot(
     source: str,
     *,
     scan_interval: tuple[datetime | None, datetime | None] = (None, None),
+    tail_policy: Literal["prefix", "whole"] = "prefix",
 ) -> SourceSnapshot:
     """Build an ordered/deduped snapshot with byte-stable content identity."""
+    if tail_policy not in {"prefix", "whole"}:
+        raise ValueError("tail policy must be prefix or whole")
     planned: list[SnapshotFile] = []
     for path in _union_dedupe([[Path(p) for p in files]]):
         resolved = _safe_resolve(path)
@@ -123,7 +140,7 @@ def build_source_snapshot(
         compressed = path.suffix.lower() in _COMPRESSED_SUFFIXES
         readable = (
             info.st_size
-            if compressed
+            if compressed or tail_policy == "whole"
             else _plain_readable_boundary(path, info.st_size, source)
         )
         planned.append(
@@ -141,7 +158,7 @@ def build_source_snapshot(
                 scan_interval=scan_interval,
             )
         )
-        verify_snapshot_file(planned[-1])
+        _verify_snapshot_identity(planned[-1])
     identity_payload = [
         {
             "resolved": str(item.resolved_path),
@@ -182,8 +199,8 @@ def build_source_snapshot(
     )
 
 
-def verify_snapshot_file(item: SnapshotFile) -> None:
-    """Refuse replacement/truncation/content drift; permit plain-file append."""
+def _verify_snapshot_identity(item: SnapshotFile) -> None:
+    """Check identity and size without rereading the captured content."""
     info = item.path.stat()
     if info.st_dev != item.device or info.st_ino != item.inode:
         raise SnapshotMutationError(f"{item.path.name}: file identity changed")
@@ -192,6 +209,11 @@ def verify_snapshot_file(item: SnapshotFile) -> None:
             raise SnapshotMutationError(f"{item.path.name}: compressed member changed")
     elif info.st_size < item.readable_bytes:
         raise SnapshotMutationError(f"{item.path.name}: file truncated")
+
+
+def verify_snapshot_file(item: SnapshotFile) -> None:
+    """Refuse replacement/truncation/content drift; permit plain-file append."""
+    _verify_snapshot_identity(item)
     if _hash_prefix(item.path, item.readable_bytes) != item.content_sha256:
         raise SnapshotMutationError(f"{item.path.name}: captured content changed")
 
@@ -300,17 +322,82 @@ def chunks_from_rows(
         yield emit()
 
 
+def _admit_chunk(
+    admission: AdmitSink, chunk: DecodedChunk, report_positions: list[int]
+) -> pd.DataFrame:
+    """Validate positional identity and canonical values before keeping rows."""
+    canonical = list(chunk.frame.columns)
+    protected = chunk.frame.copy(deep=True)
+    # Pandas copies object arrays, not nested values such as CloudTrail records.
+    for column in protected.select_dtypes(include=["object"]).columns:
+        protected[column] = pd.Series(
+            [deepcopy(value) for value in protected[column]],
+            index=protected.index, dtype=protected[column].dtype,
+        )
+    result = admission.admit(replace(chunk, frame=protected))
+    if not isinstance(result, pd.DataFrame):
+        raise TypeError("admission must return a DataFrame")
+    if (
+        tuple(result.columns) != admission.columns
+        or list(admission.columns[:len(canonical)]) != canonical
+    ):
+        raise ValueError("admission columns do not match the declared canonical schema")
+    positions = result.index.tolist()
+    allowed = set(report_positions)
+    if any(
+        not isinstance(p, Integral) or isinstance(p, bool) or p not in allowed
+        for p in positions
+    ):
+        raise ValueError("admission selected a non-report position")
+    if any(a >= b for a, b in zip(positions, positions[1:])):
+        raise ValueError("admission positions must be unique and in order")
+    if positions and not result[canonical].equals(chunk.frame.iloc[positions]):
+        raise ValueError("admission changed canonical row values")
+    return result.copy()
+
+
+class _SkippedSourceFile(Exception):
+    """A strategy rejected this file before decoding any records."""
+
+
 def execute_sink_plan(
     snapshot: SourceSnapshot,
     plan: SinkPlan,
     chunk_source: Callable[[SnapshotFile], Iterable[DecodedChunk]],
 ) -> FoldExecution:
-    """Execute independent sinks with clean-EOF, file-local transactions."""
+    """Execute independent sinks with clean-EOF, file-local transactions.
+
+    A custom chunk source owns pre-read content verification; production sources
+    open through open_snapshot_text. The executor checks identity before opening
+    and verifies captured content again at EOF.
+    """
     run_states = {sink.channel: sink.seed_run() for sink in plan.folds}
     statuses = {
         sink.channel: PreparedStatus(PreparedState.READY) for sink in plan.folds
     }
+    admission = plan.admit
+    if admission is not None:
+        statuses[admission.channel] = PreparedStatus(PreparedState.READY)
     frames: list[pd.DataFrame] = []
+    population_rows = 0
+    population_min: float | None = None
+    population_max: float | None = None
+
+    def abort_file() -> None:
+        for sink in plan.folds:
+            if (
+                statuses[sink.channel].state is not PreparedState.READY
+                or sink.abort_file is None
+            ):
+                continue
+            try:
+                run_states[sink.channel] = sink.abort_file(run_states[sink.channel])
+            except Exception as exc:
+                statuses[sink.channel] = PreparedStatus(
+                    PreparedState.FAILED, f"abort error - {_bounded_reason(exc)}"
+                )
+                run_states.pop(sink.channel, None)
+
     errors: list[str] = []
     file_spans: dict[Path, tuple[float, float]] = {}
     observed_valid_rows = 0
@@ -318,11 +405,16 @@ def execute_sink_plan(
     observed_max: float | None = None
     attempted_files = 0
     committed_files = 0
+    committed_keys: set[str] = set()
+    aborted_keys: set[str] = set()
 
     for item in snapshot.files:
         attempted_files += 1
         file_frames: list[pd.DataFrame] = []
         file_valid_rows = 0
+        file_population_rows = 0
+        file_report_min: float | None = None
+        file_report_max: float | None = None
         file_observed_min: float | None = None
         file_observed_max: float | None = None
         file_deltas = {
@@ -331,8 +423,32 @@ def execute_sink_plan(
             if statuses[sink.channel].state is PreparedState.READY
         }
         try:
-            verify_snapshot_file(item)
+            _verify_snapshot_identity(item)
             for chunk in chunk_source(item):
+                file_key = str(item.resolved_path)
+                if chunk.file_key and chunk.file_key != file_key:
+                    raise ValueError("chunk file identity does not match snapshot")
+                if not chunk.file_key:
+                    chunk = replace(chunk, file_key=file_key)
+                report_positions = [i for i, keep in enumerate(chunk.report_mask) if keep]
+                if admission is not None:
+                    file_population_rows += len(report_positions)
+                    if "ts" in chunk.frame.columns:
+                        for value in chunk.frame.iloc[report_positions]["ts"]:
+                            try:
+                                numeric = float(value)
+                            except (TypeError, ValueError, OverflowError):
+                                continue
+                            if math.isfinite(numeric):
+                                file_report_min = (
+                                    numeric if file_report_min is None
+                                    else min(file_report_min, numeric)
+                                )
+                                file_report_max = (
+                                    numeric if file_report_max is None
+                                    else max(file_report_max, numeric)
+                                )
+
                 if "ts" in chunk.frame.columns:
                     for value in chunk.frame["ts"].tolist():
                         try:
@@ -353,13 +469,23 @@ def execute_sink_plan(
                             else max(file_observed_max, numeric)
                         )
                 if plan.preserve_frame:
-                    report_positions = [
-                        index for index, keep in enumerate(chunk.report_mask) if keep
-                    ]
-                    if report_positions:
-                        file_frames.append(
-                            chunk.frame.iloc[report_positions].reset_index(drop=True).copy()
-                        )
+                    if admission is None:
+                        if report_positions:
+                            file_frames.append(
+                                chunk.frame.iloc[report_positions].reset_index(drop=True).copy()
+                            )
+                    elif statuses[admission.channel].state is PreparedState.READY:
+                        try:
+                            admitted = _admit_chunk(admission, chunk, report_positions)
+                            if not admitted.empty:
+                                file_frames.append(admitted.reset_index(drop=True))
+                        except Exception as exc:
+                            statuses[admission.channel] = PreparedStatus(
+                                PreparedState.FAILED,
+                                f"admission error - {_bounded_reason(exc)}",
+                            )
+                            frames.clear()
+                            file_frames.clear()
                 for sink in plan.folds:
                     if statuses[sink.channel].state is not PreparedState.READY:
                         continue
@@ -370,10 +496,12 @@ def execute_sink_plan(
                         delta = sink.consume(file_deltas[sink.channel], chunk, mask)
                         if not isinstance(delta, FoldDelta):
                             raise TypeError("fold callback must return FoldDelta")
-                        if delta.resident_bytes > MAX_FILE_DELTA_BYTES:
+                        ceiling = (sink.max_file_delta_bytes if sink.max_file_delta_bytes
+                                   is not None else MAX_FILE_DELTA_BYTES)
+                        if delta.resident_bytes > ceiling:
                             statuses[sink.channel] = PreparedStatus(
                                 PreparedState.ABSTAINED,
-                                "file delta exceeds 256 MiB",
+                                f"file delta exceeds {_file_delta_limit_label(ceiling)}",
                             )
                             run_states.pop(sink.channel, None)
                             file_deltas.pop(sink.channel, None)
@@ -394,7 +522,14 @@ def execute_sink_plan(
                         run_states.pop(sink.channel, None)
                         file_deltas.pop(sink.channel, None)
             verify_snapshot_file(item)
+        except _SkippedSourceFile:
+            aborted_keys.add(str(item.resolved_path))
+            abort_file()
+            attempted_files -= 1
+            continue
         except SnapshotMutationError as exc:
+            aborted_keys.add(str(item.resolved_path))
+            abort_file()
             errors.append(f"{strip_control(item.path.name)}: {_bounded_reason(exc)}")
             for sink in plan.folds:
                 if statuses[sink.channel].state is PreparedState.READY:
@@ -402,29 +537,51 @@ def execute_sink_plan(
                         PreparedState.FAILED,
                         "snapshot mutation",
                     )
+            if admission is not None:
+                if statuses[admission.channel].state is PreparedState.READY:
+                    statuses[admission.channel] = PreparedStatus(
+                        PreparedState.FAILED, "snapshot mutation"
+                    )
+                frames.clear()
             run_states.clear()
             break
         except Exception as exc:
+            abort_file()
+            aborted_keys.add(str(item.resolved_path))
             errors.append(f"{strip_control(item.path.name)}: {_bounded_reason(exc)}")
             continue
 
+        if admission is not None:
+            population_rows += file_population_rows
+            if file_report_min is not None and file_report_max is not None:
+                population_min = (
+                    file_report_min if population_min is None
+                    else min(population_min, file_report_min)
+                )
+                population_max = (
+                    file_report_max if population_max is None
+                    else max(population_max, file_report_max)
+                )
+                file_spans[item.path] = (file_report_min, file_report_max)
         if plan.preserve_frame and file_frames:
             frames.extend(file_frames)
-            finite_report: list[float] = []
-            for frame in file_frames:
-                if "ts" not in frame.columns:
-                    continue
-                for value in frame["ts"].tolist():
-                    try:
-                        numeric = float(value)
-                    except (TypeError, ValueError, OverflowError):
+            if admission is None:
+                finite_report: list[float] = []
+                for frame in file_frames:
+                    if "ts" not in frame.columns:
                         continue
-                    if math.isfinite(numeric):
-                        finite_report.append(numeric)
-            if finite_report:
-                file_spans[item.path] = (min(finite_report), max(finite_report))
+                    for value in frame["ts"].tolist():
+                        try:
+                            numeric = float(value)
+                        except (TypeError, ValueError, OverflowError):
+                            continue
+                        if math.isfinite(numeric):
+                            finite_report.append(numeric)
+                if finite_report:
+                    file_spans[item.path] = (min(finite_report), max(finite_report))
         observed_valid_rows += file_valid_rows
         committed_files += 1
+        committed_keys.add(str(item.resolved_path))
         if file_observed_min is not None and file_observed_max is not None:
             observed_min = (
                 file_observed_min
@@ -456,7 +613,12 @@ def execute_sink_plan(
                 )
                 run_states.pop(sink.channel, None)
 
-    frame = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+    if frames:
+        frame = pd.concat(frames, ignore_index=True)
+    elif admission is not None:
+        frame = pd.DataFrame(columns=list(admission.columns))
+    else:
+        frame = pd.DataFrame()
     results = {
         channel: value
         for channel, value in run_states.items()
@@ -477,4 +639,14 @@ def execute_sink_plan(
         observed_span=observed_span,
         attempted_files=attempted_files,
         committed_files=committed_files,
+        file_outcomes=FileOutcomes(frozenset(committed_keys), frozenset(aborted_keys)),
+        population=(
+            PopulationFacts(
+                population_rows,
+                (
+                    datetime.fromtimestamp(population_min, timezone.utc),
+                    datetime.fromtimestamp(population_max, timezone.utc),
+                ) if population_min is not None and population_max is not None else None,
+            ) if admission is not None else None
+        ),
     )

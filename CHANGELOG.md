@@ -29,6 +29,13 @@ All notable changes to sigwood are recorded here. The format follows
 
 ### Changed
 
+- Large-input confirmation now estimates selected records before the heavy read,
+  labels estimated or uncounted inputs, and asks at most once with a post-load
+  backstop for underestimates. `warn_above` defaults to 50,000,000 records. The
+  early comparison uses the estimated selected input, before any time-window
+  trim; the loaded count is kept only for the backstop. `warn_above = 0` still
+  disables the prompt. Eligible local syslog files with
+  a proven plain-input size at or below 14 MiB use the single-read route.
 - Detector mission lines read as concise labels, without introductory finding verbs
   or sentences about which thresholds the reader controls.
 - Syslog analysis uses less memory on large files. The stream loader builds its frame
@@ -37,6 +44,15 @@ All notable changes to sigwood are recorded here. The format follows
   evidence and loader metadata are unchanged. Measured peak memory fell by about a
   quarter on a synthetic 800,000-line file, with no measured runtime regression, and
   by about a fifth on one real syslog file.
+- Syslog analysis of local system logs reads them twice when the run allows it: a
+  first pass indexes and counts templates (shown as `indexed`), and the second keeps
+  only lines that could be rare plus reboot, admin-session and update-run lines. Findings are
+  unchanged. On synthetic 800,000-line files peak memory was 0.33 to 0.56 times a
+  single full load, at 1.4 to 1.8 times the elapsed time; on a 7 GB Linux machine
+  capped at 5 GiB, a 9,600,000-line file that a single load could not finish
+  completed at 543 MiB. Runs shared with `auth`, directory runs whose default window
+  is trimmed after loading, and inputs where most lines are candidates keep the single
+  full load. Known issues lists the routes and limits.
 - CLI planning, default-window selection and loading reuse one discovery inventory.
   Without `--recursive`, source selection and row windows retain their existing behavior.
   Recursive analysis walks supplied roots before routing; final candidate populations
@@ -49,6 +65,11 @@ All notable changes to sigwood are recorded here. The format follows
 
 ### Fixed
 
+- dnsblock skips NDJSON files named like Pi-hole logs, as the other Pi-hole loads
+  already did, instead of parsing them as dnsmasq lines.
+- dnsblock no longer fails with `reducer error - 'event_type'` when a Pi-hole file in the
+  window holds no query rows, such as a day with only dnsmasq restart lines or a day
+  whose logs stopped arriving. That file now contributes nothing and the run continues.
 - HTML and PDF reports keep displayed IP address tokens on one line. Wide HTML tables
   scroll within the window. Flow cells stay together on screen; PDF flows can break
   between intact addresses. DNS names and AWS principals gain separator wrap

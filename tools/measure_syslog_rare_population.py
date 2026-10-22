@@ -69,13 +69,15 @@ def _parse_bound(value: str | None) -> datetime | None:
 def _observe_scored_population() -> Iterator[list[int]]:
     """Observe the detector's existing scored frame for one runner invocation.
 
-    ``_score_rarity`` returns the frame on which ``syslog.run`` immediately
-    applies its reboot exclusion.  The tool repeats that existing expression
+    Both ordinary and prepared scoring return the frame on which ``syslog.run``
+    immediately applies its reboot exclusion.  The tool repeats that existing expression
     with the parser-owned grammar constant; it does not define a second reboot
     classifier.  A future change to the detector's expression itself still
     requires the frozen-manifest residual-risk note and a tool review.
     """
     original = detector._score_rarity
+    original_prepared = detector._score_prepared
+    original_run = detector.run
     observations: list[int] = []
 
     def observed_score(
@@ -88,17 +90,35 @@ def _observe_scored_population() -> Iterator[list[int]]:
         scored, threshold, frequencies = original(
             frame, rarity_pct, max_count, copy_frame=copy_frame
         )
-        reboot_mask = scored["message"].astype(str).str.contains(
-            REBOOT_SIGNALS_RE, na=False
-        )
-        observations.append(int((scored["is_anomaly"] & ~reboot_mask).sum()))
+        observe(scored)
         return scored, threshold, frequencies
 
+    def observe(scored: Any) -> None:
+        reboot_mask = scored["message"].astype(str).str.contains(REBOOT_SIGNALS_RE, na=False)
+        observations.append(int((scored["is_anomaly"] & ~reboot_mask).sum()))
+
+    def observed_prepared(frame: Any, prepared: Any) -> tuple[Any, int, dict[int, int]]:
+        scored, threshold, frequencies = original_prepared(frame, prepared)
+        observe(scored)
+        return scored, threshold, frequencies
+
+    def observed_run(context: Any, _prepared: Any = None) -> Any:
+        # No candidates means no rare rows. The detector returns before scoring.
+        if _prepared is not None:
+            frames = (context.logs.get("*.log*"), _prepared.zeek)
+            if not any(frame is not None and not frame.empty for frame in frames):
+                observations.append(0)
+        return original_run(context, _prepared=_prepared)
+
     detector._score_rarity = observed_score
+    detector._score_prepared = observed_prepared
+    detector.run = observed_run
     try:
         yield observations
     finally:
         detector._score_rarity = original
+        detector._score_prepared = original_prepared
+        detector.run = original_run
 
 
 def observe_rare_non_reboot_rows(

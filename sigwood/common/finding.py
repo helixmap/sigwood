@@ -14,10 +14,15 @@ import copy
 import enum
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Callable, ContextManager, Protocol
 
 if TYPE_CHECKING:
     import pandas as pd
+
+    from sigwood.common.loader.types import (
+        DualWindow, ExportAvailability, LoadResult, PopulationFacts, FileOutcomes,
+        PositionalMask, PreparedStatus, SinkPlan, SourceSnapshot,
+    )
 
     from sigwood.common.allowlist import AllowlistMatcher
 
@@ -70,6 +75,106 @@ class MethodTag:
 
     label: str
     named: bool
+
+
+class DeclineReason(enum.Enum):
+    """Why a prepared population could not be used."""
+
+    INELIGIBLE = "ineligible"
+    ABSTAINED = "abstained"
+    FAILED = "failed"
+
+
+@dataclass(frozen=True)
+class Declined:
+    """A preparation's typed disposition and optional diagnostic."""
+
+    reason: DeclineReason
+    cause: str = ""
+
+
+@dataclass(frozen=True)
+class FinalResult:
+    """One pattern's authoritative final-load facts."""
+
+    pattern: str
+    prepared_status: dict[str, PreparedStatus]
+    fold_results: dict[str, Any]
+    snapshot: SourceSnapshot | None
+    availability: tuple[ExportAvailability, ...]
+    population: PopulationFacts | None
+    file_outcomes: FileOutcomes | None = None
+
+
+@dataclass(frozen=True)
+class Preparation:
+    """Finish a prepared analysis after filtering, while its source is alive."""
+
+    finish: Callable[[DetectorContext, FinalResult], Any]
+    arbitration_hosts: frozenset[str] | None = None
+    expected_committed_files: frozenset[str] | None = None
+
+
+@dataclass(frozen=True)
+class PreparedPopulation:
+    """A detector's declaration of a single source preparation."""
+
+    pattern: str
+    prepare: Callable[[PreparationHost], Preparation | Declined]
+    recoverable: bool
+
+
+class PreparationHost(Protocol):
+    """Runner-owned source access and suppression for a preparation."""
+
+    pattern: str
+    source_key: str
+    config: dict[str, Any]
+    exact_window: bool
+    report_window: DualWindow
+    local_files: int
+    upper_bound_bytes: int | None
+    sibling_needs_frame: bool
+    load_all: bool
+    explicit_file: bool
+    quiet: bool
+    final_wall_seconds: float
+
+    def fold(self, sink_plan: SinkPlan, dual_window: DualWindow, *,
+             prepared_snapshot: SourceSnapshot | None = None,
+             tail_policy: str = "whole") -> LoadResult: ...
+
+    def mask(self, frame: pd.DataFrame) -> PositionalMask: ...
+
+    def window(self, available_start: datetime | None,
+               available_end: datetime | None
+               ) -> tuple[DualWindow, tuple[datetime, datetime]]: ...
+
+    def coverage(self, facts: tuple[ExportAvailability, ...],
+                 report_interval: tuple[datetime, datetime]) -> CoverageDecision: ...
+
+    def progress(self, *, snapshot_identity: str,
+                 report_interval: tuple[datetime, datetime],
+                 block_status: PreparedStatus,
+                 pass_wall_seconds: tuple[tuple[str, float], ...]) -> None: ...
+
+    def final(self, sink_plan: SinkPlan, dual_window: DualWindow, *,
+              prepared_snapshot: SourceSnapshot) -> None: ...
+
+    def timer(self, name: str) -> ContextManager[None]: ...
+
+
+@dataclass(frozen=True)
+class SuppressionContribution:
+    """Scope-blind coverage of one retained input population."""
+
+    connections: int = 0
+    domains: int = 0
+    connection_total: int = 0
+    domain_total: int = 0
+    host_rows: int = 0
+    host_total: int = 0
+    matched_hosts: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True)

@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import io
 import json
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
@@ -31,9 +32,41 @@ from sigwood.detectors import dnsblock
 UTC = timezone.utc
 
 
+@pytest.mark.parametrize(
+    ("load_all", "explicit_file", "since", "until", "expected_context"),
+    [
+        (False, False, None, None, True),
+        (False, True, None, None, False),
+        (True, False, None, None, False),
+        (False, False, datetime(2026, 1, 18, tzinfo=UTC),
+         datetime(2026, 1, 25, tzinfo=UTC), False),
+    ],
+)
+def test_preparation_window_keeps_observed_context_only_for_implicit_default(
+    load_all, explicit_file, since, until, expected_context,
+):
+    host = object.__new__(runner._PreparationHost)
+    host._args = {"since": since, "until": until}
+    host._default_spec = "7d"
+    host.load_all = load_all
+    host.explicit_file = explicit_file
+    observed_start = datetime(2026, 1, 1, tzinfo=UTC)
+    observed_end = datetime(2026, 1, 25, tzinfo=UTC)
+
+    window, interval = host.window(observed_start, observed_end)
+
+    if expected_context:
+        assert interval == (datetime(2026, 1, 18, tzinfo=UTC), observed_end)
+        assert window.context_interval == (
+            observed_start, interval[0] - timedelta(microseconds=1)
+        )
+    else:
+        assert window.context_interval is None
+
+
 def test_cadence_batch_packing_is_deterministic_and_preserves_oversize_singletons():
     pairs = (("a", "one"), ("b", "two"), ("c", "three"), ("d", "four"))
-    assert runner._pack_dnsblock_cadence_batches(
+    assert dnsblock._pack_cadence_batches(
         pairs,
         {pairs[0]: 4, pairs[1]: 6, pairs[2]: 11, pairs[3]: 3},
         limit=10,
@@ -43,9 +76,9 @@ def test_cadence_batch_packing_is_deterministic_and_preserves_oversize_singleton
 def test_cadence_batch_packing_rejects_missing_or_negative_bounds():
     pair = ("a", "one")
     with pytest.raises(ValueError, match="do not conserve"):
-        runner._pack_dnsblock_cadence_batches((pair,), {}, limit=10)
+        dnsblock._pack_cadence_batches((pair,), {}, limit=10)
     with pytest.raises(ValueError, match="non-negative"):
-        runner._pack_dnsblock_cadence_batches((pair,), {pair: -1}, limit=10)
+        dnsblock._pack_cadence_batches((pair,), {pair: -1}, limit=10)
 
 
 def test_private_calibration_batch_shares_physical_passes_and_isolates_windows_lanes(
@@ -221,6 +254,87 @@ def test_injected_planned_detector_traverses_runner_and_receives_preflight(
     }
 
 
+def test_cap_abstention_stays_in_carrier_and_exits_cleanly(tmp_path, monkeypatch):
+    log = tmp_path / "pihole.log"
+    _write_log(log)
+    artifact = tmp_path / "preflight.json"
+    report = tmp_path / "report.json"
+
+    def cap(*_args, **_kwargs):
+        raise dnsblock.FoldAbstention("synthetic block cap")
+
+    monkeypatch.setattr(dnsblock, "finalize_block_inventory", cap)
+    assert runner.run(
+        config={"sigwood": {"root": "", "warn_above": 0}}, detect="dnsblock",
+        pihole_dir=log, load_all=True, no_allowlist=True, quiet=True,
+        _detector_selection=_selection(), _dnsblock_preflight_path=artifact,
+        output_file=report, output_format="json",
+    ) == 0
+    preflight = json.loads(artifact.read_text())["preflight"]
+    assert (preflight["state"], preflight["cause"]) == (
+        "ABSTAINED", "synthetic block cap")
+    result = json.loads(report.read_text())
+    assert result["run_summary"]["detectors_failed"] == {}
+    assert result["run_summary"]["notes"]
+
+
+def test_reducer_failure_stays_detector_error(tmp_path, monkeypatch):
+    log = tmp_path / "pihole.log"
+    _write_log(log)
+    artifact = tmp_path / "preflight.json"
+    report = tmp_path / "report.json"
+    real_sink = dnsblock.make_population_sink
+
+    def failing_sink(*args, **kwargs):
+        sink = real_sink(*args, **kwargs)
+        def fail(*_args):
+            raise ValueError("synthetic reducer failure")
+        return replace(sink, consume=fail)
+
+    monkeypatch.setattr(dnsblock, "make_population_sink", failing_sink)
+    assert runner.run(
+        config={"sigwood": {"root": "", "warn_above": 0}}, detect="dnsblock",
+        pihole_dir=log, load_all=True, no_allowlist=True, quiet=True,
+        _detector_selection=_selection(), _dnsblock_preflight_path=artifact,
+        output_file=report, output_format="json",
+    ) == 1
+    assert json.loads(artifact.read_text())["preflight"]["state"] == "FAILED"
+    result = json.loads(report.read_text())
+    assert result["run_summary"]["detectors_failed"]["dnsblock"].startswith(
+        "detector error - reducer error - synthetic reducer failure")
+
+
+def test_snapshot_mutation_stays_in_failed_carrier(tmp_path, monkeypatch):
+    from sigwood.common import loader
+
+    log = tmp_path / "pihole.log"
+    _write_log(log)
+    artifact = tmp_path / "preflight.json"
+    report = tmp_path / "report.json"
+    real_load = loader.load_required_logs
+    calls = 0
+
+    def change_after_anchor(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        result = real_load(*args, **kwargs)
+        if calls == 1:
+            log.write_text(log.read_text(encoding="utf-8").replace(
+                "x.example", "y.example"), encoding="utf-8")
+        return result
+
+    monkeypatch.setattr(loader, "load_required_logs", change_after_anchor)
+    assert runner.run(
+        config={"sigwood": {"root": "", "warn_above": 0}}, detect="dnsblock",
+        pihole_dir=log, load_all=True, no_allowlist=True, quiet=True,
+        _detector_selection=_selection(), _dnsblock_preflight_path=artifact,
+        output_file=report, output_format="json",
+    ) == 1
+    assert json.loads(artifact.read_text())["preflight"]["state"] == "FAILED"
+    assert json.loads(report.read_text())["run_summary"]["detectors_failed"][
+        "dnsblock"].startswith("detector error -")
+
+
 @pytest.mark.parametrize(
     ("suppress_blocks", "expected"),
     [
@@ -296,6 +410,7 @@ def test_dnsblock_only_passes_never_retain_a_second_frame(
         return real_fold(*args, **kwargs)
 
     monkeypatch.setattr(pipeline, "run_folded_source", observe)
+    report = tmp_path / "report.json"
     assert runner.run(
         config={"sigwood": {"root": "", "warn_above": 0}},
         detect="dnsblock",
@@ -304,8 +419,11 @@ def test_dnsblock_only_passes_never_retain_a_second_frame(
         until=datetime(2026, 1, 21, tzinfo=UTC),
         quiet=True,
         _detector_selection=_selection(),
+        output_file=report, output_format="json",
     ) == 0
     assert preserve == [False, False]
+    assert json.loads(report.read_text())["run_summary"]["suppression"][
+        "domain_total"] == 0
 
 
 def test_no_allowlist_uses_zero_copy_keep_mask(tmp_path, monkeypatch):
@@ -353,6 +471,7 @@ def test_mixed_pihole_sibling_receives_one_ordinary_final_frame(tmp_path):
         {},
         vocab={"dnsblock": {}, "sibling": {}},
     )
+    report = tmp_path / "report.json"
     assert runner.run(
         config={"sigwood": {"root": "", "warn_above": 0}},
         detect="dnsblock,sibling",
@@ -361,8 +480,11 @@ def test_mixed_pihole_sibling_receives_one_ordinary_final_frame(tmp_path):
         until=datetime(2026, 1, 21, tzinfo=UTC),
         quiet=True,
         _detector_selection=selection,
+        output_file=report, output_format="json",
     ) == 0
     assert seen == {"rows": 2, "events": ["query", "gravity_blocked"]}
+    assert json.loads(report.read_text())["run_summary"]["suppression"][
+        "domain_total"] == 2
 
 
 def test_final_population_validation_is_the_only_coverage_source(

@@ -126,6 +126,28 @@ class BoundedLogicalRecordReader(Iterator[str]):
         return "".join(parts)
 
 
+def _compression_suffix(path: Path) -> str:
+    """One suffix decision for the text loader and bounded byte sampler."""
+    return path.suffix if path.suffix in (".gz", ".bz2", ".xz") else ""
+
+
+def _open_log_bytes(path: Path, *, raw=None):
+    """Open decompressed bytes; ``raw`` exposes compressed consumption to callers.
+
+    The caller owns and closes a supplied raw file. With no supplied file, the
+    returned stream owns its file as usual.
+    """
+    suffix = _compression_suffix(path)
+    if suffix == ".gz":
+        return gzip.GzipFile(filename=str(path) if raw is None else None,
+                             fileobj=raw, mode="rb")
+    if suffix == ".bz2":
+        return bz2.BZ2File(raw if raw is not None else path, mode="rb")
+    if suffix == ".xz":
+        return lzma.LZMAFile(raw if raw is not None else path, mode="rb")
+    return raw if raw is not None else path.open("rb")
+
+
 def _open_log(path: Path):
     """Open a plain, gzip-, bzip2-, or xz-compressed log file for reading.
 
@@ -135,11 +157,12 @@ def _open_log(path: Path):
     new format here closes the gap across conn/dns/syslog/pihole/cloudtrail/sniff
     in one place.
     """
-    if path.suffix == ".gz":
+    suffix = _compression_suffix(path)
+    if suffix == ".gz":
         return gzip.open(path, "rt", encoding="utf-8", errors="replace")
-    if path.suffix == ".bz2":
+    if suffix == ".bz2":
         return bz2.open(path, "rt", encoding="utf-8", errors="replace")
-    if path.suffix == ".xz":
+    if suffix == ".xz":
         return lzma.open(path, "rt", encoding="utf-8", errors="replace")
     return path.open("r", encoding="utf-8", errors="replace")
 

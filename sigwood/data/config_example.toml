@@ -49,9 +49,10 @@ use_utc       = false
 # ── Analysis window ─────────────────────────────────────────────────
 # default_window: lookback for a directory with no --since/--days ("7d","24h";
 #   "" or "all" = whole archive; --all overrides one run).
-# warn_above: prompt before analyzing more than this many records (0 disables).
+# warn_above: prompt on an estimated selected-input count before the large read;
+#   0 disables. The loaded-count backstop can prompt if the estimate was low.
 default_window = "7d"
-warn_above     = 10_000_000
+warn_above     = 50_000_000
 
 # Per-detector cap on rendered findings in the READING views (text/html/pdf;
 # json/csv ignore it - the machine feed and the worklist never truncate). Cap

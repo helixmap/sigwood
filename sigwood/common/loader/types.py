@@ -21,6 +21,7 @@ from sigwood.common.loader.limits import (
     MAX_CHUNK_DECODED_BYTES,
     MAX_CHUNK_ROWS,
     MAX_FILE_DELTA_BYTES,
+    MAX_DECLARED_FILE_DELTA_BYTES,
     MAX_LOGICAL_DOCUMENT_BYTES,
     MAX_LOGICAL_RECORD_BYTES,
 )
@@ -493,8 +494,20 @@ class PatternPreview:
 
 
 @dataclass(frozen=True)
+class PopulationEstimate:
+    """Bounded pre-read count and the independent proven plain-file size bound."""
+
+    records: int
+    records_basis: str
+    uncounted_files: int
+    upper_bound_bytes: int | None
+    on_disk_bytes: int
+    selected_files: int
+
+
+@dataclass(frozen=True)
 class FileSpan:
-    """Finite timestamp extrema of one file's kept rows."""
+    """Finite report timestamp extrema before optional candidate selection."""
 
     path: Path
     first_ts: float
@@ -618,6 +631,7 @@ class SourceSnapshot:
     files: tuple[SnapshotFile, ...]
     identity_sha256: str
     content_identity_sha256: str
+    selection: RotationSkipInfo | None = None
 
 
 @dataclass(frozen=True)
@@ -667,6 +681,7 @@ class DecodedChunk:
     report_mask: tuple[bool, ...]
     context_mask: tuple[bool, ...]
     first_ordinal: int
+    file_key: str = ""
 
     def __post_init__(self) -> None:
         rows = len(self.frame)
@@ -702,23 +717,56 @@ class FoldSink:
     seed_run: Callable[[], Any]
     commit_file: Callable[[Any, FoldDelta], Any]
     mask: Callable[[pd.DataFrame], PositionalMask]
+    abort_file: Callable[[Any], Any] | None = None
+    max_file_delta_bytes: int | None = None
+
+    def __post_init__(self) -> None:
+        limit = self.max_file_delta_bytes
+        if limit is not None and (
+            type(limit) is not int or not 0 < limit <= MAX_DECLARED_FILE_DELTA_BYTES
+        ):
+            raise ValueError("declared file delta limit must be a positive integer at most 2 GiB")
+
+
+@dataclass(frozen=True)
+class AdmitSink:
+    """Ordered report-row selection with a declared empty-result schema."""
+
+    channel: str
+    admit: Callable[[DecodedChunk], pd.DataFrame]
+    columns: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        if len(self.columns) != len(set(self.columns)):
+            raise ValueError("admission columns must be unique")
+
+
+@dataclass(frozen=True)
+class PopulationFacts:
+    """Committed report population before candidate selection."""
+
+    rows: int
+    window: tuple[datetime, datetime] | None
 
 
 @dataclass(frozen=True)
 class SinkPlan:
-    """Independent folded channels plus optional ordinary-frame preservation."""
+    """Independent folded channels and optional report-frame admission."""
 
     folds: tuple[FoldSink, ...] = ()
     preserve_frame: bool = True
+    admit: AdmitSink | None = None
 
     def __post_init__(self) -> None:
         channels = [sink.channel for sink in self.folds]
+        if self.admit is not None:
+            channels.append(self.admit.channel)
         if len(channels) != len(set(channels)):
             raise ValueError("sink channels must be unique")
 
     @property
     def requires_snapshot(self) -> bool:
-        return bool(self.folds)
+        return bool(self.folds) or self.admit is not None
 
 
 @dataclass
@@ -730,6 +778,22 @@ class LoadQuality:
     decoded_records: int = 0
     decoded_bytes: int = 0
     skipped_oversize: int = 0
+
+
+@dataclass(frozen=True)
+class PatternContribution:
+    """Selected source bytes and ordered warnings owned by one pattern."""
+
+    data_size_bytes: int
+    warnings: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class FileOutcomes:
+    """Explicit snapshot file transactions, keyed by resolved file identity."""
+
+    committed: frozenset[str] = frozenset()
+    aborted: frozenset[str] = frozenset()
 
 
 @dataclass
@@ -752,6 +816,9 @@ class LoadResult:
     availability: dict[str, tuple[ExportAvailability, ...]] = field(
         default_factory=dict,
     )
+    population: dict[str, PopulationFacts] = field(default_factory=dict)
+    contributions: dict[str, PatternContribution] = field(default_factory=dict)
+    file_outcomes: dict[str, FileOutcomes] = field(default_factory=dict)
 
 
 def _data_window(logs: dict[str, pd.DataFrame]) -> tuple[datetime, datetime] | None:
@@ -772,3 +839,22 @@ def _data_window(logs: dict[str, pd.DataFrame]) -> tuple[datetime, datetime] | N
         datetime.fromtimestamp(min(all_ts), tz=timezone.utc),
         datetime.fromtimestamp(max(all_ts), tz=timezone.utc),
     )
+
+
+def _population_metadata(
+    logs: dict[str, pd.DataFrame],
+    population: dict[str, PopulationFacts],
+) -> tuple[dict[str, int], tuple[datetime, datetime] | None]:
+    """Combine retained ordinary frames with pre-selection population facts."""
+    ordinary = {p: df for p, df in logs.items() if p not in population}
+    counts = {p: len(df) for p, df in ordinary.items() if not df.empty}
+    counts.update({p: facts.rows for p, facts in population.items() if facts.rows})
+    windows = [facts.window for facts in population.values() if facts.window is not None]
+    ordinary_window = _data_window(ordinary)
+    if ordinary_window is not None:
+        windows.append(ordinary_window)
+    window = (
+        (min(w[0] for w in windows), max(w[1] for w in windows))
+        if windows else None
+    )
+    return counts, window

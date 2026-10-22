@@ -190,16 +190,58 @@ own right.
 
 ### syslog
 
-**A large explicit syslog file can exhaust memory.** An explicitly named file gets no
-default time window, so its whole population is loaded unless you supply time bounds.
-Memory grows with the rows kept. On one macOS machine, a synthetic file of 800,000
-syslog lines had a median whole-process peak of about 924 MB across three runs,
-about 1.16 kB per line in decimal units. That per-line figure includes process overhead
-and describes this corpus and machine only; other files and machines can need different
-amounts. `--since` and `--until` can reduce the timestamped rows retained and the memory
-they need. Local-file rows whose timestamps could not be parsed are still kept, the
-whole file may still be read, and narrowing the window changes the population used to
-judge rarity.
+**Eligible larger local syslog files are read twice, and some runs still keep every row.**
+When the syslog detector reads local system logs (syslog files or the journal capture),
+it can read them twice. The first pass indexes each line's template and counts them; it
+shows as `indexed` in the progress output. The second pass keeps only the lines that could be rare, plus reboot, admin-session and
+update-run lines, and the counts from the first pass decide rarity over the whole population.
+Findings are the same as a single full load. These runs keep the single full load
+instead:
+
+- selected plain local files with a proven combined byte size at or below 14 MiB;
+  this avoids an indexing pass when measured memory savings were below 128 MiB;
+- another selected detector reads the same lines (for example `auth`);
+- a syslog directory run without explicit bounds, where the default window is trimmed
+  after loading (`--since`/`--until`, `--all`, a named file, the journal, or a disabled
+  default window all take the two reads);
+- no local files are selected (Zeek `syslog.log` alone);
+- 60% or more of the indexed lines fall in the candidate set. Retaining most rows saves
+  little or no memory, so the run pays the indexing pass and then loads in full. That cutoff came
+  from synthetic 800,000-line mixtures: two-pass peak memory was about 0.90 times the
+  single load at 50% candidates and about 1.03 times at 70%, so parity sits near 66%
+  and 60% leaves a margin. It calibrates memory only, not every input shape.
+
+The 14 MiB cutoff was rounded down from the smallest measured 128 MiB savings
+crossing on euclid and ajax. Compressed or unsized inputs have no proven
+decompressed byte bound, so this small-input shortcut does not apply to them;
+they retain the protected eligibility and candidate-density decisions. The
+cutoff is based on the measured shapes, not a universal memory guarantee.
+
+A corrupt file is skipped on both reads with the usual corruption warning, and the run
+stays on the two-read route. If the index itself fails or abstains (a per-file limit, for
+example), or a file is replaced or truncated between the reads so the two reads would
+cover different files, the run falls back to the full load and the report carries one
+note saying so. Lines appended to a file while the run reads it are left out of both
+passes, including text that completes an unterminated last line.
+
+The second read costs time. On synthetic 800,000-line files the two-pass route took
+1.4 to 1.8 times as long as a single load, at 0.33 to 0.56 times its peak memory; a
+file whose lines were mostly candidates indexed, fell back and took about 2.1 times as
+long with about the same memory. On one real 307,681-line file it took 1.38 times as
+long at 0.66 times the memory.
+On a 4-core, 7 GB Linux machine with memory capped at 5 GiB and no swap, a single load
+completed a synthetic 8,000,000-line file (4.9 GiB peak) and was killed at 9,600,000
+lines; the two-pass route completed the 9,600,000-line file at 543 MiB in 52 minutes.
+That file produced no rare-line candidates, so 543 MiB is one observed point for that
+shape only; memory for a 9,600,000-line file with many rare lines was not measured. The single full load needed about 1.16 kB per line on
+one macOS machine for the same kind of 800,000-line file. These figures describe these
+corpora and machines only.
+
+Each file's index may use up to 2 GiB. At 8 bytes per indexed line that is about 268
+million lines per file, less the space for distinct hosts and programs; this is derived
+from the limit, not measured at it. A file over the limit falls back to the full load.
+Rows whose timestamps could not be parsed are kept on both routes, and narrowing the
+window changes the population used to judge rarity.
 
 **Cross-feed syslog arbitration keeps the local rows - two narrow edges remain.** The
 syslog detector reads up to two feeds in one run: local system logs (files or the
@@ -630,15 +672,15 @@ for the dated/current layout, filename gates and directory-link boundaries.
 `.bz2`, and `.xz`. `.zst` needs a decoder that isn't in the Python standard library
 before 3.14, so it's deferred for now - decompress those files first.
 
-**Peak memory runs to a multiple of the largest log loaded.** sigwood reads each log fully
-into memory (pandas) rather than streaming, so peak memory tracks the biggest single file it
+**Peak memory runs to a multiple of the largest log loaded.** Many routes read each log fully
+into memory (pandas) rather than streaming, so peak memory can track the biggest single file they
 opens, not the total on disk - a ~560 MB `conn.log` peaked near 6 GB in one measurement. The
 default window can prune files where the layout and rotation rules support it; it does
 not guarantee that a directory avoids full reads. One very large file, or `--all` over
 a big archive, can exhaust a small box before the run finishes. Narrowing the row window
 (`--since`/`--days`) need not reduce selected bytes. Select smaller inputs or run where
-there's headroom. The large-record confirmation comes after loading, so it is not a memory
-guard. Streaming
+there's headroom. Large-record confirmation usually precedes the heavy read, but the
+estimate and prompt are advisory, not a memory guard. Streaming
 ingestion for the large-single-file case is on the list. The install has real weight too:
 the scientific-Python stack underneath (pandas, numpy, the clustering backend) puts a fresh
 virtualenv at roughly 450 MB on disk - light to operate, not light to install.

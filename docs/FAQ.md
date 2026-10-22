@@ -289,10 +289,14 @@ rotation file's first timestamp and stops early instead of decompressing the who
 The opt-in `dnsblock` detector may select 21 additional days of rotated files for its
 28-day selection aperture while keeping reported rows inside the configured window.
 An unpeekable source already loads in full; explicit time bounds and `--all` keep their normal
-meanings. sigwood prompts before reading more than `warn_above` records (default 10,000,000),
-and `warn_above = 0` turns that prompt off. It reads each log fully into memory rather than
-streaming it, so one very large file can exhaust a small machine; narrow the window, point at
-a single file, or run where there is headroom.
+meanings. sigwood estimates the records in the selected files and prompts before the large
+read when that estimate exceeds `warn_above` (default 50,000,000). It says when the count is
+estimated or files could not be counted. If the estimate is low, a loaded-count backstop can
+still prompt afterward; each run asks at most once. `warn_above = 0` turns both prompts off.
+The prompt is advisory, not a memory limit. Syslog automatically takes a single-read route
+for proven small plain inputs and can use a two-read, lower-memory route for eligible larger
+inputs. Other sources and some syslog routes can still hold every row in memory; narrow the
+window, point at a single file, or run where there is headroom.
 
 ### What timezone are the times in?
 *Full detail: [the manual](MANUAL.md#reading-output).*

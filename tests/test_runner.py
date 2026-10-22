@@ -1847,7 +1847,7 @@ def test_multi_input_directory_denial_runs_detector_and_adds_only_note(
         "Jun  5 12:00:00 host kernel: booted\n", encoding="utf-8",
     )
     _deny_directory_listing(monkeypatch, {denied})
-    monkeypatch.setattr(syslog_detector, "run", lambda _ctx: [])
+    monkeypatch.setattr(syslog_detector, "run", lambda _ctx, **kwargs: [])
 
     rc = runner.run(
         config={"sigwood": {"detect": "syslog", "default_window": "all"}},
@@ -2109,7 +2109,7 @@ def test_directory_skip_note_is_safe_in_real_report_handlers(
         "Jun  5 12:00:00 host kernel: accepted\n", encoding="utf-8",
     )
     _deny_directory_listing(monkeypatch, {denied})
-    monkeypatch.setattr(syslog_detector, "run", lambda _ctx: [])
+    monkeypatch.setattr(syslog_detector, "run", lambda _ctx, **kwargs: [])
     target = tmp_path / f"report.{output_format}"
 
     rc = runner.run(
@@ -2795,6 +2795,30 @@ def test_run_large_dataset_prompt_temporarily_shows_cursor(
     assert fake.output.endswith(_CURSOR_SHOW)
 
 
+def test_run_large_dataset_decline_precedes_heavy_load(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from sigwood.common import loader
+    from sigwood.common.errors import ExportAborted
+
+    zeek_dir = _make_flat_zeek(tmp_path, [_conn(_TS_JAN1), _conn(_TS_JAN5)])
+    prompts: list[str] = []
+
+    def _decline(prompt: str) -> str:
+        prompts.append(prompt)
+        return "n"
+
+    def _must_not_load(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("heavy load ran before the operator answered")
+
+    monkeypatch.setattr("builtins.input", _decline)
+    monkeypatch.setattr(loader, "load_required_logs", _must_not_load)
+    with pytest.raises(ExportAborted):
+        runner.run(config=_TINY_WARN_CFG, zeek_dir=zeek_dir)
+    assert len(prompts) == 1
+    assert prompts[0].startswith("2 records")
+
+
 def test_run_digest_large_dataset_prompt_temporarily_shows_cursor(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2824,6 +2848,32 @@ def test_run_digest_large_dataset_prompt_temporarily_shows_cursor(
     assert fake.output.endswith(_CURSOR_SHOW)
 
 
+def test_digest_large_dataset_decline_precedes_heavy_load(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from sigwood.common import loader
+    from sigwood.common.errors import ExportAborted
+
+    zeek_dir = _make_flat_zeek(tmp_path, [_conn(_TS_JAN1), _conn(_TS_JAN5)])
+    prompts: list[str] = []
+
+    def _decline(prompt: str) -> str:
+        prompts.append(prompt)
+        return "n"
+
+    def _must_not_load(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("digest loaded before the operator answered")
+
+    monkeypatch.setattr("builtins.input", _decline)
+    monkeypatch.setattr(loader, "load_required_logs", _must_not_load)
+    with pytest.raises(ExportAborted):
+        runner.run_digest(
+            config={"sigwood": {"warn_above": 1, "default_window": "all"}},
+            zeek_dir=zeek_dir, stream=io.StringIO(), load_all=True,
+        )
+    assert len(prompts) == 1
+
+
 def test_confirm_large_dataset_prompts_above_threshold(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2839,8 +2889,36 @@ def test_confirm_large_dataset_prompts_above_threshold(
     )
 
     assert prompts == [
-        "2 records found. This may take a while. Continue? [y/N] "
+        "Loaded 2 records. This may take a while. Continue? [y/N] "
     ]
+
+
+def test_confirm_large_dataset_labels_estimate_and_uncounted_files(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from sigwood.common.loader import PopulationEstimate
+
+    prompts: list[str] = []
+    monkeypatch.setattr("builtins.input", lambda prompt: prompts.append(prompt) or "y")
+    estimate = PopulationEstimate(
+        records=23_400_000, records_basis="estimated", uncounted_files=1,
+        upper_bound_bytes=None, on_disk_bytes=2_100_000_000, selected_files=3,
+    )
+    assert runner._confirm_large_dataset(
+        estimate.records, {"warn_above": 1}, skip_confirm=False,
+        estimate=(estimate,),
+    ) is True
+    assert prompts == [
+        "About 23,400,000 records (estimated from 3 files, 2.0 GB on disk); "
+        "1 file could not be counted. This can take a long time and a lot of "
+        "memory. Continue? [y/N] "
+    ]
+
+
+def test_large_dataset_default_has_one_runner_owner() -> None:
+    from pathlib import Path
+
+    assert Path(runner.__file__).read_text().count("50_000_000") == 1
 
 
 @pytest.mark.parametrize(
@@ -2905,7 +2983,7 @@ def test_confirm_large_dataset_whole_config_uses_default_threshold(
     monkeypatch.setattr("builtins.input", lambda *_args: "n")
     with pytest.raises(ExportAborted) as exc_info:
         runner._confirm_large_dataset(
-            10_000_001,
+            50_000_001,
             {"sigwood": {"warn_above": 0}},
             skip_confirm=False,
         )

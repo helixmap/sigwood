@@ -159,7 +159,7 @@ _DEFAULTS: dict[str, Any] = {
         # to stdout when report_dir is unset and --out is not passed.
         "output_format": "text",
         "default_window": "7d",
-        "warn_above": 10_000_000,
+        "warn_above": 50_000_000,
         # Suppress runner-owned progress/status stderr (loader bars, liveness,
         # the default-window advisory). CLI -q/--quiet wins per run. Never
         # suppresses warnings, prompts, errors, or the stdout report.

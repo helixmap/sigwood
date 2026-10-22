@@ -10,3 +10,4 @@ MAX_LOGICAL_RECORD_BYTES = 1024 * 1024
 # and a document over it skips with the ordinary oversize disclosure.
 MAX_LOGICAL_DOCUMENT_BYTES = 64 * 1024 * 1024
 MAX_FILE_DELTA_BYTES = 256 * 1024 * 1024
+MAX_DECLARED_FILE_DELTA_BYTES = 2 * 1024**3

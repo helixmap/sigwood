@@ -71,11 +71,11 @@ def _track_capture_cleanup(
     monkeypatch.setattr(journal.tempfile, "mkdtemp", tracked_mkdtemp)
     real_run = syslog_detector.run
 
-    def assert_clean_before_detector(context):
+    def assert_clean_before_detector(context, **kwargs):
         assert created
         assert all(not path.exists() for path in created)
         assert journal._ACTIVE_CAPTURES == set()
-        return real_run(context)
+        return real_run(context, **kwargs)
 
     monkeypatch.setattr(syslog_detector, "run", assert_clean_before_detector)
     return created

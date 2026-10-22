@@ -320,3 +320,34 @@ def test_private_runner_route_owns_sink_plan_and_bypasses_confirmation(monkeypat
     assert confirms == [(0, True)]
     assert receipt.outcome == "MEASURED"
     assert receipt.population_basis == "raw_pre_allowlist"
+
+
+def test_era_large_input_decline_precedes_snapshot_and_fold(monkeypatch, tmp_path) -> None:
+    source = tmp_path / "conn.log"
+    source.write_text("one\ntwo\n")
+    group = ArchiveDateGroup(_instant(1).date(), (tmp_path,))
+    plan = ArchivePlan(
+        groups=(group,),
+        inventory=((group.canonical_date, tuple(
+            FamilyInventory(family, (source,) if family == "conn" else (), 0,
+                            InventoryState.PRESENT if family == "conn" else InventoryState.EMPTY)
+            for family in ("conn", "dns", "stats", "capture_loss")
+        )),),
+        work_estimate=WorkEstimate(2, source.stat().st_size),
+        reconciliation=BaselineReconciliation(
+            expected_dates=frozenset({group.canonical_date}),
+            present_dates=frozenset({group.canonical_date}),
+            missing_dates=(), post_baseline_dates=(),
+        ),
+    )
+    monkeypatch.setattr("builtins.input", lambda _prompt: "n")
+    monkeypatch.setattr(loader, "build_source_snapshot", lambda *_a, **_k:
+                        pytest.fail("snapshot must follow confirmation"))
+    monkeypatch.setattr(loader, "load_required_logs", lambda *_a, **_k:
+                        pytest.fail("fold must follow confirmation"))
+
+    with pytest.raises(runner.ExportAborted, match="aborted by user"):
+        _run_era_harness(
+            {"sigwood": {"warn_above": 1}}, archive_root_candidates=[],
+            _archive_plan=plan, skip_confirm=False,
+        )

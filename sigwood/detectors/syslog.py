@@ -45,7 +45,8 @@ import pandas as pd
 from tqdm import tqdm
 
 from sigwood.common.display import narration_active, plural
-from sigwood.common.finding import DetectorContext, Finding, MethodTag, Severity
+from sigwood.common.finding import DetectorContext, Finding, MethodTag, Severity, PreparedPopulation
+from sigwood.detectors.syslog_preparation import prepare, SyslogPrepared
 from sigwood.parsers.syslog import (
     ADMIN_SESSION_CLOSE_RE,
     ADMIN_SESSION_ENRICHER_RE,
@@ -56,6 +57,8 @@ from sigwood.parsers.syslog import (
     strip_header,
     strip_program,
 )
+
+PREPARED_POPULATION = PreparedPopulation("*.log*", prepare, recoverable=True)
 
 DETECTOR_NAME = "syslog"
 STATUS = "available"
@@ -433,11 +436,11 @@ class _TransactionEvent(NamedTuple):
 _BootWindows = Mapping[str, tuple[tuple[float, float], ...]]
 
 
-def run(context: DetectorContext) -> list[Finding]:
+def run(context: DetectorContext, _prepared: SyslogPrepared | None = None) -> list[Finding]:
     """Detect anomalous syslog lines using drain3 templating, rarity scoring,
     temporal burst collapse, and per-program family review units."""
     flat_df = context.logs.get("*.log*")
-    zeek_df = context.logs.get("syslog*.log*")
+    zeek_df = context.logs.get("syslog*.log*") if _prepared is None else _prepared.zeek
 
     frames = [df for df in (flat_df, zeek_df) if df is not None and not df.empty]
     if not frames:
@@ -464,12 +467,15 @@ def run(context: DetectorContext) -> list[Finding]:
         "recognize_transactions", DEFAULT_CONFIG["recognize_transactions"]
     )
 
-    df = _run_drain3(df, sim_thresh, depth, parametrize)
-    if _MEMORY_PROBE is not None:
-        _MEMORY_PROBE("drain3")
-    df, threshold, freq = _score_rarity(df, rarity_pct, max_count, copy_frame=False)
-    if _MEMORY_PROBE is not None:
-        _MEMORY_PROBE("rarity")
+    if _prepared is None:
+        df = _run_drain3(df, sim_thresh, depth, parametrize)
+        if _MEMORY_PROBE is not None:
+            _MEMORY_PROBE("drain3")
+        df, threshold, freq = _score_rarity(df, rarity_pct, max_count, copy_frame=False)
+        if _MEMORY_PROBE is not None:
+            _MEMORY_PROBE("rarity")
+    else:
+        df, threshold, freq = _score_prepared(df, _prepared)
 
     now = datetime.now(timezone.utc)
 
@@ -499,20 +505,24 @@ def run(context: DetectorContext) -> list[Finding]:
 
     # The magnitude anchor is the FULL loaded population for each canonical
     # (host, program) identity, not the rare subset, family size, or sample cap.
-    identity_columns = [column for column in ("host", "program") if column in df.columns]
-    identity_df = _normalize_identity_columns(df[identity_columns])
-    if _MEMORY_PROBE is not None:
-        _MEMORY_PROBE("identity")
-    program_totals = {
-        (host, program): int(len(group))
-        for (host, program), group in identity_df.groupby(
-            ["host", "program"], sort=False
-        )
-    }
-    host_totals = {
-        host: int(len(group))
-        for host, group in identity_df.groupby("host", sort=False)
-    }
+    if _prepared is None:
+        identity_columns = [column for column in ("host", "program") if column in df.columns]
+        identity_df = _normalize_identity_columns(df[identity_columns])
+        if _MEMORY_PROBE is not None:
+            _MEMORY_PROBE("identity")
+        program_totals = {
+            (host, program): int(len(group))
+            for (host, program), group in identity_df.groupby(
+                ["host", "program"], sort=False
+            )
+        }
+        host_totals = {
+            host: int(len(group))
+            for host, group in identity_df.groupby("host", sort=False)
+        }
+    else:
+        program_totals = _prepared.program_totals
+        host_totals = _prepared.host_totals
 
     # One mask and its boolean complement over the RAW rare frame are the
     # exactly-once seam. Keep identity normalization local to its consumers so
@@ -608,6 +618,21 @@ def _run_drain3(
     parametrize_numeric: bool,
 ) -> pd.DataFrame:
     """Add template_id and template_str columns via drain3 log templating."""
+    result = mine_templates(
+        (str(msg) for msg in df["message"]),
+        sim_thresh=sim_thresh,
+        depth=depth,
+        parametrize_numeric=parametrize_numeric,
+        masking_instructions=_template_masks(),
+    )
+
+    df = df.copy()
+    df["template_id"]  = result.template_ids
+    df["template_str"] = result.template_strs
+    return df
+
+
+def _template_masks() -> list:
     try:
         from drain3.masking import MaskingInstruction
     except ImportError:
@@ -615,21 +640,29 @@ def _run_drain3(
             "drain3 is required for syslog detection. Run: pip install drain3"
         )
 
-    result = mine_templates(
-        (str(msg) for msg in df["message"]),
-        sim_thresh=sim_thresh,
-        depth=depth,
-        parametrize_numeric=parametrize_numeric,
-        masking_instructions=[
-            MaskingInstruction(LONG_HEX_MASK_PATTERN, LONG_HEX_MASK_NAME),
-            MaskingInstruction(HEX_PAIRS_MASK_PATTERN, HEX_PAIRS_MASK_NAME),
-        ],
-    )
+    return [
+        MaskingInstruction(LONG_HEX_MASK_PATTERN, LONG_HEX_MASK_NAME),
+        MaskingInstruction(HEX_PAIRS_MASK_PATTERN, HEX_PAIRS_MASK_NAME),
+    ]
 
-    df = df.copy()
-    df["template_id"]  = result.template_ids
-    df["template_str"] = result.template_strs
-    return df
+
+def _new_miner(sim_thresh: float, depth: int, parametrize_numeric: bool,
+               masking_instructions: list | None = None):
+    """Construct the shared online miner without a persistence handler."""
+    try:
+        from drain3 import TemplateMiner
+        from drain3.template_miner_config import TemplateMinerConfig
+    except ImportError:
+        raise ImportError(
+            "drain3 is required for syslog detection. Run: pip install drain3"
+        )
+    cfg = TemplateMinerConfig()
+    cfg.drain_sim_th = sim_thresh
+    cfg.drain_depth = depth
+    cfg.parametrize_numeric_tokens = parametrize_numeric
+    if masking_instructions is not None:
+        cfg.masking_instructions = masking_instructions
+    return TemplateMiner(config=cfg)
 
 
 def mine_templates(
@@ -642,22 +675,7 @@ def mine_templates(
     show_progress: bool = True,
 ) -> MinedResult:
     """Mine string messages and return online assignments plus mutation counts."""
-    try:
-        from drain3 import TemplateMiner
-        from drain3.template_miner_config import TemplateMinerConfig
-    except ImportError:
-        raise ImportError(
-            "drain3 is required for syslog detection. Run: pip install drain3"
-        )
-
-    cfg = TemplateMinerConfig()
-    cfg.drain_sim_th               = sim_thresh
-    cfg.drain_depth                = depth
-    cfg.parametrize_numeric_tokens = parametrize_numeric
-    if masking_instructions is not None:
-        cfg.masking_instructions = masking_instructions
-
-    miner = TemplateMiner(config=cfg)
+    miner = _new_miner(sim_thresh, depth, parametrize_numeric, masking_instructions)
     template_ids: list[int] = []
     template_strs: list[str] = []
     template_texts: dict[str, str] = {}
@@ -697,6 +715,28 @@ def mine_templates(
     )
 
 
+def _score_prepared(df: pd.DataFrame, prepared: SyslogPrepared) -> tuple[pd.DataFrame, int, dict[int, int]]:
+    """Mark admitted candidates using the full population's resolved rarity."""
+    df = df.copy()
+    df['is_anomaly'] = df['template_id'].isin(prepared.rare_ids)
+    return df, prepared.threshold, prepared.freq
+
+
+def _rarity_threshold(freq: Mapping[int, int], rarity_pct: int,
+                      max_count: int) -> tuple[int, set[int]]:
+    """Resolve the exact population percentile and its rare template ids."""
+    if not freq:
+        return 0, set()
+    sorted_counts = sorted(freq.values())
+    idx           = max(0, int(len(sorted_counts) * rarity_pct / 100) - 1)
+    pct_threshold = sorted_counts[idx]
+    threshold     = min(pct_threshold, max_count)
+
+    rare_ids = {tid for tid, count in freq.items() if count <= threshold}
+
+    return threshold, rare_ids
+
+
 def _score_rarity(
     df: pd.DataFrame,
     rarity_pct: int,
@@ -709,12 +749,7 @@ def _score_rarity(
         int(k): int(v) for k, v in df["template_id"].value_counts().items()
     }
 
-    sorted_counts = sorted(freq.values())
-    idx           = max(0, int(len(sorted_counts) * rarity_pct / 100) - 1)
-    pct_threshold = sorted_counts[idx]
-    threshold     = min(pct_threshold, max_count)
-
-    rare_ids = {tid for tid, count in freq.items() if count <= threshold}
+    threshold, rare_ids = _rarity_threshold(freq, rarity_pct, max_count)
 
     if copy_frame:
         df = df.copy()

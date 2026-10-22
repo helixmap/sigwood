@@ -29,7 +29,7 @@ from sigwood.common.loader.types import (
     LoadResult,
     RotationSkipInfo,
     _coerce_usable_ts,
-    _data_window,
+    _population_metadata,
     _is_infinite_ts,
     _is_out_of_range_ts,
 )
@@ -531,7 +531,9 @@ def apply_default_window(
     and ``run_digest()`` (relocated from the runner). Anchors on the family's OWN
     max-ts (combined across its patterns), filters each pattern with ``keep_null``
     wired from the source policy (keep-policy families retain unparseable-ts rows
-    through the implicit window), rebuilds coverage for any pattern that went
+    through the implicit window). Already selected populations retain their
+    frames and facts; their extrema still anchor ordinary sibling patterns.
+    Rebuilds coverage for any ordinary pattern that went
     non-empty → empty (so its zero-in-window note still fires), and rebuilds via
     ``dataclasses.replace`` so ``warnings`` / ``data_size_bytes`` / ``rotation_skips``
     carry forward unchanged. Never mutates the passed-in ``LoadResult.logs``.
@@ -540,13 +542,18 @@ def apply_default_window(
     # passed-in LoadResult's logs.
     logs = dict(load_result.logs)
     subset = {p: logs[p] for p in family_patterns if p in logs and not logs[p].empty}
-    window = _data_window(subset)
+    family_population = {
+        p: facts for p, facts in load_result.population.items() if p in family_patterns
+    }
+    _, window = _population_metadata(subset, family_population)
     if window is None:
         return load_result
     until = window[1]
     since = until - span
     merged_cov = dict(load_result.coverage)
     for p, pre_df in subset.items():
+        if p in load_result.population:
+            continue
         post_df = _apply_ts_filter(pre_df, since, until, keep_null=keep_null)
         logs[p] = post_df
         if not pre_df.empty and post_df.empty:
@@ -557,10 +564,11 @@ def apply_default_window(
             sc = tracker.coverage(True)
             if sc is not None:
                 merged_cov[p] = sc
+    counts, data_window = _population_metadata(logs, load_result.population)
     return replace(
         load_result,
         logs=logs,
-        record_counts={p: len(df) for p, df in logs.items() if not df.empty},
-        data_window=_data_window(logs),
+        record_counts=counts,
+        data_window=data_window,
         coverage=merged_cov,
     )

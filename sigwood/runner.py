@@ -22,11 +22,11 @@ import shlex
 import sys
 import time
 from collections import Counter
-from contextlib import ExitStack, nullcontext
+from contextlib import ExitStack, contextmanager, nullcontext
 from dataclasses import asdict, dataclass, field, replace
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Collection, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, Callable, Collection, Iterator, Mapping, Sequence
 
 import pandas as pd
 
@@ -34,6 +34,7 @@ import sigwood.detectors as _detectors_pkg
 
 if TYPE_CHECKING:
     from sigwood.era.report import EraCard, SelectionEvidence, SpanHonesty
+    from sigwood.common.loader import types as load_types
 from sigwood.common.config import (
     DEFAULT_DETECT_SPEC,
     detector_disclosure_lines,
@@ -71,7 +72,9 @@ from sigwood.common.errors import (
     GraphEmpty,
     GraphSourceUnreadable,
 )
-from sigwood.common.finding import DetectorContext, Finding, RunSummary
+from sigwood.common.finding import (
+    DetectorContext, Finding, RunSummary, PreparedPopulation, Preparation, Declined,
+)
 from sigwood.common.journal_probe import probe_journal
 from sigwood.common.loader import (
     AvailabilityState,
@@ -116,6 +119,9 @@ from sigwood.common.sources import (
 )
 from sigwood.common.sanitize import strip_control
 from sigwood.common.syslog_mode import SyslogMode
+
+_PIHOLE_PATTERN = "pihole*.log*"
+_LOCAL_SYSLOG_PATTERN = "*.log*"
 
 _WIDTH = TEXT_RULE_WIDTH
 _SEP = TEXT_RULE
@@ -179,8 +185,11 @@ class _LoadedPlan:
     load_windows: list[Any]
     default_spec: str
     coverage_decisions: dict[str, CoverageDecision]
-    dnsblock_prepared: Any | None = None
     coverage_lines: tuple[str, ...] = ()
+    population_preparations: dict[str, Any] = field(default_factory=dict)
+    preparation_failures: dict[str, str] = field(default_factory=dict)
+    preparation_notes: list[str] = field(default_factory=list)
+    large_dataset_prompted: bool = False
 
 
 def _select_coverage_lane(
@@ -609,6 +618,22 @@ def _run_era_harness(
     interval = ReportInterval(*archive_plan.span)
     reducer = EraReducer.from_archive_plan(archive_plan, interval, home_net=home_net)
     inventory = dict(archive_plan.inventory)
+    pre_prompted = False
+    cfg_sigwood = config.get("sigwood", {})
+    if not skip_confirm and _warn_above(cfg_sigwood) > 0:
+        previews = {}
+        for group in archive_plan.groups:
+            families = {entry.family: entry for entry in inventory[group.canonical_date]}
+            for family, pattern in ERA_FAMILIES:
+                files = tuple(families[family].files)
+                previews[f"{group.canonical_date}:{pattern}"] = loader.PatternPreview(
+                    source="zeek_dir", discovered=files, selected=files,
+                )
+        estimates = loader.estimate_population(previews)
+        pre_prompted = _confirm_large_dataset(
+            sum(item.records for item in estimates.values()), cfg_sigwood,
+            skip_confirm=False, estimate=tuple(estimates.values()),
+        )
     prepared_snapshots: dict[tuple[date, str], Any] = {}
     frozen_identities: list[str] = []
     # Freeze every loader-selected file before the first reduction pass.  The
@@ -688,7 +713,8 @@ def _run_era_harness(
             if state.latest is not None:
                 latest = state.latest if latest is None else max(latest, state.latest)
 
-    _confirm_large_dataset(sum(counts.values()), config.get("sigwood", {}), skip_confirm=skip_confirm)
+    if not pre_prompted:
+        _confirm_large_dataset(sum(counts.values()), cfg_sigwood, skip_confirm=skip_confirm)
     observations = {
         family: FamilyDayObservation(
             Availability.PRESENT if counts[family] else Availability.ABSENT,
@@ -1209,6 +1235,7 @@ def _run_analyze(
             preview=preview,
             default_spec=dry_default_spec,
             used_sources=frozenset(plan.needed_logs.values()),
+            warn_config=cfg_sigwood,
         )
         return 0
 
@@ -1229,6 +1256,7 @@ def _run_analyze(
 
     decision: SyslogProviderDecision
     loaded_or_rc: _LoadedPlan | int | None = None
+    capture_paths: tuple[str, ...] = ()
     with ExitStack() as captures:
         prepared = None
         journal_error = None
@@ -1250,6 +1278,8 @@ def _run_analyze(
                     raise
                 journal_error = exc
 
+        if prepared is not None:
+            capture_paths = (str(prepared.capture_path), str(prepared.capture_path.parent))
         decision = arbitrate_syslog_capture(
             syslog_intent, capture=prepared, error=journal_error
         )
@@ -1282,173 +1312,191 @@ def _run_analyze(
                 allowlist=allowlist,
                 pre_resolved_windows=pre_resolved,
                 dnsblock_preflight_path=_dnsblock_preflight_path,
-                dnsblock_unsuppressed=no_allowlist,
+                no_allowlist=no_allowlist,
                 discovery=discovery,
                 recursive_retry=recursive_retry,
+                preparation_config=config, capture_paths=capture_paths,
+                preparation_suppression_enabled=(not no_allowlist) and allowlist_plan.master_enabled,
+                cfg_sigwood=cfg_sigwood, skip_confirm=skip_confirm,
             )
 
-    if decision.provider is not SyslogProvider.JOURNAL:
-        source_dirs = _source_dirs_for_provider(resolved, decision.provider)
-        loaded_or_rc = _plan_and_load(
-            detect_spec=detect_spec,
-            selection=selection,
-            source_dirs=source_dirs,
-            scope=syslog_intent.adjusted_scope,
-            provider_decision=decision,
-            syslog_intent=syslog_intent,
-            default_spec=default_spec,
-            load_all=load_all,
-            since=since,
-            until=until,
-            verbose_level=verbose_level,
-            quiet=quiet,
-            allowlist=allowlist,
-            dnsblock_preflight_path=_dnsblock_preflight_path,
-            dnsblock_unsuppressed=no_allowlist,
-            discovery=discovery,
-            recursive_retry=recursive_retry,
-        )
+        if decision.provider is not SyslogProvider.JOURNAL:
+            source_dirs = _source_dirs_for_provider(resolved, decision.provider)
+            loaded_or_rc = _plan_and_load(
+                detect_spec=detect_spec,
+                selection=selection,
+                source_dirs=source_dirs,
+                scope=syslog_intent.adjusted_scope,
+                provider_decision=decision,
+                syslog_intent=syslog_intent,
+                default_spec=default_spec,
+                load_all=load_all,
+                since=since,
+                until=until,
+                verbose_level=verbose_level,
+                quiet=quiet,
+                allowlist=allowlist,
+                dnsblock_preflight_path=_dnsblock_preflight_path,
+                no_allowlist=no_allowlist,
+                discovery=discovery,
+                recursive_retry=recursive_retry,
+                preparation_config=config, capture_paths=capture_paths,
+                preparation_suppression_enabled=(not no_allowlist) and allowlist_plan.master_enabled,
+                cfg_sigwood=cfg_sigwood, skip_confirm=skip_confirm,
+            )
 
-    assert loaded_or_rc is not None
-    if isinstance(loaded_or_rc, int):
-        return loaded_or_rc
-    plan = loaded_or_rc.plan
-    source_dirs = loaded_or_rc.source_dirs
-    source_dirs.pop("journal", None)
-    load_result = loaded_or_rc.load_result
-    load_windows = loaded_or_rc.load_windows
-    _default_spec = loaded_or_rc.default_spec
-    prepared_dnsblock = loaded_or_rc.dnsblock_prepared
+        assert loaded_or_rc is not None
+        if isinstance(loaded_or_rc, int):
+            return loaded_or_rc
+        plan = loaded_or_rc.plan
+        source_dirs = dict(loaded_or_rc.source_dirs)
+        source_dirs.pop("journal", None)
+        load_result = loaded_or_rc.load_result
+        load_windows = loaded_or_rc.load_windows
+        _default_spec = loaded_or_rc.default_spec
+        default_window_active = bool(load_windows)
+
+        # Post-load precise trim for every family whose default window engaged with a
+        # load-full / conservative select-window (flat peek-prune, cloudtrail
+        # load-full, flat/mixed Zeek). Dated-Zeek families carry trim_span=None - their
+        # select_window already cut exactly at load. keep_null is wired from the
+        # source's loader policy, so keep-policy families (syslog/pihole) retain
+        # unparseable-ts rows through the implicit window exactly as through an
+        # explicit one. Mixed file+dir trims the named file's rows WITH the bucket.
+        for w in load_windows:
+            if w.trim_span is None:
+                continue
+            family_patterns = [
+                p for p, src in plan.needed_logs.items() if src == w.source
+            ]
+            load_result = loader.apply_default_window(
+                load_result, family_patterns, w.trim_span, keep_null=w.keep_null,
+            )
+        arbitration_hosts = next((item.preparation.arbitration_hosts
+            for item in loaded_or_rc.population_preparations.values()
+            if item.declaration.pattern == _LOCAL_SYSLOG_PATTERN), None)
+        if arbitration_hosts is None:
+            load_result, syslog_arbitration = _arbitrate_cross_feed_syslog(load_result)
+        else:
+            load_result, syslog_arbitration = _arbitrate_cross_feed_syslog(
+                load_result, local_hosts=arbitration_hosts,
+            )
+        loaded_or_rc = replace(loaded_or_rc, load_result=load_result)
+        logs = load_result.logs
+
+        for warning in load_result.warnings:
+            _estderr(f"{warning}")
+
+        # Rotation FALLBACK disclosure on stderr (quiet-gated): the fallback decision
+        # is only known mid-load (load_result.rotation_skips), so this "why did that
+        # read the whole archive" line lands just after the slow read. The SAME
+        # formatter feeds RunSummary.notes (the report), so the two surfaces cannot
+        # drift; the normal prune stays report-only. Loader records, runner formats.
+        if not quiet:
+            for line in _rotation_fallback_lines(load_result, plan):
+                _estderr(line)
+
+        permission_error = _permission_denied_run_error(load_result, plan.needed_logs)
+        if permission_error is not None:
+            raise ValueError(permission_error)
+
+        # ONE captured `now` for the data-window fallback, requested_span, and
+        # run-summary provenance so they cannot drift across separate clock reads.
+        # The fallback window is for DetectorContext ONLY (detectors receive a real
+        # window by contract); the run summary carries the loader's window verbatim.
+        now = datetime.now(timezone.utc)
+        if load_result.data_window is not None:
+            data_window = load_result.data_window
+        elif since or until:
+            data_window = (since or now, until or now)
+        else:
+            data_window = (now, now)
+
+        # The window the operator asked for, used by the data-found underfill
+        # parenthetical. Default-window active → the configured spec; explicit
+        # since&until → their span; since only → since→now; until-only / --all /
+        # bounded full-load → None (unconstrained).
+        requested_span: timedelta | None
+        if default_window_active:
+            requested_span = parse_window_span(_default_spec)
+        elif since is not None and until is not None:
+            requested_span = until - since
+        elif since is not None:
+            requested_span = now - since
+        else:
+            requested_span = None
+        # No real data window (load yielded nothing the renderer can place - e.g. all
+        # rows unparseable-ts under keep policy) → force requested_span None so the
+        # underfill parenthetical cannot render a confident comparison over data that
+        # does not exist. The legitimate single-event case keeps a real (ts, ts)
+        # data_window and is unaffected.
+        if load_result.data_window is None:
+            requested_span = None
+
+        total_records = sum(load_result.record_counts.values())
+        if not loaded_or_rc.large_dataset_prompted:
+            _confirm_large_dataset(
+                total_records, cfg_sigwood, skip_confirm=skip_confirm,
+            )
+
+        # Build run summary and begin output before the detector loop so the banner
+        # ("Data found:", "Records:", "Detectors:") appears before analysis starts.
+        data_sources = _derive_data_sources(plan.needed_logs, load_result.record_counts)
+        # Resolve the allowlist plan once before note assembly. New Beacon failure-cause
+        # notes inspect the exact post-allowlist view the detector will receive; the two
+        # older source-shape notes below deliberately retain their raw-loaded population.
+        # Both remain pre-loop, so RunSummary is still complete before reporter.begin().
+        suppression_enabled = (not no_allowlist) and allowlist_plan.master_enabled
+        prepared_contexts: dict[str, DetectorContext] = {}
+        prepared_auth: Any | None = None
+        # The default window is announced pre-load on stderr (and the data-found
+        # parenthetical carries the data-vs-requested span), so no prose default-window
+        # note rides the run summary.
+        notes: list[str] = []
+        if "auth" in plan.will_run:
+            auth_mod = plan.detectors["auth"]
+            auth_cfg = get_detector_config(
+                config, "auth", getattr(auth_mod, "DEFAULT_CONFIG", {}),
+            )
+            try:
+                auth_context = _prepare_detector_context(
+                    auth_mod,
+                    "auth",
+                    logs,
+                    allowlist,
+                    auth_cfg,
+                    data_window,
+                    data_sources,
+                    home_net,
+                )
+            except Exception:
+                # Pre-loop disclosure is best-effort. The contained detector loop
+                # retries prep so a note failure cannot suppress auth itself.
+                pass
+            else:
+                prepared_contexts["auth"] = auth_context
+                try:
+                    prepared_auth = auth_mod._prepare(auth_context)
+                    auth_facts = auth_mod.summary_facts(
+                        auth_context, _prepared=prepared_auth,
+                    )
+                except Exception:
+                    # The detector still runs from the successfully prepared context;
+                    # only the optional disclosure vanishes.
+                    prepared_auth = None
+                    pass
+                else:
+                    notes.extend(_format_auth_summary_notes(auth_facts))
+        prepared_declared = _finish_populations(
+            loaded_or_rc, logs, allowlist, data_window, data_sources, home_net,
+            prepared_contexts, capture_paths,
+        )
+        notes.extend(loaded_or_rc.preparation_notes)
+    prepared_dnsblock = prepared_declared.get("dnsblock")
     if _dnsblock_preflight_path is not None:
         if prepared_dnsblock is None:
             raise ValueError("dnsblock preflight artifact requested without dnsblock")
-        _write_dnsblock_preflight_artifact(
-            _dnsblock_preflight_path,
-            prepared_dnsblock,
-        )
-    default_window_active = bool(load_windows)
-
-    # Post-load precise trim for every family whose default window engaged with a
-    # load-full / conservative select-window (flat peek-prune, cloudtrail
-    # load-full, flat/mixed Zeek). Dated-Zeek families carry trim_span=None - their
-    # select_window already cut exactly at load. keep_null is wired from the
-    # source's loader policy, so keep-policy families (syslog/pihole) retain
-    # unparseable-ts rows through the implicit window exactly as through an
-    # explicit one. Mixed file+dir trims the named file's rows WITH the bucket.
-    for w in load_windows:
-        if w.trim_span is None:
-            continue
-        family_patterns = [
-            p for p, src in plan.needed_logs.items() if src == w.source
-        ]
-        load_result = loader.apply_default_window(
-            load_result, family_patterns, w.trim_span, keep_null=w.keep_null,
-        )
-    load_result, syslog_arbitration = _arbitrate_cross_feed_syslog(load_result)
-    logs = load_result.logs
-
-    for warning in load_result.warnings:
-        _estderr(f"{warning}")
-
-    # Rotation FALLBACK disclosure on stderr (quiet-gated): the fallback decision
-    # is only known mid-load (load_result.rotation_skips), so this "why did that
-    # read the whole archive" line lands just after the slow read. The SAME
-    # formatter feeds RunSummary.notes (the report), so the two surfaces cannot
-    # drift; the normal prune stays report-only. Loader records, runner formats.
-    if not quiet:
-        for line in _rotation_fallback_lines(load_result, plan):
-            _estderr(line)
-
-    permission_error = _permission_denied_run_error(load_result, plan.needed_logs)
-    if permission_error is not None:
-        raise ValueError(permission_error)
-
-    # ONE captured `now` for the data-window fallback, requested_span, and
-    # run-summary provenance so they cannot drift across separate clock reads.
-    # The fallback window is for DetectorContext ONLY (detectors receive a real
-    # window by contract); the run summary carries the loader's window verbatim.
-    now = datetime.now(timezone.utc)
-    if load_result.data_window is not None:
-        data_window = load_result.data_window
-    elif since or until:
-        data_window = (since or now, until or now)
-    else:
-        data_window = (now, now)
-
-    # The window the operator asked for, used by the data-found underfill
-    # parenthetical. Default-window active → the configured spec; explicit
-    # since&until → their span; since only → since→now; until-only / --all /
-    # bounded full-load → None (unconstrained).
-    requested_span: timedelta | None
-    if default_window_active:
-        requested_span = parse_window_span(_default_spec)
-    elif since is not None and until is not None:
-        requested_span = until - since
-    elif since is not None:
-        requested_span = now - since
-    else:
-        requested_span = None
-    # No real data window (load yielded nothing the renderer can place - e.g. all
-    # rows unparseable-ts under keep policy) → force requested_span None so the
-    # underfill parenthetical cannot render a confident comparison over data that
-    # does not exist. The legitimate single-event case keeps a real (ts, ts)
-    # data_window and is unaffected.
-    if load_result.data_window is None:
-        requested_span = None
-
-    total_records = sum(load_result.record_counts.values())
-    _confirm_large_dataset(
-        total_records, cfg_sigwood, skip_confirm=skip_confirm,
-    )
-
-    # Build run summary and begin output before the detector loop so the banner
-    # ("Data found:", "Records:", "Detectors:") appears before analysis starts.
-    data_sources = _derive_data_sources(plan.needed_logs, load_result.record_counts)
-    # Resolve the allowlist plan once before note assembly. New Beacon failure-cause
-    # notes inspect the exact post-allowlist view the detector will receive; the two
-    # older source-shape notes below deliberately retain their raw-loaded population.
-    # Both remain pre-loop, so RunSummary is still complete before reporter.begin().
-    suppression_enabled = (not no_allowlist) and allowlist_plan.master_enabled
-    prepared_contexts: dict[str, DetectorContext] = {}
-    prepared_auth: Any | None = None
-    # The default window is announced pre-load on stderr (and the data-found
-    # parenthetical carries the data-vs-requested span), so no prose default-window
-    # note rides the run summary.
-    notes: list[str] = []
-    if "auth" in plan.will_run:
-        auth_mod = plan.detectors["auth"]
-        auth_cfg = get_detector_config(
-            config, "auth", getattr(auth_mod, "DEFAULT_CONFIG", {}),
-        )
-        try:
-            auth_context = _prepare_detector_context(
-                auth_mod,
-                "auth",
-                logs,
-                allowlist,
-                auth_cfg,
-                data_window,
-                data_sources,
-                home_net,
-            )
-        except Exception:
-            # Pre-loop disclosure is best-effort. The contained detector loop
-            # retries prep so a note failure cannot suppress auth itself.
-            pass
-        else:
-            prepared_contexts["auth"] = auth_context
-            try:
-                prepared_auth = auth_mod._prepare(auth_context)
-                auth_facts = auth_mod.summary_facts(
-                    auth_context, _prepared=prepared_auth,
-                )
-            except Exception:
-                # The detector still runs from the successfully prepared context;
-                # only the optional disclosure vanishes.
-                prepared_auth = None
-                pass
-            else:
-                notes.extend(_format_auth_summary_notes(auth_facts))
+        _write_dnsblock_preflight_artifact(_dnsblock_preflight_path, prepared_dnsblock)
     if prepared_dnsblock is not None:
         notes.extend(_format_dnsblock_summary_notes(prepared_dnsblock))
     nudge = _dns_nudge(data_sources)
@@ -1594,6 +1642,7 @@ def _run_analyze(
         data_size_bytes=load_result.data_size_bytes,
         detectors_run=plan.will_run,
         detectors_skipped=plan.skipped,
+        detectors_failed=dict(loaded_or_rc.preparation_failures),
         notes=notes,
         data_sources=data_sources,
         detector_methods=detector_methods,
@@ -1620,20 +1669,16 @@ def _run_analyze(
     if suppression_enabled:
         with liveness("scanning allowlist coverage", enabled=not quiet):
             for _pat, _df in load_result.logs.items():
-                if _df.empty:
-                    continue
-                if "query" in _df.columns:
-                    suppressed_domains += allowlist.count_domain_suppressed(_df)
-                    domain_total += len(_df)
-                else:
-                    if "src" in _df.columns:
-                        suppressed_connections += allowlist.count_numeric_suppressed(_df)
-                        connection_total += len(_df)
-                    if "host" in _df.columns:
-                        count, hosts = allowlist.count_host_suppressed(_df)
-                        host_rows += count
-                        host_total += len(_df)
-                        matched_hosts.update(hosts)
+                channel = next((value for key, value in load_result.fold_results.get(_pat, {}).items()
+                                if key.startswith(_SUPPRESSION_CHANNEL + ":")), None)
+                contribution = channel if channel is not None else _suppression_contribution(_df, allowlist)
+                suppressed_domains += contribution.domains
+                domain_total += contribution.domain_total
+                suppressed_connections += contribution.connections
+                connection_total += contribution.connection_total
+                host_rows += contribution.host_rows
+                host_total += contribution.host_total
+                matched_hosts.update(contribution.matched_hosts)
     run_summary.suppression = SuppressionSummary(
         enabled=suppression_enabled,
         connections=suppressed_connections,
@@ -1679,8 +1724,13 @@ def _run_analyze(
 
     # ── Run detectors ─────────────────────────────────────────────────────────
     all_findings: list[Finding] = []
+    dispatch_prepared = dict(prepared_declared)
+    if prepared_auth is not None:
+        dispatch_prepared["auth"] = prepared_auth
 
     for name in plan.will_run:
+        if name in run_summary.detectors_failed:
+            continue
         mod = plan.detectors[name]
         det_cfg = get_detector_config(config, name, getattr(mod, "DEFAULT_CONFIG", {}))
 
@@ -1698,16 +1748,18 @@ def _run_analyze(
         # liveness wrapper.
         if name == "syslog":
             try:
-                ctx = _prepare_detector_context(
-                    mod, name, logs, allowlist, det_cfg,
-                    data_window, data_sources, home_net,
-                )
+                ctx = prepared_contexts.get(name)
+                if ctx is None:
+                    ctx = _prepare_detector_context(
+                        mod, name, logs, allowlist, det_cfg,
+                        data_window, data_sources, home_net,
+                    )
             except Exception as exc:
                 _estderr(f"{name}: prep error - {exc}")
                 run_summary.detectors_failed[name] = _failure_reason("prep error", exc)
                 continue
             try:
-                findings = mod.run(ctx)
+                findings = _run_declared(mod, name, ctx, dispatch_prepared)
             except Exception as exc:
                 _estderr(f"{name}: detector error - {exc}")
                 run_summary.detectors_failed[name] = _failure_reason("detector error", exc)
@@ -1730,15 +1782,7 @@ def _run_analyze(
                     run_summary.detectors_failed[name] = _failure_reason("prep error", exc)
                     continue
                 try:
-                    findings = (
-                        mod.run(ctx, _prepared=prepared_auth)
-                        if name == "auth" and prepared_auth is not None
-                        else (
-                            mod.run(ctx, _prepared=prepared_dnsblock)
-                            if name == "dnsblock"
-                            else mod.run(ctx)
-                        )
-                    )
+                    findings = _run_declared(mod, name, ctx, dispatch_prepared)
                     # The seal is a terse live completion record - "this
                     # detector finished" - NOT a tally. The report header
                     # is the single authoritative count surface
@@ -1921,7 +1965,13 @@ def _resolve_run_windows(
     dnsblock_mod = (
         plan.detectors.get("dnsblock") if "dnsblock" in plan.will_run else None
     )
-    if dnsblock_mod is not None and file_select_windows is not None:
+    dnsblock_population = (
+        getattr(dnsblock_mod, "PREPARED_POPULATION", None)
+        if dnsblock_mod is not None else None
+    )
+    if (dnsblock_population is not None
+            and dnsblock_population.pattern == _PIHOLE_PATTERN
+            and file_select_windows is not None):
         pihole_file_window = file_select_windows.get("pihole_dir")
         if pihole_file_window is not None:
             floor, upper = pihole_file_window
@@ -1963,6 +2013,7 @@ class _DryRunPreview:
     families: dict[str, _FamilyPreview]
     warnings: tuple[str, ...]
     fallback_lines: tuple[str, ...]
+    estimates: dict[str, Any] = field(default_factory=dict)
 
 
 def _dry_run_preview(
@@ -1982,8 +2033,8 @@ def _dry_run_preview(
     The windows come from ``_resolve_run_windows`` and the files from the
     loader's own selector, so the preview cannot disagree with the run it
     describes. A virtual ``(source, pattern)`` pair has no files to select,
-    so it gets none. Nothing is parsed, hashed, validated or captured; sizes
-    come from ``stat``.
+    so it gets none. The bounded estimate samples selected bytes without
+    parsing, hashing, validating or capturing them.
     """
     from sigwood.common import loader
 
@@ -2052,7 +2103,397 @@ def _dry_run_preview(
         families=families,
         warnings=warnings,
         fallback_lines=fallback_lines,
+        estimates=loader.estimate_population(previews),
     )
+
+
+@dataclass
+class _PopulationPreparation:
+    declaration: PreparedPopulation
+    host: _PreparationHost
+    preparation: Preparation
+
+
+def _preparation_cause(value: object, capture_paths: tuple[str, ...]) -> str:
+    """Remove ephemeral source paths before composing preparation diagnostics."""
+    text = str(value)
+    for path in sorted(capture_paths, key=len, reverse=True):
+        if path:
+            text = text.replace(path, "system journal capture")
+    return strip_control(text.splitlines()[0] if text.splitlines() else "")
+
+
+def _population_interval(
+    available_start: datetime | None, available_end: datetime | None, *,
+    since: datetime | None, until: datetime | None, load_all: bool,
+    default_spec: str, now: datetime,
+) -> tuple[datetime, datetime]:
+    """Resolve the inclusive report interval from requested and observed bounds."""
+    if since is not None and until is not None:
+        return since, until
+    if load_all:
+        end = available_end or now
+        return available_start or end, end
+    if since is not None:
+        return since, max(since, available_end or now)
+    if until is not None:
+        return min(available_start or until, until), until
+    end = available_end or now
+    span = parse_window_span(default_spec)
+    return (end - span if span is not None else available_start or end), end
+
+
+class _PreparationHost:
+    """Per-detector access to the loader under one resolved run plan."""
+
+    def __init__(self, name: str, pattern: str, config: dict[str, Any], plan: RunPlan,
+                 load_args: dict[str, Any], load_windows: list[Any], allowlist: Any,
+                 load_all: bool, default_spec: str, quiet: bool,
+                 upper_bound_bytes: int | None = None, *,
+                 no_allowlist: bool = False,
+                 progress_path: Path | None = None) -> None:
+        from sigwood.common import loader
+        self.name, self.pattern, self.config = name, pattern, config
+        declared_sources = [req["source"] for req in (
+            *getattr(plan.detectors[name], "REQUIRED_LOGS", ()),
+            *getattr(plan.detectors[name], "OPTIONAL_LOGS", ()),
+        ) if req["pattern"] == pattern]
+        self.source_key = plan.needed_logs.get(pattern) or next(
+            (source for source in declared_sources if load_args["source_dirs"].get(source)),
+            declared_sources[0],
+        )
+        report_start, report_end = (load_args.get("source_windows") or {}).get(
+            self.source_key, (load_args["since"], load_args["until"])
+        )
+        self.report_window = DualWindow((
+            report_start or datetime.min.replace(tzinfo=timezone.utc),
+            report_end or datetime.max.replace(tzinfo=timezone.utc),
+        ))
+        self._planned = pattern in plan.needed_logs
+        self._args = dict(load_args)
+        self._args["source_dirs"] = {
+            key: list(paths) for key, paths in load_args["source_dirs"].items()
+        }
+        self._allowlist = allowlist
+        self._no_allowlist = no_allowlist
+        self._progress_path = progress_path
+        self.load_all, self.quiet = load_all, quiet
+        self._default_spec = default_spec
+        self.exact_window = not any(
+            w.source == self.source_key and w.trim_span is not None for w in load_windows
+        )
+        self.explicit_file = any(
+            p.is_file() for p in self._args["source_dirs"].get(self.source_key, ())
+        )
+        preview_args = {k: v for k, v in self._args.items() if k != "show_progress"}
+        preview = loader.preview_required_files({pattern: self.source_key}, **preview_args)
+        self.local_files = len(preview[pattern].selected)
+        self.upper_bound_bytes = upper_bound_bytes
+        self.sibling_needs_frame = any(
+            other != name and any(
+                req["pattern"] == pattern
+                for req in (*getattr(plan.detectors[other], "REQUIRED_LOGS", ()),
+                            *getattr(plan.detectors[other], "OPTIONAL_LOGS", ()))
+            ) for other in plan.will_run
+        )
+        self.registration = None
+        self.final_wall_seconds = 0.0
+        self.timings: dict[str, float] = {}
+
+    def fold(self, sink_plan: load_types.SinkPlan, dual_window: DualWindow, *,
+             prepared_snapshot: load_types.SourceSnapshot | None = None,
+             tail_policy: str = "whole") -> load_types.LoadResult:
+        """Run one source pass, retaining diagnostics only in its returned facts."""
+        from sigwood.common import loader
+        return loader.load_required_logs(
+            {self.pattern: self.source_key}, **self._args,
+            sink_plans={self.pattern: sink_plan}, dual_windows={self.pattern: dual_window},
+            prepared_snapshots=({self.pattern: prepared_snapshot} if prepared_snapshot else {}),
+            snapshot_tail_policies={self.pattern: tail_policy}, progress_verb="indexed",
+        )
+
+    def mask(self, frame: pd.DataFrame) -> PositionalMask:
+        """Apply the run matcher to this detector channel."""
+        if self._no_allowlist:
+            return PositionalMask((True,) * len(frame))
+        return _positional_allowlist_mask(frame, self._allowlist, self.name)
+
+    def window(self, available_start: datetime | None,
+               available_end: datetime | None
+               ) -> tuple[DualWindow, tuple[datetime, datetime]]:
+        """Resolve observed bounds, defaulting to now; not a first-pass window."""
+        interval = _population_interval(
+            available_start, available_end, since=self._args["since"],
+            until=self._args["until"], load_all=self.load_all,
+            default_spec=self._default_spec, now=datetime.now(timezone.utc),
+        )
+        window = _resolve_fold_dual_window(
+            interval, available_start=available_start,
+            bounded_explicit=(self.explicit_file or self._args["since"] is not None
+                              or self._args["until"] is not None), load_all=self.load_all,
+        )
+        return window, interval
+
+    def coverage(self, facts: tuple[ExportAvailability, ...],
+                 report_interval: tuple[datetime, datetime]) -> CoverageDecision:
+        return _select_coverage_lane(facts, report_interval)
+
+    def progress(self, *, snapshot_identity: str,
+                 report_interval: tuple[datetime, datetime], block_status: Any,
+                 pass_wall_seconds: tuple[tuple[str, float], ...]) -> None:
+        if self._progress_path is not None:
+            _write_dnsblock_preflight_progress(
+                self._progress_path, snapshot_identity=snapshot_identity,
+                report_interval=report_interval, block_status=block_status,
+                pass_wall_seconds=pass_wall_seconds,
+            )
+
+    def final(self, sink_plan: load_types.SinkPlan, dual_window: DualWindow, *,
+              prepared_snapshot: load_types.SourceSnapshot) -> None:
+        """Register one provisional final pass."""
+        if not self._planned:
+            raise ValueError("cannot register a pattern absent from the load plan")
+        if self.registration is not None:
+            raise ValueError("a preparation may register its final load only once")
+        self.registration = (sink_plan, dual_window, prepared_snapshot)
+
+    @contextmanager
+    def timer(self, name: str) -> Iterator[None]:
+        """Accumulate elapsed seconds for a named preparation operation."""
+        started = time.monotonic()
+        try:
+            yield
+        finally:
+            self.timings[name] = self.timings.get(name, 0.0) + time.monotonic() - started
+
+
+_SUPPRESSION_CHANNEL = "sigwood.suppression-coverage"
+
+
+def _suppression_contribution(frame: pd.DataFrame, matcher: Any):
+    """Measure scope-blind coverage once, shared by folds and ordinary frames."""
+    from sigwood.common.finding import SuppressionContribution
+    if "query" in frame.columns:
+        return SuppressionContribution(domains=matcher.count_domain_suppressed(frame),
+                                       domain_total=len(frame))
+    connections = matcher.count_numeric_suppressed(frame) if "src" in frame.columns else 0
+    rows, hosts = matcher.count_host_suppressed(frame) if "host" in frame.columns else (0, ())
+    return SuppressionContribution(
+        connections=connections, connection_total=len(frame) if "src" in frame.columns else 0,
+        host_rows=rows, host_total=len(frame) if "host" in frame.columns else 0,
+        matched_hosts=frozenset(hosts),
+    )
+
+
+def _merge_suppression(left: Any, right: Any):
+    from sigwood.common.finding import SuppressionContribution
+    return SuppressionContribution(
+        left.connections + right.connections, left.domains + right.domains,
+        left.connection_total + right.connection_total, left.domain_total + right.domain_total,
+        left.host_rows + right.host_rows, left.host_total + right.host_total,
+        left.matched_hosts | right.matched_hosts,
+    )
+
+
+def _suppression_sink(name: str, matcher: Any):
+    from sigwood.common.finding import SuppressionContribution
+    from sigwood.common.loader.types import FoldDelta, FoldSink, PositionalMask
+    def consume(delta, chunk, mask):
+        frame = chunk.frame.loc[list(chunk.report_mask)]
+        value = _merge_suppression(delta.value, _suppression_contribution(frame, matcher))
+        size = sys.getsizeof(value.matched_hosts) + sum(sys.getsizeof(h) for h in value.matched_hosts)
+        return FoldDelta(value, size)
+    return FoldSink(
+        f"{_SUPPRESSION_CHANNEL}:{name}", lambda: FoldDelta(SuppressionContribution(), 0),
+        consume, SuppressionContribution, lambda state, delta: _merge_suppression(state, delta.value),
+        lambda frame: PositionalMask((True,) * len(frame)),
+    )
+
+
+def _record_preparation_disposition(
+    name: str, declaration: PreparedPopulation, disposition: Declined,
+    failures: dict[str, str], notes: list[str], capture_paths: tuple[str, ...], *,
+    unrecovered: bool = False,
+) -> None:
+    from sigwood.common.finding import DeclineReason
+    cause = _preparation_cause(disposition.cause, capture_paths)
+    if unrecovered or not declaration.recoverable:
+        reason = cause or disposition.reason.value
+        failures[name] = f"prep error - {reason}"
+        _estderr(f"{name}: {failures[name]}")
+    elif disposition.reason is not DeclineReason.INELIGIBLE:
+        detail = f" - {cause}" if cause else ""
+        notes.append(f"{name}: prepared load {disposition.reason.value}{detail}; "
+                     "analysis ran on the full frame")
+
+
+def _prepare_populations(
+    plan: RunPlan, load_args: dict[str, Any], load_windows: list[Any], config: dict,
+    allowlist: Any, load_all: bool, default_spec: str, quiet: bool,
+    capture_paths: tuple[str, ...], suppression_enabled: bool = False,
+    population_estimates: Mapping[str, Any] | None = None,
+    no_allowlist: bool = False,
+    dnsblock_preflight_path: Path | None = None,
+) -> tuple[dict[str, _PopulationPreparation], dict[str, str], list[str]]:
+    from sigwood.common.finding import Declined, DeclineReason, Preparation, PreparedPopulation
+    declarations = {}
+    owners: dict[str, str] = {}
+    for name in plan.will_run:
+        declaration = getattr(plan.detectors[name], "PREPARED_POPULATION", None)
+        if declaration is None:
+            continue
+        if not isinstance(declaration, PreparedPopulation):
+            raise ValueError(f"{name}: invalid prepared population declaration")
+        pattern = declaration.pattern
+        declared = {r["pattern"] for r in (
+            *getattr(plan.detectors[name], "REQUIRED_LOGS", ()),
+            *getattr(plan.detectors[name], "OPTIONAL_LOGS", ()),
+        )}
+        if pattern not in declared:
+            raise ValueError(f"{name}: prepared pattern {pattern!r} is not in the load plan")
+        if pattern in owners:
+            raise ValueError(f"{owners[pattern]} and {name} both prepare {pattern!r}")
+        owners[pattern] = name
+        declarations[name] = declaration
+    committed, failures, notes = {}, {}, []
+    for name, declaration in declarations.items():
+        mod = plan.detectors[name]
+        try:
+            det_cfg = get_detector_config(config, name, getattr(mod, "DEFAULT_CONFIG", {}))
+            if hasattr(mod, "validate_config"):
+                mod.validate_config(det_cfg)
+        except Exception as exc:
+            _record_preparation_disposition(name, declaration, Declined(DeclineReason.FAILED, str(exc).strip() or type(exc).__name__),
+                                            failures, notes, capture_paths, unrecovered=True)
+            continue
+        try:
+            estimate = (population_estimates or {}).get(declaration.pattern)
+            host = _PreparationHost(name, declaration.pattern, det_cfg, plan, load_args,
+                                    load_windows, allowlist, load_all, default_spec, quiet,
+                                    upper_bound_bytes=(estimate.upper_bound_bytes if estimate is not None else None),
+                                    no_allowlist=no_allowlist,
+                                    progress_path=(dnsblock_preflight_path if name == "dnsblock" else None))
+            prepared = declaration.prepare(host)
+            if isinstance(prepared, Declined):
+                _record_preparation_disposition(name, declaration, prepared, failures, notes,
+                                                capture_paths)
+            elif isinstance(prepared, Preparation):
+                if host.registration is None:
+                    raise ValueError("preparation returned without registering a final load")
+                final_plan, _, _ = host.registration
+                if (declaration.pattern == _LOCAL_SYSLOG_PATTERN
+                        and final_plan.admit is not None
+                        and prepared.arbitration_hosts is None):
+                    raise ValueError("local syslog admission requires population arbitration hosts")
+                channels = [sink.channel for sink in final_plan.folds]
+                if final_plan.admit is not None:
+                    channels.append(final_plan.admit.channel)
+                if any(c == _SUPPRESSION_CHANNEL or c.startswith(_SUPPRESSION_CHANNEL + ":")
+                       for c in channels):
+                    raise ValueError("preparation uses a reserved coverage channel")
+                # Admission replaces the ordinary frame, so its source-wide
+                # coverage needs a fold channel. A fold-only plan that drops
+                # its frame keeps the established empty banner denominator.
+                if suppression_enabled and final_plan.admit is not None:
+                    from dataclasses import replace
+                    _, window, snapshot = host.registration
+                    host.registration = (replace(final_plan, folds=(
+                        *final_plan.folds, _suppression_sink(name, allowlist),
+                    )), window, snapshot)
+                committed[name] = _PopulationPreparation(declaration, host, prepared)
+            else:
+                raise ValueError("prepare must return Preparation or Declined")
+        except Exception as exc:
+            _record_preparation_disposition(name, declaration, Declined(DeclineReason.FAILED, str(exc).strip() or type(exc).__name__),
+                                            failures, notes, capture_paths)
+    return committed, failures, notes
+
+
+def _population_load_maps(
+    committed: dict[str, _PopulationPreparation],
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    plans, windows, snapshots = {}, {}, {}
+    for item in committed.values():
+        pattern = item.declaration.pattern
+        plans[pattern], windows[pattern], snapshots[pattern] = item.host.registration
+    return plans, windows, snapshots
+
+
+def _recover_populations(
+    result: load_types.LoadResult, committed: dict[str, _PopulationPreparation],
+    failures: dict[str, str], notes: list[str], capture_paths: tuple[str, ...],
+) -> load_types.LoadResult:
+    from sigwood.common import loader
+    from sigwood.common.finding import Declined, DeclineReason
+    for name, item in list(committed.items()):
+        plan, _, _ = item.host.registration
+        status = result.prepared_status.get(plan.admit.channel) if plan.admit is not None else None
+        admission_failed = plan.admit is not None and (
+            status is None or status.state is loader.PreparedState.FAILED
+        )
+        coverage_channels = [sink.channel for sink in plan.folds
+                             if sink.channel.startswith(_SUPPRESSION_CHANNEL + ":")]
+        coverage_failed = any(result.prepared_status.get(channel) is None or
+                              result.prepared_status[channel].state is not loader.PreparedState.READY
+                              for channel in coverage_channels)
+        expected_files = item.preparation.expected_committed_files
+        outcomes = result.file_outcomes.get(item.declaration.pattern)
+        files_failed = expected_files is not None and (
+            outcomes is None or outcomes.committed != expected_files
+        )
+        if not admission_failed and not coverage_failed and not files_failed:
+            continue
+        pattern = item.declaration.pattern
+        reload = loader.load_required_logs({pattern: item.host.source_key}, **item.host._args)
+        result = loader.replace_pattern_load(result, pattern, plan, reload)
+        del committed[name]
+        _record_preparation_disposition(
+            name, item.declaration, Declined(DeclineReason.FAILED,
+                "committed file set changed" if files_failed else
+                "population coverage unavailable" if coverage_failed else
+                status.cause if status is not None else "final admission unavailable"),
+            failures, notes, capture_paths,
+        )
+    return result
+
+
+def _finish_populations(
+    loaded: _LoadedPlan, logs: dict[str, pd.DataFrame], allowlist: Any,
+    data_window: tuple[datetime, datetime], data_sources: list[str], home_net: list[str],
+    prepared_contexts: dict[str, DetectorContext], capture_paths: tuple[str, ...],
+) -> dict[str, Any]:
+    from sigwood.common.finding import Declined, DeclineReason, FinalResult
+    prepared = {}
+    result = loaded.load_result
+    for name, item in loaded.population_preparations.items():
+        try:
+            ctx = _prepare_detector_context(loaded.plan.detectors[name], name, logs,
+                                           allowlist, item.host.config, data_window,
+                                           data_sources, home_net)
+            pattern = item.declaration.pattern
+            sink_plan, _, _ = item.host.registration
+            channels = {sink.channel for sink in sink_plan.folds}
+            if sink_plan.admit is not None:
+                channels.add(sink_plan.admit.channel)
+            final = FinalResult(pattern,
+                {c: s for c, s in result.prepared_status.items() if c in channels},
+                result.fold_results.get(pattern, {}), result.snapshots.get(pattern),
+                result.availability.get(pattern, ()), result.population.get(pattern),
+                result.file_outcomes.get(pattern))
+            prepared[name] = item.preparation.finish(ctx, final)
+            prepared_contexts[name] = ctx
+        except Exception as exc:
+            _record_preparation_disposition(name, item.declaration,
+                Declined(DeclineReason.FAILED, str(exc).strip() or type(exc).__name__), loaded.preparation_failures,
+                loaded.preparation_notes, capture_paths, unrecovered=True)
+    return prepared
+
+
+def _run_declared(mod: Any, name: str, ctx: DetectorContext,
+                  prepared: dict[str, Any]) -> list[Finding]:
+    if name in prepared:
+        return mod.run(ctx, _prepared=prepared[name])
+    return mod.run(ctx)
 
 
 def _plan_and_load(
@@ -2072,9 +2513,14 @@ def _plan_and_load(
     allowlist: Any,
     pre_resolved_windows: Mapping[str, Any] | None = None,
     dnsblock_preflight_path: Path | None = None,
-    dnsblock_unsuppressed: bool = False,
+    no_allowlist: bool = False,
     discovery: Any | None = None,
     recursive_retry: str | None = None,
+    preparation_config: dict | None = None,
+    preparation_suppression_enabled: bool = False,
+    capture_paths: tuple[str, ...] = (),
+    cfg_sigwood: dict[str, Any] | None = None,
+    skip_confirm: bool = False,
 ) -> _LoadedPlan | int:
     """Build the final plan and eagerly load its one-provider source map.
 
@@ -2142,9 +2588,6 @@ def _plan_and_load(
     load_windows = windows.load_windows
     source_windows = windows.source_windows
     file_select_windows = windows.file_select_windows
-    dnsblock_mod = (
-        plan.detectors.get("dnsblock") if "dnsblock" in plan.will_run else None
-    )
     if load_windows and not quiet:
         open_ended = any(
             window.trim_span is None
@@ -2155,297 +2598,59 @@ def _plan_and_load(
         _estderr(default_window_advisory(
             default_spec, open_ended=open_ended,
         ))
-    dnsblock_prepared: Any | None = None
+    load_args = dict(source_dirs=source_dirs, since=since, until=until,
+                     verbose=verbose_level >= 1, source_windows=source_windows,
+                     show_progress=not quiet, file_select_windows=file_select_windows,
+                     _directory_skips=plan.directory_skips, discovered_candidates=populations)
+    large_dataset_prompted = False
+    gate_config = cfg_sigwood or {}
+    previews = loader.preview_required_files(
+        plan.needed_logs, source_dirs, since, until,
+        source_windows=source_windows,
+        file_select_windows=file_select_windows,
+        discovered_candidates=populations,
+        verbose=verbose_level >= 1,
+        _directory_skips=plan.directory_skips,
+    )
+    estimates = loader.estimate_population(previews)
+    if not skip_confirm and _warn_above(gate_config) > 0:
+        large_dataset_prompted = _confirm_large_dataset(
+            sum(item.records for item in estimates.values()), gate_config,
+            skip_confirm=False,
+            estimate=tuple(estimates.values()),
+        )
+    committed, preparation_failures, preparation_notes = _prepare_populations(
+        plan, load_args, load_windows, preparation_config or {}, allowlist,
+        load_all, default_spec, quiet, capture_paths, preparation_suppression_enabled,
+        population_estimates=estimates,
+        no_allowlist=no_allowlist,
+        dnsblock_preflight_path=dnsblock_preflight_path,
+    )
+    declared_plans, declared_windows, declared_snapshots = _population_load_maps(committed)
     report_interval = (
         (since, until) if since is not None and until is not None else None
     )
-    if "dnsblock" not in plan.will_run:
-        load_result = loader.load_required_logs(
-            plan.needed_logs,
-            source_dirs,
-            since,
-            until,
-            verbose=verbose_level >= 1,
-            source_windows=source_windows,
-            show_progress=not quiet,
-            file_select_windows=file_select_windows,
-            _directory_skips=plan.directory_skips,
-            discovered_candidates=populations,
-        )
-    else:
-        if dnsblock_mod is None:
-            raise RuntimeError("dnsblock was selected but its detector module is unavailable")
-        pattern = "pihole*.log*"
-        pihole_source = plan.needed_logs.get(pattern)
-        if pihole_source != "pihole_dir":
-            raise ValueError("dnsblock requires the canonical Pi-hole source pattern")
-        one_pattern = {pattern: pihole_source}
-        mask = (
-            (lambda frame: PositionalMask((True,) * len(frame)))
-            if dnsblock_unsuppressed
-            else lambda frame: _positional_allowlist_mask(frame, allowlist, "dnsblock")
-        )
-        broad_window = loader.DualWindow(
-            (
-                datetime.min.replace(tzinfo=timezone.utc),
-                datetime.max.replace(tzinfo=timezone.utc),
-            )
-        )
-        pass_wall_seconds: dict[str, float] = {}
-        first_pass_started = time.monotonic()
-        anchor_block_result = loader.load_required_logs(
-            one_pattern,
-            source_dirs,
-            since,
-            until,
-            verbose=verbose_level >= 1,
-            source_windows=source_windows,
-            show_progress=not quiet,
-            file_select_windows=file_select_windows,
-            sink_plans={
-                pattern: loader.SinkPlan(
-                    (dnsblock_mod.make_anchor_block_sink(mask),),
-                    preserve_frame=False,
-                )
-            },
-            dual_windows={pattern: broad_window},
-            _directory_skips=plan.directory_skips,
-            discovered_candidates=populations,
-        )
-        pass_wall_seconds["anchor_block"] = time.monotonic() - first_pass_started
-        snapshot = anchor_block_result.snapshots.get(pattern)
-        anchor_block_facts = anchor_block_result.fold_results.get(pattern, {}).get(
-            "dnsblock.anchor_blocks"
-        )
-        anchor_facts = (
-            anchor_block_facts.anchor if anchor_block_facts is not None else None
-        )
-
-        captured_now = datetime.now(timezone.utc)
-        available_start: datetime | None = None
-        if anchor_facts is not None and anchor_facts.minimum_ts is not None:
-            available_start = datetime.fromtimestamp(
-                anchor_facts.minimum_ts, tz=timezone.utc
-            )
-        if report_interval is None:
-            observed_start = available_start
-            observed_end = (
-                datetime.fromtimestamp(anchor_facts.maximum_ts, tz=timezone.utc)
-                if anchor_facts is not None and anchor_facts.maximum_ts is not None
-                else None
-            )
-            if load_all:
-                end = observed_end or captured_now
-                report_interval = (observed_start or end, end)
-            elif since is not None:
-                report_interval = (since, max(since, observed_end or captured_now))
-            elif until is not None:
-                report_interval = (min(observed_start or until, until), until)
-            else:
-                end = observed_end or captured_now
-                span = parse_window_span(default_spec)
-                if span is None:
-                    report_interval = (observed_start or end, end)
-                else:
-                    report_interval = (end - span, end)
-
-        explicit_file = any(
-            path.is_file() for path in source_dirs.get("pihole_dir", ())
-        )
-        fold_window = _resolve_fold_dual_window(
-            report_interval,
-            available_start=available_start,
-            bounded_explicit=(
-                since is not None or until is not None or explicit_file
-            ),
-            load_all=load_all,
-        )
-        if snapshot is None:
-            raise ValueError("dnsblock could not establish a source snapshot")
-        block_status = anchor_block_result.prepared_status.get(
-            "dnsblock.anchor_blocks",
-            loader.PreparedStatus(
-                loader.PreparedState.FAILED,
-                "anchor/block pass unavailable",
-            ),
-        )
-        block_inventory = None
-        if (
-            block_status.state is loader.PreparedState.READY
-            and anchor_block_facts is not None
-        ):
-            try:
-                block_inventory = dnsblock_mod.finalize_block_inventory(
-                    anchor_block_facts.blocks,
-                    report_interval,
-                )
-            except loader.FoldAbstention as exc:
-                block_status = loader.PreparedStatus(
-                    loader.PreparedState.ABSTAINED,
-                    str(exc),
-                )
-        if dnsblock_preflight_path is not None:
-            _write_dnsblock_preflight_progress(
-                dnsblock_preflight_path,
-                snapshot_identity=snapshot.identity_sha256,
-                report_interval=report_interval,
-                block_status=block_status,
-                pass_wall_seconds=tuple(sorted(pass_wall_seconds.items())),
-            )
-        population_inventory = block_inventory or dnsblock_mod.BlockInventory()
-        sibling_needs_frame = any(
-            name != "dnsblock"
-            and any(
-                req.get("pattern") == pattern
-                for req in list(getattr(plan.detectors[name], "REQUIRED_LOGS", ()))
-                + list(getattr(plan.detectors[name], "OPTIONAL_LOGS", ()))
-            )
-            for name in plan.will_run
-        )
-        population_started = time.monotonic()
-        load_result = loader.load_required_logs(
-            plan.needed_logs,
-            source_dirs,
-            since,
-            until,
-            verbose=verbose_level >= 1,
-            source_windows=source_windows,
-            show_progress=not quiet,
-            file_select_windows=file_select_windows,
-            sink_plans={
-                pattern: loader.SinkPlan(
-                    (
-                        dnsblock_mod.make_population_sink(
-                            population_inventory,
-                            fold_window,
-                            mask,
-                        ),
-                    ),
-                    preserve_frame=sibling_needs_frame,
-                )
-            },
-            dual_windows={pattern: fold_window},
-            prepared_snapshots={pattern: snapshot},
-            _directory_skips=plan.directory_skips,
-            discovered_candidates=populations,
-        )
-        pass_wall_seconds["population"] = time.monotonic() - population_started
-        # R3: only this final population pass may choose and feed the lane.
-        final_coverage = _select_coverage_lane(
-            load_result.availability.get(pattern, ()), report_interval
-        )
-        population_status = load_result.prepared_status.get(
-            "dnsblock.population",
-            loader.PreparedStatus(
-                loader.PreparedState.FAILED,
-                "population pass unavailable",
-            ),
-        )
-        dnsblock_prepared = dnsblock_mod.build_prepared(
-            snapshot_identity=snapshot.identity_sha256,
-            window=fold_window,
-            coverage=final_coverage,
-            block_status=block_status,
-            population_status=population_status,
-            blocks=block_inventory,
-            population=load_result.fold_results.get(pattern, {}).get(
-                "dnsblock.population"
-            ),
-            pass_wall_seconds=tuple(sorted(pass_wall_seconds.items())),
-        )
-        if (
-            dnsblock_prepared.preflight.state is loader.PreparedState.READY
-            and dnsblock_prepared.analysis is not None
-            and dnsblock_prepared.analysis.cadence_worklist
-        ):
-            cadence_results: dict[tuple[str, str], Any] = {}
-            cadence_status = loader.PreparedStatus(loader.PreparedState.READY)
-            cadence_started = time.monotonic()
-            upper_bounds = {
-                (address, family): count
-                for address, family, count in (
-                    dnsblock_prepared.analysis.cadence_query_event_upper_bounds
-                )
-            }
-            cadence_batches = _pack_dnsblock_cadence_batches(
-                dnsblock_prepared.analysis.cadence_worklist,
-                upper_bounds,
-                limit=dnsblock_mod.LIMITS.cadence_gaps,
-            )
-            for batch in cadence_batches:
-                over_bound_singleton = (
-                    len(batch) == 1
-                    and upper_bounds[batch[0]] > dnsblock_mod.LIMITS.cadence_gaps
-                )
-                cadence_sink = (
-                    dnsblock_mod.make_cadence_sink(
-                        batch[0],
-                        population_inventory,
-                        mask,
-                    )
-                    if over_bound_singleton
-                    else dnsblock_mod.make_cadence_batch_sink(
-                        batch,
-                        population_inventory,
-                        mask,
-                    )
-                )
-                cadence_load = loader.load_required_logs(
-                    one_pattern,
-                    source_dirs,
-                    since,
-                    until,
-                    verbose=verbose_level >= 1,
-                    source_windows=source_windows,
-                    show_progress=not quiet,
-                    file_select_windows=file_select_windows,
-                    sink_plans={
-                        pattern: loader.SinkPlan(
-                            (
-                                cadence_sink,
-                            ),
-                            preserve_frame=False,
-                        )
-                    },
-                    dual_windows={pattern: fold_window},
-                    prepared_snapshots={pattern: snapshot},
-                    _directory_skips=plan.directory_skips,
-                    discovered_candidates=populations,
-                )
-                channel = cadence_sink.channel
-                pair_status = cadence_load.prepared_status.get(
-                    channel,
-                    loader.PreparedStatus(
-                        loader.PreparedState.FAILED,
-                        "cadence pass unavailable",
-                    ),
-                )
-                if pair_status.state is not loader.PreparedState.READY:
-                    cadence_status = pair_status
-                    break
-                pair_result = cadence_load.fold_results.get(pattern, {}).get(channel)
-                if pair_result is None:
-                    cadence_status = loader.PreparedStatus(
-                        loader.PreparedState.FAILED,
-                        "cadence pass produced no reducer state",
-                    )
-                    break
-                if over_bound_singleton:
-                    cadence_results[batch[0]] = pair_result
-                else:
-                    cadence_results.update(
-                        {
-                            pair: pair_result.states.get(pair, dnsblock_mod.CadenceState())
-                            for pair in batch
-                        }
-                    )
-            pass_wall_seconds["cadence"] = time.monotonic() - cadence_started
-            dnsblock_prepared = dnsblock_mod.finalize_cadence(
-                dnsblock_prepared,
-                status=cadence_status,
-                results=cadence_results,
-                pass_wall_seconds=tuple(sorted(pass_wall_seconds.items())),
-            )
+    final_started = time.monotonic()
+    load_result = loader.load_required_logs(
+        plan.needed_logs,
+        source_dirs,
+        since,
+        until,
+        sink_plans=declared_plans, dual_windows=declared_windows,
+        prepared_snapshots=declared_snapshots,
+        verbose=verbose_level >= 1,
+        source_windows=source_windows,
+        show_progress=not quiet,
+        file_select_windows=file_select_windows,
+        _directory_skips=plan.directory_skips,
+        discovered_candidates=populations,
+    )
+    final_wall_seconds = time.monotonic() - final_started
+    for item in committed.values():
+        item.host.final_wall_seconds = final_wall_seconds
+    load_result = _recover_populations(
+        load_result, committed, preparation_failures, preparation_notes, capture_paths,
+    )
     coverage_decisions = {
         pattern: _select_coverage_lane(
             load_result.availability.get(pattern, ()), report_interval,
@@ -2464,51 +2669,12 @@ def _plan_and_load(
         load_windows=load_windows,
         default_spec=default_spec,
         coverage_decisions=coverage_decisions,
-        dnsblock_prepared=dnsblock_prepared,
         coverage_lines=coverage_lines,
+        population_preparations=committed,
+        preparation_failures=preparation_failures,
+        preparation_notes=preparation_notes,
+        large_dataset_prompted=large_dataset_prompted,
     )
-
-
-def _pack_dnsblock_cadence_batches(
-    worklist: tuple[tuple[str, str], ...],
-    upper_bounds: Mapping[tuple[str, str], int],
-    *,
-    limit: int,
-) -> tuple[tuple[tuple[str, str], ...], ...]:
-    """First-fit ordered batches under a conservative retained-gap bound.
-
-    An over-bound pair is deliberately emitted as a singleton so the caller can
-    preserve the original per-pair sink and its exact abstention behavior.
-    """
-    if limit <= 0:
-        raise ValueError("dnsblock cadence batch limit must be positive")
-    batches: list[tuple[tuple[str, str], ...]] = []
-    current: list[tuple[str, str]] = []
-    current_total = 0
-    for pair in worklist:
-        if pair not in upper_bounds:
-            raise ValueError("dnsblock cadence upper bounds do not conserve worklist")
-        bound = int(upper_bounds[pair])
-        if bound < 0:
-            raise ValueError("dnsblock cadence upper bound must be non-negative")
-        if bound > limit:
-            if current:
-                batches.append(tuple(current))
-                current = []
-                current_total = 0
-            batches.append((pair,))
-            continue
-        if current and current_total + bound > limit:
-            batches.append(tuple(current))
-            current = []
-            current_total = 0
-        current.append(pair)
-        current_total += bound
-    if current:
-        batches.append(tuple(current))
-    if tuple(pair for batch in batches for pair in batch) != worklist:
-        raise ValueError("dnsblock cadence batching did not conserve worklist order")
-    return tuple(batches)
 
 
 def _prepare_dnsblock_calibration_batch(
@@ -2543,7 +2709,7 @@ def _prepare_dnsblock_calibration_batch(
         if not isinstance(window, DualWindow):
             raise ValueError("dnsblock calibration windows must use DualWindow")
 
-    pattern = "pihole*.log*"
+    pattern = _PIHOLE_PATTERN
     one_pattern = {pattern: "pihole_dir"}
     source_dirs = {"pihole_dir": [Path(path) for path in source_paths]}
     starts = [
@@ -3950,6 +4116,7 @@ def _print_dry_run(
     preview: "_DryRunPreview | None" = None,
     default_spec: str = "7d",
     used_sources: Collection[str] = frozenset(),
+    warn_config: dict[str, Any] | None = None,
 ) -> None:
     print("sigwood  ·  threat hunt  ·  dry run")
     print(_SEP_DOUBLE)
@@ -4016,6 +4183,17 @@ def _print_dry_run(
         if used_sources:
             window_value += "; each source above states its own policy"
     print(f"{'window:':<{_BANNER_LABEL_WIDTH}}  {window_value}")
+    if preview is not None:
+        estimate = tuple(preview.estimates.values())
+        records = sum(item.records for item in estimate)
+        basis = "exact" if all(item.records_basis == "exact" for item in estimate) else "estimated"
+        uncounted = sum(item.uncounted_files for item in estimate)
+        warn_above = _warn_above(warn_config or {})
+        prompt = "disabled" if warn_above <= 0 else ("yes" if records > warn_above else "no")
+        detail = f"{records:,} records ({basis})"
+        if uncounted:
+            detail += f"; {uncounted} {plural(uncounted, 'file')} uncounted"
+        print(f"{'population:':<{_BANNER_LABEL_WIDTH}}  {detail}; large-input prompt: {prompt}")
 
     if will_run:
         print(f"{'detectors:':<{_BANNER_LABEL_WIDTH}}  {'  '.join(will_run)}")
@@ -4083,12 +4261,18 @@ def _dry_syslog_display(
     return f"{base} ({detail})", None
 
 
+def _warn_above(cfg_sigwood: dict[str, Any]) -> int:
+    """The runner's single default lookup for the large-input advisory."""
+    return cfg_sigwood.get("warn_above", 50_000_000)
+
+
 def _confirm_large_dataset(
     total_records: int,
     cfg_sigwood: dict[str, Any],
     *,
     skip_confirm: bool,
-) -> None:
+    estimate: tuple[Any, ...] | None = None,
+) -> bool:
     """Apply the advisory large-dataset gate shared by analyze and digest.
 
     The gate fires only when ``[sigwood].warn_above`` is positive, the record
@@ -4096,19 +4280,38 @@ def _confirm_large_dataset(
     negative threshold disables the prompt. EOF or Ctrl-C is a decline.
     Declines raise ``ExportAborted`` for the CLI to translate to exit 0.
     """
-    warn_above: int = cfg_sigwood.get("warn_above", 10_000_000)
+    warn_above = _warn_above(cfg_sigwood)
     if warn_above <= 0 or total_records <= warn_above or skip_confirm:
-        return
+        return False
+    if estimate is None:
+        message = f"Loaded {total_records:,} records. This may take a while. Continue? [y/N] "
+    else:
+        exact = all(item.records_basis == "exact" for item in estimate)
+        selected = sum(item.selected_files for item in estimate)
+        uncounted = sum(item.uncounted_files for item in estimate)
+        disk_bytes = sum(item.on_disk_bytes for item in estimate)
+        if exact:
+            lead = f"{total_records:,} records"
+        else:
+            file_label = "file" if selected == 1 else "files"
+            disk_label = human_bytes(disk_bytes)
+            lead = (f"About {total_records:,} records "
+                    f"(estimated from {selected} {file_label}, {disk_label} on disk)")
+        if uncounted:
+            file_label = "file" if uncounted == 1 else "files"
+            lead += f"; {uncounted} {file_label} could not be counted"
+        if uncounted:
+            message = f"{lead}. This can take a long time and a lot of memory. Continue? [y/N] "
+        else:
+            message = f"{lead}, which can take a long time and a lot of memory. Continue? [y/N] "
     try:
         with cursor_visible():
-            answer = input(
-                f"{total_records:,} records found. This may take a while. "
-                "Continue? [y/N] "
-            )
+            answer = input(message)
     except (EOFError, KeyboardInterrupt):
         answer = ""
     if answer.strip().lower() not in ("y", "yes"):
         raise ExportAborted("sigwood: aborted by user")
+    return True
 
 
 def _derive_data_sources(
@@ -4992,18 +5195,20 @@ def _syslog_provider_note(
 
 def _arbitrate_cross_feed_syslog(
     load_result: "loader.LoadResult",
+    *, local_hosts: frozenset[str] | None = None,
 ) -> tuple["loader.LoadResult", tuple[int, int] | None]:
     """Keep the local carrier for hosts also present in Zeek syslog."""
     # These contract patterns are claimed only by the syslog lane. Provider
     # arbitration has already selected the one local carrier behind ``*.log*``.
-    local = load_result.logs.get("*.log*")
+    local = load_result.logs.get(_LOCAL_SYSLOG_PATTERN)
     zeek = load_result.logs.get("syslog*.log*")
-    if local is None or zeek is None or zeek.empty:
+    if zeek is None or zeek.empty or "host" not in zeek.columns:
         return load_result, None
-    if "host" not in local.columns or "host" not in zeek.columns:
-        return load_result, None
-
-    local_hosts = set(local["host"].astype(str).str.lower().unique()) - {"unknown"}
+    if local_hosts is None:
+        if local is None or "host" not in local.columns:
+            return load_result, None
+        local_hosts = set(local["host"].astype(str).str.lower().unique())
+    local_hosts = set(local_hosts) - {"unknown"}
     if not local_hosts:
         return load_result, None
 
@@ -5970,8 +6175,8 @@ _CLOUDTRAIL_EMPTY_COLUMNS = [
 _DIGEST_PATTERN_AND_EMPTY: dict[tuple[str, str], tuple[str, list[str]]] = {
     ("conn",       "zeek_dir"):       ("conn*.log*",   _CONN_EMPTY_COLUMNS),
     ("dns",        "zeek_dir"):       ("dns*.log*",    _DNS_ZEEK_EMPTY_COLUMNS),
-    ("dns",        "pihole_dir"):     ("pihole*.log*", _DNS_PIHOLE_EMPTY_COLUMNS),
-    ("syslog",    "syslog_dir"):      ("*.log*",       _SYSLOG_EMPTY_COLUMNS),
+    ("dns",        "pihole_dir"):     (_PIHOLE_PATTERN, _DNS_PIHOLE_EMPTY_COLUMNS),
+    ("syslog",    "syslog_dir"):      (_LOCAL_SYSLOG_PATTERN,       _SYSLOG_EMPTY_COLUMNS),
     ("syslog",    "zeek_dir"):        ("syslog*.log*", _SYSLOG_EMPTY_COLUMNS),
     ("weird",      "zeek_dir"):       ("weird*.log*",  _WEIRD_EMPTY_COLUMNS),
     ("cloudtrail", "cloudtrail_dir"): ("*.json*",      _CLOUDTRAIL_EMPTY_COLUMNS),
@@ -6694,6 +6899,23 @@ def _run_digest(
     source_windows = (
         {source_key: dated_window} if dated_window is not None else None
     )
+    pre_prompted = False
+    if not skip_confirm and _warn_above(cfg_sigwood) > 0:
+        if source_key == "zeek_dir" and source_dir.is_file():
+            previews = {pattern: loader.PatternPreview(
+                source=source_key, discovered=(source_dir,), selected=(source_dir,),
+            )}
+        else:
+            previews = loader.preview_required_files(
+                needed_logs, source_dirs, since, until,
+                source_windows=source_windows,
+                verbose=verbose_level >= 1,
+            )
+        estimates = loader.estimate_population(previews)
+        pre_prompted = _confirm_large_dataset(
+            sum(item.records for item in estimates.values()), cfg_sigwood,
+            skip_confirm=False, estimate=tuple(estimates.values()),
+        )
 
     # Single-file Zeek bypass: the file was already content-identified by sniff;
     # discover_zeek_files' fnmatch(basename, pattern) gate is meaningless for an
@@ -6752,9 +6974,10 @@ def _run_digest(
         _estderr(f"{warning}")
 
     total_records = sum(load_result.record_counts.values())
-    _confirm_large_dataset(
-        total_records, cfg_sigwood, skip_confirm=skip_confirm,
-    )
+    if not pre_prompted:
+        _confirm_large_dataset(
+            total_records, cfg_sigwood, skip_confirm=skip_confirm,
+        )
 
     if load_result.data_window is not None:
         data_window = load_result.data_window

@@ -263,6 +263,40 @@ def test_name_cap_abstains_without_partial_inventory():
 
 
 @pytest.mark.parametrize(
+    "rows",
+    [
+        pytest.param(
+            [("exiting on receipt of SIGTERM", "unknown", 1.0),
+             ("read /etc/hosts - 22 names", "unknown", 2.0)],
+            id="no-query-rows",
+        ),
+    ],
+)
+def test_population_sink_survives_a_chunk_with_no_usable_query_rows(tmp_path, rows):
+    # A day file holding only dnsmasq restart lines leaves the sink's
+    # candidate frame empty. An empty mask must
+    # filter rows, never select columns, or the next column read raises.
+    end = datetime(2026, 1, 10, 12, tzinfo=UTC)
+    window = DualWindow((end - timedelta(days=3), end))
+    base = (end - timedelta(hours=2)).timestamp()
+    frame = pd.DataFrame(
+        {
+            "ts": [None if offset is None else base + offset for _q, _e, offset in rows],
+            "src": [None] * len(rows),
+            "query": [query for query, _e, _o in rows],
+            "event_type": [event for _q, event, _o in rows],
+            "qtype": [None] * len(rows),
+            "host": [""] * len(rows),
+        }
+    )
+    blocks = dnsblock.BlockInventory(names=set(), block_dates={})
+    sink = dnsblock.make_population_sink(blocks, window, _keep)
+    result = _execute_sink_once(tmp_path, sink, frame, [True] * len(rows))
+    assert result.statuses[sink.channel].state is PreparedState.READY
+    assert sink.channel in result.results
+
+
+@pytest.mark.parametrize(
     ("axis", "limit", "cause"),
     [
         ("association_cells", 1, "association cells exceed"),

@@ -63,6 +63,28 @@ def test_dual_window_requires_strictly_earlier_context():
     assert window.membership((start - timedelta(seconds=1)).timestamp()) == (False, True)
 
 
+def test_folded_stream_shares_identities_across_files_with_load_local_owner(tmp_path):
+    files = [tmp_path / 'one.log', tmp_path / 'two.log']
+    for path in files:
+        path.write_text('record\n')
+    timestamp = _window().report_interval[0].timestamp()
+    def parse(lines, **kwargs):
+        for line in lines:
+            yield {'ts': timestamp, 'host': bytearray(b'host.example').decode(),
+                   'program': bytearray(b'worker service').decode(), 'message': line.strip()}
+    strategy = pipeline.SourceLoader(
+        discover=lambda *a, **k: [], mode='stream', parse=parse,
+        ts_policy='keep', columns=['ts', 'host', 'program', 'message'],
+        should_skip=None, normalize=None)
+    snapshot = loader.build_source_snapshot(files, 'syslog_dir', tail_policy='whole')
+    frames = [pipeline.run_folded_source(strategy, snapshot, '*.log*', _window(),
+              loader.SinkPlan(preserve_frame=True)).frame for _ in range(2)]
+    for frame in frames:
+        assert frame.host.iloc[0] is frame.host.iloc[1]
+        assert frame.program.iloc[0] is frame.program.iloc[1]
+    assert frames[0].host.iloc[0] is not frames[1].host.iloc[0]
+
+
 @pytest.mark.parametrize(
     ("bounded_explicit", "load_all"),
     [(True, False), (False, True)],
@@ -385,6 +407,21 @@ def test_file_transaction_discards_corrupt_file_and_commits_sibling(tmp_path):
     assert result.results == {"ok": 1}
     assert result.frame["value"].tolist() == ["good"]
     assert result.file_errors == ("bad.log: truncated",)
+    assert result.file_outcomes == loader.FileOutcomes(
+        frozenset({str(good.resolve())}), frozenset({str(bad.resolve())}))
+
+
+def test_read_failure_before_first_chunk_has_explicit_outcome(tmp_path):
+    path = tmp_path / "broken.log"
+    path.write_text("unreadable stream\n")
+    def chunks(item):
+        raise OSError("before decode")
+        yield  # make the failure occur on iteration
+    result = loader.execute_sink_plan(
+        loader.build_source_snapshot([path], "flat"),
+        loader.SinkPlan((_count_sink("lane"),)), chunks)
+    assert result.file_outcomes == loader.FileOutcomes(
+        frozenset(), frozenset({str(path.resolve())}))
 
 
 def test_snapshot_mutation_fails_fold_and_discards_all_partial_state(tmp_path):
@@ -887,3 +924,99 @@ def test_real_pihole_route_preserves_frame_population_for_fold_plan(tmp_path, ex
     assert folded.fold_results["pihole*.log*"]["lane"] == len(
         ordinary.logs["pihole*.log*"]
     )
+
+
+def test_pihole_fold_skips_ndjson_like_ordinary(tmp_path, capsys):
+    good = tmp_path / 'pihole.log'
+    wrong = tmp_path / 'pihole.log.1'
+    good.write_text('Jan  2 00:00:00 dnsmasq[1]: query[A] a.example from 192.0.2.1\n')
+    wrong.write_text('{"ts":1577836800,"message":"not dnsmasq"}\n')
+    needed = {'pihole*.log*': 'pihole_dir'}
+    sources = {'pihole_dir': [good, wrong]}
+    ordinary = loader.load_required_logs(needed, sources, verbose=True,
+                                         show_progress=False)
+    ordinary_stderr = capsys.readouterr().err
+    folded = loader.load_required_logs(
+        needed, sources, verbose=True, show_progress=False,
+        sink_plans={'pihole*.log*': loader.SinkPlan((_count_sink('lane'),))},
+        dual_windows={'pihole*.log*': loader.DualWindow(
+            (datetime(2026, 1, 1, tzinfo=UTC),
+             datetime(2026, 1, 4, tzinfo=UTC)))},
+    )
+    folded_stderr = capsys.readouterr().err
+    pd.testing.assert_frame_equal(ordinary.logs['pihole*.log*'],
+                                  folded.logs['pihole*.log*'])
+    assert ordinary.warnings == folded.warnings
+    assert ordinary.coverage == folded.coverage
+    assert ordinary_stderr == folded_stderr
+    assert 'pihole.log.1' in folded_stderr
+
+
+def test_syslog_fold_skips_binary_and_wrong_family_like_ordinary(tmp_path, capsys):
+    good = tmp_path / 'good.log'
+    binary = tmp_path / 'binary.log'
+    ndjson = tmp_path / 'ndjson.log'
+    tsv = tmp_path / 'tsv.log'
+    good.write_text('2020-01-01T00:00:00Z host.example app: distinct event\n')
+    binary.write_bytes(b'\x00\x01\x02\x00')
+    ndjson.write_text('{"ts":1577836800,"message":"not flat syslog"}\n')
+    tsv.write_text('#separator \\x09\n#fields\tts\thost\tmessage\n')
+    needed = {'*.log*': 'syslog_dir'}
+    sources = {'syslog_dir': [good, binary, ndjson, tsv]}
+    ordinary = loader.load_required_logs(needed, sources, verbose=True,
+                                         show_progress=False)
+    ordinary_stderr = capsys.readouterr().err
+    folded = loader.load_required_logs(
+        needed, sources, verbose=True, show_progress=False,
+        sink_plans={'*.log*': loader.SinkPlan((_count_sink('lane'),))},
+        dual_windows={'*.log*': loader.DualWindow(
+            (datetime(2019, 1, 1, tzinfo=UTC),
+             datetime(2021, 1, 1, tzinfo=UTC)))},
+    )
+    folded_stderr = capsys.readouterr().err
+    pd.testing.assert_frame_equal(ordinary.logs['*.log*'], folded.logs['*.log*'])
+    assert ordinary.warnings == folded.warnings
+    assert ordinary.coverage == folded.coverage
+    assert ordinary_stderr == folded_stderr
+    assert folded.warnings
+
+
+def test_pihole_fold_all_files_skipped_has_no_files_read_coverage(tmp_path):
+    wrong = tmp_path / 'pihole.log'
+    wrong.write_text('{"ts":1577836800,"message":"not dnsmasq"}\n')
+    result = loader.load_required_logs(
+        {'pihole*.log*': 'pihole_dir'}, {'pihole_dir': [wrong]},
+        show_progress=False,
+        sink_plans={'pihole*.log*': loader.SinkPlan((_count_sink('lane'),))},
+        dual_windows={'pihole*.log*': loader.DualWindow(
+            (datetime(2026, 1, 1, tzinfo=UTC),
+             datetime(2026, 1, 4, tzinfo=UTC)))},
+    )
+    assert result.coverage['pihole*.log*'] == loader.SourceCoverage(None, None)
+    assert result.logs['pihole*.log*'].empty
+
+
+def test_reused_prepared_snapshot_preserves_rotation_skip_provenance(tmp_path):
+    for index, day in enumerate((10, 8, 2)):
+        name = 'syslog.log' if index == 0 else f'syslog.log.{index}'
+        (tmp_path / name).write_text(
+            f'Jun {day:>2} 12:00:00 host.example app: event {index}\n')
+    since = datetime(2026, 6, 5, tzinfo=UTC)
+    until = datetime(2026, 6, 9, tzinfo=UTC)
+    needed = {'*.log*': 'syslog_dir'}
+    first = loader.load_required_logs(
+        needed, {'syslog_dir': [tmp_path]}, since=since, until=until,
+        sink_plans={'*.log*': loader.SinkPlan((_count_sink('first'),))},
+        dual_windows={'*.log*': loader.DualWindow((since, until))},
+        show_progress=False,
+    )
+    assert first.rotation_skips['*.log*'].skipped > 0
+    second = loader.load_required_logs(
+        needed, {}, since=since, until=until,
+        sink_plans={'*.log*': loader.SinkPlan((_count_sink('second'),))},
+        dual_windows={'*.log*': loader.DualWindow((since, until))},
+        prepared_snapshots={'*.log*': first.snapshots['*.log*']},
+        show_progress=False,
+    )
+    assert second.rotation_skips['*.log*'] == first.rotation_skips['*.log*']
+    assert second.snapshots['*.log*'].selection == first.snapshots['*.log*'].selection

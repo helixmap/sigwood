@@ -29,6 +29,18 @@ All notable changes to sigwood are recorded here. The format follows
 
 ### Changed
 
+- **The runner is now a small facade over an implementation package.** `sigwood/runner.py`
+  went from about 7,100 lines to under 800 and defines nothing itself; the work lives in
+  `sigwood/_runner/` as seven modules (graph, digest, notes, planning, analyze, era and the
+  private dnsblock calibration harness). Every name that was bound on `sigwood.runner`
+  before is still bound there, including the entry points `run`, `run_digest`, `run_graph`
+  and `run_era`, with `run()`'s signature unchanged, so programmatic callers and anything
+  that patches the runner for testing keep working as before. The notes a report carries are
+  now built as typed values inside the runner and flattened to the same strings at the
+  report boundary; `RunSummary.notes` and the JSON output are unchanged. **Behavior and
+  output are unchanged**: every reorganization step was judged against recorded reference
+  runs (176 real CLI invocations across the demo, fixture and frozen real-log corpora) and
+  reproduced them byte for byte, which was the gate each step had to pass.
 - Large-input confirmation now estimates selected records before the heavy read,
   labels estimated or uncounted inputs, and asks at most once with a post-load
   backstop for underestimates. `warn_above` defaults to 50,000,000 records. The

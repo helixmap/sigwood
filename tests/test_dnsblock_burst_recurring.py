@@ -284,7 +284,7 @@ def test_weak_lane_refuses_burst_and_recurring_without_grid_evaluation():
     assert analysis.burst_channel.status is dnsblock.ChannelStatus.ABSTAINED
     assert analysis.burst_channel.cause == "weak_coverage"
     assert analysis.recurring.status is dnsblock.ChannelStatus.ABSTAINED
-    notes = runner._format_dnsblock_summary_notes(_prepared(weak=True))
+    notes = [n.text for n in runner._format_dnsblock_summary_notes(_prepared(weak=True))]
     assert notes[0].startswith("these logs cannot prove how complete each day is")
     assert not any("burst reporting needs" in line for line in notes)
 
@@ -323,7 +323,7 @@ def test_steady_partial_capture_does_not_clear_burst_and_missing_strong_period_s
             "dnsblock: recurring reporting needs every day of the report fully "
             "covered; 1 of 5 were not"
         )
-        for line in runner._format_dnsblock_summary_notes(prepared)
+        for line in [n.text for n in runner._format_dnsblock_summary_notes(prepared)]
     )
 
 
@@ -407,7 +407,7 @@ def test_short_report_span_keeps_silent_typed_recurring_abstention():
     assert prepared.analysis.recurring.cause == "insufficient_report_span"
     assert not any(
         "recurring analysis" in line
-        for line in runner._format_dnsblock_summary_notes(prepared)
+        for line in [n.text for n in runner._format_dnsblock_summary_notes(prepared)]
     )
 
 

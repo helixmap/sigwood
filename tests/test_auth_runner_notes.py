@@ -296,7 +296,7 @@ def test_hostile_values_cannot_enter_summary_note_payload() -> None:
             )
         ])
     )
-    notes = runner._format_auth_summary_notes(facts)
+    notes = [n.text for n in runner._format_auth_summary_notes(facts)]
     rendered = " ".join(notes)
     assert hostile_host not in rendered
     assert hostile_account not in rendered

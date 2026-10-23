@@ -96,7 +96,7 @@ def test_derive_data_sources_empty_record_counts() -> None:
 def test_dns_nudge_fires_for_dnsmasq_alone() -> None:
     result = _dns_nudge(["dnsmasq_dns"])
     assert result is not None
-    assert "Pi-hole" in result or "dnsmasq" in result
+    assert "Pi-hole" in result.text or "dnsmasq" in result.text
 
 
 def test_dns_nudge_fires_for_dnsmasq_with_non_rich_zeek_source() -> None:
@@ -1484,7 +1484,7 @@ def test_permission_skip_notes_report_partial_pattern_rows_missing() -> None:
         needed_logs={"pihole*.log*": "pihole_dir"},
     )
 
-    assert runner._permission_skip_notes(load_result, plan) == [
+    assert [n.text for n in runner._permission_skip_notes(load_result, plan)] == [
         "Pi-hole: 1 of 3 discovered files permission denied - "
         "those rows are missing from this run (/placeholder/pihole.log.2)"
     ]
@@ -1958,7 +1958,7 @@ def test_pihole_denial_has_directory_note_without_pattern_mismatch_warning(
         directory_skips=skips,
     )
 
-    notes = runner._directory_skip_notes(plan)
+    notes = [n.text for n in runner._directory_skip_notes(plan)]
     assert len(notes) == 1
     assert notes[0].startswith("Pi-hole: directory could not be listed")
     assert not any("none match" in warning for warning in result.warnings)
@@ -2087,7 +2087,7 @@ def test_directory_skip_notes_use_operator_labels_at_directory_granularity() -> 
         },
     )
 
-    notes = runner._directory_skip_notes(plan)
+    notes = [n.text for n in runner._directory_skip_notes(plan)]
     assert notes[0].startswith("Zeek: directory could not be listed")
     assert notes[1].startswith("syslog: directory could not be listed")
     assert all("_dir:" not in note for note in notes)
@@ -2623,13 +2623,13 @@ def test_aws_window_note_cloudtrail_narrowed_rider() -> None:
     plan = SimpleNamespace(will_run=["aws"])
     base = _aws_window_note(plan, cloudtrail_narrowed=False)
     assert base is not None
-    assert "first-seen" in base
-    assert "--all" not in base
+    assert "first-seen" in base.text
+    assert "--all" not in base.text
 
     rider = _aws_window_note(plan, cloudtrail_narrowed=True)
     assert rider is not None
-    assert rider.startswith(base)  # same note, guidance appended
-    assert "--all" in rider
+    assert rider.text.startswith(base.text)  # same note, guidance appended
+    assert "--all" in rider.text
 
     # No aws → no note regardless of the flag.
     assert _aws_window_note(SimpleNamespace(will_run=["beacon"]),
@@ -2918,7 +2918,11 @@ def test_confirm_large_dataset_labels_estimate_and_uncounted_files(
 def test_large_dataset_default_has_one_runner_owner() -> None:
     from pathlib import Path
 
-    assert Path(runner.__file__).read_text().count("50_000_000") == 1
+    facade = Path(runner.__file__)
+    sources = [facade, *facade.with_name("_runner").rglob("*.py")]
+    assert sum(
+        path.read_text().count("50_000_000") for path in sources
+    ) == 1
 
 
 @pytest.mark.parametrize(
@@ -3381,8 +3385,8 @@ def test_aws_below_floor_note_returns_string_with_count() -> None:
     df = pd.DataFrame([{"lane": "interactive", "principal": "x"}])
     note = _aws_below_floor_note(plan, {"*.json*": df}, config={})
     assert note is not None
-    assert "5" in note
-    assert "min_events" in note
+    assert "5" in note.text
+    assert "min_events" in note.text
 
 
 def test_aws_below_floor_note_returns_none_when_aws_not_in_plan() -> None:
@@ -3410,7 +3414,7 @@ def test_aws_window_note_fires_when_aws_runs() -> None:
     plan = _fake_plan(["aws"], _fake_aws_mod())
     note = _aws_window_note(plan)
     assert note is not None
-    assert "first-seen" in note
+    assert "first-seen" in note.text
 
 
 def test_aws_window_note_silent_when_aws_did_not_run() -> None:
@@ -3576,11 +3580,11 @@ def test_home_net_note_default_includes_parenthetical() -> None:
         _scan_plan(scan_in_plan=True), config, list(_RFC1918_HOME_NET)
     )
     assert note is not None
-    assert "10.0.0.0/8" in note
-    assert "172.16.0.0/12" in note
-    assert "192.168.0.0/16" in note
-    assert "RFC1918 default" in note
-    assert "set home_net in config to override" in note
+    assert "10.0.0.0/8" in note.text
+    assert "172.16.0.0/12" in note.text
+    assert "192.168.0.0/16" in note.text
+    assert "RFC1918 default" in note.text
+    assert "set home_net in config to override" in note.text
 
 
 def test_home_net_note_declared_omits_parenthetical_with_custom_range() -> None:
@@ -3593,8 +3597,8 @@ def test_home_net_note_declared_omits_parenthetical_with_custom_range() -> None:
         _scan_plan(scan_in_plan=True), config, ["192.0.2.0/24"]
     )
     assert note is not None
-    assert "192.0.2.0/24" in note
-    assert "RFC1918 default" not in note
+    assert "192.0.2.0/24" in note.text
+    assert "RFC1918 default" not in note.text
 
 
 def test_home_net_note_declared_omits_parenthetical_when_value_equals_default() -> None:
@@ -3612,9 +3616,9 @@ def test_home_net_note_declared_omits_parenthetical_when_value_equals_default() 
         _scan_plan(scan_in_plan=True), config, list(_RFC1918_HOME_NET)
     )
     assert note is not None
-    assert "10.0.0.0/8" in note
-    assert "RFC1918 default" not in note
-    assert "override" not in note
+    assert "10.0.0.0/8" in note.text
+    assert "RFC1918 default" not in note.text
+    assert "override" not in note.text
 
 
 def test_home_net_note_returns_none_when_scan_not_in_plan() -> None:
@@ -4988,7 +4992,7 @@ def test_source_overlap_two_families_same_dir(tmp_path) -> None:
     plan = _plan_with_needed(
         {"conn*.log*": "zeek_dir", "*.log*": "syslog_dir"}
     )
-    notes = _source_overlap_notes(source_dirs, plan)
+    notes = [n.text for n in _source_overlap_notes(source_dirs, plan)]
     assert len(notes) == 1, notes
     assert notes[0].startswith("zeek_dir, syslog_dir resolve to the same directory")
     assert str(shared.resolve()) in notes[0]
@@ -5008,7 +5012,7 @@ def test_source_overlap_three_families_same_dir(tmp_path) -> None:
         "*.log*": "syslog_dir",
         "pihole*.log*": "pihole_dir",
     })
-    notes = _source_overlap_notes(source_dirs, plan)
+    notes = [n.text for n in _source_overlap_notes(source_dirs, plan)]
     assert len(notes) == 1, notes
     assert notes[0].startswith(
         "zeek_dir, syslog_dir, pihole_dir resolve to the same directory"

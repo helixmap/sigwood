@@ -44,15 +44,16 @@ class FrozenDateTime(datetime):
 
 @contextmanager
 def fixed_clock():
+    from sigwood import runner
     modules = ('sigwood.parsers.syslog', 'sigwood.parsers.dnsmasq',
                'sigwood.detectors.syslog', 'sigwood.detectors.auth', 'sigwood.runner',
-               'sigwood.common.loader.windowing', 'sigwood.common.display')
+               'sigwood.common.loader.windowing', 'sigwood.common.display', runner.run.__module__)
     previous_tz = os.environ.get('TZ')
     os.environ['TZ'] = 'UTC'
     time.tzset()
     patches = []
     try:
-        for name in modules:
+        for name in dict.fromkeys(modules):
             module = importlib.import_module(name)
             if hasattr(module, 'datetime'):
                 binding = patch.object(module, 'datetime', FrozenDateTime)

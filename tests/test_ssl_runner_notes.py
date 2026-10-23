@@ -152,7 +152,7 @@ def test_no_note_carries_an_address_or_a_server_name() -> None:
         _row(dst="239.0.0.1"),
     ]
     logs = _logs(rows)
-    joined = " ".join(runner._ssl_eligibility_notes(_plan(), logs, HOME_NET))
+    joined = " ".join([n.text for n in runner._ssl_eligibility_notes(_plan(), logs, HOME_NET)])
     for identity in ("192.0.2.10", "198.51.100.20", "203.0.113.7",
                      "239.0.0.1", "secret.example.com", "aa11"):
         assert identity not in joined

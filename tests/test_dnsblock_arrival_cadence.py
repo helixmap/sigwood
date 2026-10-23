@@ -578,7 +578,7 @@ def test_note_projector_is_fixed_order_and_suppression_conserves():
         prepared,
         analysis=replace(prepared.analysis, notes=facts),
     )
-    notes = runner._format_dnsblock_summary_notes(prepared)
+    notes = [n.text for n in runner._format_dnsblock_summary_notes(prepared)]
     assert notes[0].startswith("these logs cannot prove how complete each day is")
     assert notes[1] == (
         "dnsblock: 2 candidate pairs not reported: not enough earlier history "
@@ -603,9 +603,9 @@ def test_note_projector_uses_detector_owned_vector_facts():
         insufficient_context_periods=8,
         insufficient_arrival_coverage=2,
     )
-    notes = runner._format_dnsblock_summary_notes(
+    notes = [n.text for n in runner._format_dnsblock_summary_notes(
         replace(prepared, analysis=replace(prepared.analysis, notes=facts))
-    )
+    )]
     assert notes[1] == (
         "dnsblock: first-activity reporting needs 9 earlier days of history and "
         "this window has 8; nothing is wrong, it will report once the archive is longer"
@@ -622,9 +622,9 @@ def test_arrival_coverage_note_keeps_the_strong_lane_denominator() -> None:
         arrival_days_required=4,
         insufficient_arrival_coverage=2,
     )
-    notes = runner._format_dnsblock_summary_notes(
+    notes = [n.text for n in runner._format_dnsblock_summary_notes(
         replace(prepared, analysis=replace(prepared.analysis, notes=facts))
-    )
+    )]
     assert (
         "dnsblock: first-activity reporting needs 4 covered days and this window has 2"
         in notes
@@ -639,9 +639,9 @@ def test_note_projector_hides_nonconserving_suppression_state():
         raw_block_report_rows=0,
         filtered_block_report_rows=1,
     )
-    notes = runner._format_dnsblock_summary_notes(
+    notes = [n.text for n in runner._format_dnsblock_summary_notes(
         replace(prepared, analysis=replace(prepared.analysis, notes=facts))
-    )
+    )]
     assert not any("allowlist removed" in note for note in notes)
 
 
@@ -716,9 +716,9 @@ def test_note_projector_zero_cause_precedence_uses_query_population(
         context_findings=0,
         **overrides,
     )
-    notes = runner._format_dnsblock_summary_notes(
+    notes = [n.text for n in runner._format_dnsblock_summary_notes(
         replace(prepared, analysis=replace(prepared.analysis, notes=facts))
-    )
+    )]
     assert notes[-1] == expected
 
 

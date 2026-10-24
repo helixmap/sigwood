@@ -230,8 +230,10 @@ python -m pytest             # from the repo root
 
 The `core.hooksPath` line is a one-time setting per clone. Git will not enable
 hooks on your behalf, by design, so a fresh clone has the hook scripts but not
-the gate until you run it. The hooks only check dash punctuation and add a
-fraction of a second to a commit.
+the gate until you run it. The hooks only check dash punctuation and add a fraction of a second to a commit.
+Because the setting points at the tracked `.githooks/` directory, a commit runs
+whatever hook scripts the checked-out branch contains, including `tests/dash_rule.py`,
+so review those two paths before committing on a branch you did not write.
 
 Commits on `main` are signed with the maintainer's hardware key, and the branch
 refuses unsigned ones. That is a property of the maintainer's clone, not

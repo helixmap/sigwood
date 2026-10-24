@@ -701,12 +701,28 @@ also carries the run's data window.
 
 **Symbolic-link refusal does not cover hard links.** sigwood checks, at the moment it opens
 the file, that the final name it was asked to write is not a symbolic link, and refuses
-rather than following it. It also opens each directory along the way without blindly
-following links, so a symbolic link substituted among the parent directories cannot redirect
-an artifact into a directory another account controls. A directory you relocated yourself
-still works: a link is followed when the directory it points at is yours (or the system's)
-and is not one other accounts can write, and shared directories such as `/tmp` that carry
-the sticky bit are treated as ordinary rather than hostile.
+rather than following it. It also opens each directory along the way, for an absolute path
+and a relative one alike, without blindly following links. A link among those directories is
+followed only when three things hold: the directory holding the link is yours (or the
+system's) and is not one other accounts can change, the link itself was made by you or by
+the system, and the directory it points at passes the same test. A relocated reports
+directory you set up yourself therefore keeps working, and shared directories such as `/tmp`
+that carry the sticky bit are treated as ordinary rather than hostile. A directory writable
+by your own group is accepted when that group is your account's primary group and lists no
+other members, which is how many Linux systems set up one private group per user; sigwood
+cannot see another account whose primary group is that same group, so on a system that
+shares such a group across accounts the acceptance is broader than it looks.
+
+When sigwood creates a private directory it normally sets the mode on the directory it just
+opened, not on a name that could have been replaced underneath it; the one exception is the
+recovery described next, which works by name and only inside a directory other accounts
+cannot change. One narrow case is refused rather than guessed at: under a umask that removes your own read or search permission, a
+freshly created private directory cannot be reopened, and sigwood recovers its permissions
+by name only inside a directory other accounts cannot change. Anywhere else it stops with a
+message naming the cause, and the empty directory it created may be left unreadable until
+you repair or remove it. A directory another account can write to still leaves one window
+open between creation and reopening, in which a directory you already own could be moved
+into place and have its mode set to 0700; a link or a file moved there is refused.
 
 Reports, decks and other whole files are written to a fresh name and moved into place, so a
 **hard link** at the destination loses one of its names rather than its contents: the file
@@ -715,8 +731,11 @@ another name refers to is left as it was.
 One narrower shape remains. A few outputs are written as a stream rather than in one piece,
 including exported logs and reports rendered progressively. Those still open the destination
 directly, so a hard link there would have its contents replaced. It matters only where another
-account can create or replace a name in one of the directories along your output path; if
-every such directory is one only you can write to, it does not apply.
+account can create or replace a name in one of the directories along your output path; if every such directory is one only you can write to, it does not apply.
+
+**An interrupted CloudTrail re-export can leave an older part in place.** When an export is written again to the same output file name, its new files land first and the
+parts it no longer needs are removed after. If the export is interrupted between those two steps, an older part of the same window
+stays on disk with its earlier provenance and can still be loaded as current data until the next successful export to that same output removes it.
 
 **The conn digest is slow on very large frames.** The connection digest walks every
 row to build its histogram and per-flow summary, so a multi-million-row `conn.log`

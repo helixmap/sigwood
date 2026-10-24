@@ -505,7 +505,11 @@ def test_falsy_non_string_event_time_drops_only_that_record_not_object_siblings(
             ],
         },
     )
-    assert meta == {"units": 2, "unit_label": "objects"}
+    assert meta == {
+        "units": 2,
+        "unit_label": "objects",
+        "notes": ["left out 1 record with no readable eventTime"],
+    }
     assert [event["eventName"] for event in events] == [
         "GoodSameObject",
         "Good",
@@ -772,7 +776,100 @@ def test_event_time_sort_and_trim(monkeypatch) -> None:
     assert names == ["E_EARLY", "E_LATE", "E_BOUNDARY"]
 
 
-# ── write(): 2 GB split with _partNN-only-on-split ────────────────────────────
+@pytest.mark.parametrize("zone", ("UTC", "Etc/GMT+6"))
+@pytest.mark.parametrize("naive", (False, True), ids=("aware", "timezone-less"))
+def test_event_time_offsets_keep_utc_window_order_and_output_bytes(
+    monkeypatch, tmp_path, pin_tz, zone, naive,
+) -> None:
+    pin_tz(zone)
+    suffix = "" if naive else "Z"
+    records = [
+        {"eventTime": f"2026-06-01T13:00:00{suffix}", "eventName": "End"},
+        {"eventTime": "2026-06-01T15:30:00+03:00", "eventName": "Later"},
+        {"eventTime": "2026-06-01T06:00:00-06:00", "eventName": "Equal"},
+        {"eventTime": f"2026-06-01T12:00:00{suffix}", "eventName": "Start"},
+        {"eventTime": f"2026-06-01T11:59:59{suffix}", "eventName": "Before"},
+    ]
+    client = FakeS3Client()
+    base = "AWSLogs/000000000000/CloudTrail/us-east-1/2026/06/01/"
+    client.add_object(base + "events.json.gz", _gz_envelope(records))
+    monkeypatch.setattr(ct.boto3, "client", lambda _svc: client)
+    events, meta = ct.fetch(
+        {}, {"path": "s3://example-trail-bucket/AWSLogs/", "egress_warn_gb": 100},
+        datetime(2026, 6, 1, 12, tzinfo=timezone.utc),
+        datetime(2026, 6, 1, 13, tzinfo=timezone.utc), verbose=False,
+    )
+    assert events == [records[2], records[3], records[1]]
+    assert meta == {"units": 1, "unit_label": "objects"}
+    out = tmp_path / "events.json.log"
+    count, _ = ct.write(events, out, verbose=False)
+    assert count == 3
+    expected = (
+        '{"eventTime": "2026-06-01T06:00:00-06:00", "eventName": "Equal"}\n'
+        f'{{"eventTime": "2026-06-01T12:00:00{suffix}", "eventName": "Start"}}\n'
+        '{"eventTime": "2026-06-01T15:30:00+03:00", "eventName": "Later"}\n'
+    )
+    assert out.read_bytes() == expected.encode("utf-8")
+
+
+@pytest.mark.parametrize(
+    "unreadable",
+    (
+        [],
+        [{"eventTime": "not-a-timestamp", "eventName": "Unreadable"}],
+        [
+            {"eventTime": None, "eventName": "Null"},
+            {"eventName": "Missing"},
+            {"eventTime": "", "eventName": "Empty"},
+            {"eventTime": "invalid\n\x1b[31m\r\x00", "eventName": "Untrusted"},
+        ],
+    ),
+    ids=("readable", "one-unreadable", "missing-and-unreadable"),
+)
+def test_unreadable_event_times_keep_valid_siblings_and_disclose_only_drops(
+    monkeypatch, tmp_path, capsys, unreadable, restore_display_utc,
+) -> None:
+    before = {"eventTime": "2026-06-01T11:00:00Z", "eventName": "Before"}
+    after = {"eventTime": "2026-06-01T13:00:00Z", "eventName": "After"}
+    outside = {"eventTime": "2026-06-02T00:00:00Z", "eventName": "Outside"}
+    client = FakeS3Client()
+    base = "AWSLogs/000000000000/CloudTrail/us-east-1/2026/06/01/"
+    client.add_object(
+        base + "events.json.gz", _gz_envelope([before, *unreadable, after, outside]),
+    )
+    monkeypatch.setattr(ct.boto3, "client", lambda _svc: client)
+    cfg = {"export": {"cloudtrail": {
+        "path": "s3://example-trail-bucket/AWSLogs/", "egress_warn_gb": 100,
+    }}}
+    since = datetime(2026, 6, 1, tzinfo=timezone.utc)
+    until = datetime(2026, 6, 2, tzinfo=timezone.utc)
+    events, meta = ct.fetch({}, cfg["export"]["cloudtrail"], since, until, verbose=False)
+    assert events == [before, after]
+    assert (meta["units"], meta["unit_label"]) == (1, "objects")
+    n = len(unreadable)
+    if n:
+        noun = "record" if n == 1 else "records"
+        note = f"left out {n} {noun} with no readable eventTime"
+        assert meta["notes"] == [note]
+    else:
+        assert "notes" not in meta
+    capsys.readouterr()
+    outpath = tmp_path / "export.json.log"
+    run_export(
+        cfg, backend="cloudtrail", query_names=[], since=since, until=until,
+        out=str(outpath), verbose=False, skip_confirm=True,
+    )
+    captured = capsys.readouterr()
+    notes = [line for line in captured.out.splitlines() if line.startswith("note:")]
+    assert notes == ([f"note: {note}"] if n else [])
+    assert outpath.read_text().splitlines() == [json.dumps(before), json.dumps(after)]
+    combined = captured.out + captured.err
+    for value in ("not-a-timestamp", "invalid", "Untrusted", "Traceback", "\x1b[31m", "\x00"):
+        assert value not in combined
+    assert "skipped unreadable object:" not in captured.err
+
+
+# write(): 2 GB split with _partNN-only-on-split
 
 
 def test_write_no_split(tmp_path: Path) -> None:

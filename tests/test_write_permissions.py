@@ -5,9 +5,11 @@ from __future__ import annotations
 import ast
 import errno
 import fcntl
+import grp
 import io
 import json
 import os
+import pwd
 import shutil
 import stat
 import subprocess
@@ -15,6 +17,7 @@ import sys
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Iterator
 
 import pytest
@@ -23,11 +26,13 @@ import sigwood.cli as cli
 import sigwood.cli_allowlist as cli_allowlist
 import sigwood.cli_init as cli_init
 import sigwood.runner as runner
+import sigwood.common.paths as paths_mod
 from sigwood.common.finding import RunSummary
 from sigwood.common.output import register_builtin_handlers
 from sigwood.common.paths import (
     private_mkdir,
     private_open,
+    private_open_lock,
     private_write_bytes,
     private_write_text,
 )
@@ -113,9 +118,10 @@ def _drive_handler(handler: object, close_handler: object) -> None:
 
 
 @_POSIX_ONLY
-def test_private_mkdir_sets_every_created_component_to_0700(tmp_path: Path) -> None:
+@pytest.mark.parametrize("mask", [0, 0o022, 0o002, 0o777])
+def test_private_mkdir_sets_every_created_component_to_0700(tmp_path: Path, mask: int) -> None:
     target = tmp_path / "first" / "second"
-    with _temporary_umask(0):
+    with _temporary_umask(mask):
         private_mkdir(target)
     assert _mode(tmp_path / "first") == 0o700
     assert _mode(target) == 0o700
@@ -438,12 +444,13 @@ def test_write_through_symlinked_parent_directory_remains_supported(
     tmp_path: Path,
 ) -> None:
     relocated = tmp_path / "relocated-reports"
-    relocated.mkdir()
+    with _temporary_umask(0o022):
+        relocated.mkdir()
     reports = tmp_path / "reports"
     reports.symlink_to(relocated, target_is_directory=True)
 
-    # Final-component refusal intentionally does not close the residual risk in
-    # parent components; ordinary relocated report directories remain supported.
+    # An owner-controlled relocation to a private directory remains a supported
+    # report destination.
     private_write_text(reports / "report.txt", "relocated\r\n", newline="")
 
     written = relocated / "report.txt"
@@ -465,6 +472,155 @@ def test_private_open_keeps_regular_route_bytes_and_clears_nonblocking(
 
     assert target.read_bytes() == b"first\r\nsecond\n"
     assert _mode(target) == (0o600 if private else 0o644)
+
+
+@_POSIX_ONLY
+@pytest.mark.parametrize("mask", [0o022, 0o002, 0o777])
+def test_private_lock_creation_is_private_and_reopen_keeps_inode(
+    tmp_path: Path, mask: int,
+) -> None:
+    target = tmp_path / "lock"
+    with _temporary_umask(mask):
+        with private_open_lock(target) as first:
+            original = os.fstat(first.fileno())
+            assert stat.S_IMODE(original.st_mode) == 0o600
+            assert fcntl.fcntl(first.fileno(), fcntl.F_GETFL) & os.O_NONBLOCK == 0
+        with private_open_lock(target) as second:
+            assert os.fstat(second.fileno()).st_ino == original.st_ino
+    assert target.read_bytes() == b""
+
+
+@_POSIX_ONLY
+def test_private_lock_existing_inode_is_never_chmodded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = tmp_path / "lock"
+    target.write_bytes(b"preserve these bytes\n")
+    target.chmod(0o640)
+    original = target.stat()
+
+    def unexpected_chmod(*_args: object) -> None:
+        pytest.fail("existing lock inode was chmodded")
+
+    monkeypatch.setattr(os, "fchmod", unexpected_chmod)
+    with private_open_lock(target):
+        pass
+    assert target.read_bytes() == b"preserve these bytes\n"
+    assert _mode(target) == 0o640
+    assert target.stat().st_ino == original.st_ino
+
+
+@_POSIX_ONLY
+def test_private_lock_requires_only_write_access(tmp_path: Path) -> None:
+    target = tmp_path / "lock"
+    target.touch()
+    target.chmod(0o200)
+    with private_open_lock(target) as stream:
+        assert fcntl.fcntl(stream.fileno(), fcntl.F_GETFL) & os.O_ACCMODE == os.O_WRONLY
+    assert _mode(target) == 0o200
+
+
+@_POSIX_ONLY
+def test_private_lock_flock_excludes_another_open_of_the_same_inode(tmp_path: Path) -> None:
+    target = tmp_path / "lock"
+    with private_open_lock(target) as first, private_open_lock(target) as second:
+        assert os.fstat(first.fileno()).st_ino == os.fstat(second.fileno()).st_ino
+        fcntl.flock(first.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        with pytest.raises(BlockingIOError):
+            fcntl.flock(second.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        fcntl.flock(first.fileno(), fcntl.LOCK_UN)
+        fcntl.flock(second.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        fcntl.flock(second.fileno(), fcntl.LOCK_UN)
+
+
+@_POSIX_ONLY
+def test_private_lock_refuses_symlink_without_modifying_target(tmp_path: Path) -> None:
+    victim = tmp_path / "preserved-file"
+    victim.write_bytes(b"preserve these bytes\n")
+    victim.chmod(0o640)
+    target = tmp_path / "lock"
+    target.symlink_to(victim)
+    with pytest.raises(ValueError, match="symbolic link"):
+        private_open_lock(target)
+    assert victim.read_bytes() == b"preserve these bytes\n"
+    assert _mode(victim) == 0o640
+
+
+@_POSIX_ONLY
+@pytest.mark.parametrize("kind", ["fifo", "directory", "device"])
+def test_private_lock_refuses_nonregular_leaf_without_hanging(tmp_path: Path, kind: str) -> None:
+    target = tmp_path / "lock"
+    if kind == "fifo":
+        os.mkfifo(target)
+    elif kind == "directory":
+        target.mkdir()
+    else:
+        target = Path("/dev/null")
+    result = subprocess.run(
+        [sys.executable, "-c", (
+            "import sys; from sigwood.common.paths import private_open_lock; "
+            "private_open_lock(sys.argv[1])"
+        ), str(target)], capture_output=True, text=True, timeout=_HANG_TIMEOUT_SECONDS,
+    )
+    assert result.returncode != 0
+    assert any(reason in result.stderr for reason in (
+        "could not be opened safely", "not a regular file", "Is a directory",
+    ))
+    assert not target.is_file()
+
+
+@_POSIX_ONLY
+def test_private_lock_does_not_recreate_a_disappearing_existing_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = tmp_path / "lock"
+    target.touch()
+    original = paths_mod._open_through_walked_parent
+    flags_seen = []
+
+    def lose_existing(path, flags, mode):
+        flags_seen.append(flags)
+        if flags & os.O_EXCL:
+            target.unlink()
+            raise FileExistsError(errno.EEXIST, "injected collision")
+        return original(path, flags, mode)
+
+    monkeypatch.setattr(paths_mod, "_open_through_walked_parent", lose_existing)
+    with pytest.raises(FileNotFoundError):
+        private_open_lock(target)
+    assert len(flags_seen) == 2
+    assert flags_seen[0] & os.O_CREAT
+    assert flags_seen[1] & (os.O_CREAT | os.O_TRUNC) == 0
+    assert not target.exists()
+
+
+@_POSIX_ONLY
+@pytest.mark.parametrize("failure", ["fstat", "fcntl", "fchmod", "fdopen"])
+def test_private_lock_closes_descriptors_on_setup_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str,
+) -> None:
+    original_open, original_close = os.open, os.close
+    opened = set()
+
+    def record_open(*args, **kwargs):
+        fd = original_open(*args, **kwargs)
+        opened.add(fd)
+        return fd
+
+    def record_close(fd):
+        original_close(fd)
+        opened.remove(fd)
+
+    def fail_setup(*_args, **_kwargs):
+        raise OSError("injected setup failure")
+
+    _patch_dirfd_call(monkeypatch, "open", record_open)
+    monkeypatch.setattr(os, "close", record_close)
+    owner = fcntl if failure == "fcntl" else os
+    monkeypatch.setattr(owner, failure, fail_setup)
+    with pytest.raises(OSError, match="injected setup failure"):
+        private_open_lock(tmp_path / "lock")
+    assert not opened
 
 
 @_POSIX_ONLY
@@ -836,6 +992,64 @@ def test_system_init_branch_uses_ambient_umask(
     assert _mode(home / "config.toml") == 0o644
     assert _mode(allowlist_dir) == 0o755
     assert {_mode(path) for path in allowlist_dir.iterdir() if path.is_file()} == {0o644}
+
+
+@_POSIX_ONLY
+@pytest.mark.parametrize("private", [True, False])
+@pytest.mark.parametrize("mode", [0o640, 0o644])
+def test_reset_writability_probe_preserves_hard_linked_inode(
+    tmp_path: Path, private: bool, mode: int,
+) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    victim = tmp_path / "preserved-file"
+    victim.write_bytes(b"preserve these bytes\n")
+    victim.chmod(mode)
+    probe = home / ".sigwood_init_write_probe"
+    probe.hardlink_to(victim)
+    original = victim.stat()
+
+    assert cli_init._writability_error(home, private=private) is None
+
+    assert victim.read_bytes() == b"preserve these bytes\n"
+    assert _mode(victim) == mode
+    assert victim.stat().st_ino == original.st_ino
+    assert not probe.exists()
+    assert list(home.iterdir()) == []
+
+
+@_POSIX_ONLY
+@pytest.mark.parametrize("scope", ["config", "allowlist"])
+def test_reset_probe_permission_message_strips_controls_at_stdout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str], scope: str,
+) -> None:
+    hostile = "home\n\r\x1b[31m\x7f\x85\x9b"
+    home = tmp_path / hostile
+    home.mkdir()
+    config = home / "config.toml"
+    config.write_text("[sigwood]\n")
+    answers = iter([scope, "reset"])
+    monkeypatch.setattr("builtins.input", lambda *_args: next(answers))
+    monkeypatch.setattr(cli_init, "_find_initial_config", lambda: config)
+    monkeypatch.setattr(
+        cli_init, "_entry_for_config", lambda path: cli_init._do_reset(path, {}),
+    )
+    monkeypatch.setattr(cli_init, "_resolve_allowlist_dir_from_config", lambda _path: home)
+
+    def denied(*_args, **_kwargs):
+        raise PermissionError(errno.EACCES, "denied\n\r\x1b[31m\x7f\x85\x9b", "probe")
+
+    monkeypatch.setattr(cli_init, "private_write_bytes", denied)
+    cli.main(["init"])
+
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    assert not any(control in captured.out for control in ("\r", "\x1b", "\x7f", "\x85", "\x9b"))
+    assert f"can't write to {tmp_path}/home[31m (" in captured.out
+    assert len([line for line in captured.out.splitlines() if line.startswith("can't write to")]) == 1
+    assert "Traceback" not in captured.out
+    assert list(home.iterdir()) == [config]
 
 
 @_POSIX_ONLY
@@ -1233,6 +1447,7 @@ def test_write_survives_a_parent_replaced_mid_walk(tmp_path: Path) -> None:
             # refers to is unlinked and a fresh one takes its name.
             shutil.rmtree(parent)
             parent.mkdir()
+            parent.chmod(0o700)
         return result
 
     with pytest.MonkeyPatch.context() as patch:
@@ -1241,3 +1456,480 @@ def test_write_survives_a_parent_replaced_mid_walk(tmp_path: Path) -> None:
 
     assert target.read_text(encoding="utf-8") == "findings"
     assert len(calls) == 2, "expected exactly one re-walk, not a retry loop"
+
+
+def _patch_dirfd_call(monkeypatch, name, replacement) -> None:
+    original = getattr(os, name)
+    supported = os.supports_dir_fd
+    monkeypatch.setattr(os, name, replacement)
+    if original in supported:
+        monkeypatch.setattr(os, "supports_dir_fd", supported | {replacement})
+
+
+def _stat_with_owner(info: os.stat_result, uid: int) -> os.stat_result:
+    values = list(info)
+    values[4] = uid
+    return os.stat_result(values)
+
+
+@_POSIX_ONLY
+@pytest.mark.parametrize("relative", [False, True])
+def test_first_parent_link_rejects_untrusted_target(tmp_path, monkeypatch, relative) -> None:
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    elsewhere.chmod(0o777)
+    reports = tmp_path / "reports"
+    reports.symlink_to(elsewhere, target_is_directory=True)
+    monkeypatch.chdir(tmp_path)
+    target = Path("reports/result.txt") if relative else reports / "result.txt"
+    with pytest.raises(ValueError, match="sticky"):
+        private_write_text(target, "synthetic")
+    assert not (elsewhere / "result.txt").exists()
+
+
+@_POSIX_ONLY
+def test_unreadable_cwd_does_not_bypass_parent_walk(tmp_path, monkeypatch) -> None:
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    elsewhere.chmod(0o777)
+    cwd = tmp_path / "cwd"
+    cwd.mkdir()
+    (cwd / "reports").symlink_to(elsewhere, target_is_directory=True)
+    monkeypatch.chdir(cwd)
+    cwd.chmod(0o300)
+    try:
+        with pytest.raises(ValueError, match="cannot open the directory"):
+            private_write_text("reports/result.txt", "synthetic")
+    finally:
+        cwd.chmod(0o700)
+    assert not (elsewhere / "result.txt").exists()
+
+
+@_POSIX_ONLY
+@pytest.mark.parametrize("error", [errno.EACCES, errno.EMFILE])
+def test_anchor_failure_never_falls_back_to_an_unwalked_write(tmp_path, monkeypatch, error) -> None:
+    target = tmp_path / "result.txt"
+    original = os.open
+    failure = OSError(error, os.strerror(error))
+
+    def fail_anchor(path, flags, *args, **kwargs):
+        if str(path) == "/" and not kwargs:
+            raise failure
+        return original(path, flags, *args, **kwargs)
+
+    _patch_dirfd_call(monkeypatch, "open", fail_anchor)
+    if error == errno.EACCES:
+        with pytest.raises(ValueError, match="make it readable"):
+            private_write_text(target, "synthetic")
+    else:
+        with pytest.raises(OSError) as caught:
+            private_write_text(target, "synthetic")
+        assert caught.value is failure
+    assert not target.exists()
+
+
+@_POSIX_ONLY
+@pytest.mark.parametrize("foreign", [False, True])
+def test_link_owner_is_checked_independently_of_target_owner(tmp_path, monkeypatch, foreign) -> None:
+    target = tmp_path / "target"
+    target.mkdir(mode=0o700)
+    link = tmp_path / "reports"
+    link.symlink_to(target, target_is_directory=True)
+    original = os.lstat
+
+    def link_owner(path, *args, **kwargs):
+        info = original(path, *args, **kwargs)
+        if Path(path).name == "reports" and stat.S_ISLNK(info.st_mode):
+            return _stat_with_owner(info, os.geteuid() + 10000 if foreign else 0)
+        return info
+
+    _patch_dirfd_call(monkeypatch, "lstat", link_owner)
+    if foreign:
+        with pytest.raises(ValueError, match="symbolic link owned by another user"):
+            private_write_text(link / "result.txt", "synthetic")
+        assert not (target / "result.txt").exists()
+    else:
+        private_write_text(link / "result.txt", "synthetic")
+        assert (target / "result.txt").read_text() == "synthetic"
+
+
+@_POSIX_ONLY
+@pytest.mark.parametrize("foreign_sticky", [False, True])
+def test_link_inside_untrusted_container_is_refused(tmp_path, monkeypatch, foreign_sticky) -> None:
+    target = tmp_path / "target"
+    target.mkdir(mode=0o700)
+    container = tmp_path / "container"
+    container.mkdir()
+    container.chmod(0o1777 if foreign_sticky else 0o777)
+    (container / "reports").symlink_to(target, target_is_directory=True)
+    if foreign_sticky:
+        inode = container.stat().st_ino
+        original = os.fstat
+
+        def foreign_owner(fd):
+            info = original(fd)
+            return _stat_with_owner(info, os.geteuid() + 10000) if info.st_ino == inode else info
+
+        monkeypatch.setattr(os, "fstat", foreign_owner)
+    with pytest.raises(ValueError, match="inside a directory"):
+        private_write_text(container / "reports" / "result.txt", "synthetic")
+    assert not (target / "result.txt").exists()
+
+
+@_POSIX_ONLY
+@pytest.mark.parametrize("group_on", ["target", "container"])
+@pytest.mark.parametrize("case", ["private", "members", "different", "unknown-group", "unknown-user"])
+def test_group_writable_relocation_uses_account_group_facts(tmp_path, monkeypatch, group_on, case) -> None:
+    container = tmp_path / "container"
+    container.mkdir(mode=0o700)
+    target = tmp_path / "target"
+    target.mkdir(mode=0o700)
+    group_dir = target if group_on == "target" else container
+    group_dir.chmod(0o775)
+    gid = group_dir.stat().st_gid
+    (container / "reports").symlink_to(target, target_is_directory=True)
+
+    def user_lookup(_uid):
+        if case == "unknown-user":
+            raise KeyError("unresolved user")
+        return SimpleNamespace(pw_gid=gid + 10000 if case == "different" else gid)
+
+    def group_lookup(_gid):
+        if case == "unknown-group":
+            raise KeyError("unresolved group")
+        return SimpleNamespace(gr_mem=["other"] if case == "members" else [])
+
+    monkeypatch.setattr(pwd, "getpwuid", user_lookup)
+    monkeypatch.setattr(grp, "getgrgid", group_lookup)
+    with _temporary_umask(0o002):
+        if case == "private":
+            private_write_text(container / "reports" / "result.txt", "synthetic")
+            assert (target / "result.txt").read_text() == "synthetic"
+        else:
+            with pytest.raises(ValueError, match="refusing"):
+                private_write_text(container / "reports" / "result.txt", "synthetic")
+            assert not (target / "result.txt").exists()
+
+
+@_POSIX_ONLY
+def test_private_mkdir_does_not_chmod_through_a_substituted_ancestor(tmp_path, monkeypatch) -> None:
+    parent = tmp_path / "parent"
+    parent.mkdir()
+    replacement = tmp_path / "replacement"
+    replacement.mkdir()
+    victim = replacement / "created"
+    victim.mkdir()
+    victim.chmod(0o755)
+    original = os.mkdir
+
+    def swap_ancestor(path, mode=0o777, *, dir_fd=None):
+        original(path, mode, dir_fd=dir_fd)
+        if Path(path).name == "created":
+            parent.rename(tmp_path / "original-parent")
+            parent.symlink_to(replacement, target_is_directory=True)
+
+    _patch_dirfd_call(monkeypatch, "mkdir", swap_ancestor)
+    private_mkdir(parent / "created")
+    assert _mode(victim) == 0o755
+    assert _mode(tmp_path / "original-parent" / "created") == 0o700
+
+
+@_POSIX_ONLY
+@pytest.mark.parametrize("replacement", ["symlink", "file", "concurrent"])
+def test_private_mkdir_preserves_replacements_and_race_created_modes(tmp_path, monkeypatch, replacement) -> None:
+    victim = tmp_path / "victim"
+    victim.mkdir()
+    victim.chmod(0o755)
+    created = tmp_path / "created"
+    original = os.mkdir
+
+    def swap_leaf(path, mode=0o777, *, dir_fd=None):
+        if Path(path).name != "created":
+            return original(path, mode, dir_fd=dir_fd)
+        if replacement == "concurrent":
+            original(path, 0o755, dir_fd=dir_fd)
+            created.chmod(0o755)
+            raise FileExistsError(errno.EEXIST, "exists", str(path))
+        original(path, mode, dir_fd=dir_fd)
+        created.rmdir()
+        if replacement == "symlink":
+            created.symlink_to(victim, target_is_directory=True)
+        else:
+            created.write_text("preserve")
+            created.chmod(0o600)
+
+    _patch_dirfd_call(monkeypatch, "mkdir", swap_leaf)
+    if replacement == "symlink":
+        with pytest.raises(ValueError, match="symbolic link"):
+            private_mkdir(created)
+    elif replacement == "file":
+        with pytest.raises(OSError) as caught:
+            private_mkdir(created)
+        assert caught.value.errno == errno.ENOTDIR
+        assert created.read_text() == "preserve"
+    else:
+        private_mkdir(created)
+        assert _mode(created) == 0o755
+    assert _mode(victim) == 0o755
+
+
+@_POSIX_ONLY
+def test_private_mkdir_ordinary_route_chmods_only_open_descriptors(tmp_path, monkeypatch) -> None:
+    def unexpected_name_chmod(*_args, **_kwargs):
+        pytest.fail("name-based chmod on the ordinary route")
+
+    monkeypatch.setattr(os, "chmod", unexpected_name_chmod)
+    with _temporary_umask(0o022):
+        private_mkdir(tmp_path / "first" / "second")
+    assert _mode(tmp_path / "first") == _mode(tmp_path / "first" / "second") == 0o700
+
+
+@_POSIX_ONLY
+def test_private_mkdir_recovery_in_untrusted_container_preserves_regular_file(tmp_path, monkeypatch) -> None:
+    container = tmp_path / "shared"
+    container.mkdir()
+    container.chmod(0o777)
+    victim = tmp_path / "victim.txt"
+    victim.write_text("preserve")
+    victim.chmod(0o644)
+    created = container / "created"
+    original = os.lstat
+    swapped = False
+
+    def swap_after_classification(path, *args, **kwargs):
+        nonlocal swapped
+        info = original(path, *args, **kwargs)
+        if Path(path).name == "created" and stat.S_ISDIR(info.st_mode) and not swapped:
+            swapped = True
+            created.rmdir()
+            created.symlink_to(victim)
+        return info
+
+    _patch_dirfd_call(monkeypatch, "lstat", swap_after_classification)
+    with _temporary_umask(0o777):
+        with pytest.raises(ValueError, match="cannot recover private permissions"):
+            private_mkdir(created)
+    assert victim.read_text() == "preserve"
+    assert _mode(victim) == 0o644
+
+
+@_POSIX_ONLY
+def test_relative_and_absolute_relocations_share_component_validation(tmp_path, monkeypatch) -> None:
+    target = tmp_path / "target"
+    target.mkdir(mode=0o700)
+    link = tmp_path / "reports"
+    link.symlink_to(target, target_is_directory=True)
+    monkeypatch.chdir(tmp_path)
+    original = paths_mod._validate_followed_directory
+    seen = []
+
+    def record_target(fd, component, path):
+        seen.append((component, os.fstat(fd).st_ino))
+        original(fd, component, path)
+
+    monkeypatch.setattr(paths_mod, "_validate_followed_directory", record_target)
+    private_write_text("reports/relative.txt", "synthetic")
+    private_write_text(link / "absolute.txt", "synthetic")
+    assert seen == [("reports", target.stat().st_ino)] * 2
+
+
+@_POSIX_ONLY
+@pytest.mark.parametrize("failure", ["mkdir-mode", "followed-target"])
+def test_directory_walk_failures_close_every_opened_descriptor(tmp_path, monkeypatch, failure) -> None:
+    original_open, original_close = os.open, os.close
+    opened = set()
+
+    def record_open(*args, **kwargs):
+        fd = original_open(*args, **kwargs)
+        opened.add(fd)
+        return fd
+
+    def record_close(fd):
+        original_close(fd)
+        opened.remove(fd)
+
+    _patch_dirfd_call(monkeypatch, "open", record_open)
+    monkeypatch.setattr(os, "close", record_close)
+    if failure == "mkdir-mode":
+        def fail_mode(_fd, _mode):
+            raise OSError("mode failure")
+        monkeypatch.setattr(os, "fchmod", fail_mode)
+        action = lambda: private_mkdir(tmp_path / "created")
+    else:
+        target = tmp_path / "target"
+        target.mkdir(mode=0o700)
+        link = tmp_path / "reports"
+        link.symlink_to(target, target_is_directory=True)
+        def fail_validation(*_args):
+            raise OSError("validation failure")
+        monkeypatch.setattr(paths_mod, "_validate_followed_directory", fail_validation)
+        action = lambda: private_write_text(link / "result.txt", "synthetic")
+    with pytest.raises(OSError):
+        action()
+    assert not opened
+
+
+@_POSIX_ONLY
+@pytest.mark.parametrize(
+    "case,reason",
+    [
+        ("anchor-permission", "cannot open the directory"),
+        ("anchor-limit", os.strerror(errno.EMFILE)),
+        ("link-owner", "symbolic link owned by another user"),
+        ("container", "inside a directory other accounts can modify"),
+        ("group-members", "group lists other members"),
+        ("group-primary", "outside your primary group"),
+        ("group-unknown", "group cannot be resolved"),
+        ("user-unknown", "account group cannot be resolved"),
+        ("created-owner", "not a directory you own"),
+        ("created-link", "is a symbolic link"),
+        ("recovery", "cannot recover private permissions"),
+    ],
+)
+def test_directory_refusals_strip_untrusted_names_through_cli(
+    tmp_path, monkeypatch, capsys, case, reason,
+) -> None:
+    source = tmp_path / "conn.log"
+    source.write_text(_CONN_LINE)
+    hostile = "entry\n\r\x1b[31m\x7f\x85\x9b"
+    container = tmp_path / "container"
+    container.mkdir(mode=0o700)
+    target = tmp_path / "target"
+    target.mkdir(mode=0o700)
+    link = container / hostile
+    link.symlink_to(target, target_is_directory=True)
+    output = link / "result.txt"
+    action = lambda: private_write_text(output, "synthetic")
+    if case.startswith("anchor"):
+        original = os.open
+        number = errno.EACCES if case == "anchor-permission" else errno.EMFILE
+        def fail_anchor(path, flags, *args, **kwargs):
+            if str(path) == "/" and not kwargs:
+                raise OSError(number, os.strerror(number), str(output))
+            return original(path, flags, *args, **kwargs)
+        _patch_dirfd_call(monkeypatch, "open", fail_anchor)
+    elif case == "link-owner":
+        original = os.lstat
+        def foreign_link(path, *args, **kwargs):
+            info = original(path, *args, **kwargs)
+            return _stat_with_owner(info, os.geteuid() + 10000) if Path(path).name == hostile else info
+        _patch_dirfd_call(monkeypatch, "lstat", foreign_link)
+    elif case == "container":
+        container.chmod(0o777)
+    elif case.startswith("group") or case == "user-unknown":
+        target.chmod(0o775)
+        gid = target.stat().st_gid
+        def user_lookup(_uid):
+            if case == "user-unknown":
+                raise KeyError("unresolved")
+            return SimpleNamespace(pw_gid=gid + 10000 if case == "group-primary" else gid)
+        def group_lookup(_gid):
+            if case == "group-unknown":
+                raise KeyError("unresolved")
+            return SimpleNamespace(gr_mem=["other"] if case == "group-members" else [])
+        monkeypatch.setattr(pwd, "getpwuid", user_lookup)
+        monkeypatch.setattr(grp, "getgrgid", group_lookup)
+    else:
+        created = container / (hostile + "created")
+        action = lambda: private_mkdir(created)
+        if case == "created-owner":
+            original = os.fstat
+            def foreign_created(fd):
+                info = original(fd)
+                if created.exists() and info.st_ino == created.stat().st_ino:
+                    return _stat_with_owner(info, os.geteuid() + 10000)
+                return info
+            monkeypatch.setattr(os, "fstat", foreign_created)
+        elif case == "created-link":
+            original = os.mkdir
+            def replace_created(path, mode=0o777, *, dir_fd=None):
+                original(path, mode, dir_fd=dir_fd)
+                if Path(path).name == created.name:
+                    created.rmdir()
+                    created.symlink_to(target, target_is_directory=True)
+            _patch_dirfd_call(monkeypatch, "mkdir", replace_created)
+        else:
+            container.chmod(0o777)
+            def restricted_mkdir():
+                with _temporary_umask(0o777):
+                    private_mkdir(created)
+            action = restricted_mkdir
+    monkeypatch.setattr(cli, "_load_config", lambda _parsed: {})
+    monkeypatch.setattr(runner, "run", lambda **_kwargs: action())
+    try:
+        with _temporary_umask(0o022):
+            with pytest.raises(SystemExit) as caught:
+                cli.main(["beacon", str(source), "--all", "-q"])
+    finally:
+        if case == "recovery" and created.is_dir() and not created.is_symlink():
+            created.chmod(0o700)
+    assert caught.value.code == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err.startswith("sigwood: ")
+    assert reason in captured.err
+    for control in ("\x1b", "\x7f", "\x85", "\x9b", "\r"):
+        assert control not in captured.err
+    assert captured.err.count("\n") == 1
+    assert "Traceback" not in captured.err
+    assert "run 'sigwood --help'" not in captured.err
+    if case == "anchor-limit":
+        assert "make it readable" not in captured.err
+    assert not (target / "result.txt").exists()
+
+
+@pytest.mark.parametrize("writer", ["text", "bytes", "atomic", "once"])
+def test_explicit_mode_is_rejected_before_private_write_mutation(tmp_path: Path, writer: str) -> None:
+    target = tmp_path / "missing" / "artifact"
+    with pytest.raises(ValueError, match="explicit modes require the public permission policy"):
+        if writer == "text":
+            private_write_text(target, "synthetic", mode=0o640)
+        elif writer == "bytes":
+            private_write_bytes(target, b"synthetic", mode=0o640)
+        elif writer == "atomic":
+            paths_mod._atomic_replace_write(target, b"synthetic", private=True, mode=0o640)
+        else:
+            paths_mod._atomic_replace_once(target, b"synthetic", private=True, mode=0o640)
+    assert not target.parent.exists()
+
+
+@_POSIX_ONLY
+@pytest.mark.parametrize("writer", ["text", "bytes", "atomic", "once"])
+def test_explicit_public_mode_reaches_each_whole_value_writer(tmp_path: Path, writer: str) -> None:
+    target = tmp_path / "artifact"
+    with _temporary_umask(0o022):
+        if writer == "text":
+            private_write_text(target, "synthetic", private=False, mode=0o640)
+        elif writer == "bytes":
+            private_write_bytes(target, b"synthetic", private=False, mode=0o640)
+        elif writer == "atomic":
+            paths_mod._atomic_replace_write(target, b"synthetic", private=False, mode=0o640)
+        else:
+            paths_mod._atomic_replace_once(target, b"synthetic", private=False, mode=0o640)
+    assert target.read_bytes() == b"synthetic"
+    assert _mode(target) == 0o640
+
+
+@_POSIX_ONLY
+@pytest.mark.parametrize("existing,explicit,private,expected", [(0o600, None, False, 0o600), (None, 0o640, False, 0o640), (None, None, False, 0o644), (0o644, None, True, 0o600), (0o4644, None, False, 0o644)])
+def test_atomic_temporary_has_selected_mode_before_payload_write(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    existing: int | None, explicit: int | None, private: bool, expected: int,
+) -> None:
+    target = tmp_path / "artifact"
+    if existing is not None:
+        target.write_bytes(b"original")
+        target.chmod(existing)
+    original = os.fdopen
+    seen = []
+
+    def observe_before_write(fd, *args, **kwargs):
+        seen.append(stat.S_IMODE(os.fstat(fd).st_mode))
+        return original(fd, *args, **kwargs)
+
+    monkeypatch.setattr(os, "fdopen", observe_before_write)
+    with _temporary_umask(0o022):
+        private_write_bytes(target, b"synthetic", private=private, mode=explicit)
+    assert seen == [expected]
+    assert _mode(target) == expected
+    assert target.read_bytes() == b"synthetic"

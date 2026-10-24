@@ -348,3 +348,50 @@ def test_release_packages_once_before_tests_and_publication() -> None:
         assert re.search(r"^          name:\s*dist\s*$", block, re.MULTILINE)
 
     assert not re.search(r"^\s*(?:-\s+)?run\s*:", publish, re.MULTILINE)
+
+
+def _named_step(block: str, name: str) -> str:
+    marker = f"      - name: {name}\n"
+    assert block.count(marker) == 1, f"expected one {name!r} step"
+    start = block.index(marker)
+    end = block.find("\n      - ", start + len(marker))
+    return block[start:] if end == -1 else block[start:end]
+
+
+def _assert_exact_source_version_gate(workflow: str) -> None:
+    tag = _named_step(_job_block(workflow, "package"), "Tag matches version (tag push only)")
+    assert "if: github.event_name == 'push'" in tag
+    assert '''found = re.findall(r'^__version__ = "([^"]+)"$', s, flags=re.M)''' in tag
+    assert "assert len(found) == 1" in tag
+    assert "print(found[0])" in tag
+    assert "search(" not in tag
+    assert 'test "$tag" = "$ver"' in tag
+
+
+def _assert_archive_version_precedes_attestation(workflow: str) -> None:
+    package = _job_block(workflow, "package")
+    build = _named_step(package, "Build and validate distributions")
+    split = 'if [ "$GITHUB_EVENT_NAME" = "push" ]; then\n'
+    assert split in build
+    _, _, branches = build.partition(split)
+    tag_arm, separator, dispatch_arm = branches.partition("\n          else\n")
+    assert separator
+    tag_command = 'python tools/validate_distribution.py dist --expect-version "${GITHUB_REF_NAME#v}"'
+    assert tag_arm.strip() == tag_command
+    dispatch_command, separator, _ = dispatch_arm.partition("\n          fi")
+    assert separator
+    assert dispatch_command.strip() == "python tools/validate_distribution.py dist"
+    assert build.index("python -m build --no-isolation") < build.index(tag_command)
+    assert build.index("python -m twine check dist/*") < build.index(tag_command)
+    assert build.index(tag_command) < build.index("sha256sum dist/*")
+    assert package.index("Build and validate distributions") < package.index("Attest build provenance")
+
+
+def test_tag_source_version_is_anchored_and_unambiguous() -> None:
+    """Pin the actual tag step, not the separate dispatch version editor."""
+    _assert_exact_source_version_gate(_WORKFLOW.read_text(encoding="utf-8"))
+
+
+def test_built_archive_version_matches_tag_before_attestation() -> None:
+    """Pin direct shell markers; arbitrary indirect data flow still needs review."""
+    _assert_archive_version_precedes_attestation(_WORKFLOW.read_text(encoding="utf-8"))

@@ -369,3 +369,60 @@ def test_cli_precomputed_selection_carries_detector_vocabulary(
         "config: ignoring unknown setting [detectors.beacon].thresold "
         "(did you mean threshold?)",
     ]
+
+
+def test_loaded_source_metadata_replaces_reserved_user_tables(tmp_path: Path) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text(
+        '[sigwood]\nroot=""\n[__source__]\npath="forged.example.test"\nmode=420\n'
+        '[__user_set__]\nforged=true\n'
+    )
+    path.chmod(0o640)
+    loaded = cfg.load(path)
+    assert loaded["__source__"] == {"path": str(path), "mode": 0o640}
+    assert loaded["__user_set__"] == {"sigwood": {"root"}}
+    assert cfg.config_disclosure_lines(loaded) == []
+
+
+def test_default_config_has_no_loaded_source_metadata(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cfg, "_find_config_file", lambda: None)
+    assert "__source__" not in cfg.load()
+
+
+def test_source_metadata_comes_from_parsed_descriptor_after_path_swap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import os
+
+    path = tmp_path / "config.toml"
+    path.write_text('[sigwood]\nroot="original"\n')
+    path.chmod(0o600)
+    replacement = tmp_path / "replacement.toml"
+    replacement.write_text('[sigwood]\nroot="replacement"\n')
+    replacement.chmod(0o644)
+    original = cfg.tomllib.load
+
+    def swap_after_parse(stream):
+        parsed = original(stream)
+        os.replace(replacement, path)
+        return parsed
+
+    monkeypatch.setattr(cfg.tomllib, "load", swap_after_parse)
+    loaded = cfg.load(path)
+    assert loaded["sigwood"]["root"] == "original"
+    assert loaded["__source__"] == {"path": str(path), "mode": 0o600}
+    assert path.read_text() == '[sigwood]\nroot="replacement"\n'
+
+
+def test_source_metadata_failure_cannot_leave_forged_provenance(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text('[__source__]\npath="forged.example.test"\nmode=420\n')
+
+    def fail_metadata(_fd):
+        raise OSError("metadata unavailable")
+
+    monkeypatch.setattr(cfg.os, "fstat", fail_metadata)
+    with pytest.raises(cfg.ConfigError, match="cannot read config permissions.*metadata unavailable"):
+        cfg.load(path)

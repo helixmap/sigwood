@@ -605,3 +605,21 @@ def test_run_export_narrates_compact_positive_span(
         line for line in capsys.readouterr().out.splitlines() if line.startswith("window:")
     )
     assert window_line.endswith(f"  ·  {expected}")
+
+
+@pytest.mark.parametrize("authentic", [False, True])
+def test_backend_stanza_uses_only_top_level_source_without_mutating_input(authentic: bool) -> None:
+    import copy
+
+    config = {"export": {"splunk": {"host": "192.0.2.20", "__source__": {"path": "forged.example.test", "mode": 0o644}}}}
+    if authentic:
+        config["__source__"] = {"path": "config.example.test", "mode": 0o600}
+    original = copy.deepcopy(config)
+    stanza = exporters._backend_cfg(config, "splunk")
+    if authentic:
+        assert stanza["__source__"] == config["__source__"]
+        assert stanza["__source__"] is not config["__source__"]
+    else:
+        assert "__source__" not in stanza
+    assert stanza is not config["export"]["splunk"]
+    assert config == original

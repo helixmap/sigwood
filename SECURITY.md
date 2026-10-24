@@ -76,7 +76,9 @@ code or escape the tool:
   (`SIGWOOD_SPLUNK_USER` / `SIGWOOD_SPLUNK_PASS`) - the recommended path - or
   from your config file. They are sent only to the Splunk host you configure.
   TLS certificate verification is on by default (`verify_tls = true`). Prefer
-  the environment variables over storing a password in the config file.
+  the environment variables over storing a password in the config file; when sigwood reads a
+  password from a config file that other accounts can read, it says so once on stderr at the
+  export and names the environment variable as the remedy.
 - **No background process, no database, no daemon, no listening socket.**
 - **No dynamic code execution.** sigwood uses no `eval`, `exec`, or shell
   invocation, and performs no code-executing deserialization of untrusted input.

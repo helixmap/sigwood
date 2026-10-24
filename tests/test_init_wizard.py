@@ -17,6 +17,7 @@ import bz2
 import gzip
 import os
 import re
+import stat
 import subprocess
 import sys
 import tomllib
@@ -2490,13 +2491,19 @@ def test_import_boundary_allows_only_three_pure_common_leaves() -> None:
             (
                 "effective_root",
                 "private_mkdir",
-                "private_open",
                 "private_write_bytes",
                 "private_write_text",
                 "resolve_path",
             ),
         ),
     }
+
+
+def test_local_control_strip_matches_shared_owner_over_all_codepoints() -> None:
+    from sigwood.common.sanitize import strip_control
+
+    codepoints = "".join(map(chr, range(sys.maxunicode + 1)))
+    assert cli._strip_control(codepoints) == strip_control(codepoints)
 
 
 def test_init_uses_shared_probe_once_and_creates_no_capture_before_abort(
@@ -3074,3 +3081,116 @@ def test_init_detect_default_hunt_slots_mirror_available_detectors() -> None:
         logs = list(mod.REQUIRED_LOGS) + list(mod.OPTIONAL_LOGS)
         expected = frozenset(source_slot[log["source"]] for log in logs)
         assert cli._DEFAULT_HUNT_SLOTS[name] == expected
+
+
+@pytest.mark.parametrize("flow", ["merge", "reset"])
+@pytest.mark.parametrize("mode,private", [(0o600, False), (0o640, False), (0o644, False), (0o4644, False), (0o644, True)])
+def test_wizard_preserves_system_config_and_backup_permissions(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, flow: str, mode: int, private: bool,
+) -> None:
+    home = tmp_path / "config-home"
+    home.mkdir()
+    target = home / "config.toml"
+    original = b'[sigwood]\nroot = ""\n[export.splunk]\npassword = "example-password"\n'
+    target.write_bytes(original)
+    target.chmod(mode)
+    monkeypatch.setattr(cli, "_SYSTEM_ROOT", "/etc/sigwood" if private else str(home))
+    monkeypatch.setattr(cli, "_find_initial_config", lambda: target)
+    _stub_candidates(monkeypatch)
+    answers = ([""] if flow == "merge" else ["r", "c", "reset"]) + ["", "", "", "", "k", "", ""]
+    _stage_inputs(monkeypatch, answers)
+    previous = os.umask(0o022)
+    try:
+        cli._run_init([])
+    finally:
+        os.umask(previous)
+    expected = 0o600 if private else mode & 0o777
+    assert stat.S_IMODE(target.stat().st_mode) == expected
+    backup = target.with_suffix(".toml.bak")
+    assert backup.read_bytes() == original
+    assert stat.S_IMODE(backup.stat().st_mode) == expected
+    assert isinstance(tomllib.loads(target.read_text()), dict)
+
+
+@pytest.mark.parametrize("flow", ["merge", "reset"])
+def test_wizard_backup_pairs_read_bytes_with_descriptor_permissions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, flow: str,
+) -> None:
+    home = tmp_path / "config-home"
+    home.mkdir()
+    target = home / "config.toml"
+    original = b'[sigwood]\nroot=""\n[export.splunk]\npassword="example-password"\n'
+    target.write_bytes(original)
+    target.chmod(0o600)
+    replacement = home / "replacement.toml"
+    replacement.write_text('[sigwood]\nroot=""\n')
+    replacement.chmod(0o644)
+    monkeypatch.setattr(cli, "_SYSTEM_ROOT", str(home))
+    monkeypatch.setattr(cli, "_find_initial_config", lambda: target)
+    reader = cli._read_existing_config_for_root
+    calls = []
+
+    def replace_after_snapshot(path):
+        result = reader(path)
+        calls.append(path)
+        if len(calls) == (1 if flow == "merge" else 2):
+            os.replace(replacement, target)
+        return result
+
+    monkeypatch.setattr(cli, "_read_existing_config_for_root", replace_after_snapshot)
+    _stub_candidates(monkeypatch)
+    answers = ([""] if flow == "merge" else ["r", "c", "reset"]) + ["", "", "", "", "k", "", ""]
+    _stage_inputs(monkeypatch, answers)
+    cli._run_init([])
+    backup = target.with_suffix(".toml.bak")
+    assert backup.read_bytes() == original
+    assert stat.S_IMODE(backup.stat().st_mode) == 0o600
+    assert len(calls) == (1 if flow == "merge" else 2)
+
+
+def test_existing_config_reader_pairs_bytes_and_mode_across_path_replacement(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = tmp_path / "config.toml"
+    original = b'[sigwood]\nroot=""\n'
+    target.write_bytes(original)
+    target.chmod(0o600)
+    replacement = tmp_path / "replacement.toml"
+    replacement.write_bytes(b'[sigwood]\nroot="replacement"\n')
+    replacement.chmod(0o644)
+    original_open = Path.open
+
+    def swap_after_open(path, *args, **kwargs):
+        stream = original_open(path, *args, **kwargs)
+        if path == target and args == ("rb",):
+            os.replace(replacement, target)
+        return stream
+
+    monkeypatch.setattr(Path, "open", swap_after_open)
+    raw, text, section, mode = cli._read_existing_config_for_root(target)
+    assert raw == original and text == original.decode()
+    assert section == {"root": ""} and mode == 0o600
+    assert stat.S_IMODE(target.stat().st_mode) == 0o644
+
+
+def test_public_backup_refuses_missing_original_mode_without_mutation(tmp_path: Path) -> None:
+    target = tmp_path / "config.toml"
+    target.write_text('[sigwood]\nroot=""\n')
+    original = target.read_bytes()
+    with pytest.raises(ValueError, match="original mode is unavailable"):
+        cli._write_config(target, original.decode(), {}, fresh=False, existing_raw=original, private=False)
+    assert target.read_bytes() == original
+    assert not target.with_suffix(".toml.bak").exists()
+
+
+def test_existing_config_reader_reports_descriptor_metadata_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    target = tmp_path / "config.toml"
+    target.write_text('[sigwood]\nroot=""\n')
+
+    def fail_metadata(_fd):
+        raise OSError("metadata unavailable")
+
+    monkeypatch.setattr(os, "fstat", fail_metadata)
+    with pytest.raises(ValueError, match="cannot read existing config.*metadata unavailable"):
+        cli._read_existing_config_for_root(target)
+    assert not target.with_suffix(".toml.bak").exists()

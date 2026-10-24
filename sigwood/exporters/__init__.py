@@ -50,6 +50,11 @@ Architecture:
             Extension applied to auto-named output files. Default ".log".
             CloudTrail uses ".json.log".
 
+        OUTPUT_PARTS: bool
+            True for writers using canonical _partNN siblings, where NN is a
+            positive ASCII integer padded to at least two digits. Default False.
+            A repeated logical output retires superseded members of its family.
+
     Adding a new backend means: (1) drop a module under exporters/ that
     implements those four callables; (2) add its name to _KNOWN_BACKENDS;
     (3) add a branch in _load_backend(). Nothing else changes here.
@@ -64,6 +69,7 @@ import importlib
 import importlib.metadata
 import fcntl
 import os
+import re
 import shutil
 import stat
 from datetime import datetime, timedelta, timezone
@@ -105,7 +111,7 @@ from sigwood.common.paths import (
     be_like_water,
     effective_root,
     private_mkdir,
-    private_open,
+    private_open_lock,
     private_write_bytes,
     resolve_path,
 )
@@ -118,7 +124,12 @@ def _backend_cfg(config: dict[str, Any], name: str) -> dict[str, Any]:
     Single read-site for backend config - keeps every fetch / is_configured /
     summary_descriptor / query lookup honest to the [export.<backend>] shape.
     """
-    return config.get("export", {}).get(name, {})
+    stanza = dict(config.get("export", {}).get(name, {}))
+    stanza.pop("__source__", None)
+    source = config.get("__source__")
+    if isinstance(source, dict):
+        stanza["__source__"] = dict(source)
+    return stanza
 
 
 def _normalize_end_of_day_until(until: datetime) -> datetime:
@@ -291,9 +302,26 @@ def _validate_staged_write(
     return staged
 
 
+def output_family_member(name: str, logical_name: str, *, parts: bool) -> bool:
+    """Match the bare output or its canonical positive part siblings."""
+    if name == logical_name:
+        return True
+    if not parts:
+        return False
+    suffixes = "".join(Path(logical_name).suffixes)
+    stem = logical_name[:-len(suffixes)] if suffixes else logical_name
+    prefix = stem + "_part"
+    if not name.startswith(prefix) or (suffixes and not name.endswith(suffixes)):
+        return False
+    digits = name[len(prefix):-len(suffixes)] if suffixes else name[len(prefix):]
+    return re.fullmatch(r"(?:0[1-9]|[1-9][0-9]|[1-9][0-9]{2,})", digits, re.ASCII) is not None
+
+
 def _commit_export_provenance(
     staged: list[tuple[Path, Path, int, str]],
     *,
+    logical_name: str,
+    parts: bool,
     since: datetime,
     until: datetime,
     backend: str,
@@ -323,17 +351,23 @@ def _commit_export_provenance(
     # Validate the complete entry shape before acquiring the lock or replacing
     # any final data.  In particular, a backend-returned reserved/control-bearing
     # basename must never fail only after it has already mutated the destination.
+    if not isinstance(logical_name, str) or not isinstance(parts, bool):
+        raise ValueError("invalid export output family")
+    validation_entries = dict(entries)
+    validation_entries[logical_name] = next(iter(entries.values()))
     canonical_manifest_bytes(ProvenanceManifest(
         schema_version=PROVENANCE_SCHEMA_VERSION,
         generation=1,
         written_at=datetime.now(timezone.utc),
-        entries=entries,
+        entries=validation_entries,
     ))
+    if any(not output_family_member(name, logical_name, parts=parts) for name in entries):
+        raise ValueError("exporter backend output is outside its logical output family")
     lock_path = parent / PROVENANCE_LOCK_NAME
     manifest_path = parent / PROVENANCE_MANIFEST_NAME
     stage_dir = staged[0][0].parent
     staged_manifest = stage_dir / PROVENANCE_MANIFEST_NAME
-    with private_open(lock_path, encoding="utf-8") as lock_stream:
+    with private_open_lock(lock_path, encoding="utf-8") as lock_stream:
         if not stat.S_ISREG(os.fstat(lock_stream.fileno()).st_mode):
             raise ValueError("export provenance lock is not a regular file")
         fcntl.flock(lock_stream.fileno(), fcntl.LOCK_EX)
@@ -351,10 +385,34 @@ def _commit_export_provenance(
             else:
                 generation = current.generation
                 merged = dict(current.entries)
-            merged.update(entries)
+            names = set(entries)
+            stale_entries = {
+                name for name in merged
+                if name not in names and output_family_member(name, logical_name, parts=parts)
+            }
+            with os.scandir(parent) as listing:
+                removable = {
+                    item.name for item in listing
+                    if item.name not in names
+                    and output_family_member(item.name, logical_name, parts=parts)
+                }
             for staged_path, final_path, _, _ in staged:
                 _fsync_file(staged_path)
                 os.replace(staged_path, final_path)
+            removed = 0
+            for name in sorted(removable):
+                path = parent / name
+                try:
+                    info = path.lstat()
+                    if stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode):
+                        os.unlink(path)
+                        removed += 1
+                except FileNotFoundError:
+                    pass
+            _fsync_directory(parent)
+            for name in stale_entries:
+                del merged[name]
+            merged.update(entries)
             manifest = ProvenanceManifest(
                 schema_version=PROVENANCE_SCHEMA_VERSION,
                 generation=generation + 1,
@@ -370,6 +428,7 @@ def _commit_export_provenance(
     return {
         "bytes": sum(item[2] for item in staged),
         "paths": [item[1] for item in staged],
+        "removed": removed,
     }
 
 
@@ -595,6 +654,8 @@ def _run_export(
             staged = _validate_staged_write(stage_dir, staged_meta)
             write_meta = _commit_export_provenance(
                 staged,
+                logical_name=outpath.name,
+                parts=getattr(backend_module, "OUTPUT_PARTS", False),
                 since=since,
                 until=until,
                 backend=resolved_backend,
@@ -604,6 +665,12 @@ def _run_export(
         finally:
             shutil.rmtree(stage_dir, ignore_errors=True)
         nl, nb = _emit_result_line(query_name, n_written, write_meta, outpath)
+        removed = write_meta["removed"]
+        if removed:
+            print(
+                f"note: removed {removed} {plural(removed, 'file')} "
+                "left by an earlier export of this window"
+            )
         for note in notes:
             print(f"note: {strip_control(note)}")
         grand_lines += nl

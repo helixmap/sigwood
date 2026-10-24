@@ -8,6 +8,9 @@ All notable changes to sigwood are recorded here. The format follows
 
 ### Added
 
+- `sigwood export` warns once, on stderr, when the Splunk password it uses was read from a
+  config file that other accounts can read, and names `SIGWOOD_SPLUNK_PASS` as the
+  remedy. The warning never includes the credential.
 - Value-taking flags accept a space before the value, including short flags. The
   `=` spelling remains available; values starting with `-` other than a bare `-`
   use `=`.
@@ -29,6 +32,13 @@ All notable changes to sigwood are recorded here. The format follows
 
 ### Changed
 
+- CONTRIBUTING notes that the repository's commit hooks run whatever hook scripts the
+  checked-out branch contains, and asks contributors to review them before committing
+  on a branch they did not write.
+- A relocated output directory writable by your own group is accepted when the group is
+  your account's primary group and lists no other members, the one-private-group-per-user
+  convention on many Linux systems. An output directory sigwood cannot open to check is
+  refused with a message rather than written through.
 - **The runner is now a small facade over an implementation package.** `sigwood/runner.py`
   went from about 7,100 lines to under 800 and defines nothing itself; the work lives in
   `sigwood/_runner/` as seven modules (graph, digest, notes, planning, analyze, era and the
@@ -77,6 +87,33 @@ All notable changes to sigwood are recorded here. The format follows
 
 ### Fixed
 
+- Re-exporting a CloudTrail window that splits into a different number of `_partNN` files
+  no longer leaves older parts behind to be loaded as current data. The export removes
+  the superseded parts and their provenance entries in the same commit and says how
+  many files it removed.
+- The release workflow's tag check reads the package version as exactly one assignment
+  at the start of a line, and a tag push now also requires the built wheel and sdist to
+  carry the tag's version before they are attested or uploaded.
+- Running `sigwood init` against an existing system-wide config no longer widens its
+  permissions: a config an administrator had tightened to 0600 keeps that mode on
+  rewrite, and its `.toml.bak` backup is written with the original's mode rather than
+  the umask's. The mode is read from the same open file the bytes came from.
+- The export provenance lock and the setup wizard's write probe no longer truncate the
+  file at their names when they open it. A hard link planted at either name keeps its
+  contents and its mode; the lock is created private when absent and otherwise opened as
+  it is. The wizard's reset permission message strips terminal control characters from
+  the path and error it reports.
+- Writing a report or export through a relative output path whose first directory is a
+  symbolic link now walks and checks that link like every other directory; previously it was
+  followed without any check. A link that another account planted, or a link inside a
+  directory other accounts can change, is refused. Private directories sigwood creates normally have
+  their mode set on the directory just opened rather than on a name that could have been
+  swapped; the one exception, recovering owner access removed by an unusual umask, works
+  by name only inside a directory other accounts cannot change.
+- A CloudTrail export no longer stops with a traceback when one event carries a
+  timestamp without a timezone offset; such a timestamp is read as UTC, which is
+  what CloudTrail writes. Events whose timestamp is missing or cannot be read are
+  still left out, and the export now says how many, once, after the result line.
 - dnsblock skips NDJSON files named like Pi-hole logs, as the other Pi-hole loads
   already did, instead of parsing them as dnsmasq lines.
 - dnsblock no longer fails with `reducer error - 'event_type'` when a Pi-hole file in the

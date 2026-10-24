@@ -119,7 +119,9 @@ def validate_sdist(path: Path) -> str:
     return version
 
 
-def validate_distribution(dist_dir: Path) -> tuple[Path, Path, str]:
+def validate_distribution(
+    dist_dir: Path, *, expect_version: str | None = None,
+) -> tuple[Path, Path, str]:
     if not dist_dir.is_dir():
         raise ValueError(f"distribution directory does not exist: {dist_dir}")
 
@@ -130,6 +132,11 @@ def validate_distribution(dist_dir: Path) -> tuple[Path, Path, str]:
     if wheel_version != sdist_version:
         raise ValueError(
             f"wheel/sdist version mismatch: {wheel_version!r} != {sdist_version!r}"
+        )
+    if expect_version is not None and wheel_version != expect_version:
+        raise ValueError(
+            f"distribution version {wheel_version!r} does not match "
+            f"expected version {expect_version!r}"
         )
     return wheel, sdist, wheel_version
 
@@ -143,10 +150,16 @@ def main() -> int:
         default=Path("dist"),
         help="directory containing exactly one wheel and one sdist (default: dist)",
     )
+    parser.add_argument(
+        "--expect-version",
+        help="require the validated archives to have this exact version",
+    )
     args = parser.parse_args()
 
     try:
-        wheel, sdist, version = validate_distribution(args.dist_dir)
+        wheel, sdist, version = validate_distribution(
+            args.dist_dir, expect_version=args.expect_version,
+        )
     except (OSError, ValueError, tarfile.TarError, zipfile.BadZipFile) as exc:
         parser.exit(1, f"distribution validation failed: {exc}\n")
 

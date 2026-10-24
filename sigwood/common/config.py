@@ -13,6 +13,8 @@ from __future__ import annotations
 import copy
 import difflib
 import ipaddress
+import os
+import stat
 import tomllib
 from collections.abc import Mapping
 from datetime import timedelta
@@ -222,7 +224,7 @@ SEARCH_PATHS: list[Path] = [
 # section cannot drift out of the set. `__user_set__` is a provenance sidecar
 # _load_file attaches to the merged dict, not a user-facing section.
 KNOWN_SECTIONS: frozenset[str] = frozenset(_DEFAULTS)
-_INTERNAL_KEYS: frozenset[str] = frozenset({"__user_set__"})
+_INTERNAL_KEYS: frozenset[str] = frozenset({"__user_set__", "__source__"})
 
 # The explicit public config vocabulary.  ``_LEAF`` recognizes a name without
 # descending into its value; ``_ANY_SCOPE`` recognizes an arbitrary table name
@@ -543,12 +545,19 @@ def _load_file(path: Path) -> dict[str, Any]:
     try:
         with path.open("rb") as fh:
             user_config = tomllib.load(fh)
+            try:
+                source_mode = stat.S_IMODE(os.fstat(fh.fileno()).st_mode)
+            except OSError as exc:
+                raise ConfigError(f"cannot read config permissions at {path}: {exc}") from exc
     except tomllib.TOMLDecodeError as exc:
         raise ConfigError(
             f"config parse error in {path} - {exc}"
         ) from exc
 
+    for reserved in ("__source__", "__user_set__"):
+        user_config.pop(reserved, None)
     merged = _deep_merge(copy.deepcopy(_DEFAULTS), user_config)
+    merged["__source__"] = {"path": str(path), "mode": source_mode}
     merged["__user_set__"] = {
         section: set(content.keys()) if isinstance(content, dict) else set()
         for section, content in user_config.items()

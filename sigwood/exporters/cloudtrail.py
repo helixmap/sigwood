@@ -68,6 +68,8 @@ _AUTH_ERROR_CODES = {
 _PART_SPLIT_BYTES = 2_000_000_000  # 2 GB
 
 OUTPUT_EXTENSION = ".json.log"
+# Split outputs use canonical positive _partNN names for generation retirement.
+OUTPUT_PARTS = True
 
 
 class _MalformedCloudTrailObject(ValueError):
@@ -319,13 +321,16 @@ def _enumerate_days(since: datetime, until: datetime) -> list[tuple[int, int, in
 
 
 def _parse_event_time(s: str) -> datetime | None:
-    """Best-effort parse of CloudTrail eventTime. Returns None on failure."""
+    """Parse eventTime, reading a timestamp without an offset as UTC."""
     if not s:
         return None
     try:
-        return datetime.fromisoformat(s.replace("Z", "+00:00"))
+        parsed = datetime.fromisoformat(s.replace("Z", "+00:00"))
     except (ValueError, TypeError):
         return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed
 
 
 def _to_utc(dt: datetime) -> datetime:
@@ -369,7 +374,8 @@ def fetch(
         skip_confirm: Bypass the egress-cost prompt.
 
     Returns:
-        (events, fetch_meta) where fetch_meta = {"units": N, "unit_label": "objects"}.
+        (events, fetch_meta) with the listed object count and optional notes
+        disclosing records left out for missing or unreadable timestamps.
 
     Raises:
         ValueError: bad path, no objects, AWS credential/access errors, missing boto3.
@@ -476,15 +482,23 @@ def fetch(
         since_utc = _to_utc(since)
         until_utc = _to_utc(until)
         trimmed: list[dict[str, Any]] = []
+        unreadable = 0
         for e in events:
             et = _parse_event_time(e.get("eventTime", ""))
             if et is None:
-                continue   # drop events with no parseable timestamp
+                unreadable += 1
+                continue
             if since_utc <= et < until_utc:
                 trimmed.append(e)
         ln.seal(f"sorted and trimmed to {len(trimmed)} events in window")
 
-    return trimmed, {"units": len(objects), "unit_label": "objects"}
+    fetch_meta: dict[str, Any] = {"units": len(objects), "unit_label": "objects"}
+    if unreadable:
+        fetch_meta["notes"] = [
+            f"left out {unreadable:,} {plural(unreadable, 'record')} "
+            "with no readable eventTime"
+        ]
+    return trimmed, fetch_meta
 
 
 def write(

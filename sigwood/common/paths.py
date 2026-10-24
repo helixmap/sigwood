@@ -18,8 +18,10 @@ from __future__ import annotations
 
 import errno
 import fcntl
+import grp
 import itertools
 import os
+import pwd
 import stat
 from pathlib import Path
 from typing import Any, NamedTuple, TextIO
@@ -44,19 +46,41 @@ class ResolvedTarget(NamedTuple):
 def private_mkdir(
     path: str | os.PathLike[str], *, private: bool = True,
 ) -> None:
-    """Create ``path`` and missing parents without touching existing modes.
+    """Create missing directories without changing pre-existing modes.
 
-    Private components are created and then set to ``0700``. Public components
-    request ``0777`` and remain governed by the ambient umask. Only a component
-    successfully created by this call is eligible for chmod; a directory created
-    concurrently by another process is accepted but never mode-touched.
+    New private directories finish at 0700. Recovering owner access removed by
+    the umask requires a trusted containing directory. Public directories keep
+    the ambient umask's mode.
     """
     target = Path(path)
     if target.is_dir():
         return
     if target.exists():
         raise FileExistsError(errno.EEXIST, os.strerror(errno.EEXIST), str(target))
+    if os.open not in os.supports_dir_fd or os.mkdir not in os.supports_dir_fd:
+        _mkdir_without_dirfd(target, private=private)
+        return
 
+    dir_fd, components = _open_directory_anchor(target, path)
+    try:
+        for component in components:
+            try:
+                nxt = _descend(dir_fd, component, path)
+            except FileNotFoundError:
+                try:
+                    os.mkdir(component, 0o700 if private else 0o777, dir_fd=dir_fd)
+                except FileExistsError:
+                    nxt = _descend(dir_fd, component, path)
+                else:
+                    nxt = _open_created_directory(dir_fd, component, path, private=private)
+            os.close(dir_fd)
+            dir_fd = nxt
+    finally:
+        os.close(dir_fd)
+
+
+def _mkdir_without_dirfd(target: Path, *, private: bool) -> None:
+    """Use pathname creation only where descriptor-relative calls are absent."""
     missing: list[Path] = []
     current = target
     while not current.exists():
@@ -65,11 +89,9 @@ def private_mkdir(
         if parent == current:
             break
         current = parent
-
-    requested_mode = 0o700 if private else 0o777
     for component in reversed(missing):
         try:
-            os.mkdir(component, requested_mode)
+            os.mkdir(component, 0o700 if private else 0o777)
         except FileExistsError:
             if component.is_dir():
                 continue
@@ -78,51 +100,167 @@ def private_mkdir(
             os.chmod(component, 0o700)
 
 
-def _validate_followed_directory(fd: int, component: str, path: object) -> None:
-    """Accept a symlinked path component only when it cannot be attacker-chosen.
-
-    Validation reads the OPENED DESCRIPTOR, never the name: a check against the
-    path could be invalidated between the check and the open, whereas fstat
-    describes exactly the directory that was opened. Accepted owners are the
-    running user and root; a group- or world-writable directory is refused
-    because any account able to write it can substitute what sits beneath it.
-    """
-    info = os.fstat(fd)
+def _directory_trust_failure(info: os.stat_result) -> str | None:
+    """Return the reason other accounts may control entries, or None."""
     if info.st_uid not in (os.geteuid(), 0):
+        return "directory owned by another user"
+    shared = info.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
+    if not shared or info.st_mode & stat.S_ISVTX:
+        return None
+    if info.st_mode & stat.S_IWOTH:
+        return "group- or world-writable directory without the sticky bit"
+    try:
+        primary_gid = pwd.getpwuid(os.geteuid()).pw_gid
+    except KeyError:
+        return "group-writable directory whose account group cannot be resolved"
+    if info.st_gid != primary_gid:
+        return "group-writable directory outside your primary group"
+    try:
+        members = grp.getgrgid(info.st_gid).gr_mem
+    except KeyError:
+        return "group-writable directory whose group cannot be resolved"
+    if members:
+        return "group-writable directory whose group lists other members"
+    # Supplementary membership does not reveal other accounts' primary groups.
+    return None
+
+
+def _directory_trusted(info: os.stat_result) -> bool:
+    """Assess trust using the shared owner, mode and account-group policy."""
+    return _directory_trust_failure(info) is None
+
+
+def _validate_followed_directory(fd: int, component: str, path: object) -> None:
+    """Validate the opened target of a followed directory link."""
+    reason = _directory_trust_failure(os.fstat(fd))
+    if reason is not None:
         raise ValueError(
             f"{path}: the directory component {component!r} is a symbolic link to a "
-            "directory owned by another user - refusing to write through it; "
-            "point it somewhere you own or write to a different location"
+            f"{reason} - refusing to write through it; "
+            "tighten its permissions or write to a different location"
         )
-    shared = bool(info.st_mode & (stat.S_IWGRP | stat.S_IWOTH))
-    # The STICKY bit is what separates a shared directory from a hostile one: in a
-    # sticky directory another account may create its own names but cannot remove or
-    # replace one it does not own, which is the standard safe-shared pattern and what
-    # `/tmp` relies on. Refusing every group- or world-writable target would reject
-    # `/tmp` outright - on macOS it is a symlink to a 1777 `/private/tmp` - and that
-    # is an ordinary place to write, not an attack. The ownership test above is what
-    # actually rejects an attacker-chosen destination.
-    if shared and not info.st_mode & stat.S_ISVTX:
+
+
+def _descend(dir_fd: int, component: str, path: object) -> int:
+    """Open one component, following only a trusted directory relocation."""
+    try:
+        return os.open(
+            component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=dir_fd,
+        )
+    except OSError as exc:
+        if exc.errno not in (errno.ELOOP, errno.ENOTDIR):
+            raise
+        try:
+            link = os.lstat(component, dir_fd=dir_fd)
+        except OSError:
+            raise exc
+        if not stat.S_ISLNK(link.st_mode):
+            raise
+        reason = _directory_trust_failure(os.fstat(dir_fd))
+        if reason is not None:
+            raise ValueError(
+                f"{path}: the directory component {component!r} is a symbolic link "
+                f"inside a directory other accounts can modify ({reason}) - "
+                "refusing to follow it; write to a different location"
+            ) from exc
+        if link.st_uid not in (os.geteuid(), 0):
+            raise ValueError(
+                f"{path}: the directory component {component!r} is a symbolic link "
+                "owned by another user - refusing to follow it; "
+                "remove it or choose another target"
+            ) from exc
+        nxt = os.open(component, os.O_RDONLY | os.O_DIRECTORY, dir_fd=dir_fd)
+        try:
+            _validate_followed_directory(nxt, component, path)
+        except BaseException:
+            os.close(nxt)
+            raise
+        return nxt
+
+
+def _open_directory_anchor(directory: Path, path: object) -> tuple[int, list[str]]:
+    """Open a known anchor without falling back after an access failure."""
+    parts = list(directory.parts)
+    anchor = directory.anchor if directory.is_absolute() else "."
+    components = parts[1:] if directory.is_absolute() else parts
+    try:
+        fd = os.open(anchor, os.O_RDONLY | os.O_DIRECTORY)
+    except OSError as exc:
+        if exc.errno not in (errno.EACCES, errno.EPERM):
+            raise
         raise ValueError(
-            f"{path}: the directory component {component!r} is a symbolic link to a "
-            "group- or world-writable directory without the sticky bit - refusing to "
-            "write through it; tighten its permissions or write to a different location"
+            f"{path}: cannot open the directory {anchor!r} to write safely - "
+            "make it readable or write to a different location"
+        ) from exc
+    return fd, components
+
+
+def _recover_created_directory(dir_fd: int, component: str, path: object) -> None:
+    """Restore owner access only while a trusted container stabilizes the name."""
+    info = os.lstat(component, dir_fd=dir_fd)
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid():
+        raise ValueError(
+            f"{path}: directory component {component!r} is not a directory you own - "
+            "refusing to change its permissions; choose another target"
         )
+    if not _directory_trusted(os.fstat(dir_fd)):
+        raise ValueError(
+            f"{path}: cannot recover private permissions on directory component "
+            f"{component!r} inside a directory other accounts can modify; "
+            "use a umask that preserves owner read and search access, "
+            "or write to a different location"
+        )
+    os.chmod(component, 0o700, dir_fd=dir_fd)
+
+
+def _open_created_directory(
+    dir_fd: int, component: str, path: object, *, private: bool,
+) -> int:
+    """Bind mode changes to a new owned directory, with one access recovery."""
+    for attempt in range(2):
+        try:
+            fd = os.open(
+                component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                dir_fd=dir_fd,
+            )
+        except OSError as exc:
+            if private and exc.errno == errno.EACCES and attempt == 0:
+                _recover_created_directory(dir_fd, component, path)
+                continue
+            if exc.errno in (errno.ELOOP, errno.ENOTDIR):
+                try:
+                    is_link = stat.S_ISLNK(os.lstat(component, dir_fd=dir_fd).st_mode)
+                except OSError:
+                    is_link = False
+                if is_link:
+                    raise ValueError(
+                        f"{path}: directory component {component!r} is a symbolic link - "
+                        "refusing to change its permissions; choose another target"
+                    ) from exc
+            raise
+        try:
+            info = os.fstat(fd)
+            if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid():
+                raise ValueError(
+                    f"{path}: directory component {component!r} is not a directory "
+                    "you own - refusing to change its permissions; choose another target"
+                )
+            if private:
+                os.fchmod(fd, 0o700)
+        except BaseException:
+            os.close(fd)
+            raise
+        return fd
+    raise RuntimeError("directory access recovery did not finish")  # pragma: no cover
 
 
 def _open_parent_dirfd(path: str | os.PathLike[str]) -> tuple[int | None, str]:
-    """Open the containing directory component-by-component, and the leaf name.
+    """Open every parent component relative to a held directory descriptor.
 
-    ``O_NOFOLLOW`` on the final name protects the file that is opened; it says
-    nothing about the directories walked to reach it, so a substituted PARENT
-    would still receive the write. Each component is therefore opened with
-    ``O_DIRECTORY | O_NOFOLLOW`` and, when that reports a link, followed only
-    after :func:`_validate_followed_directory` accepts what it opened.
-
-    A relocated directory is an ordinary and supported setup, so a symlink the
-    operator owns is followed; only one another account could have chosen is
-    refused. Returns ``(None, str(path))`` where the platform cannot open
-    relative to a descriptor, preserving the previous single-open behaviour.
+    Relocations require a trusted containing directory, a link owned by the
+    user or root, and a trusted opened target. The private-group trust arm
+    cannot identify other accounts sharing that group as their primary gid.
+    Platforms without descriptor-relative open retain pathname behavior.
     """
     target = Path(path)
     name = target.name
@@ -130,48 +268,10 @@ def _open_parent_dirfd(path: str | os.PathLike[str]) -> tuple[int | None, str]:
         raise ValueError(f"{path}: no file name to write")
     if os.open not in os.supports_dir_fd:
         return None, str(target)
-
-    parent = target.parent
-    parts = list(parent.parts)
-    if not parts:
-        return None, str(target)
-
-    anchor = parts[0]
+    dir_fd, components = _open_directory_anchor(target.parent, path)
     try:
-        dir_fd = os.open(anchor, os.O_RDONLY | os.O_DIRECTORY)
-    except OSError:
-        return None, str(target)
-
-    try:
-        for component in parts[1:]:
-            try:
-                nxt = os.open(
-                    component,
-                    os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
-                    dir_fd=dir_fd,
-                )
-            except OSError as exc:
-                # Refusing to follow a symlinked directory surfaces differently by
-                # platform: ELOOP on Linux, ENOTDIR on macOS, because O_DIRECTORY
-                # sees a non-directory once O_NOFOLLOW declines the link. ENOTDIR is
-                # ALSO the honest error for a component that is a regular file, so
-                # the link is confirmed by lstat rather than inferred from errno.
-                if exc.errno not in (errno.ELOOP, errno.ENOTDIR):
-                    raise
-                try:
-                    is_link = stat.S_ISLNK(
-                        os.lstat(component, dir_fd=dir_fd).st_mode
-                    )
-                except OSError:
-                    is_link = False
-                if not is_link:
-                    raise
-                nxt = os.open(component, os.O_RDONLY | os.O_DIRECTORY, dir_fd=dir_fd)
-                try:
-                    _validate_followed_directory(nxt, component, path)
-                except BaseException:
-                    os.close(nxt)
-                    raise
+        for component in components:
+            nxt = _descend(dir_fd, component, path)
             os.close(dir_fd)
             dir_fd = nxt
     except BaseException:
@@ -236,10 +336,7 @@ def _write_fd(path: str | os.PathLike[str], *, private: bool) -> int:
             leaf_is_symlink = False
         if not leaf_is_symlink:
             raise
-        raise ValueError(
-            f"{path} is a symbolic link - refusing to write through it; "
-            "remove it or choose another target"
-        ) from exc
+        raise _symlink_leaf_refusal(path) from exc
     try:
         _require_regular_fd(path, fd)
         descriptor_flags = fcntl.fcntl(fd, fcntl.F_GETFL)
@@ -253,6 +350,13 @@ def _write_fd(path: str | os.PathLike[str], *, private: bool) -> int:
             pass
         raise
     return fd
+
+
+def _symlink_leaf_refusal(path: str | os.PathLike[str]) -> ValueError:
+    return ValueError(
+        f"{path} is a symbolic link - refusing to write through it; "
+        "remove it or choose another target"
+    )
 
 
 def _safe_open_leaf_refusal(path: str | os.PathLike[str]) -> ValueError:
@@ -277,7 +381,7 @@ def _require_regular_fd(path: str | os.PathLike[str], fd: int) -> None:
 
 def _validate_existing_regular_leaf(
     path: Path, leaf: str, dir_fd: int | None,
-) -> None:
+) -> os.stat_result | None:
     """Classify an atomic-replace destination without accessing its inode."""
     try:
         existing = (
@@ -288,12 +392,10 @@ def _validate_existing_regular_leaf(
             return
         raise
     if stat.S_ISLNK(existing.st_mode):
-        raise ValueError(
-            f"{path} is a symbolic link - refusing to write through it; "
-            "remove it or choose another target"
-        )
+        raise _symlink_leaf_refusal(path)
     if not stat.S_ISREG(existing.st_mode):
         raise _nonregular_leaf_refusal(path)
+    return existing
 
 
 def private_open(
@@ -312,8 +414,54 @@ def private_open(
         raise
 
 
+def private_open_lock(
+    path: str | os.PathLike[str], *, encoding: str = "utf-8",
+) -> TextIO:
+    """Open a stable regular lock inode without changing existing bytes or mode.
+
+    Only an inode exclusively created by this call is tightened to 0600. The
+    returned stream is used for locking, never for writing lock contents.
+    """
+    flags = os.O_WRONLY | os.O_NOFOLLOW | os.O_NONBLOCK
+    created = False
+    try:
+        try:
+            fd = _open_through_walked_parent(
+                path, flags | os.O_CREAT | os.O_EXCL, 0o600,
+            )
+            created = True
+        except FileExistsError:
+            fd = _open_through_walked_parent(path, flags, 0o600)
+    except OSError as exc:
+        if exc.errno == errno.ENXIO:
+            raise _safe_open_leaf_refusal(path) from exc
+        if exc.errno != errno.ELOOP:
+            raise
+        try:
+            is_link = stat.S_ISLNK(os.lstat(path).st_mode)
+        except OSError:
+            is_link = False
+        if not is_link:
+            raise
+        raise _symlink_leaf_refusal(path) from exc
+    try:
+        _require_regular_fd(path, fd)
+        descriptor_flags = fcntl.fcntl(fd, fcntl.F_GETFL)
+        fcntl.fcntl(fd, fcntl.F_SETFL, descriptor_flags & ~os.O_NONBLOCK)
+        if created:
+            os.fchmod(fd, 0o600)
+        return os.fdopen(fd, "w", encoding=encoding)
+    except BaseException:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        raise
+
+
 def _atomic_replace_write(
     path: str | os.PathLike[str], payload: bytes, *, private: bool,
+    mode: int | None = None,
 ) -> None:
     """Write one complete value to a fresh name and rename it over the target.
 
@@ -329,10 +477,12 @@ def _atomic_replace_write(
     its own inode in place or two writers would each lock a private temporary and
     both believe they hold it.
     """
+    if private and mode is not None:
+        raise ValueError("explicit modes require the public permission policy")
     target = Path(path)
     for attempt in range(2):
         try:
-            _atomic_replace_once(target, payload, private=private)
+            _atomic_replace_once(target, payload, private=private, mode=mode)
             return
         except OSError as exc:
             # Same lost-parent race the truncate path retries: a concurrent writer
@@ -343,12 +493,14 @@ def _atomic_replace_write(
 
 
 def _atomic_replace_once(
-    target: Path, payload: bytes, *, private: bool,
+    target: Path, payload: bytes, *, private: bool, mode: int | None = None,
 ) -> None:
     """One attempt at the fresh-name write and rename."""
+    if private and mode is not None:
+        raise ValueError("explicit modes require the public permission policy")
     dir_fd, leaf = _open_parent_dirfd(target)
     try:
-        _validate_existing_regular_leaf(target, leaf, dir_fd)
+        existing = _validate_existing_regular_leaf(target, leaf, dir_fd)
 
         requested_mode = 0o600 if private else 0o666
         temporary = f".{Path(leaf).name}.sigwood-{os.getpid()}-{next(_TEMP_COUNTER)}"
@@ -361,6 +513,10 @@ def _atomic_replace_once(
         try:
             if private:
                 os.fchmod(fd, 0o600)
+            elif mode is not None:
+                os.fchmod(fd, mode & 0o777)
+            elif existing is not None:
+                os.fchmod(fd, stat.S_IMODE(existing.st_mode) & 0o777)
             with os.fdopen(fd, "wb") as stream:
                 stream.write(payload)
         except BaseException:
@@ -395,22 +551,28 @@ def _unlink_quietly(name: str, dir_fd: int | None) -> None:
 def private_write_text(
     path: str | os.PathLike[str], text: str, *, private: bool = True,
     encoding: str = "utf-8", newline: str | None = None,
+    mode: int | None = None,
 ) -> None:
-    """Write one text value, replacing the destination rather than emptying it."""
+    """Replace one text value with private or preserved public permissions.
+
+    An explicit public mode overrides the existing ordinary permission bits.
+    A fresh public file without an explicit mode follows the ambient umask.
+    """
     if newline is None:
         payload = text.replace("\n", os.linesep) if os.linesep != "\n" else text
     elif newline == "":
         payload = text
     else:
         payload = text.replace("\n", newline)
-    _atomic_replace_write(path, payload.encode(encoding), private=private)
+    _atomic_replace_write(path, payload.encode(encoding), private=private, mode=mode)
 
 
 def private_write_bytes(
     path: str | os.PathLike[str], data: bytes, *, private: bool = True,
+    mode: int | None = None,
 ) -> None:
-    """Write one byte value, replacing the destination rather than emptying it."""
-    _atomic_replace_write(path, data, private=private)
+    """Replace one byte value using the same mode policy as private_write_text."""
+    _atomic_replace_write(path, data, private=private, mode=mode)
 
 
 def be_like_water(target: str) -> ResolvedTarget:

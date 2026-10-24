@@ -20,6 +20,7 @@ import gzip
 import lzma
 import os
 import re
+import stat
 import sys
 import tomllib
 from dataclasses import dataclass
@@ -35,7 +36,6 @@ import sigwood.common.syslog_mode as syslog_mode
 from sigwood.common.paths import (
     effective_root,
     private_mkdir,
-    private_open,
     private_write_bytes,
     private_write_text,
     resolve_path,
@@ -1651,6 +1651,18 @@ def _permission_advice(home: Path) -> str:
     return "make the location writable as your user, or pick another location"
 
 
+def _strip_control(value: object) -> str:
+    """Neutralize terminal controls without widening the wizard import boundary."""
+    return "".join(
+        char for char in str(value)
+        if not (
+            ord(char) < 0x20
+            or 0x7F <= ord(char) < 0xA0
+            or 0xDC80 <= ord(char) < 0xDD00
+        )
+    )
+
+
 def _writability_error(home: Path, *, private: bool = True) -> str | None:
     """Probe that init can create <home> and write inside it. Returns an
     actionable message or None. Creates <home> on success (mkdir is the probe).
@@ -1661,12 +1673,11 @@ def _writability_error(home: Path, *, private: bool = True) -> str | None:
     try:
         private_mkdir(home, private=private)
         probe = home / ".sigwood_init_write_probe"
-        with private_open(probe, private=private, encoding="utf-8"):
-            pass
+        private_write_bytes(probe, b"", private=private)
         probe.unlink()
         return None
     except OSError as exc:
-        return (
+        return _strip_control(
             f"can't write to {home} ({exc}) - "
             f"{_permission_advice(home)}"
         )
@@ -1743,15 +1754,17 @@ def _reset_allowlist_d(allowlist_d: Path, *, private: bool = True) -> None:
 
 def _read_existing_config_for_root(
     target: Path,
-) -> tuple[bytes | None, str | None, dict | None]:
+) -> tuple[bytes | None, str | None, dict | None, int | None]:
     """Read an existing config file. Returns (raw_bytes, decoded_text,
-    parsed-sigwood-dict). Bytes are preserved verbatim for `.bak`
+    parsed-sigwood-dict, mode) from one descriptor. Bytes are preserved verbatim for `.bak`
     (read_text translates CRLF→LF under universal newlines, which would
     break the non-clobber guarantee for Windows-line-ending files)."""
     if not target.exists():
-        return (None, None, None)
+        return (None, None, None, None)
     try:
-        raw = target.read_bytes()
+        with target.open("rb") as stream:
+            raw = stream.read()
+            mode = stat.S_IMODE(os.fstat(stream.fileno()).st_mode)
     except OSError as exc:
         raise ValueError(
             f"cannot read existing config at {target}: {exc}"
@@ -1768,7 +1781,7 @@ def _read_existing_config_for_root(
         raise ValueError(
             f"existing config at {target} is not valid TOML: {exc}"
         ) from exc
-    return (raw, text, parsed.get("sigwood", {}))
+    return (raw, text, parsed.get("sigwood", {}), mode)
 
 
 def _validate_existing_syslog_source(existing: dict) -> None:
@@ -1802,6 +1815,7 @@ class _Redirect:
 def _write_config(
     target: Path, text_base: str, actions: dict[str, Action], *,
     fresh: bool, existing_raw: bytes | None, private: bool = True,
+    existing_mode: int | None = None,
 ) -> None:
     """POST-ACCEPT commit: create the home, `.bak` the existing file (verbatim
     bytes), apply every managed Action over ``text_base``, write. The ONLY
@@ -1809,6 +1823,11 @@ def _write_config(
 
     A home-mkdir failure surfaces the actionable ValueError at the CLI boundary
     (the E1 backstop for the non-mutating fresh preflight)."""
+    if existing_raw is not None and not private and existing_mode is None:
+        raise ValueError(
+            f"cannot preserve backup permissions for {target}: "
+            "original mode is unavailable"
+        )
     try:
         private_mkdir(target.parent, private=private)
     except OSError as exc:
@@ -1819,7 +1838,10 @@ def _write_config(
     if existing_raw is not None:
         bak_path = target.with_suffix(".toml.bak")
         try:
-            private_write_bytes(bak_path, existing_raw, private=private)
+            private_write_bytes(
+                bak_path, existing_raw, private=private,
+                mode=None if private else existing_mode,
+            )
         except OSError as exc:
             raise ValueError(
                 f"cannot write backup at {bak_path}: {exc}"
@@ -1876,7 +1898,7 @@ def _location_flow() -> tuple[Path, str] | _Redirect:
 
 def _do_merge(
     config_path: Path, existing_bytes: bytes, existing_text: str, existing_section: dict,
-    *, private: bool = True,
+    *, private: bool = True, existing_mode: int | None = None,
 ) -> None:
     """Non-destructive merge over the existing config text (fresh=False - skips
     preserve user values; tuning and exporter stanzas survive byte-identical).
@@ -1904,7 +1926,7 @@ def _do_merge(
 
     _write_config(
         config_path, existing_text, actions, fresh=False, existing_raw=existing_bytes,
-        private=private,
+        private=private, existing_mode=existing_mode,
     )
     print()
     _print_confirm(config_path, resolved, probe)
@@ -1914,7 +1936,9 @@ def _entry_for_config(config_path: Path) -> None:
     """Merge / reset decision for an existing config. Reached for a discovered
     search-home config AND (via _Redirect) a typed custom-home config."""
     private = config_path.parent != Path(_SYSTEM_ROOT)
-    existing_bytes, existing_text, existing_section = _read_existing_config_for_root(config_path)
+    existing_bytes, existing_text, existing_section, existing_mode = (
+        _read_existing_config_for_root(config_path)
+    )
     assert existing_bytes is not None and existing_text is not None
 
     _print_merge_reset(config_path)
@@ -1924,7 +1948,7 @@ def _entry_for_config(config_path: Path) -> None:
             print()
             _do_merge(
                 config_path, existing_bytes, existing_text,
-                existing_section or {}, private=private,
+                existing_section or {}, private=private, existing_mode=existing_mode,
             )
             return
         if choice in ("r", "reset"):
@@ -1991,10 +2015,10 @@ def _do_reset(
                 continue
             break
 
-        existing_raw = config_path.read_bytes() if config_path.exists() else None
+        existing_raw, _, _, existing_mode = _read_existing_config_for_root(config_path)
         _write_config(
             config_path, _load_example_text(), actions, fresh=True,
-            existing_raw=existing_raw, private=private,
+            existing_raw=existing_raw, private=private, existing_mode=existing_mode,
         )
         if scope == "both":
             _reset_allowlist_d(

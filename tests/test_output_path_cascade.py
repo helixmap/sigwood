@@ -664,6 +664,8 @@ def test_export_cloudtrail_split_renders_plus_K_more(
         return 7_000_000, {"bytes": 6144, "paths": parts}
 
     monkeypatch.setattr(splunk_module, "write", _split_write)
+    # This simulated splitting backend declares its part-family contract.
+    monkeypatch.setattr(splunk_module, "OUTPUT_PARTS", True, raising=False)
 
     run_export(
         config=config, backend="splunk", query_names=["only"],

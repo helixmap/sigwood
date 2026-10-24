@@ -36,6 +36,8 @@ def main() -> int:
             time.sleep(0.01)
         _commit_export_provenance(
             staged,
+            logical_name=basename,
+            parts=False,
             since=datetime(2026, 8, 1, tzinfo=timezone.utc),
             until=datetime(2026, 8, 2, tzinfo=timezone.utc),
             backend="splunk",

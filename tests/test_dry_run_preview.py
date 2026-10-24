@@ -489,6 +489,8 @@ def _manifest_export(parent: Path) -> Path:
     staged = _validate_staged_write(stage, {"bytes": len(payload), "paths": [staged_path]})
     _commit_export_provenance(
         staged,
+        logical_name=staged_path.name,
+        parts=False,
         since=datetime.now(timezone.utc) - timedelta(days=2),
         until=datetime.now(timezone.utc),
         backend="splunk",

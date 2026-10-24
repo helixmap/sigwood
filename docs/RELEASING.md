@@ -111,7 +111,11 @@ The executable package version has one owner: `sigwood/__init__.py` (`__version_
 line deliberately repeats the version as rendered prose, so update it in the same commit.
 
 Stable versions use `X.Y.Z`; tags use `vX.Y.Z`. The release workflow rejects a tag whose
-version does not exactly match `__version__`.
+version does not exactly match `__version__`, and it reads that version the way the cut
+script below does: exactly one assignment at the start of a line, so a second assignment, or
+none, fails the gate rather than being guessed around. The built wheel and sdist are then
+required to carry that same version before anything is attested or uploaded; a workflow
+dispatch rehearsal keeps its throwaway version and skips that comparison.
 
 ## Release workflow route
 
@@ -144,8 +148,10 @@ toolchain, not the `ubuntu-latest` runner image, the Python installed by
 `actions/setup-python`, that Python's bundled pip, or the package index serving the hashed
 downloads; those layers remain trusted by assumption.
 
-After validation, `package` creates a GitHub build provenance attestation for both distributions,
-then uploads those same files as the `dist` workflow artifact. The attestation binds their
+After validation, which on a tag push also requires the two archives' shared version to equal
+the tag (`tools/validate_distribution.py --expect-version`), `package` creates a GitHub build
+provenance attestation for both distributions, then uploads those same files as the `dist`
+workflow artifact. The attestation binds their
 digests to the source commit and `release.yml` workflow that built them. It does not prove that
 the code is safe or reviewed, that the inputs were reproducible, or that no packaging-layer
 difference changes behavior.

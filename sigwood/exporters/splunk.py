@@ -17,14 +17,17 @@ from __future__ import annotations
 import os
 import re
 import ssl
+import stat
+import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
 from tqdm import tqdm
 
-from sigwood.common.display import fmt_window, plural
+from sigwood.common.display import compact_home, fmt_window, plural
 from sigwood.common.paths import private_mkdir, private_open
+from sigwood.common.sanitize import strip_control
 
 try:
     import splunklib.client as splunk_client
@@ -35,6 +38,7 @@ except ImportError:
 
 # RFC 3164 PRI field: <N> or <NN> or <NNN> at start of line
 PRI_RE = re.compile(r"^<\d+>")
+_WARNED_CREDENTIAL_SOURCES: set[str] = set()
 
 
 def is_configured(backend_cfg: dict[str, Any]) -> bool:
@@ -65,13 +69,35 @@ def _get_credentials(config: dict[str, Any]) -> tuple[str, str]:
     Environment variables take priority over config-file values.
     """
     user = os.environ.get("SIGWOOD_SPLUNK_USER", "").strip() or config.get("username", "").strip()
-    passwd = os.environ.get("SIGWOOD_SPLUNK_PASS", "").strip() or config.get("password", "").strip()
+    env_password = os.environ.get("SIGWOOD_SPLUNK_PASS", "").strip()
+    passwd = env_password or config.get("password", "").strip()
+    if not env_password and passwd:
+        _warn_file_credentials(config)
     if not user or not passwd:
         raise ValueError(
             "Splunk credentials not found - set SIGWOOD_SPLUNK_USER and "
             "SIGWOOD_SPLUNK_PASS"
         )
     return user, passwd
+
+
+def _warn_file_credentials(config: dict[str, Any]) -> None:
+    """Warn once for a loaded file password with shared read permission bits."""
+    source = config.get("__source__")
+    if not isinstance(source, dict):
+        return
+    path, mode = source.get("path"), source.get("mode")
+    if not isinstance(path, str) or not isinstance(mode, int):
+        return
+    if not mode & (stat.S_IRGRP | stat.S_IROTH) or path in _WARNED_CREDENTIAL_SOURCES:
+        return
+    print(
+        f"splunk: the password in {strip_control(compact_home(path))} can be read "
+        f"by other accounts ({stat.filemode(stat.S_IFREG | (mode & 0o7777))}) - "
+        "move it to SIGWOOD_SPLUNK_PASS, or tighten the file's mode",
+        file=sys.stderr,
+    )
+    _WARNED_CREDENTIAL_SOURCES.add(path)
 
 
 def _is_cert_verification_failure(exc: BaseException) -> bool:

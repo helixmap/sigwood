@@ -575,6 +575,18 @@ provenance could not be established. Entries for files outside the selected
 population create no fact. Trust is prospective: existing files do not become
 trusted merely because a later manifest exists.
 
+A successful re-export replaces one logical output family in its destination
+directory. The family is its resolved output basename and, for CloudTrail, the
+canonical `_partNN` siblings of that basename. Auto-generated names include the
+requested window; an explicit output filename can be reused for another window.
+Files and symlink leaves in that family that were not produced by the new run are
+removed, and their manifest entries are retired. Names outside the family are
+untouched. A stale entry whose file is already gone is retired without a counted
+removal. A real directory at a family name remains on disk, but its stale entry is
+retired. Interruption after the new files land and before retirement can leave an
+older part with its valid prior entry until the next successful export to that
+same logical output.
+
 The reserved manifest, `.sigwood-export-provenance.lock`, and every path below
 the exact `.sigwood-export-stage-` prefix are excluded before discovery,
 sniffing, parsing, snapshots, and byte accounting. Explicitly naming a reserved

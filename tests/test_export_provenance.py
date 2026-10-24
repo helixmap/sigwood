@@ -285,6 +285,26 @@ def test_symlink_lock_refuses_without_final_mutation(
     assert not (tmp_path / "pihole_20260801_1d.log").exists()
 
 
+@pytest.mark.parametrize("mode", [0o640, 0o644])
+def test_provenance_lock_preserves_hard_linked_inode(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, mode: int,
+) -> None:
+    victim = tmp_path / "preserved-file"
+    victim.write_bytes(b"preserve these bytes\n")
+    victim.chmod(mode)
+    lock = tmp_path / PROVENANCE_LOCK_NAME
+    lock.hardlink_to(victim)
+    original = victim.stat()
+
+    data = _run_real_writer(monkeypatch, tmp_path)
+
+    assert data.is_file()
+    assert victim.read_bytes() == b"preserve these bytes\n"
+    assert stat.S_IMODE(victim.stat().st_mode) == mode
+    assert victim.stat().st_ino == original.st_ino == lock.stat().st_ino
+    assert read_manifest(tmp_path / PROVENANCE_MANIFEST_NAME).generation == 1
+
+
 @pytest.mark.parametrize("failure", ["duplicate", "bytes"])
 def test_backend_write_metadata_fails_before_final_mutation(
     monkeypatch: pytest.MonkeyPatch,

@@ -68,7 +68,14 @@ jobs:
         if: github.event_name == 'push'
         run: |
           tag="${GITHUB_REF_NAME#v}"
-          ver="$(python -c "import re,pathlib; print(re.search(r'__version__ = \"([^\"]+)\"', pathlib.Path('sigwood/__init__.py').read_text()).group(1))")"
+          ver="$(python - <<'PY'
+          import re, pathlib
+          s = pathlib.Path("sigwood/__init__.py").read_text()
+          found = re.findall(r'^__version__ = "([^"]+)"$', s, flags=re.M)
+          assert len(found) == 1, f"expected exactly one __version__, found {len(found)}"
+          print(found[0])
+          PY
+          )"
           echo "tag=$tag version=$ver"
           test "$tag" = "$ver" || { echo "::error::tag v$tag != __version__ $ver"; exit 1; }
 
@@ -106,7 +113,11 @@ jobs:
         run: |
           python -m build --no-isolation
           python -m twine check dist/*
-          python tools/validate_distribution.py dist
+          if [ "$GITHUB_EVENT_NAME" = "push" ]; then
+            python tools/validate_distribution.py dist --expect-version "${GITHUB_REF_NAME#v}"
+          else
+            python tools/validate_distribution.py dist
+          fi
           sha256sum dist/*
 
       - name: Attest build provenance

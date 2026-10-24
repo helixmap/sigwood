@@ -850,3 +850,130 @@ def test_output_explicit_path(tmp_path: Path) -> None:
     assert not explicit.exists()
     result = _resolve_output_path({}, str(explicit), since, until, "default")
     assert result == explicit
+
+
+@pytest.mark.parametrize("mode,env_password,warnings", [(0o644, None, 1), (0o600, None, 0), (0o644, "environment-password", 0), (0o644, "   ", 1)])
+def test_file_password_warning_uses_loaded_permissions_once_per_export(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str], mode: int, env_password: str | None, warnings: int,
+) -> None:
+    import sigwood.exporters.splunk as splunk_module
+
+    monkeypatch.delenv("SIGWOOD_SPLUNK_USER", raising=False)
+    monkeypatch.delenv("SIGWOOD_SPLUNK_PASS", raising=False)
+    if env_password is not None:
+        monkeypatch.setenv("SIGWOOD_SPLUNK_PASS", env_password)
+    monkeypatch.setattr(splunk_module, "_WARNED_CREDENTIAL_SOURCES", set(), raising=False)
+    path = tmp_path / "config.toml"
+    path.write_text(
+        '[export.splunk]\nhost="192.0.2.20"\nport=8089\n'
+        'username="example-user"\npassword="example-password"\n'
+        '[export.splunk.query.alpha]\nspl="search index=alpha"\noutput_basename="alpha"\n'
+        '[export.splunk.query.beta]\nspl="search index=beta"\noutput_basename="beta"\n'
+    )
+    path.chmod(mode)
+    loaded = cfg.load(path)
+    _install_fake_splunk(monkeypatch, [[], []])
+    run_export(
+        loaded, "splunk", ["alpha", "beta"],
+        datetime(2026, 8, 1, tzinfo=timezone.utc),
+        datetime(2026, 8, 1, 1, tzinfo=timezone.utc),
+        str(tmp_path / "exports") + "/", False, use_utc=True,
+    )
+    captured = capsys.readouterr()
+    assert captured.err.count("splunk: the password in ") == warnings
+    assert "example-user" not in captured.err
+    assert "example-password" not in captured.err
+    assert "environment-password" not in captured.err
+    if warnings:
+        assert "move it to SIGWOOD_SPLUNK_PASS, or tighten the file's mode" in captured.err
+        assert str(path) in captured.err
+    assert "alpha" in captured.out and "beta" in captured.out
+
+
+@pytest.mark.parametrize("mode,forged,warnings", [(0o600, 0o644, 0), (0o644, 0o600, 1)])
+def test_file_password_warning_ignores_forged_source_permissions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str], mode: int, forged: int, warnings: int,
+) -> None:
+    import sigwood.exporters.splunk as splunk_module
+
+    monkeypatch.delenv("SIGWOOD_SPLUNK_USER", raising=False)
+    monkeypatch.delenv("SIGWOOD_SPLUNK_PASS", raising=False)
+    monkeypatch.setattr(splunk_module, "_WARNED_CREDENTIAL_SOURCES", set())
+    path = tmp_path / "config.toml"
+    path.write_text(
+        '[export.splunk]\nhost="192.0.2.20"\nusername="example-user"\npassword="example-password"\n'
+        '[export.splunk.__source__]\npath="nested-forged.example.test"\nmode=' + str(forged) + '\n'
+        '[export.splunk.query.alpha]\nspl="search index=alpha"\noutput_basename="alpha"\n'
+        '[__source__]\npath="top-forged.example.test"\nmode=' + str(forged) + '\n'
+    )
+    path.chmod(mode)
+    _install_fake_splunk(monkeypatch, [[]])
+    run_export(cfg.load(path), "splunk", ["alpha"], datetime(2026, 8, 1, tzinfo=timezone.utc), datetime(2026, 8, 1, 1, tzinfo=timezone.utc), str(tmp_path / "exports") + "/", False, use_utc=True)
+    captured = capsys.readouterr()
+    assert captured.err.count("splunk: the password in ") == warnings
+    assert "forged.example.test" not in captured.err
+    if warnings:
+        assert str(path) in captured.err
+
+
+def test_file_password_without_source_metadata_is_silent(monkeypatch: pytest.MonkeyPatch, capsys) -> None:
+    import sigwood.exporters.splunk as splunk_module
+
+    monkeypatch.delenv("SIGWOOD_SPLUNK_USER", raising=False)
+    monkeypatch.delenv("SIGWOOD_SPLUNK_PASS", raising=False)
+    monkeypatch.setattr(splunk_module, "_WARNED_CREDENTIAL_SOURCES", set())
+    assert _get_credentials({"username": "example-user", "password": "example-password"}) == ("example-user", "example-password")
+    assert capsys.readouterr().err == ""
+
+
+@pytest.mark.parametrize("surrogate", [False, True])
+def test_export_warning_neutralizes_source_path_through_cli_and_keeps_stdout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys, surrogate: bool,
+) -> None:
+    from sigwood import cli
+    import sigwood.exporters.splunk as splunk_module
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("SIGWOOD_SPLUNK_USER", raising=False)
+    monkeypatch.delenv("SIGWOOD_SPLUNK_PASS", raising=False)
+    monkeypatch.setattr(splunk_module, "_WARNED_CREDENTIAL_SOURCES", set())
+    monkeypatch.setattr(splunk_module, "tqdm", lambda iterable, **_kwargs: iterable)
+    hostile = "config\n\r\x1b[31m\x7f\x85\x9b" + ("\udc9b" if surrogate else "")
+    path = tmp_path / (hostile + ".toml")
+    content = (
+        '[export.splunk]\nhost="192.0.2.20"\nusername="example-user"\npassword="example-password"\n'
+        '[export.splunk.query.alpha]\nspl="search index=alpha"\noutput_basename="alpha"\n'
+        '[export.splunk.query.beta]\nspl="search index=beta"\noutput_basename="beta"\n'
+    )
+    try:
+        path.write_text(content)
+    except (UnicodeError, OSError):
+        if not surrogate:
+            raise
+        path = tmp_path / "surrogate-source.toml"
+        path.write_text(content)
+        loader = cfg.load
+
+        def loaded_with_filesystem_escape(*args, **kwargs):
+            loaded = loader(*args, **kwargs)
+            loaded["__source__"]["path"] = str(tmp_path / (hostile + ".toml"))
+            return loaded
+
+        monkeypatch.setattr(cfg, "load", loaded_with_filesystem_escape)
+    path.chmod(0o644)
+    _install_fake_splunk(monkeypatch, [[], [], [], []])
+    args = ["export", "splunk", "alpha", "beta", "--config=" + str(path), "--out=" + str(tmp_path / "exports") + "/", "--since=2026-08-01", "--until=2026-08-01T01:00:00Z", "--utc", "--yes"]
+    cli.main(args)
+    first = capsys.readouterr()
+    assert first.err.startswith("splunk: the password in ")
+    assert first.err.count("\n") == 1
+    assert not any((ord(c) < 32 and c != "\n") or 127 <= ord(c) < 160 or 0xDC80 <= ord(c) < 0xDD00 for c in first.err)
+    assert "example-user" not in first.err and "example-password" not in first.err
+    assert "(-rw-r--r--)" in first.err
+    monkeypatch.setenv("SIGWOOD_SPLUNK_PASS", "example-password")
+    cli.main(args)
+    second = capsys.readouterr()
+    assert second.err == ""
+    assert second.out == first.out

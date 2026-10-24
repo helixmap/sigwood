@@ -6,6 +6,8 @@ All notable changes to sigwood are recorded here. The format follows
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-10-24
+
 ### Added
 
 - `sigwood export` warns once, on stderr, when the Splunk password it uses was read from a
@@ -1985,7 +1987,8 @@ agent, no account.
 - Analysis-window controls (`--since`/`--until`/`--days`/`--all`), a per-source default
   lookback window, and local-or-UTC time rendering.
 
-[Unreleased]: https://github.com/helixmap/sigwood/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/helixmap/sigwood/compare/v1.2.0...HEAD
+[1.2.0]: https://github.com/helixmap/sigwood/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/helixmap/sigwood/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/helixmap/sigwood/compare/v0.7.1...v1.0.0
 [0.7.1]: https://github.com/helixmap/sigwood/compare/v0.7.0...v0.7.1

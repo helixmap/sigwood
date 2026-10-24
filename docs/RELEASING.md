@@ -179,8 +179,13 @@ never publishes the draft.
 
 ## Release checklist
 
-The in-fence `### §N` echo lines are deliberate: once a pasted section has scrolled out
+The in-fence `### >>> §N` echo lines are deliberate: once a pasted section has scrolled out
 of the terminal, they identify the last section the maintainer pasted.
+
+A block that waits on you says so in the fence before it waits. A key touch is announced with a
+`touch the key …` line, and the one browser act a block waits for (the §4 dispatch) is a prompt
+that says when to press Enter. A terminal that sits silent after one of those lines is waiting
+for you, not hung.
 
 ### 0 - Preflight the current branch
 
@@ -229,6 +234,28 @@ installed for local work sits in it too. Before treating a report as a blocker, 
 affected package is in what users receive, which is `[project] dependencies` plus the shipped
 extras in `pyproject.toml`; the `dev` extra is maintainer-only. A finding in tooling that reaches
 no user is still worth fixing, and it is not a reason to hold the cut.
+
+Confirm that every action the workflows pin is on the repository's allowed-actions list. Dependabot
+bumps the pins in the workflow files but cannot update that list, and nothing reports when the two
+drift apart. A pin that `ci.yml` uses fails visibly on the next push. A pin that only `release.yml`
+uses stays hidden until a release runs, and without a §4 rehearsal that is the publish job, after
+the `pypi` approval, with a tag already pushed that cannot be reused. The list below also includes
+the actions the publish action pins inside itself, which no workflow file names (§4 explains why
+those matter):
+
+```bash
+{
+  grep -ho 'uses: [^ ]*@[0-9a-f]\{40\}' .github/workflows/*.yml | cut -d' ' -f2
+  for ref in $(grep -ho 'pypa/gh-action-pypi-publish@[0-9a-f]\{40\}' .github/workflows/release.yml | sort -u); do
+    gh api "repos/${ref%@*}/contents/action.yml?ref=${ref#*@}" --jq .content | base64 -d |
+      grep -o 'uses: [^ ]*@[0-9a-f]\{40\}' | cut -d' ' -f2
+  done
+} | sort -u
+```
+
+Compare the output with the **Allow specified actions and reusable workflows** box under
+**Settings -> Actions -> General**, in the browser, because the maintainer token cannot read that policy. Add any missing entry before
+continuing. Superseded SHAs can be removed in the same sitting.
 
 Finally, confirm that nothing is knowingly shipping in a defective state. A detector outside the
 default hunt is still reachable by name and under `--detect=all`, so "not in the default hunt" is
@@ -363,15 +390,17 @@ git add -u
 # plus any new file section 1 added:  git add <path>
 
 if test -s "${RELEASE_MESSAGE:-}" &&
+  printf 'touch the key to sign the release commit\n' &&
   git commit -F "$RELEASE_MESSAGE" &&
   test -z "$(git status --short)"; then
+  printf 'touch the key to authenticate the push\n'
   git push origin main
 else
-  printf 'release state is not fully committed - nothing pushed\n' >&2
+  printf 'release state is not fully committed; nothing pushed\n' >&2
   false
 fi
 
-### §2a
+### >>> §2a
 ```
 
 Wait for the [CI workflow](https://github.com/helixmap/sigwood/actions/workflows/ci.yml) run on
@@ -382,12 +411,37 @@ so a forgotten push fails here rather than at the tag. Every version-specific co
 this point uses these variables without editing. If the shell closes or `__version__` changes,
 run the block again.
 
+It also chooses `PYTHON`, the interpreter every later venv is built with: the newest version in
+the release workflow's test matrix that is installed on this machine. A bare `python3` is not
+used, because Homebrew moves it to new versions on its own, including ones the matrix does not
+test. A source-built dependency on an untested interpreter can crash the suite in ways that read
+like a release defect (pandas on Python 3.15 segfaults). The choice is read from `release.yml`,
+so it follows the matrix when the supported range changes.
+
 ```bash
 REPO=helixmap/sigwood
+PYTHON=$(
+  .venv/bin/python - <<'PY'
+import pathlib
+import re
+import shutil
+
+text = pathlib.Path(".github/workflows/release.yml").read_text()
+matrices = re.findall(r'^\s*python-version: \[([^\]]+)\]', text, re.M)
+assert len(matrices) == 1
+for version in reversed(re.findall(r'"(\d+\.\d+)"', matrices[0])):
+    path = shutil.which(f"python{version}")
+    if path:
+        print(path)
+        break
+PY
+)
 
 if [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
   TAG="v${VERSION}"
-  printf 'repository: %s\nversion:    %s\ntag:        %s\n' "$REPO" "$VERSION" "$TAG" &&
+  printf 'repository: %s\nversion:    %s\ntag:        %s\npython:     %s\n' \
+    "$REPO" "$VERSION" "$TAG" "${PYTHON:-none of the release matrix versions is installed}" &&
+    test -n "$PYTHON" &&
     grep -F "$VERSION" README.md &&
     grep -F "## [$VERSION] - " CHANGELOG.md &&
     test -z "$(git status --short)" &&
@@ -398,7 +452,7 @@ else
   false
 fi
 
-### §2b
+### >>> §2b
 ```
 
 All checks must succeed.
@@ -415,9 +469,10 @@ its temporary clone on success, and retains it for inspection on failure.
 
 It guards the working tree first. Everything here builds from `HEAD`, while `$VERSION` was
 read from the working tree in step 2, so an uncommitted release state produces artifacts one
-version behind and fails on the very last line - the smoke test - after a full test run, with
+version behind and fails on the very last line, the smoke test, after a full test run, with
 a version mismatch that looks like a packaging fault rather than a missing commit. The guard
-turns that into an immediate, accurate message.
+turns that into an immediate, accurate message. It also refuses to start without the `PYTHON`
+that §2b chose, since both venvs are built with it.
 
 ```bash
 BUILD=$(mktemp -d "${TMPDIR:-/tmp}/sigwood-build.XXXXXX")
@@ -428,12 +483,16 @@ BUILD=$(mktemp -d "${TMPDIR:-/tmp}/sigwood-build.XXXXXX")
     printf 'uncommitted changes: this builds from HEAD, so land the release state first (step 1)\n' >&2
     exit 1
   fi
+  if [[ -z "${PYTHON:-}" ]]; then
+    printf 'PYTHON is not set: run the identity block in step 2 first\n' >&2
+    exit 1
+  fi
 
   git clone -q --no-local --no-hardlinks "$PWD" "$BUILD/src"
   git -C "$BUILD/src" checkout -q "$(git rev-parse HEAD)"
   cd "$BUILD/src"
 
-  python3 -m venv .venv-rel
+  "$PYTHON" -m venv .venv-rel
   .venv-rel/bin/python -m pip install -q --upgrade pip
   .venv-rel/bin/python -m pip install -e ".[dev]" build twine
   .venv-rel/bin/python -m pytest -q
@@ -447,7 +506,7 @@ BUILD=$(mktemp -d "${TMPDIR:-/tmp}/sigwood-build.XXXXXX")
   shopt -s nullglob
   WHEELS=(dist/*.whl)
   (( ${#WHEELS[@]} == 1 ))
-  python3 -m venv .venv-smoke
+  "$PYTHON" -m venv .venv-smoke
   .venv-smoke/bin/python -m pip install -q "${WHEELS[0]}"
   .venv-smoke/bin/python -m pip check
   test "$(.venv-smoke/bin/sigwood --version)" = "sigwood $VERSION"
@@ -469,7 +528,7 @@ else
   false
 fi
 
-### §3
+### >>> §3
 ```
 
 Nothing above this point changes remote release state.
@@ -478,7 +537,8 @@ Nothing above this point changes remote release state.
 
 This step is non-negotiable before the first Trusted Publishing release, after any change to
 `.github/workflows/release.yml`, and after any change to the repository's allowed-actions policy.
-It is still recommended for later releases when none of those changed.
+A Dependabot pin bump in `release.yml` is such a change, even though it does not look like a
+change to the release path. It is still recommended for later releases when none of those changed.
 
 An unchanged workflow is not the same as an unchanged release path. The publish job resolves
 actions that no workflow file names: `pypa/gh-action-pypi-publish` pins its own
@@ -496,12 +556,18 @@ mode is covered by the by-hand fallback in step 7, not by this rehearsal. The co
 there is no placeholder to replace. The dispatch itself is a browser act: `gh workflow run`
 needs the Actions write permission that the maintainer token from the one-time setup
 deliberately does not carry, so the block below asks for the click and then finds the run by
-the commit it ran on and the time it was created. Progress can be monitored on the
-[Actions tab](https://github.com/helixmap/sigwood/actions) of the GitHub Repository.
+the commit it ran on and the time it was created.
+
+When the prompt appears, click **Run workflow** on the
+[release workflow page](https://github.com/helixmap/sigwood/actions/workflows/release.yml) with
+branch `main`, then come straight back and press Enter. Do not wait for the run to finish. Enter
+starts a 60-second search for the new run, and once it is found the terminal follows it live
+until it completes. Pressing Enter before the click can end the search before the run exists;
+pressing it after the run has finished still works, without the live progress.
 
 ```bash
 REHEARSAL_SINCE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-read -r -p "dispatch now (Actions tab -> release -> Run workflow -> branch main), then press Enter: "
+read -r -p "click Run workflow (Actions -> release -> branch main), then press Enter right away; this terminal finds the run and follows it: "
 REHEARSAL_RUN_ID=
 for _ in {1..30}; do
   REHEARSAL_RUN_ID=$(gh run list --repo "$REPO" --workflow release.yml --event workflow_dispatch \
@@ -519,7 +585,7 @@ if [[ "$REHEARSAL_RUN_ID" =~ ^[0-9]+$ ]] &&
   printf 'TestPyPI version: %s\n' "$DEV_VERSION"
 
   TEST_VENV=$(mktemp -d "${TMPDIR:-/tmp}/sigwood-testpypi.XXXXXX")
-  if python3 -m venv "$TEST_VENV" &&
+  if "$PYTHON" -m venv "$TEST_VENV" &&
     "$TEST_VENV/bin/python" -m pip --isolated install \
       --index-url https://test.pypi.org/simple/ \
       --extra-index-url https://pypi.org/simple/ \
@@ -536,7 +602,7 @@ else
   false
 fi
 
-### §4
+### >>> §4a
 ```
 
 Both index flags are required. `--index-url` selects the sigwood package from TestPyPI;
@@ -561,6 +627,8 @@ else
   printf 'build provenance verification failed; inspect %s\n' "$ATTEST_DIR" >&2
   false
 fi
+
+### >>> §4b
 ```
 
 This proves that GitHub accepted a signed statement binding those digests to the expected
@@ -575,9 +643,11 @@ one for the push:
 ```bash
 if test -z "$(git tag --list "$TAG")" &&
   test -z "$(git ls-remote --tags origin "refs/tags/$TAG")" &&
+  printf 'touch the key to sign the tag\n' &&
   git tag -s "$TAG" -m "sigwood $TAG tag" &&
   git verify-tag "$TAG" &&
   git show --no-patch --decorate "$TAG" &&
+  printf 'touch the key to authenticate the push\n' &&
   git push origin "$TAG"; then
   printf 'pushed %s\n' "$TAG"
 else
@@ -585,11 +655,11 @@ else
   false
 fi
 
-### §5a
+### >>> §5a
 ```
 
 Capture the workflow run belonging to the tagged commit. This lookup block is safe to rerun
-if the shell closes after the tag push; initialize `REPO`, `VERSION`, and `TAG` again first.
+if the shell closes after the tag push; initialize `REPO`, `VERSION`, `TAG`, and `PYTHON` again first (§8 builds its venv with `PYTHON`).
 
 ```bash
 if TAG_SHA=$(git rev-list -n 1 "$TAG") && [[ -n "$TAG_SHA" ]]; then
@@ -612,7 +682,7 @@ else
   false
 fi
 
-### §5b
+### >>> §5b
 ```
 
 The workflow reruns the complete Python 3.11-3.14 matrix, validates a fresh sdist and wheel,
@@ -673,7 +743,7 @@ else
   false
 fi
 
-### §7a
+### >>> §7a
 ```
 
 Open the first address and read the title, tag, and rendered notes. It is a read-only preview of
@@ -688,7 +758,7 @@ the release once it is public:
 test "$(gh release view "$TAG" --repo "$REPO" --json isDraft --jq .isDraft)" = "false" &&
   printf 'published GitHub Release %s\n' "$TAG"
 
-### §7b
+### >>> §7b
 ```
 
 Attaching built artifacts is optional; PyPI remains the distribution source of truth.
@@ -715,7 +785,7 @@ else
   false
 fi
 
-### §7c
+### >>> §7c
 ```
 
 Then on the Releases page choose **Draft a new release**, pick the existing tag `vX.Y.Z`, title
@@ -730,7 +800,7 @@ the check.
 
 ```bash
 if POST_VENV=$(mktemp -d "${TMPDIR:-/tmp}/sigwood-postpub.XXXXXX") &&
-  python3 -m venv "$POST_VENV" &&
+  "$PYTHON" -m venv "$POST_VENV" &&
   "$POST_VENV/bin/python" -m pip --isolated install --no-cache-dir \
     --index-url https://pypi.org/simple/ "sigwood==$VERSION" &&
   "$POST_VENV/bin/python" -m pip check &&
@@ -742,7 +812,7 @@ else
   false
 fi
 
-### §8a
+### >>> §8a
 ```
 
 This exact-version install is the authoritative signal that the release is live. PyPI's JSON
@@ -751,23 +821,18 @@ endpoint is CDN-cached and can briefly lag the file index used by pip.
 Then confirm the GitHub side from the terminal. Without a tag argument, `gh release view`
 resolves the repository's **latest published** Release, so the second test catches the one
 failure the Releases page shows silently - a release that was drafted but never published,
-leaving the previous version advertised as latest:
+leaving the previous version advertised as latest. And confirm GitHub verified both signatures. The first call reads the tagged commit, the second the annotated tag object itself:
 
 ```bash
 test "$(gh release view "$TAG" --repo "$REPO" --json isDraft --jq .isDraft)" = "false" &&
   test "$(gh release view --repo "$REPO" --json tagName --jq .tagName)" = "$TAG" &&
   printf 'GitHub Release %s is published and latest\n' "$TAG"
-```
 
-Then confirm GitHub verified both signatures. The first call reads the tagged commit, the
-second the annotated tag object itself:
-
-```bash
 test "$(gh api "repos/$REPO/commits/$(git rev-list -n 1 "$TAG")" --jq .commit.verification.verified)" = "true" &&
   test "$(gh api "repos/$REPO/git/tags/$(git rev-parse "$TAG")" --jq .verification.verified)" = "true" &&
   printf 'commit and tag for %s are Verified on GitHub\n' "$TAG"
 
-### §8b
+### >>> §8b
 ```
 
 Then confirm:

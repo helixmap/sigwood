@@ -419,9 +419,16 @@ def test_source_metadata_failure_cannot_leave_forged_provenance(
 ) -> None:
     path = tmp_path / "config.toml"
     path.write_text('[__source__]\npath="forged.example.test"\nmode=420\n')
+    inode = path.stat().st_ino
+    original = cfg.os.fstat
 
-    def fail_metadata(_fd):
-        raise OSError("metadata unavailable")
+    # Fail only the descriptor open on the config file: the test runner's own
+    # output capture reads descriptor metadata while this patch is active, and a
+    # fake that fails every descriptor breaks the runner instead of the loader.
+    def fail_metadata(fd):
+        if original(fd).st_ino == inode:
+            raise OSError("metadata unavailable")
+        return original(fd)
 
     monkeypatch.setattr(cfg.os, "fstat", fail_metadata)
     with pytest.raises(cfg.ConfigError, match="cannot read config permissions.*metadata unavailable"):

@@ -3186,9 +3186,15 @@ def test_public_backup_refuses_missing_original_mode_without_mutation(tmp_path: 
 def test_existing_config_reader_reports_descriptor_metadata_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     target = tmp_path / "config.toml"
     target.write_text('[sigwood]\nroot=""\n')
+    inode = target.stat().st_ino
+    original = os.fstat
 
-    def fail_metadata(_fd):
-        raise OSError("metadata unavailable")
+    # Fail only the descriptor open on the config file: the test runner's own
+    # output capture reads descriptor metadata while this patch is active.
+    def fail_metadata(fd):
+        if original(fd).st_ino == inode:
+            raise OSError("metadata unavailable")
+        return original(fd)
 
     monkeypatch.setattr(os, "fstat", fail_metadata)
     with pytest.raises(ValueError, match="cannot read existing config.*metadata unavailable"):

@@ -611,8 +611,14 @@ def test_private_lock_closes_descriptors_on_setup_failure(
         original_close(fd)
         opened.remove(fd)
 
-    def fail_setup(*_args, **_kwargs):
-        raise OSError("injected setup failure")
+    original_setup = getattr(fcntl if failure == "fcntl" else os, failure)
+
+    # Fail only a descriptor this test saw opened: the test runner's own output
+    # capture reads descriptor metadata while the fstat patch is active.
+    def fail_setup(fd, *args, **kwargs):
+        if fd in opened:
+            raise OSError("injected setup failure")
+        return original_setup(fd, *args, **kwargs)
 
     _patch_dirfd_call(monkeypatch, "open", record_open)
     monkeypatch.setattr(os, "close", record_close)
@@ -661,8 +667,14 @@ def test_private_open_closes_fd_when_setup_fails(
     def _fail_fchmod(_fd: int, _mode: int) -> None:
         raise OSError("fchmod failed")
 
-    def _fail_fstat(_fd: int) -> os.stat_result:
-        raise OSError("fstat failed")
+    real_fstat = paths_mod.os.fstat
+
+    # Fail only a descriptor this test saw opened: the test runner's own output
+    # capture reads descriptor metadata while the fstat patch is active.
+    def _fail_fstat(fd: int) -> os.stat_result:
+        if fd in opened:
+            raise OSError("fstat failed")
+        return real_fstat(fd)
 
     def _fail_fcntl(*_args: object) -> int:
         raise OSError("fcntl failed")

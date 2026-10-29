@@ -6,7 +6,7 @@
 
 [![CI](https://github.com/helixmap/sigwood/actions/workflows/ci.yml/badge.svg)](https://github.com/helixmap/sigwood/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/sigwood)](https://pypi.org/project/sigwood/) <br>
-![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)
+![Python 3.11 to 3.14](https://img.shields.io/badge/python-3.11--3.14-blue.svg)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](#license)
 
 <br><br clear="all">
@@ -136,7 +136,8 @@ full run against that corpus, followed by the same findings in HTML format:
 ## Installation
 
 One name everywhere: the PyPI distribution, the command, the import package, and the config
-section are all `sigwood`. Requires **Python 3.11+**.
+section are all `sigwood`. Requires **Python 3.11 through 3.14**; 3.15 is refused at install time
+until its dependency stack ships wheels for it.
 
 The recommended install is [pipx](https://pipx.pypa.io), which keeps sigwood in its own
 isolated environment and on your PATH (and sidesteps the `externally-managed-environment`

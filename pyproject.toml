@@ -33,7 +33,11 @@ classifiers = [
     "Topic :: System :: Networking :: Monitoring",
     "Topic :: System :: Systems Administration",
 ]
-requires-python = ">=3.11"
+# Capped below 3.15: no pandas 2.x release ships a 3.15 wheel, so an install there
+# builds pandas from source, and that build crashed on the first timestamp
+# conversion (observed on macOS arm64). Lift the cap with the classifiers, both CI
+# matrices and the MANUAL support sentence once the dependency stack covers 3.15.
+requires-python = ">=3.11,<3.15"
 dependencies = [
     # Capped below 3.0: pandas 3.0 reroutes to_datetime(unit=...) through
     # Series.map, which segfaults under the py3.12 + pandas 3.0.4 + numpy 2.4.6

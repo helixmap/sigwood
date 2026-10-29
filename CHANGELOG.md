@@ -6,6 +6,14 @@ All notable changes to sigwood are recorded here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- Installation requires Python 3.11 through 3.14 (`requires-python = ">=3.11,<3.15"`).
+  Python 3.15 was previously permitted but unverified, and installing there built
+  pandas 2.x from source because no 2.x release ships a 3.15 wheel; that build crashed
+  on the first timestamp conversion. pip now refuses the install instead. The cap lifts
+  once the dependency stack covers 3.15.
+
 ## [1.2.0] - 2026-10-24
 
 ### Added

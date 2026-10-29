@@ -260,7 +260,7 @@ metadata, and wheel/sdist version drift before a release checkout is involved.
 
 `[dev]` deliberately leaves out `[pdf]` - WeasyPrint needs native libraries pip can't
 install, so grab `.[dev,pdf]` plus your platform's Pango/HarfBuzz/fontconfig only if
-you're working on PDF output. Requires Python 3.11+.
+you're working on PDF output. Requires Python 3.11 through 3.14.
 
 Fork, branch, keep the change small and self-contained, and open a PR against `main`.
 For anything cross-cutting - a new source family, a schema change, a new dependency -

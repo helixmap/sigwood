@@ -74,10 +74,11 @@ stays calm, and the exit code carries the verdict.
 After this chapter you can install sigwood without changing the operating system's Python,
 add the optional integrations you need, upgrade the same environment later, and recover from
 an earlier root-owned installation without guessing at a destructive command. sigwood needs
-Python 3.11 or newer and supports macOS and Linux, including Raspberry Pi. It is tested on
-3.11 through 3.14, the versions its CI matrix runs; 3.15 is untested at this tag, and
-installing there is permitted rather than verified. Windows is not a tested native target;
-use WSL when Windows is the host.
+Python 3.11 through 3.14 and supports macOS and Linux, including Raspberry Pi. Those are the
+versions its CI matrix runs. Python 3.15 is refused at install time: no pandas 2.x release
+ships a wheel for it, so pip would build pandas from source, and that build crashes on the
+first timestamp conversion. The cap lifts once the dependency stack covers 3.15. Windows is
+not a tested native target; use WSL when Windows is the host.
 
 An isolated tool environment is the simplest route. With pipx:
 

@@ -143,10 +143,16 @@ uv pip compile .github/requirements/build-toolchain.in --generate-hashes \
 ```
 
 Do not omit the Python or platform arguments. A lock resolved for the maintainer's macOS host is
-not the Linux lock consumed by the GitHub-hosted runner. The hashes cover the Python build
-toolchain, not the `ubuntu-latest` runner image, the Python installed by
-`actions/setup-python`, that Python's bundled pip, or the package index serving the hashed
-downloads; those layers remain trusted by assumption.
+not the Linux lock consumed by the GitHub-hosted runner. The command keeps every pin already in
+the output file, so run as written it changes nothing; add `--upgrade-package <name>` for each
+package to move, or `--upgrade` to refresh every pin. A Dependabot pull request against this lock
+is applied this way rather than merged: pip-tools style output omits `setuptools` as unsafe, so
+the proposed lock drops the build backend the `package` job installs without isolation, and CI
+green on that pull request proves nothing because only `release.yml` consumes the lock.
+
+The hashes cover the Python build toolchain, not the `ubuntu-latest` runner image, the Python
+installed by `actions/setup-python`, that Python's bundled pip, or the package index serving the
+hashed downloads; those layers remain trusted by assumption.
 
 After validation, which on a tag push also requires the two archives' shared version to equal
 the tag (`tools/validate_distribution.py --expect-version`), `package` creates a GitHub build
@@ -414,9 +420,11 @@ run the block again.
 It also chooses `PYTHON`, the interpreter every later venv is built with: the newest version in
 the release workflow's test matrix that is installed on this machine. A bare `python3` is not
 used, because Homebrew moves it to new versions on its own, including ones the matrix does not
-test. A source-built dependency on an untested interpreter can crash the suite in ways that read
-like a release defect (pandas on Python 3.15 segfaults). The choice is read from `release.yml`,
-so it follows the matrix when the supported range changes.
+test. An interpreter outside `requires-python` fails the editable install at once, and one the
+range admits but the matrix never ran can build a dependency from source and crash the suite in
+ways that read like a release defect (pandas on Python 3.15 segfaulted before the range was
+capped below it). The choice is read from `release.yml`, so it follows the matrix when the
+supported range changes.
 
 ```bash
 REPO=helixmap/sigwood

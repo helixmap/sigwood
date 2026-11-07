@@ -1,0 +1,11 @@
+.git
+.github
+.githooks
+.venv
+__pycache__
+*.pyc
+tests
+docs
+notebooks
+demo
+tools

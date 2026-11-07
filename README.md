@@ -158,6 +158,27 @@ plain virtualenv also works. Optional extras, upgrades, `sudo pip` recovery, and
 footprint are all in the
 [manual](https://github.com/helixmap/sigwood/blob/main/docs/MANUAL.md#installing-and-upgrading).
 
+### Docker
+
+You can also run sigwood in a container using Docker:
+
+```bash
+# Build the image
+docker build -t sigwood:latest .
+
+# Run sigwood to display help
+docker run --rm sigwood:latest
+
+# Analyze local logs by mounting them to /data
+docker run --rm -v /path/to/logs:/data:ro sigwood:latest /data/conn.log
+
+# Run a specific detector
+docker run --rm -v /path/to/logs:/data:ro sigwood:latest beacon /data/conn.log
+
+# Generate an interactive HTML graph report
+docker run --rm -v /path/to/logs:/data:ro -v $(pwd)/reports:/reports sigwood:latest graph /data -o /reports/graph.html
+```
+
 ## What it hunts
 
 | Detector  | Surfaces                                            | Method                       | Source                         |

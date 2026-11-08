@@ -20,10 +20,12 @@ RUN pip install --no-cache-dir --upgrade pip build && \
 FROM python:3.12-slim-bookworm AS runner
 
 # Create non-root user and working directories
+ENV HOME=/home/sigwood
 RUN groupadd -g 1000 sigwood && \
-    useradd -u 1000 -g sigwood -m -s /bin/bash sigwood && \
+    useradd -u 1000 -g sigwood -m -d /home/sigwood -s /bin/bash sigwood && \
     mkdir -p /data /reports && \
-    chown -R sigwood:sigwood /data /reports
+    chmod 1777 /reports && \
+    chown -R sigwood:sigwood /data /reports /home/sigwood
 
 # Copy installed packages from builder
 COPY --from=builder /install /usr/local

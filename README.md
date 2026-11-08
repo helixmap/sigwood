@@ -175,9 +175,32 @@ docker run --rm -v /path/to/logs:/data:ro sigwood:latest /data/conn.log
 # Run a specific detector
 docker run --rm -v /path/to/logs:/data:ro sigwood:latest beacon /data/conn.log
 
-# Generate an interactive HTML graph report
-docker run --rm -v /path/to/logs:/data:ro -v $(pwd)/reports:/reports sigwood:latest graph /data -o /reports/graph.html
+# Generate an interactive HTML graph report:
+# For a specific log file to an exact target file:
+docker run --rm -v /path/to/logs:/data:ro -v $(pwd)/reports:/reports sigwood:latest graph /data/conn.log -o /reports/graph.html
+
+# For a directory with mixed logs (e.g. conn.log and dns.log), pass a directory target
+# so separate graph artifacts are generated (e.g. sigwood-graph_conn_<date>.html):
+docker run --rm -v /path/to/logs:/data:ro -v $(pwd)/reports:/reports sigwood:latest graph /data -o /reports/
 ```
+
+#### File Permissions and User Strategy
+
+The image runs as non-root user `sigwood` (`UID:GID 1000`) with `HOME=/home/sigwood`.
+
+When bind-mounting a writable output directory on Linux (such as `-v $(pwd)/reports:/reports`):
+- Ensure the host destination directory exists before running docker so the docker daemon does not create it as `root`.
+- If your host user matches UID 1000, `docker run --rm -v $(pwd)/reports:/reports ...` works directly.
+- If running under a different host UID/GID, pass `--user $(id -u):$(id -g)` along with `-e HOME=/tmp` (or mount a writable directory to `/home/sigwood`) so sigwood can write reports and locate a writable home directory:
+  ```bash
+  mkdir -p reports
+  docker run --rm \
+    --user $(id -u):$(id -g) \
+    -e HOME=/tmp \
+    -v /path/to/logs:/data:ro \
+    -v $(pwd)/reports:/reports \
+    sigwood:latest graph /data -o /reports/
+  ```
 
 ## What it hunts
 

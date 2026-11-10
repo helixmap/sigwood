@@ -2594,3 +2594,28 @@ def test_run_graph_windowed_pihole_empty_names_selected_window(
         runner.run_graph(
             config, kind="pihole", inputs=source, stream=io.StringIO(), quiet=True,
         )
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores directory write bits")
+def test_graph_write_failure_names_the_destination_and_does_not_claim_nothing_to_graph(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A graph that was built but could not be written says so truthfully."""
+    conn = tmp_path / "conn.log"
+    conn.write_text(_CONN_LINE, encoding="utf-8")
+    reports = tmp_path / "reports"
+    reports.mkdir()
+    _stub_config(monkeypatch, _config())
+    reports.chmod(0o500)
+    try:
+        rc = cli._main(["graph", "--all", "-q", f"--out={reports}/", str(conn)])
+    finally:
+        reports.chmod(0o700)
+
+    captured = capsys.readouterr()
+    assert rc == 1
+    assert f"sigwood: conn: could not write graph to {reports}/sigwood-graph_conn_" in captured.err
+    assert ".sigwood-" not in captured.err
+    assert "nothing to graph" not in captured.err
+    assert captured.err.rstrip().endswith("sigwood: no graph written")
+    assert list(reports.iterdir()) == []

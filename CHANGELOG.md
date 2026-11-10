@@ -6,6 +6,12 @@ All notable changes to sigwood are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- A `Dockerfile` and README instructions for running sigwood in a container. The image
+  runs as a non-root user, reads logs from a read-only `/data` mount, and writes
+  reports and graphs to a mounted `/reports` directory.
+
 ### Changed
 
 - Installation requires Python 3.11 through 3.14 (`requires-python = ">=3.11,<3.15"`).
@@ -13,6 +19,18 @@ All notable changes to sigwood are recorded here. The format follows
   pandas 2.x from source because no 2.x release ships a 3.15 wheel; that build crashed
   on the first timestamp conversion. pip now refuses the install instead. The cap lifts
   once the dependency stack covers 3.15.
+
+### Fixed
+
+- When the clustering backend cannot load because numba has no writable directory for
+  its compile cache (a read-only install with an unwritable home directory, common in
+  containers), sigwood no longer crashes every command with a traceback. The `dns`
+  detector is skipped with a message naming `NUMBA_CACHE_DIR` as the remedy, and the
+  other detectors run. Where stock `hdbscan` is installed, `dns` falls back to it.
+- A failed report or graph write names the file you asked for instead of a hidden
+  temporary file. A graph that was built but could not be written now says
+  `could not write graph to <path>` and ends with "no graph written" rather than
+  "nothing to graph".
 
 ## [1.2.0] - 2026-10-24
 

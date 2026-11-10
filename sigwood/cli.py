@@ -48,6 +48,7 @@ from sigwood.common.errors import (
     ExportAborted,
     GraphEmpty,
     GraphSourceUnreadable,
+    GraphWriteFailed,
     UsageError,
 )
 from sigwood.common.output import get_handler
@@ -1671,7 +1672,7 @@ def _run_graph(args: list[str]) -> int:
             print(f"  {kind}: {source} -> {strip_control(destination)}")
         return 1 if input_permissions else 0
 
-    rendered = clean_empty = 0
+    rendered = clean_empty = write_errors = 0
     ordinary_errors = input_errors
     permission_errors = input_permissions
     for kind, inputs in buckets.items():
@@ -1703,6 +1704,11 @@ def _run_graph(args: list[str]) -> int:
             print(f"sigwood: {strip_control(exc)} - skipping", file=sys.stderr)
             clean_empty += 1
             continue
+        except GraphWriteFailed as exc:
+            print(f"sigwood: {kind}: {strip_control(exc)}", file=sys.stderr)
+            ordinary_errors += 1
+            write_errors += 1
+            continue
         except (ValueError, OSError, OverflowError) as exc:
             print(f"sigwood: {kind}: {strip_control(exc)}", file=sys.stderr)
             ordinary_errors += 1
@@ -1726,7 +1732,12 @@ def _run_graph(args: list[str]) -> int:
         return 0
     if clean_empty and not ordinary_errors:
         return 0
-    print("sigwood: nothing to graph", file=sys.stderr)
+    # A bucket that built a graph and failed only at the write had something to
+    # graph, so the closing status must not say otherwise.
+    if write_errors:
+        print("sigwood: no graph written", file=sys.stderr)
+    else:
+        print("sigwood: nothing to graph", file=sys.stderr)
     return 1
 
 

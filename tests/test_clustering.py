@@ -111,6 +111,105 @@ def test_fallback_resolves_to_hdbscan_when_fast_hdbscan_blocked(monkeypatch):
         importlib.reload(clustering)
 
 
+_NUMBA_CACHE_ERROR = (
+    "cannot cache function '_init_node': no locator available for file "
+    "'/usr/local/lib/python3.12/site-packages/fast_hdbscan/numba_kdtree.py'"
+)
+
+
+def _install_failing_fast_hdbscan(monkeypatch, tmp_path, message: str) -> None:
+    """Shadow fast_hdbscan with a package whose import raises RuntimeError.
+
+    numba raises a plain RuntimeError while decorating a cache=True function
+    when no directory is writable for its compile cache, which surfaces as a
+    RuntimeError from ``import fast_hdbscan``. The real module is removed from
+    sys.modules (monkeypatch restores it) so the shadow is what imports.
+    """
+    package = tmp_path / "fast_hdbscan"
+    package.mkdir()
+    (package / "__init__.py").write_text(
+        f"raise RuntimeError({message!r})\n", encoding="utf-8",
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+    monkeypatch.delitem(sys.modules, "fast_hdbscan", raising=False)
+
+
+def test_unusable_fast_backend_without_fallback_is_an_import_error(
+    monkeypatch, tmp_path,
+):
+    """An unwritable numba cache must not escape as a RuntimeError.
+
+    Detector discovery contains ImportError only, so a RuntimeError from the
+    backend import used to crash every analyze command with a raw traceback.
+    """
+    _install_failing_fast_hdbscan(monkeypatch, tmp_path, _NUMBA_CACHE_ERROR)
+    monkeypatch.setitem(sys.modules, "hdbscan", None)
+    try:
+        with pytest.raises(ImportError) as excinfo:
+            importlib.reload(clustering)
+        message = str(excinfo.value)
+        assert message == (
+            "fast_hdbscan failed to load: numba found no writable directory "
+            "for its compile cache - set NUMBA_CACHE_DIR to a writable directory"
+        )
+        assert isinstance(excinfo.value.__cause__, RuntimeError)
+    finally:
+        monkeypatch.undo()
+        importlib.reload(clustering)
+
+
+def test_unusable_fast_backend_reports_an_unrecognized_runtime_error_verbatim(
+    monkeypatch, tmp_path,
+):
+    """Only numba's cache failure earns the NUMBA_CACHE_DIR remedy."""
+    _install_failing_fast_hdbscan(monkeypatch, tmp_path, "boom\nsecond line")
+    monkeypatch.setitem(sys.modules, "hdbscan", None)
+    try:
+        with pytest.raises(ImportError) as excinfo:
+            importlib.reload(clustering)
+        assert str(excinfo.value) == "fast_hdbscan failed to load: boom"
+    finally:
+        monkeypatch.undo()
+        importlib.reload(clustering)
+
+
+def test_unusable_fast_backend_falls_back_to_stock_hdbscan(monkeypatch, tmp_path):
+    try:
+        import hdbscan  # noqa: F401
+    except ImportError:
+        pytest.skip("stock hdbscan not importable")
+    _install_failing_fast_hdbscan(monkeypatch, tmp_path, _NUMBA_CACHE_ERROR)
+    try:
+        importlib.reload(clustering)
+        assert clustering.ACTIVE_BACKEND == "hdbscan"
+    finally:
+        monkeypatch.undo()
+        importlib.reload(clustering)
+
+
+def test_unusable_fast_backend_skips_dns_and_leaves_other_detectors_running(
+    monkeypatch, tmp_path,
+):
+    """Discovery records dns as an import failure; beacon stays available."""
+    from sigwood import runner
+
+    _install_failing_fast_hdbscan(monkeypatch, tmp_path, _NUMBA_CACHE_ERROR)
+    monkeypatch.setitem(sys.modules, "hdbscan", None)
+    monkeypatch.delitem(sys.modules, "sigwood.common.clustering")
+    monkeypatch.delitem(sys.modules, "sigwood.detectors.dns", raising=False)
+    try:
+        failures: dict[str, str] = {}
+        available = runner.discover_detectors(_failures=failures)
+        assert "beacon" in available
+        assert "dns" not in available
+        assert failures["dns"].startswith(
+            "fast_hdbscan failed to load: numba found no writable directory"
+        )
+    finally:
+        monkeypatch.undo()
+        importlib.reload(clustering)
+
+
 def _partition(labels) -> tuple[frozenset, frozenset]:
     """Reduce a labeling to a label-permutation-invariant partition.
 

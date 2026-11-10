@@ -1945,3 +1945,78 @@ def test_atomic_temporary_has_selected_mode_before_payload_write(
     assert seen == [expected]
     assert _mode(target) == expected
     assert target.read_bytes() == b"synthetic"
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root ignores directory write bits")
+def test_atomic_write_create_failure_names_the_destination(tmp_path: Path) -> None:
+    """A refused write reports the path the caller asked for, not the temporary."""
+    locked = tmp_path / "locked"
+    locked.mkdir()
+    target = locked / "report.html"
+    locked.chmod(0o500)
+    try:
+        with pytest.raises(PermissionError) as excinfo:
+            private_write_bytes(target, b"payload")
+    finally:
+        locked.chmod(0o700)
+    assert excinfo.value.errno == errno.EACCES
+    assert excinfo.value.filename == str(target)
+    assert ".sigwood-" not in str(excinfo.value)
+
+
+def test_atomic_write_payload_failure_names_the_destination(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed payload write (no filename on the error) names the destination."""
+    target = tmp_path / "report.html"
+    real_fdopen = os.fdopen
+
+    class _FullDisk:
+        def __init__(self, stream):
+            self._stream = stream
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc_info):
+            self._stream.close()
+            return False
+
+        def write(self, _data):
+            raise OSError(errno.ENOSPC, os.strerror(errno.ENOSPC))
+
+    def _fdopen(fd, mode="r", *args, **kwargs):
+        stream = real_fdopen(fd, mode, *args, **kwargs)
+        # Only the writer's own binary temporary; every other caller is untouched.
+        return _FullDisk(stream) if mode == "wb" else stream
+
+    with monkeypatch.context() as patch:
+        patch.setattr(paths_mod.os, "fdopen", _fdopen)
+        with pytest.raises(OSError) as excinfo:
+            private_write_bytes(target, b"payload")
+    assert excinfo.value.errno == errno.ENOSPC
+    assert excinfo.value.filename == str(target)
+    assert not target.exists()
+    assert [p.name for p in tmp_path.iterdir()] == []
+
+
+def test_atomic_write_rename_failure_names_the_destination(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed rename reports the destination and leaves no temporary behind."""
+    target = tmp_path / "report.html"
+    real_rename = os.rename
+
+    def _rename(src, dst, *args, **kwargs):
+        if str(src).startswith(".report.html.sigwood-"):
+            raise OSError(errno.EXDEV, os.strerror(errno.EXDEV), src, None, dst)
+        return real_rename(src, dst, *args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(paths_mod.os, "rename", _rename)
+        with pytest.raises(OSError) as excinfo:
+            private_write_bytes(target, b"payload")
+    assert excinfo.value.errno == errno.EXDEV
+    assert excinfo.value.filename == str(target)
+    assert excinfo.value.filename2 is None
+    assert [p.name for p in tmp_path.iterdir()] == []

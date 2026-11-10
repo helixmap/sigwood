@@ -504,12 +504,19 @@ def _atomic_replace_once(
 
         requested_mode = 0o600 if private else 0o666
         temporary = f".{Path(leaf).name}.sigwood-{os.getpid()}-{next(_TEMP_COUNTER)}"
-        fd = os.open(
-            temporary,
-            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
-            requested_mode,
-            dir_fd=dir_fd,
-        )
+        try:
+            fd = os.open(
+                temporary,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                requested_mode,
+                dir_fd=dir_fd,
+            )
+        except OSError as exc:
+            # EEXIST is a fact about the temporary's own name, never the target.
+            renamed = None if exc.errno == errno.EEXIST else _naming_target(exc, target, temporary)
+            if renamed is None:
+                raise
+            raise renamed from exc
         try:
             if private:
                 os.fchmod(fd, 0o600)
@@ -519,25 +526,48 @@ def _atomic_replace_once(
                 os.fchmod(fd, stat.S_IMODE(existing.st_mode) & 0o777)
             with os.fdopen(fd, "wb") as stream:
                 stream.write(payload)
-        except BaseException:
+        except BaseException as exc:
             try:
                 os.close(fd)
             except OSError:
                 pass
             _unlink_quietly(temporary, dir_fd)
-            raise
+            renamed = _naming_target(exc, target, temporary) if isinstance(exc, OSError) else None
+            if renamed is None:
+                raise
+            raise renamed from exc
         try:
             _validate_existing_regular_leaf(target, leaf, dir_fd)
             os.rename(temporary, leaf, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
-        except BaseException:
+        except BaseException as exc:
             _unlink_quietly(temporary, dir_fd)
-            raise
+            renamed = _naming_target(exc, target, temporary) if isinstance(exc, OSError) else None
+            if renamed is None:
+                raise
+            raise renamed from exc
     finally:
         if dir_fd is not None:
             try:
                 os.close(dir_fd)
             except OSError:
                 pass
+
+
+def _naming_target(exc: OSError, target: Path, temporary: str) -> OSError | None:
+    """Return the error re-addressed to the destination, or None to keep it.
+
+    A failure to create, write or rename the fresh temporary is reported with
+    the temporary's hidden name, or with no name at all for a failed write. The
+    operator asked for the destination, so the error names the destination.
+    The errno, and so the OSError subclass, is kept, which leaves every errno
+    check (the lost-parent ENOENT retry included) unchanged. An error that
+    already names some other path is left alone.
+    """
+    if exc.errno is None:
+        return None
+    if exc.filename is not None and temporary not in (exc.filename, exc.filename2):
+        return None
+    return OSError(exc.errno, exc.strerror or os.strerror(exc.errno), os.fspath(target))
 
 
 def _unlink_quietly(name: str, dir_fd: int | None) -> None:

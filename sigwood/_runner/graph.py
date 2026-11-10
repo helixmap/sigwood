@@ -17,7 +17,7 @@ from sigwood.common.display import (
     set_narration_enabled,
     to_display_timezone,
 )
-from sigwood.common.errors import GraphEmpty, GraphSourceUnreadable
+from sigwood.common.errors import GraphEmpty, GraphSourceUnreadable, GraphWriteFailed
 from sigwood.common.loader import FileSpan
 from sigwood.common.paths import private_mkdir, private_write_text
 from sigwood.common.sanitize import strip_control
@@ -405,8 +405,15 @@ def _run_graph(
     # Do not create a directory or touch an exact target until the loader,
     # builder, and strict JSON-in-script renderer have all succeeded.
     if output_file is not None:
-        private_mkdir(output_file.parent)
-        private_write_text(output_file, html, encoding="utf-8", newline="")
+        try:
+            private_mkdir(output_file.parent)
+            private_write_text(output_file, html, encoding="utf-8", newline="")
+        except OSError as exc:
+            # Absolute, because an auto-named target in the working directory is
+            # otherwise a bare filename the operator cannot place.
+            raise GraphWriteFailed(
+                str(output_file.absolute()), exc.strerror or str(exc), exc.errno,
+            ) from exc
         return output_file
     if stream is None:
         stream = sys.stdout

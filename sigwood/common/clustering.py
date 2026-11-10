@@ -48,14 +48,45 @@ from typing import Any
 
 import numpy as np
 
+def _unusable_fast_backend_message(exc: RuntimeError) -> str:
+    """Describe a fast_hdbscan that is installed but cannot load here.
+
+    numba raises a plain ``RuntimeError`` while decorating a ``cache=True``
+    function when it finds no writable directory for its compile cache (a
+    read-only install with an unwritable home directory, as in a container
+    run under an arbitrary user). numba offers no subtype for it, so its own
+    message text is read only to add the remedy; it never decides whether the
+    backend counts as unusable. The message stays on one line because detector
+    discovery reports the first line as the skip reason.
+    """
+    detail = str(exc).strip().splitlines()[0] if str(exc).strip() else type(exc).__name__
+    if "cannot cache function" in detail and "no locator available" in detail:
+        return (
+            "fast_hdbscan failed to load: numba found no writable directory "
+            "for its compile cache - set NUMBA_CACHE_DIR to a writable directory"
+        )
+    return f"fast_hdbscan failed to load: {detail}"
+
+
+# A RuntimeError while importing fast_hdbscan means the installed backend is
+# unusable in this environment. It is handled exactly like a missing backend:
+# fall back to stock hdbscan, else raise ImportError, the one failure class
+# detector discovery records as a disclosed skip instead of a crash.
+_fast_backend_failure: RuntimeError | None = None
 try:
     from fast_hdbscan import HDBSCAN
     ACTIVE_BACKEND = "fast_hdbscan"
-except ImportError:
+except (ImportError, RuntimeError) as _fast_exc:
+    if isinstance(_fast_exc, RuntimeError):
+        _fast_backend_failure = _fast_exc
     try:
         from hdbscan import HDBSCAN
         ACTIVE_BACKEND = "hdbscan"
     except ImportError as e:
+        if _fast_backend_failure is not None:
+            raise ImportError(
+                _unusable_fast_backend_message(_fast_backend_failure)
+            ) from _fast_backend_failure
         raise ImportError(
             "No HDBSCAN backend available - neither 'fast_hdbscan' nor "
             "'hdbscan' was importable. sigwood installs one automatically "

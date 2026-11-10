@@ -89,3 +89,18 @@ class GraphSourceUnreadable(Exception):
         self.kind = kind
         self.source_label = source_label
         self.message = message
+
+
+class GraphWriteFailed(OSError):
+    """A graph was built but its artifact could not be written.
+
+    It subclasses OSError, the class the write raised before this type existed,
+    so programmatic callers catching OSError keep working. ``errno`` carries the
+    underlying error number. The CLI catches it per bucket so the closing
+    status does not claim there was nothing to graph.
+    """
+
+    def __init__(self, path: str, reason: str, errno_value: int | None = None) -> None:
+        super().__init__(f"could not write graph to {path}: {reason}")
+        self.errno = errno_value
+        self.path = path
